@@ -1,8 +1,7 @@
 # H3 Take
 
-One ComfyUI node for a MiniMax H3 take. It calls ComfyUI's own
-`MiniMaxH3ReferenceToVideo` and `MiniMaxH3AddGuide` for stills. It does not
-import Context Loop, Motion Context, or DaSiWa Director.
+One ComfyUI node for a MiniMax H3 shot. It calls ComfyUI's own H3 nodes and
+needs no other custom node pack.
 
 Sampling, the checkpoint, and `MiniMaxH3SigmaShift` stay on the graph.
 Hiding those is how a pack takes control away.
@@ -11,43 +10,60 @@ Hiding those is how a pack takes control away.
 
 | You want | Set |
 |---|---|
+| A shot from text | `prompt` only |
 | Start on a still | `anchor=start`, connect `start_image` |
 | End on a still | `anchor=end`, connect `end_image` |
 | Both ends | `anchor=both` |
-| A picture the model may use, not a frame it must hit | `ref_image_1` … `ref_image_3` |
-| A voice timbre | `voice` plus the H3 audio VAE |
+| Stills along the shot | connect `mid_image_*`, list their frames in `mid_frames` |
+| A picture the model may use, not a frame it must hit | `ref_image_*` |
+| A reference clip, with or without its sound | `ref_video_*`, `ref_video_audio_*` |
+| A voice or sound the model may use | `ref_audio_*` |
 | Change a clip in place | `video_mode=v2v`, source length equals `length`, set `keep` |
 | New frames after the clip | `video_mode=extend_after` |
 | New frames before the clip | `video_mode=extend_before` |
 | New frames on both sides | `video_mode=extend_both` |
+| Keep the clip's sound over the held frames | `audio_hold=span`, connect `source_audio` |
+| Generate picture to an existing track | `audio_hold=full`, connect `source_audio` |
+| New sound on the same picture | `video_mode=v2v`, `keep=0`, `audio_hold=off` |
+| Regenerate one area of a held clip | connect `region`, white regenerates |
 
-Picture numbers are fixed, so the prompt cannot drift:
+## Checkpoint
+
+Set `checkpoint` to match the model on the graph. H3 ships two kinds and they
+read the prompt differently. `ref2va` takes references. `fl2va` takes a prompt
+and pinned frames, and refuses references.
+
+## Prompt labels
+
+The `labels` output lists what each number means in this take.
 
 - Picture 1 is the start pin, when there is one
 - The end pin is the next picture
 - Soft references come after the pins
-- Voice is always `<Audio 1>`, timbre only
+- Mid pins are guides and take no picture number
+- Audio numbers count video soundtracks first, then `ref_audio_*`
 
-A source video is not a picture number. The `labels` output says where it sits.
+A source video is not a picture number.
 
 ## Video is a held span
 
-`keep` 0 freezes the held frames. `keep` 1 regenerates them. The generated
-frames, before or after that span, are always free. That is the control a
-guide clip does not have.
+`keep` 0 holds the source. `keep` 1 regenerates it. The generated frames,
+before or after that span, are always free.
 
 `extend_after` holds the source tail at frame 0. `extend_before` holds the
 source head at the end. `extend_both` holds the middle and leaves at least
 five new frames on each side. `align=av` snaps the hold to 39, 90, 141, …
 so the audio clock matches. `align=video` only obeys the frame grid.
 
-The latent mask writer is not in this folder yet. The placement is. A queued
-video mode fails loud instead of pinning the clip with AddGuide.
+The node writes the source into the latent and sets a nested noise mask, so
+connect its `latent` output to the sampler. `video_feather` softens the edge
+where held video meets generated video. `audio_feather` does the same for
+sound, and 40 ticks is one second. Source video must be 24 fps.
 
 ## What a pin still refuses
 
-A start or end pin is one still. Passing a clip to those sockets is not
-video-to-video. Connect the clip as `source_video` and set `video_mode`.
+A pin is one still. Passing a clip to those sockets is not video-to-video.
+Connect the clip as `source_video` and set `video_mode`.
 
 ## Timeline
 
@@ -55,9 +71,19 @@ video-to-video. Connect the clip as `source_video` and set `video_mode`.
 before and after it. Drag a block to move it. Drag an edge to trim. A region
 longer than the VRAM cap becomes sequential passes. Under 24 GB the cap is
 124 frames, under 48 GB it is 243, otherwise 362. Later passes hold the last
-39 frames of the one before them. The node does not sample.
+39 frames of the one before them. The node describes the passes. It does not
+run them yet.
 
 ## Install
 
 Clone this folder into ComfyUI `custom_nodes/` and restart ComfyUI. The
 timeline script loads with the node. It does not download a model.
+
+## Develop
+
+`python -m unittest discover -s tests` runs from the repo root. Writer tests
+need torch and ComfyUI, and skip without them.
+
+`tools/deploy.sh` copies the repo into a running container, runs the tests
+there, and restarts ComfyUI. `tools/run_take.py` queues a real take.
+`tools/compare_takes.py` measures how closely a span matches its source.
