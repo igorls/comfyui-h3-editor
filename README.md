@@ -18,13 +18,13 @@ Hiding those is how a pack takes control away.
 | A picture the model may use, not a frame it must hit | `ref_image_*` |
 | A reference clip, with or without its sound | `ref_video_*`, `ref_video_audio_*` |
 | A voice or sound the model may use | `ref_audio_*` |
-| Change a clip in place | `video_mode=v2v`, source length equals `length`, set `keep` |
+| Change a clip in place | `video_mode=v2v`, source length equals `length`, set `strength` |
 | New frames after the clip | `video_mode=extend_after` |
 | New frames before the clip | `video_mode=extend_before` |
 | New frames on both sides | `video_mode=extend_both` |
 | Keep the clip's sound over the held frames | `audio_hold=span`, connect `source_audio` |
 | Generate picture to an existing track | `audio_hold=full`, connect `source_audio` |
-| New sound on the same picture | `video_mode=v2v`, `keep=0`, `audio_hold=off` |
+| New sound on the same picture | `video_mode=v2v`, `strength=hold`, `audio_hold=off` |
 | Regenerate one area of a held clip | connect `region`, white regenerates |
 
 ## Checkpoint
@@ -47,8 +47,20 @@ A source video is not a picture number.
 
 ## Video is a held span
 
-`keep` 0 holds the source. `keep` 1 regenerates it. The generated frames,
-before or after that span, are always free.
+`strength` says how far the held video may move. The generated frames, before
+or after that span, are always free.
+
+| Strength | Result |
+|---|---|
+| `hold` | The source stays |
+| `light` | A tint of the prompt, same shot |
+| `medium` | The prompt changes what is in the shot, framing and pose stay |
+| `heavy` | The prompt leads, the shot is still recognizable |
+| `regenerate` | Nothing of the source stays |
+
+These were measured on FastH3 Omni NVFP4 at 8 steps. Another checkpoint or step
+count may need `custom`, which reads the raw mask value from `keep`. The range
+is not linear. Below about 0.95 the source wins outright.
 
 `extend_after` holds the source tail at frame 0. `extend_before` holds the
 source head at the end. `extend_both` holds the middle and leaves at least

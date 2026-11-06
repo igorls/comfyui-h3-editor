@@ -28,6 +28,7 @@ TAKE = {
     "mid_frames": "",
     "video_mode": "off",
     "hold_frames": 39,
+    "strength": "hold",
     "keep": 0.0,
     "align": "av",
     "video_feather": 0,
@@ -61,6 +62,22 @@ def graph(args, take):
         g["7"] = {"class_type": "GetVideoComponents", "inputs": {"video": ["6", 0]}}
         g["10"]["inputs"]["source_video"] = ["7", 0]
         g["10"]["inputs"]["source_audio"] = ["7", 1]
+    # Autogrow sockets are addressed as group.name in API format.
+    images = [("start_image", args.start)] if args.start else []
+    images += [("mid_images.mid_image_%s" % i, name) for i, name in enumerate(args.mid)]
+    images += [("ref_images.ref_image_%s" % i, name) for i, name in enumerate(args.ref)]
+    for i, (socket, name) in enumerate(images):
+        node = str(30 + i)
+        g[node] = {"class_type": "LoadImage", "inputs": {"image": name}}
+        g["10"]["inputs"][socket] = [node, 0]
+    if args.region:
+        width, height = take["width"], take["height"]
+        g["20"] = {"class_type": "SolidMask", "inputs": {"value": 0.0, "width": width, "height": height}}
+        g["21"] = {"class_type": "SolidMask", "inputs": {"value": 1.0, "width": width // 2, "height": height}}
+        g["22"] = {"class_type": "MaskComposite", "inputs": {
+            "destination": ["20", 0], "source": ["21", 0], "operation": "add",
+            "x": 0 if args.region == "left" else width // 2, "y": 0}}
+        g["10"]["inputs"]["region"] = ["22", 0]
     return g
 
 
@@ -80,6 +97,10 @@ def main():
     parser.add_argument("--prefix", required=True)
     parser.add_argument("--prompt", default="")
     parser.add_argument("--source", default="")
+    parser.add_argument("--start", default="", help="input file for start_image")
+    parser.add_argument("--mid", action="append", default=[], help="input file for the next mid image")
+    parser.add_argument("--ref", action="append", default=[], help="input file for the next reference image")
+    parser.add_argument("--region", choices=["left", "right"], default="", help="regenerate this half of the held video")
     parser.add_argument("--unet", default=MODELS["unet"])
     parser.add_argument("--sampler", default="euler")
     parser.add_argument("--steps", type=int, default=8)

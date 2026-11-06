@@ -11,6 +11,9 @@ AUDIO_HZ = 40
 MAX_PICTURES = 9
 MAX_REF_VIDEOS = 3
 MAX_REF_AUDIOS = 3
+# Mask values measured on FastH3 Omni NVFP4, 8 steps. Below 0.95 the source wins
+# outright and above 0.996 the composition is lost, so a linear slider would waste most of its travel.
+STRENGTHS = {"hold": 0.0, "light": 0.95, "medium": 0.99, "heavy": 0.996, "regenerate": 1.0}
 
 
 def legal_length(length):
@@ -22,6 +25,14 @@ def av_hold(length):
     """24 fps video and 40 Hz audio land together on 39, 90, 141, ..."""
     length = int(length)
     return length >= 39 and legal_length(length) and (length - 39) % 51 == 0
+
+
+def resolve_keep(strength, keep=0.0):
+    if strength == "custom":
+        return float(keep)
+    if strength not in STRENGTHS:
+        raise ValueError("strength must be custom or one of %s" % (tuple(STRENGTHS),))
+    return STRENGTHS[strength]
 
 
 def video_steps(frames):

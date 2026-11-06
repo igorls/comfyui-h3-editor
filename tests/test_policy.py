@@ -7,6 +7,7 @@ from policy import (
     legal_length,
     parse_frames,
     plan,
+    resolve_keep,
     video_span,
     video_steps,
 )
@@ -109,6 +110,14 @@ class PolicyTest(unittest.TestCase):
         self.assertTrue(all(b["length"] <= 243 for b in blocks))
         self.assertTrue(all(b["hold"] == 39 for b in blocks[1:]))
         self.assertGreaterEqual(blocks[-1]["start"] + blocks[-1]["length"], 600)
+
+    def test_named_strengths_and_custom(self):
+        self.assertEqual(resolve_keep("hold"), 0.0)
+        self.assertEqual(resolve_keep("medium"), 0.99)
+        self.assertEqual(resolve_keep("regenerate"), 1.0)
+        self.assertEqual(resolve_keep("custom", 0.42), 0.42)
+        with self.assertRaises(ValueError):
+            resolve_keep("loud")
 
     def test_text_alone_is_a_legal_take(self):
         out = plan("none", length=124)

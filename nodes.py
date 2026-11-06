@@ -10,6 +10,7 @@ from .policy import (
     MAX_PICTURES,
     MAX_REF_AUDIOS,
     MAX_REF_VIDEOS,
+    STRENGTHS,
     VIDEO_MODES,
     audio_ticks,
     audio_window,
@@ -18,6 +19,7 @@ from .policy import (
     hold_curve,
     parse_frames,
     plan,
+    resolve_keep,
     video_span,
     video_steps,
 )
@@ -72,7 +74,8 @@ class H3Take(io.ComfyNode):
                 io.Combo.Input("video_mode", options=list(VIDEO_MODES), default="off"),
                 io.Image.Input("source_video", optional=True, tooltip="24 fps frames to hold."),
                 io.Int.Input("hold_frames", default=39, min=5, max=3600, step=1),
-                io.Float.Input("keep", default=0.0, min=0.0, max=1.0, step=0.0001, tooltip="0 holds the source. 1 regenerates it."),
+                io.Combo.Input("strength", options=list(STRENGTHS) + ["custom"], default="hold", tooltip="How much the held video may change. light tints it, medium and heavy keep the shot but follow the prompt, regenerate keeps nothing."),
+                io.Float.Input("keep", default=0.0, min=0.0, max=1.0, step=0.0001, tooltip="Raw mask value, read only when strength is custom. The useful range is about 0.95 to 0.996."),
                 io.Combo.Input("align", options=["av", "video"], default="av", tooltip="av snaps holds to 39, 90, 141, so picture and sound share a boundary."),
                 io.Mask.Input("region", optional=True, tooltip="White areas of the held video regenerate. One mask or one per frame."),
                 io.Int.Input("video_feather", default=0, min=0, max=20, tooltip="Latent steps of soft edge where held video meets generated video."),
@@ -102,11 +105,12 @@ class H3Take(io.ComfyNode):
 
     @classmethod
     def execute(cls, clip, vae, prompt, width, height, length, checkpoint, anchor, mid_frames, video_mode,
-                hold_frames, keep, align, video_feather, audio_hold, audio_feather, ref_image_size,
+                hold_frames, strength, keep, align, video_feather, audio_hold, audio_feather, ref_image_size,
                 audio_vae=None, start_image=None, end_image=None, mid_images=None, source_video=None,
                 region=None, source_audio=None, ref_images=None, ref_videos=None, ref_video_audios=None,
                 ref_audios=None) -> io.NodeOutput:
         source_frames = frame_count(source_video, "source video") if source_video is not None else 0
+        keep = resolve_keep(strength, keep)
         span = video_span(video_mode, source_frames, length, hold_frames=hold_frames, align=align, keep=keep)
         window = audio_window(audio_hold, span, length, audio_seconds(source_audio))
         soft = [image for _, image in ordered(ref_images)]
