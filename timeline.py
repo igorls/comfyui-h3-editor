@@ -2,7 +2,7 @@
 
 import json
 
-from policy import max_block_for_vram, split_span
+from .policy import max_block_for_vram, split_span
 
 
 DEFAULT = {

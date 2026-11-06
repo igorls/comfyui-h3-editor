@@ -1,12 +1,9 @@
-import os
-import sys
+"""H3 Take. Relative imports only: ComfyUI owns the top-level name `nodes`."""
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from nodes import NODE_CLASS_MAPPINGS as TAKE_NODES
-from nodes import NODE_DISPLAY_NAME_MAPPINGS as TAKE_NAMES
-from timeline import NODE_CLASS_MAPPINGS as TIMELINE_NODES
-from timeline import NODE_DISPLAY_NAME_MAPPINGS as TIMELINE_NAMES
+from .nodes import NODE_CLASS_MAPPINGS as TAKE_NODES
+from .nodes import NODE_DISPLAY_NAME_MAPPINGS as TAKE_NAMES
+from .timeline import NODE_CLASS_MAPPINGS as TIMELINE_NODES
+from .timeline import NODE_DISPLAY_NAME_MAPPINGS as TIMELINE_NAMES
 
 NODE_CLASS_MAPPINGS = {**TAKE_NODES, **TIMELINE_NODES}
 NODE_DISPLAY_NAME_MAPPINGS = {**TAKE_NAMES, **TIMELINE_NAMES}
