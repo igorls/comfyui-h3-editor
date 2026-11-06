@@ -77,6 +77,18 @@ sound, and 40 ticks is one second. Source video must be 24 fps.
 A pin is one still. Passing a clip to those sockets is not video-to-video.
 Connect the clip as `source_video` and set `video_mode`.
 
+## Known limits
+
+Mid pins are not ready. In a test on FastH3 Omni NVFP4 a still pinned at frame
+68 froze for about nine frames, with a hard jump in and out. Start pins, end
+pins, and held video do not do this.
+
+The `fl2va` route has not been run on a real checkpoint.
+
+A loaded H3 stack needs about 34 GiB of system RAM. With little more than that
+available, several takes in a row can get ComfyUI killed. `/free` did not
+release that memory in testing. Restarting ComfyUI between takes did.
+
 ## Timeline
 
 `H3 Timeline` is the editor. Place a held source and the generate regions
