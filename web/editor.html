@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>H3 Timeline</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { background: #161410; color: #f4efe6; }
+  body { margin: 0; }
+  .h3ed { box-sizing: border-box; width: 720px; padding: 12px 14px 14px; color: #f4efe6; background: #161410; font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .h3ed * { box-sizing: border-box; }
+  button, select { font: inherit; color: inherit; }
+  .h3head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+  .h3head strong { font-size: 15px; font-weight: 650; letter-spacing: -0.02em; }
+  .h3time { font-variant-numeric: tabular-nums; color: #d2c6b6; }
+  .h3budget { margin-left: auto; color: #d2c6b6; }
+  select { background: #221f1b; border: 1px solid #4a433b; border-radius: 4px; padding: 2px 6px; }
+  select:focus, button:focus-visible { outline: 2px solid #e4c27a; outline-offset: 2px; }
+  .h3ruler, .h3passes { position: relative; height: 22px; margin-top: 6px; }
+  .h3lane { position: relative; height: 52px; margin-top: 6px; background: #221f1b; border-radius: 4px; }
+  .h3tick { position: absolute; top: 0; color: #d2c6b6; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .h3block { position: absolute; top: 8px; height: 36px; border-radius: 4px; padding: 6px 8px; overflow: hidden; cursor: pointer; border: 1px solid transparent; text-align: left; }
+  .h3block.generate { background: #3d3428; }
+  .h3block.hold { background: #243034; }
+  .h3block.selected { border-color: #e4c27a; }
+  .h3block b { display: block; font-weight: 600; }
+  .h3block span { color: #d2c6b6; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .h3pass { position: absolute; top: 2px; height: 18px; background: #3d3428; border-radius: 3px; font-size: 11px; line-height: 18px; padding: 0 6px; overflow: hidden; }
+  .h3play { position: absolute; top: 0; bottom: 0; width: 1px; background: #f2e6c8; pointer-events: none; }
+  .h3note { margin-top: 8px; color: #d2c6b6; min-height: 2.7em; max-width: 68ch; }
+  .h3note.warn { color: #e6c07a; }
+  .h3tools { display: flex; gap: 6px; margin-top: 8px; }
+  .h3tools button { background: #221f1b; border: 1px solid #4a433b; border-radius: 4px; padding: 4px 8px; cursor: pointer; }
+  .h3tools button:hover { border-color: #e4c27a; }
+</style>
+</head>
+<body>
+<div class="h3ed" id="ed"></div>
+<script>
+const span = 496;
+const width = 692;
+const state = {
+  vram_gb: 16,
+  selected: "after",
+  play: 80,
+  hold: { start: 124, length: 124, label: "Source" },
+  generates: [
+    { id: "before", start: 0, length: 124, label: "Before" },
+    { id: "after", start: 248, length: 243, label: "After" },
+  ],
+};
+function capFor(gb) { return gb < 24 ? 124 : gb < 48 ? 243 : 362; }
+function seconds(frames) {
+  const s = frames / 24;
+  return Math.floor(s / 60) + ":" + (s % 60).toFixed(1).padStart(4, "0");
+}
+function splitSpan(total, maxBlock) {
+  const snap = (n) => (n < 5 ? null : 5 + 17 * Math.floor((n - 5) / 17));
+  const cap = snap(maxBlock);
+  const overlap = 39;
+  const legal = snap(total);
+  if (!cap || !legal) return [];
+  if (legal <= cap) return [{ start: 0, length: legal, hold: 0, pass: 1 }];
+  const blocks = [];
+  let covered = 0;
+  for (let guard = 0; covered < legal && guard < 24; guard += 1) {
+    if (!blocks.length) {
+      blocks.push({ start: 0, length: Math.min(cap, legal), hold: 0, pass: 1 });
+      covered = blocks[0].length;
+      continue;
+    }
+    const remain = legal - covered;
+    const length = snap(Math.min(cap, remain + overlap));
+    if (length == null || length - overlap < 5) break;
+    const start = covered - overlap;
+    const next = start + length;
+    if (next <= covered) break;
+    blocks.push({ start, length, hold: overlap, pass: blocks.length + 1 });
+    covered = next;
+  }
+  return blocks;
+}
+function render() {
+  const root = document.getElementById("ed");
+  const cap = capFor(state.vram_gb);
+  const px = (frames) => (frames / span) * width;
+  root.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "h3head";
+  head.innerHTML = "<strong>Timeline</strong><span class='h3time'>" + seconds(state.play) + "</span>";
+  const budget = document.createElement("span");
+  budget.className = "h3budget";
+  budget.textContent = state.vram_gb + " GB · " + cap + " frames";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Memory budget");
+  for (const gb of [16, 24, 48, 96]) {
+    const opt = document.createElement("option");
+    opt.value = String(gb);
+    opt.textContent = gb === 96 ? "96 GB Afterpic" : gb + " GB";
+    if (gb === state.vram_gb) opt.selected = true;
+    select.appendChild(opt);
+  }
+  select.addEventListener("change", () => { state.vram_gb = Number(select.value); render(); });
+  head.append(budget, select);
+  root.appendChild(head);
+  const ruler = document.createElement("div");
+  ruler.className = "h3ruler";
+  for (let s = 0; s <= 20; s += 5) {
+    const tick = document.createElement("span");
+    tick.className = "h3tick";
+    tick.style.left = px(s * 24) + "px";
+    tick.textContent = s + "s";
+    ruler.appendChild(tick);
+  }
+  root.appendChild(ruler);
+  const lane = document.createElement("div");
+  lane.className = "h3lane";
+  const items = [...state.generates.map((b) => ({ ...b, kind: "generate" })), { ...state.hold, id: "hold", kind: "hold" }];
+  for (const block of items) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "h3block " + block.kind + (state.selected === block.id ? " selected" : "");
+    el.style.left = px(block.start) + "px";
+    el.style.width = Math.max(36, px(block.length) - 4) + "px";
+    el.innerHTML = "<b>" + block.label + "</b><span>" + (block.kind === "hold" ? "kept" : block.length + "f") + "</span>";
+    el.addEventListener("click", () => { state.selected = block.id; render(); });
+    lane.appendChild(el);
+  }
+  const play = document.createElement("div");
+  play.className = "h3play";
+  play.style.left = px(state.play) + "px";
+  lane.appendChild(play);
+  root.appendChild(lane);
+  const passes = document.createElement("div");
+  passes.className = "h3passes";
+  const selected = state.generates.find((b) => b.id === state.selected) || state.generates[1];
+  const parts = splitSpan(selected.length, cap);
+  for (const part of parts) {
+    const el = document.createElement("div");
+    el.className = "h3pass";
+    el.style.left = px(selected.start + part.start) + "px";
+    el.style.width = Math.max(28, px(part.length) - 3) + "px";
+    el.textContent = "Pass " + part.pass;
+    passes.appendChild(el);
+  }
+  root.appendChild(passes);
+  const note = document.createElement("div");
+  const over = selected.length > cap;
+  note.className = "h3note" + (over ? " warn" : "");
+  note.textContent = over
+    ? selected.label + " is " + selected.length + " frames. At " + state.vram_gb + " GB it runs as " + parts.length + " passes. Each later pass holds the last 39 frames of the one before it. One pass is in memory at a time."
+    : selected.label + " fits in one pass. The source in the middle is held, not resampled.";
+  root.appendChild(note);
+  const tools = document.createElement("div");
+  tools.className = "h3tools";
+  const longer = document.createElement("button");
+  longer.type = "button";
+  longer.textContent = "Lengthen After";
+  longer.addEventListener("click", () => {
+    const after = state.generates.find((b) => b.id === "after");
+    after.length = Math.min(496, after.length + 51);
+    state.selected = "after";
+    render();
+  });
+  tools.appendChild(longer);
+  root.appendChild(tools);
+}
+render();
+</script>
+</body>
+</html>
