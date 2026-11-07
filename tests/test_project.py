@@ -1,7 +1,7 @@
 import unittest
 
 from policy import bridge_spans, legal_length, video_span
-from project import active_take, clip_prompt, export_command, frame_of, linked_length, new_project, render_graph, slug, snap_frames
+from project import active_take, clip_prompt, export_command, frame_of, item_length, linked_length, new_project, render_graph, slug, snap_frames, tempo_chain
 from prompting import compose_prompt, compose_reference_prompt, tag_subjects
 
 
@@ -78,6 +78,11 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(graph["10"]["inputs"]["width"], 640)
         self.assertEqual(graph["12"]["inputs"]["steps"], 4)
         self.assertIn("integrated_multimodal_description", graph["10"]["inputs"]["prompt"])
+
+    def test_a_clip_renders_with_the_moving_preview(self):
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3)
+        self.assertEqual(graph["13"]["inputs"]["model"], ["9", 0])
+        self.assertEqual(graph["9"]["inputs"]["folder"], "h3take_projects/x/preview")
 
     def test_an_empty_clip_is_not_rendered(self):
         with self.assertRaises(ValueError):
@@ -194,6 +199,7 @@ class ExportTest(unittest.TestCase):
         self.assertLess(args.index("a.mp4"), args.index("b.mp4"))
         self.assertIn("trim=start_frame=10:end_frame=110", self.filter_of(args))
         self.assertIn("concat=n=2:v=1:a=1", self.filter_of(args))
+        self.assertEqual(args[args.index("-map") + 1], "[k0v]")
 
     def test_a_gap_becomes_black_and_silence(self):
         self.project["timeline"] = [{"clip": "a", "start": 24, "in": 0, "out": 24}]
@@ -206,6 +212,30 @@ class ExportTest(unittest.TestCase):
         self.project["timeline"] = [{"clip": "a", "start": 0, "in": 0, "out": 24}, {"clip": "b", "start": 24, "in": 0, "out": 24}]
         args = export_command(self.project, {"a": "a.mp4"}, "o.mp4")
         self.assertNotIn("b.mp4", args)
+
+    def test_speed_changes_timing_on_the_timeline_only(self):
+        self.assertEqual(item_length({"in": 0, "out": 100, "speed": 2}), 50)
+        self.assertEqual(item_length({"in": 0, "out": 100}), 100)
+        self.project["timeline"] = [{"clip": "a", "start": 0, "in": 10, "out": 110, "speed": 2}]
+        text = self.filter_of(export_command(self.project, {"a": "a.mp4"}, "o.mp4"))
+        self.assertIn("trim=start_frame=10:end_frame=110,setpts=(PTS-STARTPTS)/2.00000", text)
+        self.assertIn("atempo=2", text.replace("atempo=2.00000", "atempo=2"))
+
+    def test_large_speed_changes_chain_atempo(self):
+        self.assertEqual(tempo_chain(1), "")
+        self.assertEqual(tempo_chain(4), "atempo=2.0,atempo=2.00000")
+        self.assertEqual(tempo_chain(0.25), "atempo=0.5,atempo=0.50000")
+
+    def test_a_transition_crossfades_the_overlap(self):
+        self.project["timeline"] = [
+            {"clip": "a", "start": 0, "in": 0, "out": 48},
+            {"clip": "b", "start": 36, "in": 0, "out": 48, "transition": {"type": "black", "frames": 12}},
+        ]
+        args = export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4")
+        text = self.filter_of(args)
+        self.assertIn("xfade=transition=fadeblack:duration=0.50000:offset=1.50000", text)
+        self.assertIn("acrossfade=d=0.50000", text)
+        self.assertNotIn("concat", text)
 
     def test_nothing_to_export_says_so(self):
         with self.assertRaises(ValueError):

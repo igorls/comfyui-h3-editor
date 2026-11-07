@@ -33,6 +33,7 @@
         <video id="videoA" playsinline></video>
         <video id="videoB" playsinline></video>
         <img id="preview" alt="Live render preview" hidden>
+        <video id="motion" playsinline loop hidden></video>
         <div id="slate" class="slate"></div>
         <div id="live" class="live" hidden></div>
       </div>
@@ -53,12 +54,16 @@
     <div class="tl-tools">
       <button id="split" class="quiet" title="Split at the playhead (S)">Split</button>
       <button id="remove" class="quiet" title="Remove from the timeline (Delete)">Remove</button>
+      <button id="ripple" class="quiet" title="Remove and close the space (Shift+Delete)">Ripple delete</button>
+      <button id="closeGap" class="quiet" title="Close the selected gap (Delete)">Close gap</button>
       <span class="tool-gap"></span>
       <button id="extendBack" class="quiet" title="Generate what happens before the selected clip">Extend back</button>
       <button id="extendForward" class="quiet" title="Generate what happens after the selected clip">Extend forward</button>
       <button id="bridge" class="quiet" title="Generate what connects the selected clip to the next one">Bridge to next</button>
+      <button id="merge" class="quiet" title="Replace the join with a generated crossing, keeping the scene's length">Merge with next</button>
       <div class="spacer"></div>
-      <label class="zoom">Zoom <input id="zoom" type="range" min="0.5" max="12" step="0.1" value="3"></label>
+      <button id="fit" class="quiet" title="Show the whole scene (\)">Fit</button>
+      <label class="zoom">Zoom <input id="zoom" type="range" min="0.1" max="12" step="0.1" value="3"></label>
     </div>
     <div class="tl-body" id="tlBody">
       <div class="tl-heads"><div class="tl-head ruler-head"></div><div class="tl-head v">Picture</div><div class="tl-head a">Sound</div></div>

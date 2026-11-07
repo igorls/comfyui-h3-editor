@@ -65,10 +65,11 @@ button:disabled { opacity: 0.45; cursor: default; }
 .stage { display: grid; grid-template-rows: minmax(0, 1fr) 60px; min-width: 0; min-height: 0; background: var(--room); }
 .screen { position: relative; margin: 16px 16px 0; background: #000; border-radius: 6px; overflow: hidden; min-height: 0; }
 .screen video, .screen img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-.screen video { visibility: hidden; }
+.screen video { visibility: hidden; z-index: 1; }
 .screen video.show { visibility: visible; }
+.screen #preview, .screen #motion { z-index: 3; visibility: visible; background: #000; }
 .slate { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); pointer-events: none; }
-.live { position: absolute; left: 16px; bottom: 16px; padding: 6px 12px; border-radius: 6px; background: rgba(20, 24, 28, 0.82); color: var(--live); font-variant-numeric: tabular-nums; }
+.live { z-index: 4; position: absolute; left: 16px; bottom: 16px; padding: 6px 12px; border-radius: 6px; background: rgba(20, 24, 28, 0.82); color: var(--live); font-variant-numeric: tabular-nums; }
 .transport { display: flex; align-items: center; justify-content: center; gap: 8px; }
 .icon { width: 42px; height: 38px; padding: 0; background: var(--panel); }
 .icon:hover { background: var(--raised); }
@@ -89,10 +90,21 @@ button:disabled { opacity: 0.45; cursor: default; }
 .take { padding: 0; background: var(--raised); border: 2px solid transparent; overflow: hidden; text-align: left; }
 .take.on { border-color: var(--tungsten); }
 .take img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
-.take span { display: block; padding: 5px 8px; font-size: 12px; color: var(--muted); }
+.take span { display: block; padding: 5px 8px 0; font-size: 12px; color: var(--text); }
+.take small { display: block; padding: 0 8px 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.take-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 22px; }
+.take-tools button { padding: 6px 10px; font-size: 13px; }
+.on-timeline { display: flex; flex-direction: column; gap: 10px; margin-bottom: 22px; }
+.speeds { display: flex; align-items: center; gap: 8px; }
+.speeds > span { color: var(--muted); font-size: 13px; }
+.speeds > span:first-child { min-width: 84px; }
+.speeds input, .speeds select { width: 76px; padding: 6px 8px; background: var(--room); border: 1px solid var(--line); border-radius: 6px; }
+.speeds select { width: 122px; }
+.speeds button { padding: 6px 8px; font-size: 13px; }
 
 .timeline { display: grid; grid-template-rows: 48px minmax(0, 1fr); background: var(--panel); border-top: 1px solid var(--line); min-height: 0; }
-.tl-tools { display: flex; align-items: center; gap: 10px; padding: 0 16px; }
+.tl-tools { display: flex; align-items: center; gap: 8px; padding: 0 16px; overflow-x: auto; }
+.tl-tools button { flex: none; padding: 7px 11px; }
 .tool-gap { width: 14px; }
 .zoom { display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .tl-body { display: grid; grid-template-columns: var(--head) minmax(0, 1fr); min-height: 0; border-top: 1px solid var(--line); }
@@ -122,6 +134,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .strip { position: absolute; inset: 0; background-size: auto 100%; background-repeat: repeat-x; opacity: 0.92; }
 .block .name { position: absolute; left: 8px; top: 6px; right: 8px; padding: 2px 6px; width: fit-content; max-width: calc(100% - 16px); border-radius: 4px; background: rgba(20, 24, 28, 0.74); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .block .bar { position: absolute; left: 0; bottom: 0; height: 5px; background: var(--live); transition: width 0.25s linear; }
+.block .tr { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, rgba(224, 162, 74, 0.1), rgba(224, 162, 74, 0.55)); border-right: 2px solid var(--tungsten); pointer-events: none; }
+.gapmark { position: absolute; top: 8px; bottom: 8px; border-radius: 5px; background: rgba(224, 162, 74, 0.16); border: 2px solid var(--tungsten); }
 .block .edge { position: absolute; top: 0; bottom: 0; width: 10px; cursor: ew-resize; }
 .block .edge.l { left: 0; }
 .block .edge.r { right: 0; }

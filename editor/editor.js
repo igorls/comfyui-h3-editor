@@ -20,6 +20,7 @@ const state = {
   clip: null,
   item: null,
   person: null,
+  gap: null,
   playhead: 0,
   playing: false,
   zoom: 3,
@@ -33,7 +34,7 @@ let saveTimer = 0;
 const px = (frames) => frames * state.zoom;
 const uid = (prefix) => prefix + Math.random().toString(36).slice(2, 8);
 const clipOf = (id) => state.project.clips.find((c) => c.id === id);
-const itemLength = (item) => item.out - item.in;
+const itemLength = (item) => Math.max(1, Math.round((item.out - item.in) / (item.speed || 1)));
 const itemEnd = (item) => item.start + itemLength(item);
 const viewUrl = (file, subfolder) => "/view?type=output&filename=" + encodeURIComponent(file) + "&subfolder=" + encodeURIComponent(subfolder || "");
 const sorted = () => [...state.project.timeline].sort((a, b) => a.start - b.start);
@@ -105,8 +106,9 @@ function settle(moved) {
   }
   let end = 0;
   for (const item of items) {
-    if (item.start < end) item.start = end;
-    end = itemEnd(item);
+    const floor = end - (item.transition?.frames || 0);
+    if (item.start < floor) item.start = floor;
+    end = Math.max(end, itemEnd(item));
   }
 }
 
@@ -196,6 +198,9 @@ function updateTools() {
   $("extendBack").disabled = !holdable;
   $("extendForward").disabled = !holdable;
   $("bridge").disabled = !(holdable && next && activeTake(clipOf(next.clip)) && itemLength(next) >= HOLD);
+  $("merge").disabled = !(item && next && activeTake(clipOf(next.clip)) && next.start === itemEnd(item));
+  $("ripple").disabled = !state.item;
+  $("closeGap").disabled = !state.gap;
 }
 
 function shiftFrom(frame, by, skip = null) {
@@ -301,7 +306,7 @@ async function grabFrame(clip, side) {
     return;
   }
   try {
-    const frame = Math.min(take.frames - 1, Math.round(item.in + state.playhead - item.start));
+    const frame = Math.min(take.frames - 1, Math.round(item.in + (state.playhead - item.start) * speedOf(item)));
     setClipFrame(clip, side, await postJson("/project/" + state.folder + "/grab", { file: take.file, subfolder: take.subfolder, frame }));
   } catch (error) {
     toast(error.message, true);
@@ -437,9 +442,126 @@ function renderPerson(panel, person) {
   );
 }
 
+const MERGE_FRAMES = 63;
+
+// Replaces the end of one clip and the start of the next with a generated crossing.
+// The scene keeps its length, because the new clip fills exactly what was trimmed away.
+function mergeWithNext() {
+  const item = selectedRendered();
+  const next = item && followingItem(item);
+  if (!item || !next || !activeTake(clipOf(next.clip))) return;
+  if (next.start !== itemEnd(item)) {
+    toast("Put the two clips side by side to merge them.", true);
+    return;
+  }
+  const away = Math.ceil(MERGE_FRAMES / 2);
+  const rest = MERGE_FRAMES - away;
+  if (speedOf(item) !== 1 || speedOf(next) !== 1) {
+    toast("Set both clips to 100% speed to merge them.", true);
+    return;
+  }
+  if (item.out - item.in < HOLD + away || next.out - next.in < HOLD + rest) {
+    toast("Both clips need at least " + (HOLD + away) + " frames on the timeline to merge.", true);
+    return;
+  }
+  checkpoint();
+  item.out -= away;
+  next.in += rest;
+  next.start += rest;
+  const source = clipOf(item.clip);
+  const clip = {
+    id: uid("c"), name: "Merge from " + source.name,
+    action: "One continuous shot that moves naturally from the opening frames into the closing frames.",
+    camera: "", speaker: "", dialogue: "", sound: "", music: "", seconds: 2.625, takes: [], active: null,
+    link: { mode: "bridge", hold: HOLD, a: sideOf(item), b: sideOf(next) },
+  };
+  state.project.clips.push(clip);
+  const [first, last] = linkedRange(clip.link, linkedFrames(clip.link, clip.seconds));
+  const placed = { id: uid("i"), clip: clip.id, start: itemEnd(item), in: first, out: last };
+  state.project.timeline.push(placed);
+  state.clip = clip.id;
+  state.person = null;
+  state.item = placed.id;
+  save();
+  renderAll();
+}
+
+/* Timeline editing */
+
+function gapAt(frame) {
+  let end = 0;
+  for (const item of sorted()) {
+    if (frame >= end && frame < item.start) return { start: end, end: item.start };
+    end = Math.max(end, itemEnd(item));
+  }
+  return null;
+}
+
+function closeGap() {
+  if (!state.gap) return;
+  checkpoint();
+  const shift = state.gap.end - state.gap.start;
+  for (const item of state.project.timeline) {
+    if (item.start >= state.gap.end) item.start -= shift;
+  }
+  state.gap = null;
+  save();
+  renderTimeline();
+  showFrame();
+}
+
+function rippleDelete() {
+  const item = state.project.timeline.find((i) => i.id === state.item);
+  if (!item) {
+    toast("Select a clip on the timeline first.");
+    return;
+  }
+  checkpoint();
+  const end = itemEnd(item);
+  const shift = itemLength(item) - (item.transition?.frames || 0);
+  state.project.timeline = state.project.timeline.filter((i) => i !== item);
+  for (const other of state.project.timeline) {
+    if (other.start >= end - (other.transition?.frames || 0)) other.start -= shift;
+  }
+  state.item = null;
+  save();
+  renderTimeline();
+  showFrame();
+}
+
+function editPoints() {
+  const points = new Set([0]);
+  for (const item of state.project.timeline) {
+    points.add(item.start);
+    points.add(itemEnd(item));
+  }
+  return [...points].sort((a, b) => a - b);
+}
+
+function jumpEdit(step) {
+  const points = editPoints();
+  const target = step > 0 ? points.find((p) => p > state.playhead) : points.filter((p) => p < state.playhead).at(-1);
+  if (target !== undefined) seek(target);
+}
+
+function setZoom(value, anchor = null) {
+  const scroller = $("tlScroll");
+  const frame = anchor === null ? null : (scroller.scrollLeft + anchor) / state.zoom;
+  state.zoom = Math.min(12, Math.max(0.1, value));
+  $("zoom").value = String(state.zoom);
+  renderTimeline();
+  if (frame !== null) scroller.scrollLeft = frame * state.zoom - anchor;
+}
+
+function fitTimeline() {
+  setZoom(($("tlScroll").clientWidth - 40) / Math.max(sceneEnd(), FPS));
+  $("tlScroll").scrollLeft = 0;
+}
+
 function selectClip(clipId, itemId = null) {
   state.clip = clipId;
   state.item = itemId;
+  state.gap = null;
   state.person = null;
   renderCast();
   renderBin();
@@ -562,9 +684,13 @@ function renderInspector() {
   const notice = document.createElement("p");
   notice.className = "notice";
   notice.textContent = "The clip this one joins has changed, so the join may show. Render it again to fix that.";
+  const item = state.project.timeline.find((i) => i.id === state.item);
   const children = [
     head,
     ...(stale ? [notice] : []),
+    actions,
+    ...versions(clip),
+    ...(item ? timelineControls(item) : []),
     two,
     field("What happens", clip.action, (v) => (clip.action = v), { big: true }),
     ...framesFor(clip),
@@ -574,36 +700,195 @@ function renderInspector() {
     field("What they say", clip.dialogue, (v) => (clip.dialogue = v), { area: true }),
     field("Sound", clip.sound, (v) => (clip.sound = v), { area: true }),
     field("Music", clip.music, (v) => (clip.music = v)),
-    actions,
+    field("Seed. Leave empty for a new one each render", clip.seed ?? "", (v) => {
+      clip.seed = v.trim() === "" ? null : Number(v);
+    }, { type: "number" }),
   ];
-  if (clip.takes.length) {
-    const title = document.createElement("h3");
-    title.textContent = "Takes";
-    const takes = document.createElement("div");
-    takes.className = "takes";
-    clip.takes.forEach((take, index) => {
-      const button = document.createElement("button");
-      button.className = "take" + (take === activeTake(clip) ? " on" : "");
-      const img = document.createElement("img");
-      img.alt = "";
-      img.src = viewUrl(take.poster, take.subfolder);
-      const label = document.createElement("span");
-      label.textContent = "Take " + (index + 1) + ", " + take.quality;
-      button.append(img, label);
-      button.addEventListener("click", () => {
-        checkpoint();
-        clip.active = take.id;
-        for (const item of state.project.timeline) {
-          if (item.clip === clip.id) item.out = Math.min(item.out, take.frames);
-        }
-        save();
-        renderAll();
-      });
-      takes.append(button);
-    });
-    children.push(title, takes);
-  }
   panel.replaceChildren(...children);
+}
+
+const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast"];
+
+function chooseTake(clip, take) {
+  checkpoint();
+  clip.active = take.id;
+  const [, last] = linkedRange(clip.link, take.frames);
+  for (const item of state.project.timeline) {
+    if (item.clip === clip.id) item.out = Math.min(item.out, last);
+  }
+  save();
+  renderAll();
+}
+
+function cycleTake(step) {
+  const clip = clipOf(state.clip);
+  if (!clip || clip.takes.length < 2) return;
+  const index = clip.takes.indexOf(activeTake(clip));
+  const take = clip.takes[(index + step + clip.takes.length) % clip.takes.length];
+  chooseTake(clip, take);
+  toast("Take " + (clip.takes.indexOf(take) + 1) + " of " + clip.takes.length);
+}
+
+function versions(clip) {
+  if (!clip.takes.length) return [];
+  const title = document.createElement("h3");
+  title.textContent = "Takes. Press [ or ] to flip between them";
+  const takes = document.createElement("div");
+  takes.className = "takes";
+  const current = activeTake(clip);
+  clip.takes.forEach((take, index) => {
+    const button = document.createElement("button");
+    button.className = "take" + (take === current ? " on" : "");
+    const img = document.createElement("img");
+    img.alt = "";
+    img.src = viewUrl(take.poster, take.subfolder);
+    const label = document.createElement("span");
+    label.textContent = "Take " + (index + 1) + ", " + take.quality;
+    const seed = document.createElement("small");
+    seed.textContent = "Seed " + take.seed;
+    button.append(img, label, seed);
+    button.addEventListener("click", () => chooseTake(clip, take));
+    takes.append(button);
+  });
+  const tools = document.createElement("div");
+  tools.className = "take-tools";
+  const button = (text, run, disabled = false) => {
+    const element = document.createElement("button");
+    element.className = "quiet";
+    element.textContent = text;
+    element.disabled = disabled;
+    element.addEventListener("click", run);
+    tools.append(element);
+  };
+  button("Keep this seed", () => {
+    checkpoint();
+    clip.seed = current.seed;
+    save();
+    renderInspector();
+    toast("Renders of this clip now use seed " + current.seed + ".");
+  });
+  button("Restore its prompt", () => {
+    checkpoint();
+    for (const name of SAVED_FIELDS) {
+      if (current.saved && name in current.saved) clip[name] = current.saved[name];
+    }
+    save();
+    renderInspector();
+  }, !current.saved);
+  button("Delete take", () => {
+    checkpoint();
+    clip.takes = clip.takes.filter((t) => t !== current);
+    clip.active = clip.takes.at(-1)?.id ?? null;
+    save();
+    renderAll();
+  }, clip.takes.length < 2);
+  return [title, takes, tools];
+}
+
+function setSpeed(item, speed) {
+  const value = Math.min(4, Math.max(0.25, speed));
+  const oldEnd = itemEnd(item);
+  item.speed = value;
+  const shift = itemEnd(item) - oldEnd;
+  for (const other of state.project.timeline) {
+    if (other !== item && other.start >= oldEnd - (other.transition?.frames || 0)) other.start += shift;
+  }
+  save();
+  renderTimeline();
+  showFrame();
+}
+
+function previousItem(item) {
+  return sorted().filter((other) => other !== item && other.start < item.start).at(-1) || null;
+}
+
+function setTransition(item, type, frames) {
+  const before = previousItem(item);
+  const old = item.transition?.frames || 0;
+  if (type !== "none" && (!before || itemEnd(before) < item.start + old)) {
+    toast("Put this clip right after another one to add a transition.", true);
+    renderInspector();
+    return;
+  }
+  const limit = before ? Math.min(itemLength(before), itemLength(item)) - 1 : 0;
+  const next = type === "none" ? 0 : Math.max(2, Math.min(frames, limit));
+  const shift = next - old;
+  for (const other of state.project.timeline) {
+    if (other === item || other.start > item.start) other.start -= shift;
+  }
+  if (type === "none") delete item.transition;
+  else item.transition = { type, frames: next };
+  save();
+  renderTimeline();
+  renderInspector();
+  showFrame();
+}
+
+function timelineControls(item) {
+  const title = document.createElement("h3");
+  title.textContent = "On the timeline";
+  const box = document.createElement("div");
+  box.className = "on-timeline";
+
+  const speeds = document.createElement("div");
+  speeds.className = "speeds";
+  const percent = document.createElement("input");
+  percent.type = "number";
+  percent.min = "25";
+  percent.max = "400";
+  percent.step = "5";
+  percent.value = String(Math.round(speedOf(item) * 100));
+  percent.setAttribute("aria-label", "Speed in percent");
+  percent.addEventListener("change", () => {
+    checkpoint();
+    setSpeed(item, Number(percent.value) / 100 || 1);
+    percent.value = String(Math.round(speedOf(item) * 100));
+  });
+  const label = document.createElement("span");
+  label.textContent = "Speed %";
+  speeds.append(label, percent);
+  for (const value of [50, 100, 200]) {
+    const preset = document.createElement("button");
+    preset.className = "quiet";
+    preset.textContent = value + "%";
+    preset.addEventListener("click", () => {
+      checkpoint();
+      setSpeed(item, value / 100);
+      percent.value = String(value);
+    });
+    speeds.append(preset);
+  }
+
+  const row = document.createElement("div");
+  row.className = "speeds";
+  const name = document.createElement("span");
+  name.textContent = "Transition in";
+  const kind = document.createElement("select");
+  kind.setAttribute("aria-label", "Transition in");
+  for (const [value, text] of [["none", "None"], ["dissolve", "Dissolve"], ["black", "Dip to black"], ["wipe", "Wipe"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    option.selected = (item.transition?.type || "none") === value;
+    kind.append(option);
+  }
+  const length = document.createElement("input");
+  length.type = "number";
+  length.min = "2";
+  length.step = "2";
+  length.value = String(item.transition?.frames || 12);
+  length.setAttribute("aria-label", "Transition length in frames");
+  const apply = () => {
+    checkpoint();
+    setTransition(item, kind.value, Number(length.value) || 12);
+  };
+  kind.addEventListener("change", apply);
+  length.addEventListener("change", apply);
+  const unit = document.createElement("span");
+  unit.textContent = "frames";
+  row.append(name, kind, length, unit);
+  box.append(speeds, row);
+  return [title, box];
 }
 
 function framesFor(clip) {
@@ -653,8 +938,16 @@ function renderTimeline() {
     else if (take) strip.style.backgroundImage = "url(" + viewUrl(take.poster, take.subfolder) + ")";
     const name = document.createElement("div");
     name.className = "name";
-    name.textContent = status === "stale" ? clip.name + ", source changed" : clip.name;
+    const rate = speedOf(item) !== 1 ? " " + Math.round(speedOf(item) * 100) + "%" : "";
+    name.textContent = (status === "stale" ? clip.name + ", source changed" : clip.name) + rate;
     block.append(strip, name);
+    if (item.transition) {
+      const mark = document.createElement("div");
+      mark.className = "tr";
+      mark.style.width = px(item.transition.frames) + "px";
+      mark.title = item.transition.type + ", " + item.transition.frames + " frames";
+      block.append(mark);
+    }
     if (job && state.running === job) {
       const bar = document.createElement("div");
       bar.className = "bar";
@@ -674,6 +967,13 @@ function renderTimeline() {
     wave.style.left = block.style.left;
     wave.style.width = block.style.width;
     waves.push(wave);
+  }
+  if (state.gap) {
+    const mark = document.createElement("div");
+    mark.className = "gapmark";
+    mark.style.left = px(state.gap.start) + "px";
+    mark.style.width = px(state.gap.end - state.gap.start) + "px";
+    blocks.push(mark);
   }
   $("laneV").replaceChildren(...blocks);
   $("laneA").replaceChildren(...waves);
@@ -724,12 +1024,13 @@ function bindBlock(block, item, clip) {
         checkpoint();
         changed = true;
       }
+      const rate = speedOf(item);
       if (edge === "l") {
-        const shift = Math.max(-origin.in, Math.min(delta, origin.out - origin.in - 6));
+        const shift = Math.max(-origin.in, Math.min(Math.round(delta * rate), origin.out - origin.in - 6));
         item.in = origin.in + shift;
-        item.start = origin.start + shift;
+        item.start = origin.start + Math.round(shift / rate);
       } else if (edge === "r") {
-        item.out = Math.min(limit, Math.max(origin.in + 6, origin.out + delta));
+        item.out = Math.min(limit, Math.max(origin.in + 6, origin.out + Math.round(delta * rate)));
       } else {
         const wanted = Math.max(0, origin.start + delta);
         const startSnap = snap(wanted, points);
@@ -761,16 +1062,20 @@ function splitAtPlayhead() {
     return;
   }
   checkpoint();
-  const cut = item.in + (state.playhead - item.start);
-  state.project.timeline.push({ id: uid("i"), clip: item.clip, start: state.playhead, in: cut, out: item.out });
+  const cut = Math.round(item.in + (state.playhead - item.start) * speedOf(item));
+  state.project.timeline.push({ id: uid("i"), clip: item.clip, start: state.playhead, in: cut, out: item.out, speed: item.speed });
   item.out = cut;
   save();
   renderTimeline();
 }
 
 function removeSelected() {
+  if (state.gap) {
+    closeGap();
+    return;
+  }
   if (!state.item) {
-    toast("Select a clip on the timeline first.");
+    toast("Select a clip or a gap on the timeline first.");
     return;
   }
   checkpoint();
@@ -811,25 +1116,104 @@ function showLive(job) {
   const live = $("live");
   const image = $("preview");
   const showing = !!job && !state.playing;
+  const motion = $("motion");
   live.hidden = !showing;
-  image.hidden = !(showing && job.preview);
-  if (!showing) return;
-  if (job.preview) image.src = job.preview;
+  image.hidden = !(showing && job.preview && !job.motion);
+  motion.hidden = !(showing && job.motion);
+  if (!showing) {
+    motion.pause();
+    return;
+  }
+  if (job.preview && !job.motion) image.src = job.preview;
+  if (job.motion && motion.dataset.url !== job.motion) {
+    const resume = motion.currentTime;
+    motion.dataset.url = job.motion;
+    motion.src = job.motion;
+    motion.onloadedmetadata = () => {
+      motion.currentTime = resume % (motion.duration || 1);
+      motion.play().catch(() => {
+        motion.muted = true;
+        motion.play().catch(() => {});
+      });
+    };
+  }
   live.textContent = (clipOf(job.clip)?.name || "Clip") + ": " + (job.stage || "Waiting in the queue") + (job.max ? ", step " + job.step + " of " + job.max : "");
 }
 
+function speedOf(item) {
+  return item?.speed || 1;
+}
+
+function sourceSeconds(item, frame) {
+  return (item.in + (frame - item.start) * speedOf(item)) / FPS;
+}
+
+// The clip coming in over this frame, when a transition is running.
+function incoming(frame) {
+  return state.project.timeline.find((i) => i.transition && frame >= i.start && frame < i.start + i.transition.frames) || null;
+}
+
+// The clip the player follows. During a transition that is the one going out.
+function leading(frame) {
+  const coming = incoming(frame);
+  const others = state.project.timeline.filter((i) => i !== coming && frame >= i.start && frame < itemEnd(i));
+  return others[0] || coming;
+}
+
+function clearMix() {
+  for (const video of [front, back]) {
+    video.style.opacity = "";
+    video.style.clipPath = "";
+    video.volume = 1;
+  }
+  front.style.zIndex = "1";
+  back.style.zIndex = "2";
+}
+
+function applyMix(item, frame) {
+  const progress = Math.min(1, Math.max(0, (frame - item.start) / item.transition.frames));
+  const kind = item.transition.type;
+  front.style.zIndex = "1";
+  back.style.zIndex = "2";
+  back.classList.add("show");
+  front.volume = 1 - progress;
+  back.volume = progress;
+  if (kind === "wipe") {
+    back.style.opacity = "";
+    back.style.clipPath = "inset(0 " + (100 - progress * 100) + "% 0 0)";
+  } else if (kind === "black") {
+    front.style.opacity = String(Math.max(0, 1 - progress * 2));
+    back.style.opacity = String(Math.max(0, progress * 2 - 1));
+    back.style.clipPath = "";
+  } else {
+    back.style.opacity = String(progress);
+    back.style.clipPath = "";
+  }
+}
+
+function place(video, item, frame, tolerance = 0.01) {
+  load(video, sourceOf(item));
+  video.playbackRate = speedOf(item);
+  const seconds = sourceSeconds(item, frame);
+  if (Math.abs(video.currentTime - seconds) > tolerance) video.currentTime = seconds;
+}
+
 function showFrame() {
-  const item = itemAt(state.playhead);
+  const item = leading(state.playhead);
   const url = sourceOf(item);
   const job = state.running || jobFor(item?.clip || state.clip);
   const slate = $("slate");
+  clearMix();
   if (url) {
-    load(front, url);
-    const seek = (item.in + state.playhead - item.start) / FPS;
-    if (Math.abs(front.currentTime - seek) > 0.01) front.currentTime = seek;
+    place(front, item, state.playhead);
     front.classList.add("show");
     back.classList.remove("show");
     slate.textContent = "";
+    const coming = incoming(state.playhead);
+    if (coming && coming !== item && sourceOf(coming)) {
+      place(back, coming, state.playhead);
+      applyMix(coming, state.playhead);
+    }
   } else {
     front.classList.remove("show");
     back.classList.remove("show");
@@ -844,6 +1228,7 @@ function swap() {
   [front, back] = [back, front];
   front.classList.add("show");
   back.classList.remove("show");
+  clearMix();
 }
 
 function setPlaying(on) {
@@ -859,39 +1244,49 @@ function setPlaying(on) {
   if (state.playhead >= sceneEnd()) state.playhead = 0;
   showFrame();
   lastTick = performance.now();
-  const item = itemAt(state.playhead);
+  const item = leading(state.playhead);
   if (item && sourceOf(item)) front.play().catch(() => {});
   requestAnimationFrame(tick);
 }
 
 function tick(now) {
   if (!state.playing) return;
-  const item = itemAt(state.playhead);
+  const item = leading(state.playhead);
   const url = sourceOf(item);
   if (url && !front.paused && front.dataset.url === url) {
-    state.playhead = item.start + front.currentTime * FPS - item.in;
+    state.playhead = item.start + (front.currentTime * FPS - item.in) / speedOf(item);
   } else {
     state.playhead += ((now - lastTick) / 1000) * FPS;
   }
   lastTick = now;
 
-  const following = item ? nextItem(item.start) : nextItem(state.playhead);
-  if (following && sourceOf(following)) {
-    load(back, sourceOf(following));
-    if (back.paused) back.currentTime = following.in / FPS;
+  const coming = incoming(state.playhead);
+  if (coming && coming !== item && sourceOf(coming)) {
+    if (back.paused || back.dataset.url !== sourceOf(coming)) {
+      place(back, coming, state.playhead, 0.08);
+      back.play().catch(() => {});
+    }
+    applyMix(coming, state.playhead);
+  } else {
+    const following = item ? sorted().find((i) => i.start >= itemEnd(item) - (i.transition?.frames || 0) && i !== item) : nextItem(state.playhead);
+    if (following && sourceOf(following) && back.paused) {
+      load(back, sourceOf(following));
+      back.currentTime = following.in / FPS;
+    }
   }
-  const current = itemAt(state.playhead);
+
+  const current = leading(state.playhead);
   if (current !== item) {
     if (current && sourceOf(current)) {
       if (back.dataset.url === sourceOf(current)) swap();
-      else load(front, sourceOf(current));
-      front.currentTime = (current.in + state.playhead - current.start) / FPS;
+      place(front, current, state.playhead, 0.08);
       front.classList.add("show");
       front.play().catch(() => {});
-      back.pause();
+      if (!incoming(state.playhead)) back.pause();
     } else {
       front.pause();
       front.classList.remove("show");
+      clearMix();
     }
   }
   if (state.playhead >= sceneEnd()) {
@@ -928,7 +1323,8 @@ async function renderClip(clip, quality) {
   }
   refreshLink(clip);
   const take = uid("t");
-  const seed = Math.floor(Math.random() * 2 ** 31);
+  const seed = Number.isFinite(clip.seed) ? clip.seed : Math.floor(Math.random() * 2 ** 31);
+  const saved = Object.fromEntries(SAVED_FIELDS.map((name) => [name, clip[name]]));
   try {
     const { graph } = await postJson("/project/" + state.folder + "/graph", { project: state.project, clip, take, quality, seed });
     const response = await fetch("/prompt", {
@@ -938,7 +1334,7 @@ async function renderClip(clip, quality) {
     });
     const body = await response.json();
     if (!response.ok) throw new Error(body.error?.message || "ComfyUI refused the render.");
-    const job = { id: body.prompt_id, clip: clip.id, take, quality, seed };
+    const job = { id: body.prompt_id, clip: clip.id, take, quality, seed, saved };
     state.project.pending = [...(state.project.pending || []), job];
     state.jobs.set(job.id, { ...job, step: 0, max: 0, progress: 0 });
     save();
@@ -972,7 +1368,7 @@ async function acceptRender(job, file) {
   const clip = clipOf(job.clip);
   if (!clip) return finishJob(job);
   const info = await postJson("/probe", file);
-  const take = { id: job.take, file: file.filename, subfolder: file.subfolder, poster: info.poster, frames: info.frames, quality: job.quality, seed: job.seed };
+  const take = { id: job.take, file: file.filename, subfolder: file.subfolder, poster: info.poster, frames: info.frames, quality: job.quality, seed: job.seed, saved: job.saved };
   const fresh = !clip.takes.length;
   clip.takes.push(take);
   clip.active = take.id;
@@ -1057,6 +1453,11 @@ function onBinary(buffer) {
 function onMessage({ type, data }) {
   const job = data?.prompt_id ? state.jobs.get(data.prompt_id) : null;
   if (!job) return;
+  if (type === "h3take_preview") {
+    job.motion = viewUrl(data.filename, data.subfolder);
+    showLive(job);
+    return;
+  }
   if (state.running !== job) {
     state.running = job;
     renderTimeline();
@@ -1171,11 +1572,18 @@ $("split").addEventListener("click", splitAtPlayhead);
 $("extendBack").addEventListener("click", () => addLinked("extend_before"));
 $("extendForward").addEventListener("click", () => addLinked("extend_after"));
 $("bridge").addEventListener("click", () => addLinked("bridge"));
+$("merge").addEventListener("click", mergeWithNext);
+$("ripple").addEventListener("click", rippleDelete);
+$("closeGap").addEventListener("click", closeGap);
+$("fit").addEventListener("click", fitTimeline);
 $("remove").addEventListener("click", removeSelected);
-$("zoom").addEventListener("input", (event) => {
-  state.zoom = Number(event.target.value);
-  renderTimeline();
-});
+$("zoom").addEventListener("input", (event) => setZoom(Number(event.target.value)));
+$("tlScroll").addEventListener("wheel", (event) => {
+  if (!event.ctrlKey && !event.metaKey) return;
+  event.preventDefault();
+  const anchor = event.clientX - $("tlScroll").getBoundingClientRect().left;
+  setZoom(state.zoom * (event.deltaY < 0 ? 1.15 : 1 / 1.15), anchor);
+}, { passive: false });
 
 $("ruler").addEventListener("pointerdown", (event) => {
   const frameAt = (ev) => (ev.clientX - $("ruler").getBoundingClientRect().left) / state.zoom;
@@ -1207,7 +1615,11 @@ lane.addEventListener("drop", (event) => {
   renderTimeline();
 });
 $("laneV").addEventListener("pointerdown", (event) => {
-  if (event.target === lane) selectClip(null);
+  if (event.target !== lane && !event.target.classList.contains("gapmark")) return;
+  const frame = (event.clientX - lane.getBoundingClientRect().left) / state.zoom;
+  selectClip(null);
+  state.gap = gapAt(frame);
+  renderTimeline();
 });
 
 window.addEventListener("keydown", (event) => {
@@ -1217,7 +1629,21 @@ window.addEventListener("keydown", (event) => {
     setPlaying(!state.playing);
   } else if (event.key === "ArrowLeft") seek(state.playhead - (event.shiftKey ? FPS : 1));
   else if (event.key === "ArrowRight") seek(state.playhead + (event.shiftKey ? FPS : 1));
-  else if (event.key === "Delete" || event.key === "Backspace") removeSelected();
+  else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    jumpEdit(-1);
+  } else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    jumpEdit(1);
+  } else if (event.key === "Home") seek(0);
+  else if (event.key === "End") seek(sceneEnd());
+  else if (event.key === "[") cycleTake(-1);
+  else if (event.key === "]") cycleTake(1);
+  else if (event.key === "\\") fitTimeline();
+  else if (event.key === "Delete" || event.key === "Backspace") {
+    if (event.shiftKey) rippleDelete();
+    else removeSelected();
+  }
   else if (event.key.toLowerCase() === "s" && !event.ctrlKey && !event.metaKey) splitAtPlayhead();
   else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
     event.preventDefault();

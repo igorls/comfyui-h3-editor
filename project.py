@@ -131,9 +131,11 @@ def render_graph(project, folder, clip, take, quality, seed):
             "length": length, "checkpoint": "ref2va", "anchor": "none", "mid_frames": "",
             "video_mode": "off", "hold_frames": 39, "strength": "hold", "keep": 0.0, "align": "av", "video_feather": 0,
             "audio_hold": "off", "audio_feather": 8, "ref_image_size": "match"}},
+        "9": {"class_type": "H3LivePreview", "inputs": {
+            "model": ["5", 0], "audio_vae": ["4", 0], "folder": "%s/%s/preview" % (ROOT, folder)}},
         "11": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": project.get("sampler", "euler")}},
         "12": {"class_type": "BasicScheduler", "inputs": {"model": ["5", 0], "scheduler": "simple", "steps": size["steps"], "denoise": 1.0}},
-        "13": {"class_type": "BasicGuider", "inputs": {"model": ["5", 0], "conditioning": ["10", 0]}},
+        "13": {"class_type": "BasicGuider", "inputs": {"model": ["9", 0], "conditioning": ["10", 0]}},
         "14": {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)}},
         "15": {"class_type": "SamplerCustomAdvanced", "inputs": {
             "noise": ["14", 0], "guider": ["13", 0], "sampler": ["11", 0], "sigmas": ["12", 0], "latent_image": ["10", 1]}},
@@ -183,10 +185,34 @@ def active_take(clip):
     return takes[-1] if takes else None
 
 
+TRANSITIONS = {"dissolve": "fade", "black": "fadeblack", "wipe": "wipeleft"}
+
+
+def item_length(item):
+    """Frames an item fills on the timeline, after its speed."""
+    return max(1, int(round((item["out"] - item["in"]) / float(item.get("speed") or 1))))
+
+
+def tempo_chain(speed):
+    """atempo only takes 0.5 to 2 at a time, so larger changes are chained."""
+    speed = float(speed)
+    steps = []
+    while speed > 2.0:
+        steps.append("atempo=2.0")
+        speed /= 2.0
+    while speed < 0.5:
+        steps.append("atempo=0.5")
+        speed /= 0.5
+    if abs(speed - 1.0) > 1e-6:
+        steps.append("atempo=%.5f" % speed)
+    return ",".join(steps)
+
+
 def export_command(project, paths, out_path, width=None, height=None):
     """ffmpeg arguments that join the timeline's rendered clips. Gaps become black and silence.
 
-    paths maps a clip id to the file of its active take. Clips with no render are skipped.
+    paths maps a clip id to the file of its active take. Clips with no render
+    are skipped. Speed and transitions live on the timeline and are applied here.
     """
     clips = {c["id"]: c for c in project.get("clips", [])}
     items = sorted(
@@ -202,32 +228,54 @@ def export_command(project, paths, out_path, width=None, height=None):
 
     args = ["ffmpeg", "-y", "-v", "error"]
     chains = []
-    labels = []
+    finish = "fps=%s,scale=%s:%s:force_original_aspect_ratio=increase,crop=%s:%s,setsar=1,format=yuv420p,settb=1/%s" % (
+        FPS, width, height, width, height, FPS)
+    sound = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
+
+    def gap_segment(label, frames):
+        seconds = frames / float(FPS)
+        chains.append("color=c=black:s=%sx%s:r=%s:d=%.5f,format=yuv420p,setsar=1,settb=1/%s[%sv]" % (width, height, FPS, seconds, FPS, label))
+        chains.append("anullsrc=r=48000:cl=stereo:d=%.5f,%s[%sa]" % (seconds, sound, label))
+
+    video = audio = None
     cursor = 0
-    count = 0
+    step = 0
+
+    def join(next_video, next_audio):
+        nonlocal video, audio, step
+        if video is None:
+            video, audio = next_video, next_audio
+            return
+        chains.append("[%s][%s][%s][%s]concat=n=2:v=1:a=1[j%sv][j%sa]" % (video, audio, next_video, next_audio, step, step))
+        chains.append("[j%sv]settb=1/%s[k%sv]" % (step, FPS, step))
+        video, audio = "k%sv" % step, "j%sa" % step
+        step += 1
+
     for index, item in enumerate(items):
         args += ["-i", paths[item["clip"]]]
-        gap = item["start"] - cursor
-        if gap > 0:
-            seconds = gap / float(FPS)
-            chains.append("color=c=black:s=%sx%s:r=%s:d=%.5f,setsar=1[gv%s]" % (width, height, FPS, seconds, count))
-            chains.append("anullsrc=r=48000:cl=stereo:d=%.5f[ga%s]" % (seconds, count))
-            labels += ["[gv%s]" % count, "[ga%s]" % count]
-            count += 1
+        speed = float(item.get("speed") or 1)
         first, last = int(item["in"]), int(item["out"])
-        chains.append(
-            "[%s:v]trim=start_frame=%s:end_frame=%s,setpts=PTS-STARTPTS,fps=%s,"
-            "scale=%s:%s:force_original_aspect_ratio=increase,crop=%s:%s,setsar=1[v%s]"
-            % (index, first, last, FPS, width, height, width, height, index)
-        )
-        chains.append(
-            "[%s:a]atrim=start=%.5f:end=%.5f,asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo[a%s]"
-            % (index, first / float(FPS), last / float(FPS), index)
-        )
-        labels += ["[v%s]" % index, "[a%s]" % index]
-        cursor = item["start"] + (last - first)
-    pieces = len(labels) // 2
-    chains.append("%sconcat=n=%s:v=1:a=1[outv][outa]" % ("".join(labels), pieces))
-    args += ["-filter_complex", ";".join(chains), "-map", "[outv]", "-map", "[outa]",
+        chains.append("[%s:v]trim=start_frame=%s:end_frame=%s,setpts=(PTS-STARTPTS)/%.5f,%s[v%s]" % (index, first, last, speed, finish, index))
+        tempo = tempo_chain(speed)
+        chains.append("[%s:a]atrim=start=%.5f:end=%.5f,asetpts=PTS-STARTPTS,%s%s[a%s]" % (
+            index, first / float(FPS), last / float(FPS), tempo + "," if tempo else "", sound, index))
+
+        overlap = cursor - item["start"]
+        transition = item.get("transition")
+        if transition and overlap > 0 and video is not None:
+            seconds = overlap / float(FPS)
+            chains.append("[%s][v%s]xfade=transition=%s:duration=%.5f:offset=%.5f[x%sv]" % (
+                video, index, TRANSITIONS.get(transition.get("type"), "fade"), seconds, (cursor - overlap) / float(FPS), index))
+            chains.append("[%s][a%s]acrossfade=d=%.5f[x%sa]" % (audio, index, seconds, index))
+            video, audio = "x%sv" % index, "x%sa" % index
+        else:
+            gap = item["start"] - cursor
+            if gap > 0:
+                gap_segment("g%s" % index, gap)
+                join("g%sv" % index, "g%sa" % index)
+            join("v%s" % index, "a%s" % index)
+        cursor = item["start"] + item_length(item)
+
+    args += ["-filter_complex", ";".join(chains), "-map", "[%s]" % video, "-map", "[%s]" % audio,
              "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", out_path]
     return args

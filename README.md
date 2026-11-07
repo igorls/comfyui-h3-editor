@@ -23,6 +23,15 @@ Open H3 Editor from the ComfyUI sidebar. It is a full-screen timeline editor.
   choose who is in each clip. Write @Name in What happens to place them.
 - Give a clip a first or last frame by uploading one, or press Use playhead
   frame to take the frame under the playhead.
+- Merge with next replaces the join between two side-by-side clips with a
+  generated crossing, and the scene keeps its length.
+- Speed and transitions belong to the timeline, so they never touch a render.
+  Select a clip to set them. The player previews both.
+- Each take keeps its seed and the prompt that made it. Keep a seed to render
+  variations of one result, or restore a take's prompt.
+- While a clip samples, the player loops the whole clip with its sound, updated
+  at each step, so you can cancel a bad take early. This needs
+  `taeh3.safetensors` in `models/vae_approx`. Without it you get a rough still.
 - Export joins the timeline with ffmpeg and does not use the GPU. A gap becomes
   black and silence.
 - Renders belong to the project, so closing or refreshing the editor does not
@@ -34,8 +43,13 @@ Projects live in `h3take_projects` in ComfyUI's output folder.
 |---|---|
 | Space | Play or pause |
 | Left, Right | Move one frame. Hold Shift for one second |
+| Up, Down | Jump to the previous or next edit |
+| Home, End | Go to the start or end |
 | S | Split at the playhead |
-| Delete | Remove from the timeline |
+| Delete | Remove a clip, or close a selected gap |
+| Shift+Delete | Remove a clip and close the space |
+| [ , ] | Flip between takes of the selected clip |
+| Ctrl+wheel, \\ | Zoom at the pointer, fit the whole scene |
 | Ctrl+Z, Ctrl+Shift+Z | Undo, redo |
 
 The editor writes each prompt in the structure from MiniMax's H3 prompt guides.
