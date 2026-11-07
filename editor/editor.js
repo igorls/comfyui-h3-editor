@@ -26,6 +26,10 @@ const state = {
   zoom: 3,
   jobs: new Map(),
   running: null,
+  edits: 0,
+  savedEdits: 0,
+  saving: null,
+  quiet: false,
 };
 let undo = [];
 let redo = [];
@@ -67,22 +71,83 @@ function toast(message, bad = false) {
 
 async function api(path, options) {
   const response = await fetch("/h3take/api" + path, options);
-  if (!response.ok) throw new Error((await response.text()) || "The request failed.");
+  if (!response.ok) {
+    const text = await response.text();
+    let message = text;
+    try { message = JSON.parse(text).error || text; } catch (_) {}
+    throw new Error(message || "The request failed.");
+  }
   return response.json();
 }
 
 const postJson = (path, body, method = "POST") =>
   api(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
+// The server owns the project. The editor sends its copy with the revision it started from,
+// and the server merges it with whatever else changed: finished renders, an agent, another window.
 function save() {
+  state.edits++;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    postJson("/project/" + state.folder, state.project, "PUT").catch((e) => toast(e.message, true));
-  }, 300);
+  saveTimer = setTimeout(flush, 300);
+}
+
+const unsaved = () => state.edits !== state.savedEdits || state.saving !== null;
+
+async function flush() {
+  clearTimeout(saveTimer);
+  while (state.saving) await state.saving;
+  if (state.edits === state.savedEdits) return;
+  const sent = state.edits;
+  const folder = state.folder;
+  state.saving = (async () => {
+    try {
+      const result = await postJson("/project/" + folder + "?client=" + clientId, state.project, "PUT");
+      state.savedEdits = sent;
+      if (folder === state.folder && state.edits === sent) adopt(result.project);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      state.saving = null;
+    }
+  })();
+  await state.saving;
+}
+
+// Take the server's copy as the editor's own. Only safe when nothing local is waiting to be saved.
+function adopt(project, { external = false } = {}) {
+  const before = state.jobs;
+  const same = JSON.stringify({ ...project, revision: 0 }) === JSON.stringify({ ...state.project, revision: 0 });
+  state.project = project;
+  syncJobs();
+  if (same) return;
+  if (!clipOf(state.clip)) state.clip = null;
+  if (!state.project.timeline.some((i) => i.id === state.item)) state.item = null;
+  if (state.person && !(state.project.cast || []).some((p) => p.id === state.person)) state.person = null;
+  if (external) {
+    undo = [];
+    redo = [];
+  }
+  for (const [id, job] of before) {
+    if (state.jobs.has(id)) continue;
+    const clip = clipOf(job.clip);
+    if (!clip) continue;
+    if (clip.takes.some((t) => t.id === job.take)) toast(clip.name + " is ready.");
+    else if (clip.error && !job.reported) toast(clip.name + ": " + clip.error, true);
+  }
+  renderAll();
+  ensureStrips();
+}
+
+async function refreshProject(external) {
+  if (!state.folder || unsaved()) return;
+  const folder = state.folder;
+  const project = await api("/project/" + folder);
+  if (folder === state.folder && !unsaved() && (project.revision || 0) > (state.project.revision || 0)) adopt(project, { external });
 }
 
 // Call before a change that undo should be able to reverse.
 function checkpoint() {
+  if (state.quiet) return;
   undo.push(JSON.stringify(state.project));
   if (undo.length > 100) undo.shift();
   redo = [];
@@ -91,7 +156,10 @@ function checkpoint() {
 function restore(from, to) {
   if (!from.length) return;
   to.push(JSON.stringify(state.project));
+  // An undo is a new edit on top of the latest revision, not a step back to an old one.
+  const revision = state.project.revision;
   state.project = JSON.parse(from.pop());
+  state.project.revision = revision;
   if (!clipOf(state.clip)) state.clip = null;
   state.item = null;
   save();
@@ -126,10 +194,33 @@ function addClip() {
   document.querySelector("#inspector textarea.big")?.focus();
 }
 
-function placeOnTimeline(clip, start) {
+// Mirrors snap_frames and planned_frames in project.py: a clip is as long as its render will be.
+function snapFrames(seconds) {
+  return 5 + 17 * Math.max(1, Math.round((seconds * FPS - 5) / 17));
+}
+
+function plannedFrames(clip) {
   const take = activeTake(clip);
-  const frames = take ? take.frames : clip.link ? linkedFrames(clip.link, clip.seconds) : Math.round(clip.seconds * FPS);
-  const [first, last] = linkedRange(clip.link, frames);
+  return take ? take.frames : clip.link ? linkedFrames(clip.link, clip.seconds) : snapFrames(clip.seconds);
+}
+
+// An unrendered clip follows its seconds on the timeline, and the clips after it move along.
+function resizePlanned(clip) {
+  if (clip.takes.length) return;
+  const [first, last] = linkedRange(clip.link, plannedFrames(clip));
+  for (const item of state.project.timeline) {
+    if (item.clip !== clip.id) continue;
+    const end = itemEnd(item);
+    item.in = first;
+    item.out = last;
+    shiftFrom(end, itemEnd(item) - end, item);
+  }
+  settle(null);
+  renderTimeline();
+}
+
+function placeOnTimeline(clip, start) {
+  const [first, last] = linkedRange(clip.link, plannedFrames(clip));
   const item = { id: uid("i"), clip: clip.id, start, in: first, out: last };
   state.project.timeline.push(item);
   settle(item);
@@ -583,6 +674,7 @@ function clipStatus(clip) {
     if (state.running !== job) return { kind: "live", text: "Queued" };
     return { kind: "live", text: job.max ? "Rendering " + Math.round((job.progress || 0) * 100) + "%" : "Rendering" };
   }
+  if (clip.error) return { kind: "danger", text: "Render failed" };
   if (!clip.takes.length) return { kind: "muted", text: "Not rendered" };
   if (isStale(clip)) return { kind: "danger", text: "Source changed" };
   const take = activeTake(clip);
@@ -671,6 +763,7 @@ function field(label, value, onInput, { big = false, area = false, type = "text"
   if (big) input.className = "big";
   if (!area && !big) input.type = type;
   if (placeholder) input.placeholder = placeholder;
+  input.dataset.key = label;
   input.value = value ?? "";
   input.addEventListener("focus", () => checkpoint(), { once: true });
   input.addEventListener("input", () => {
@@ -758,6 +851,7 @@ function renderInspector() {
   name.className = "name-input";
   name.value = clip.name;
   name.setAttribute("aria-label", "Clip name");
+  name.dataset.key = "name";
   name.addEventListener("focus", () => checkpoint(), { once: true });
   name.addEventListener("input", () => {
     clip.name = name.value;
@@ -772,6 +866,12 @@ function renderInspector() {
   head.append(name, line);
 
   const parts = [head];
+  if (clip.error && !job) {
+    const notice = document.createElement("p");
+    notice.className = "notice";
+    notice.textContent = "The last render failed. " + clip.error;
+    parts.push(notice);
+  }
   if (isStale(clip) && !job) {
     const notice = document.createElement("p");
     notice.className = "notice";
@@ -784,7 +884,9 @@ function renderInspector() {
   timing.append(
     field("Camera", clip.camera, (v) => (clip.camera = v), { placeholder: "Slow push in" }),
     field("Seconds", clip.seconds, (v) => {
-      if (Number(v) > 0) clip.seconds = Number(v);
+      if (!(Number(v) >= 0.5 && Number(v) <= 60)) return;
+      clip.seconds = Number(v);
+      resizePlanned(clip);
     }, { type: "number" }),
   );
   parts.push(section("Shot", [
@@ -1611,6 +1713,8 @@ function updateQueue() {
   $("queue").textContent = count ? (count === 1 ? "Rendering 1 clip" : "Rendering " + count + " clips") : "";
 }
 
+// Renders are queued by the server, which also attaches the finished take to the project.
+// The editor only shows progress, so closing it never loses a render.
 async function renderClip(clip, quality) {
   if (jobFor(clip.id)) return;
   if (!clip.action.trim()) {
@@ -1618,23 +1722,11 @@ async function renderClip(clip, quality) {
     toast("Describe what happens in " + clip.name + " before rendering it.", true);
     return;
   }
-  refreshLink(clip);
-  const take = uid("t");
-  const seed = Number.isFinite(clip.seed) ? clip.seed : Math.floor(Math.random() * 2 ** 31);
-  const saved = Object.fromEntries(SAVED_FIELDS.map((name) => [name, clip[name]]));
   try {
-    const { graph } = await postJson("/project/" + state.folder + "/graph", { project: state.project, clip, take, quality, seed });
-    const response = await fetch("/prompt", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: graph, client_id: clientId }),
-    });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error?.message || "ComfyUI refused the render.");
-    const job = { id: body.prompt_id, clip: clip.id, take, quality, seed, saved };
-    state.project.pending = [...(state.project.pending || []), job];
-    state.jobs.set(job.id, { ...job, step: 0, max: 0, progress: 0 });
-    save();
+    await flush();
+    const result = await postJson("/project/" + state.folder + "/render", { clip: clip.id, quality, client_id: clientId });
+    state.jobs.set(result.job.id, { ...result.job, step: 0, max: 0, progress: 0 });
+    if (!unsaved()) adopt(result.project);
     updateQueue();
     renderAll();
   } catch (error) {
@@ -1643,79 +1735,39 @@ async function renderClip(clip, quality) {
 }
 
 async function cancelJob(job) {
-  if (state.running === job) await fetch("/interrupt", { method: "POST" });
-  else await fetch("/queue", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ delete: [job.id] }) });
-  finishJob(job);
-  toast("Render cancelled.");
-}
-
-function finishJob(job) {
-  state.jobs.delete(job.id);
-  state.project.pending = (state.project.pending || []).filter((p) => p.id !== job.id);
-  save();
-  if (state.running === job) state.running = null;
-  if (job.preview) URL.revokeObjectURL(job.preview);
-  updateQueue();
-  renderAll();
-}
-
-async function acceptRender(job, file) {
-  if (job.accepting) return;
-  job.accepting = true;
-  const clip = clipOf(job.clip);
-  if (!clip) return finishJob(job);
-  const info = await postJson("/probe", file);
-  const take = { id: job.take, file: file.filename, subfolder: file.subfolder, poster: info.poster, frames: info.frames, quality: job.quality, seed: job.seed, saved: job.saved, strip: info.strip || undefined };
-  const fresh = !clip.takes.length;
-  clip.takes.push(take);
-  clip.active = take.id;
-  const [first, last] = linkedRange(clip.link, info.frames);
-  for (const item of state.project.timeline) {
-    if (item.clip !== clip.id) continue;
-    item.in = fresh ? first : item.in;
-    item.out = fresh ? last : Math.min(item.out, last);
+  try {
+    await flush();
+    const result = await postJson("/project/" + state.folder + "/cancel", { job: job.id, client_id: clientId });
+    job.reported = true;
+    state.jobs.delete(job.id);
+    if (!unsaved()) adopt(result.project);
+    updateQueue();
+    renderAll();
+    toast("Render cancelled.");
+  } catch (error) {
+    toast(error.message, true);
   }
-  settle(null);
-  save();
-  finishJob(job);
-  toast(clip.name + " is ready.");
 }
 
-function savedFile(history) {
-  const groups = Object.values(history.outputs?.["19"] || {}).filter(Array.isArray).flat();
-  return groups.find((g) => g && g.filename);
-}
-
-// Renders belong to the project, not this window. Picks them up after a refresh or a missed message.
-async function checkJob(job) {
-  const history = (await (await fetch("/history/" + job.id)).json())[job.id];
-  if (!history) return false;
-  const file = savedFile(history);
-  if (file) await acceptRender(job, { filename: file.filename, subfolder: file.subfolder });
-  else finishJob(job);
-  return true;
-}
-
-async function resumeJobs() {
-  const queue = await (await fetch("/queue")).json();
-  const active = new Set([...queue.queue_running, ...queue.queue_pending].map((entry) => entry[1]));
-  for (const pending of state.project.pending || []) {
-    const job = { ...pending, step: 0, max: 0, progress: 0 };
-    state.jobs.set(job.id, job);
-    if (!active.has(job.id) && !(await checkJob(job))) finishJob(job);
+// The jobs shown are the project's own record of what is rendering, wherever it was started.
+function syncJobs() {
+  const next = new Map();
+  for (const job of state.project.pending || []) next.set(job.id, state.jobs.get(job.id) || { ...job, step: 0, max: 0, progress: 0 });
+  for (const [id, job] of state.jobs) {
+    if (next.has(id)) continue;
+    if (state.running === job) state.running = null;
+    if (job.preview) URL.revokeObjectURL(job.preview);
   }
+  state.jobs = next;
   updateQueue();
-  renderAll();
 }
-
-setInterval(() => {
-  for (const job of state.jobs.values()) checkJob(job).catch(() => {});
-}, 4000);
 
 function connect() {
   const socket = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?clientId=" + clientId);
   socket.binaryType = "arraybuffer";
   socket.onclose = () => setTimeout(connect, 2000);
+  // Anything missed while the connection was down is in the project.
+  socket.onopen = () => refreshProject(false).catch(() => {});
   socket.onmessage = (event) => {
     if (typeof event.data === "string") onMessage(JSON.parse(event.data));
     else onBinary(event.data);
@@ -1748,6 +1800,11 @@ function onBinary(buffer) {
 }
 
 function onMessage({ type, data }) {
+  if (type === "h3take_project") {
+    if (data.folder !== state.folder || data.client === clientId) return;
+    if ((data.revision || 0) > (state.project?.revision || 0)) refreshProject(data.source !== "render").catch(() => {});
+    return;
+  }
   const job = data?.prompt_id ? state.jobs.get(data.prompt_id) : null;
   if (!job) return;
   if (type === "h3take_preview") {
@@ -1787,40 +1844,57 @@ function onMessage({ type, data }) {
     }
     showLive(job);
   } else if (type === "executed" && String(data.node) === "19") {
-    const groups = Object.values(data.output || {}).filter(Array.isArray).flat();
-    const file = groups.find((g) => g && g.filename);
-    if (file) acceptRender(job, { filename: file.filename, subfolder: file.subfolder }).catch((e) => toast(e.message, true));
+    job.stage = "Adding the take";
+    showFrame();
   } else if (type === "execution_error") {
-    toast("The render failed: " + (data.exception_message || "see the ComfyUI log"), true);
-    finishJob(job);
-  } else if (type === "execution_interrupted") {
-    finishJob(job);
+    job.reported = true;
+    toast("The render of " + (clipOf(job.clip)?.name || "a clip") + " failed: " + (data.exception_message || "see the ComfyUI log"), true);
   }
 }
 
 /* Project */
 
 function renderAll() {
+  const focus = rememberFocus();
   renderCast();
   renderBin();
   renderInspector();
   renderTimeline();
   showFrame();
+  restoreFocus(focus);
+}
+
+// A re-render must not take the caret away from someone typing in the inspector.
+function rememberFocus() {
+  const el = document.activeElement;
+  if (!el || !$("inspector").contains(el) || !el.dataset.key) return null;
+  return { key: el.dataset.key, start: el.selectionStart, end: el.selectionEnd };
+}
+
+function restoreFocus(focus) {
+  if (!focus) return;
+  const el = $("inspector").querySelector('[data-key="' + CSS.escape(focus.key) + '"]');
+  if (!el) return;
+  state.quiet = true;
+  el.focus();
+  state.quiet = false;
+  try { el.setSelectionRange(focus.start, focus.end); } catch (_) {}
 }
 
 async function openProject(folder) {
+  await flush();
   state.folder = folder;
   state.project = await api("/project/" + folder);
+  state.edits = state.savedEdits = 0;
   state.clip = null;
   state.item = null;
   state.playhead = 0;
   undo = [];
   redo = [];
   try { localStorage.setItem("h3take.project", folder); } catch (_) {}
-  state.jobs.clear();
   state.running = null;
+  syncJobs();
   renderAll();
-  await resumeJobs();
   ensureStrips();
 }
 
@@ -1862,13 +1936,15 @@ $("close").addEventListener("click", () => window.parent.postMessage("h3-editor-
 $("renderAll").addEventListener("click", () => {
   const waiting = sorted().map((i) => clipOf(i.clip)).filter((c, i, all) => c && !c.takes.length && all.indexOf(c) === i);
   if (!waiting.length) return toast("Every clip on the timeline already has a render.");
-  waiting.forEach((clip) => renderClip(clip, "draft"));
+  (async () => {
+    for (const clip of waiting) await renderClip(clip, "draft");
+  })();
 });
 $("export").addEventListener("click", async () => {
   clearTimeout(saveTimer);
   $("export").disabled = true;
   try {
-    await postJson("/project/" + state.folder, state.project, "PUT");
+    await flush();
     const result = await postJson("/project/" + state.folder + "/export", {});
     toast("Exported " + result.filename + " to " + result.subfolder);
   } catch (error) {

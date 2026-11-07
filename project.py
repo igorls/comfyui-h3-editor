@@ -3,8 +3,11 @@
 Moving or trimming on the timeline never touches a render. No Comfy import.
 """
 
+import copy
 import math
+import random
 import re
+import uuid
 
 try:
     from .prompting import compose_prompt, compose_reference_prompt
@@ -291,3 +294,736 @@ def export_command(project, paths, out_path, width=None, height=None):
     args += ["-filter_complex", ";".join(chains), "-map", "[%s]" % video, "-map", "[%s]" % audio,
              "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", out_path]
     return args
+
+
+# Editing operations. The editor, the HTTP API and agents share these, so the rules live in one place.
+
+HOLD = 39
+MERGE_FRAMES = 63
+CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
+               "first", "last")
+TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music")
+PROJECT_FIELDS = ("style",)
+CAST_FIELDS = ("name", "description")
+LINK_MODES = ("extend_after", "extend_before", "bridge", "merge")
+LINK_TITLES = {"extend_after": "After ", "extend_before": "Before ", "bridge": "Bridge from ", "merge": "Merge from "}
+SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast")
+
+
+def new_id(prefix):
+    return prefix + uuid.uuid4().hex[:8]
+
+
+def timecode(frames):
+    f = max(0, int(round(frames)))
+    return "%02d:%02d:%02d" % (f // FPS // 60, (f // FPS) % 60, f % FPS)
+
+
+def find_clip(project, clip_id):
+    for clip in project.get("clips", []):
+        if clip["id"] == clip_id:
+            return clip
+    raise KeyError("no clip %s" % clip_id)
+
+
+def find_item(project, item_id):
+    for item in project.get("timeline", []):
+        if item["id"] == item_id:
+            return item
+    raise KeyError("no timeline item %s" % item_id)
+
+
+def find_cast(project, cast_id):
+    for person in project.get("cast", []):
+        if person["id"] == cast_id:
+            return person
+    raise KeyError("no cast member %s" % cast_id)
+
+
+def item_end(item):
+    return item["start"] + item_length(item)
+
+
+def scene_end(project):
+    return max([item_end(i) for i in project.get("timeline", [])] or [0])
+
+
+def ordered(project):
+    return sorted(project.get("timeline", []), key=lambda i: i["start"])
+
+
+def settle(project, moved=None):
+    """Clips never overlap on the picture track, except where a transition says so."""
+    items = sorted(project.get("timeline", []), key=lambda i: (i["start"], 0 if i is moved else 1))
+    end = 0
+    for item in items:
+        floor = end - ((item.get("transition") or {}).get("frames") or 0)
+        if item["start"] < floor:
+            item["start"] = floor
+        end = max(end, item_end(item))
+
+
+def shift_from(project, frame, by, skip=None):
+    for other in project.get("timeline", []):
+        if other is not skip and other["start"] >= frame:
+            other["start"] += by
+
+
+def linked_range(link, frames):
+    """The part of a linked render the timeline shows. Held frames are already on screen in the source."""
+    if not link:
+        return 0, frames
+    hold = int(link["hold"])
+    if link["mode"] == "extend_after":
+        return hold, frames
+    if link["mode"] == "extend_before":
+        return 0, frames - hold
+    return hold, frames - hold
+
+
+def planned_frames(clip):
+    """What a render of this clip will be, so its place on the timeline is right before it exists."""
+    take = active_take(clip)
+    if take:
+        return take["frames"]
+    if clip.get("link"):
+        return linked_length(clip["link"], clip.get("seconds", 5))
+    return snap_frames(clip.get("seconds", 5))
+
+
+def check_fields(fields, allowed):
+    if not isinstance(fields, dict):
+        raise ValueError("fields must be an object")
+    unknown = sorted(set(fields) - set(allowed))
+    if unknown:
+        raise ValueError("unknown fields: %s. Allowed: %s" % (", ".join(unknown), ", ".join(allowed)))
+
+
+def clean_asset(value, what):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("file"), str) or not value["file"]:
+        raise ValueError("%s needs a file, and a subfolder if it has one" % what)
+    return {"file": value["file"], "subfolder": str(value.get("subfolder") or "")}
+
+
+def clean_clip_fields(fields):
+    check_fields(fields, CLIP_FIELDS)
+    out = dict(fields)
+    if "seconds" in out:
+        seconds = float(out["seconds"])
+        if not math.isfinite(seconds) or not 0.5 <= seconds <= 60:
+            raise ValueError("seconds must be between 0.5 and 60")
+        out["seconds"] = seconds
+    if "seed" in out:
+        out["seed"] = None if out["seed"] in (None, "") else int(out["seed"])
+    if "cast" in out:
+        if not isinstance(out["cast"], list) or not all(isinstance(c, str) for c in out["cast"]):
+            raise ValueError("cast is a list of cast ids")
+    for name in TEXT_FIELDS:
+        if name in out and not isinstance(out[name], str):
+            raise ValueError("%s must be text" % name)
+    for side in ("first", "last"):
+        if side in out:
+            out[side] = clean_asset(out[side], "a %s frame" % side)
+    return out
+
+
+def place_clip(project, clip_id, start=None):
+    """Put a clip on the timeline, at the end unless a frame is given. Later clips make room."""
+    clip = find_clip(project, clip_id)
+    first, last = linked_range(clip.get("link"), planned_frames(clip))
+    at = scene_end(project) if start is None else max(0, int(start))
+    item = {"id": new_id("i"), "clip": clip["id"], "start": at, "in": first, "out": last}
+    project.setdefault("timeline", []).append(item)
+    settle(project, item)
+    return item
+
+
+def add_clip(project, fields, start=None, place=True):
+    fields = clean_clip_fields(fields or {})
+    number = len(project.get("clips", [])) + 1
+    clip = {"id": new_id("c"), "name": "Clip %s" % number, "action": "", "camera": "", "speaker": "",
+            "dialogue": "", "sound": "", "music": "", "seconds": 5, "takes": [], "active": None}
+    clip.update({k: v for k, v in fields.items() if v is not None or k == "seed"})
+    project.setdefault("clips", []).append(clip)
+    item = place_clip(project, clip["id"], start) if place else None
+    return clip, item
+
+
+def update_clip(project, clip_id, fields):
+    clip = find_clip(project, clip_id)
+    fields = clean_clip_fields(fields)
+    before = planned_frames(clip)
+    for key, value in fields.items():
+        if value is None and key in ("first", "last"):
+            clip.pop(key, None)
+        else:
+            clip[key] = value
+    if not clip.get("takes") and planned_frames(clip) != before:
+        # An unrendered clip changes length with its seconds. Later clips follow it.
+        first, last = linked_range(clip.get("link"), planned_frames(clip))
+        for item in project.get("timeline", []):
+            if item["clip"] == clip_id:
+                end = item_end(item)
+                item["in"], item["out"] = first, last
+                shift_from(project, end, item_end(item) - end, skip=item)
+        settle(project)
+    return clip
+
+
+def remove_clip(project, clip_id):
+    find_clip(project, clip_id)
+    project["clips"] = [c for c in project["clips"] if c["id"] != clip_id]
+    project["timeline"] = [i for i in project.get("timeline", []) if i["clip"] != clip_id]
+
+
+def previous_item(project, item):
+    earlier = [o for o in ordered(project) if o is not item and o["start"] < item["start"]]
+    return earlier[-1] if earlier else None
+
+
+def following_item(project, item):
+    later = [o for o in ordered(project) if o is not item and o["start"] >= item_end(item)]
+    return later[0] if later else None
+
+
+def set_speed(project, item_id, speed):
+    """Speed is non-destructive. Clips after this one move with its new end."""
+    item = find_item(project, item_id)
+    old_end = item_end(item)
+    item["speed"] = clean_speed(speed)
+    shift = item_end(item) - old_end
+    for other in project.get("timeline", []):
+        if other is not item and other["start"] >= old_end - ((other.get("transition") or {}).get("frames") or 0):
+            other["start"] += shift
+    return item
+
+
+def set_transition(project, item_id, kind, frames=12):
+    """A transition overlaps this clip with the one before. The clip and everything after it slide back."""
+    item = find_item(project, item_id)
+    before = previous_item(project, item)
+    old = (item.get("transition") or {}).get("frames") or 0
+    if kind in (None, "none"):
+        kind = "none"
+    elif kind not in TRANSITIONS:
+        raise ValueError("transition must be none or one of %s" % ", ".join(TRANSITIONS))
+    if kind != "none" and (not before or item_end(before) < item["start"] + old):
+        raise ValueError("put this clip right after another one to add a transition")
+    limit = min(item_length(before), item_length(item)) - 1 if before else 0
+    length = 0 if kind == "none" else max(2, min(int(frames), limit))
+    shift = length - old
+    for other in project.get("timeline", []):
+        if other is item or other["start"] > item["start"]:
+            other["start"] -= shift
+    if kind == "none":
+        item.pop("transition", None)
+    else:
+        item["transition"] = {"type": kind, "frames": length}
+    return item
+
+
+def update_item(project, item_id, fields, ripple=False):
+    """Move or trim a timeline item. With ripple, later clips follow its new end."""
+    check_fields(fields, ("start", "in", "out", "speed", "transition"))
+    item = find_item(project, item_id)
+    take = active_take(find_clip(project, item["clip"]))
+    old_end = item_end(item)
+    changed = {k: int(fields[k]) for k in ("start", "in", "out") if k in fields}
+    start = changed.get("start", item["start"])
+    first = changed.get("in", item["in"])
+    last = changed.get("out", item["out"])
+    if start < 0 or first < 0 or last - first < 6:
+        raise ValueError("an item needs a start of 0 or more and at least 6 frames between in and out")
+    if take and last > take["frames"]:
+        raise ValueError("out is past the end of the take, which has %s frames" % take["frames"])
+    item.update({"start": start, "in": first, "out": last})
+    if ripple and "start" not in changed:
+        shift_from(project, old_end, item_end(item) - old_end, skip=item)
+    if "speed" in fields:
+        set_speed(project, item_id, fields["speed"])
+    if "transition" in fields:
+        transition = fields["transition"] or {}
+        if isinstance(transition, str):
+            transition = {"type": transition}
+        set_transition(project, item_id, transition.get("type", "none"), transition.get("frames", 12))
+    settle(project, item)
+    return item
+
+
+def remove_item(project, item_id, ripple=False):
+    item = find_item(project, item_id)
+    end = item_end(item)
+    shift = item_length(item) - ((item.get("transition") or {}).get("frames") or 0)
+    project["timeline"] = [i for i in project["timeline"] if i is not item]
+    if ripple:
+        for other in project["timeline"]:
+            if other["start"] >= end - ((other.get("transition") or {}).get("frames") or 0):
+                other["start"] -= shift
+
+
+def split_item(project, item_id, frame):
+    """Cut an item in two at a timeline frame. Both halves keep pointing at the same take."""
+    item = find_item(project, item_id)
+    frame = int(frame)
+    if not item["start"] < frame < item_end(item):
+        raise ValueError("frame %s is not inside that item, which runs from %s to %s" % (frame, item["start"], item_end(item)))
+    cut = int(round(item["in"] + (frame - item["start"]) * clean_speed(item.get("speed"))))
+    right = {"id": new_id("i"), "clip": item["clip"], "start": frame, "in": cut, "out": item["out"]}
+    if item.get("speed"):
+        right["speed"] = item["speed"]
+    item["out"] = cut
+    project["timeline"].append(right)
+    return right
+
+
+def gap_at(project, frame):
+    end = 0
+    for item in ordered(project):
+        if end <= frame < item["start"]:
+            return end, item["start"]
+        end = max(end, item_end(item))
+    return None
+
+
+def close_gap(project, frame=None):
+    """Close the gap at a frame, or every gap when no frame is given. Returns the frames removed."""
+    if frame is not None:
+        gap = gap_at(project, int(frame))
+        if not gap:
+            raise ValueError("there is no gap at frame %s" % frame)
+        shift_from(project, gap[1], gap[0] - gap[1])
+        return gap[1] - gap[0]
+    removed = 0
+    while True:
+        gap = next((g for g in (gap_at(project, i["start"] - 1) for i in ordered(project) if i["start"] > 0) if g), None)
+        if not gap:
+            return removed
+        shift_from(project, gap[1], gap[0] - gap[1])
+        removed += gap[1] - gap[0]
+
+
+def side_of(project, item):
+    take = active_take(find_clip(project, item["clip"]))
+    if not take:
+        raise ValueError("render %s before joining another clip to it" % find_clip(project, item["clip"])["name"])
+    return {"clip": item["clip"], "item": item["id"], "file": take["file"], "subfolder": take.get("subfolder"),
+            "first": item["in"], "last": item["out"]}
+
+
+def link_sides(link):
+    return [s for s in ((link or {}).get("a"), (link or {}).get("b")) if s]
+
+
+def side_changed(project, side):
+    item = next((i for i in project.get("timeline", []) if i["id"] == side["item"]), None)
+    clip = next((c for c in project.get("clips", []) if c["id"] == side["clip"]), None)
+    take = active_take(clip) if clip else None
+    if not item or not take:
+        return False
+    return take["file"] != side["file"] or item["in"] != side["first"] or item["out"] != side["last"]
+
+
+def touches(project, clip, side):
+    """Only a join that still exists can show, so a clip that moved away from its source is left alone."""
+    source = next((i for i in project.get("timeline", []) if i["id"] == side["item"]), None)
+    if not source:
+        return False
+    return any(i["clip"] == clip["id"] and (item_end(i) == source["start"] or item_end(source) == i["start"])
+               for i in project.get("timeline", []))
+
+
+def is_stale(project, clip):
+    return bool(clip.get("takes")) and any(side_changed(project, s) and touches(project, clip, s) for s in link_sides(clip.get("link")))
+
+
+def refresh_link(project, clip):
+    """A linked clip always renders from what its sources show on the timeline right now."""
+    for side in link_sides(clip.get("link")):
+        item = next((i for i in project.get("timeline", []) if i["id"] == side["item"]), None)
+        source = next((c for c in project.get("clips", []) if item and c["id"] == item["clip"]), None)
+        if item and source and active_take(source):
+            side.update(side_of(project, item))
+
+
+def add_linked(project, item_id, mode, seconds=None, action=""):
+    """Extend a clip forward or back, bridge it to the next one, or merge the two with a generated crossing."""
+    if mode not in LINK_MODES:
+        raise ValueError("mode must be one of %s" % ", ".join(LINK_MODES))
+    item = find_item(project, item_id)
+    source = find_clip(project, item["clip"])
+    side = side_of(project, item)
+    if item_length(item) < HOLD:
+        raise ValueError("the clip needs at least %s frames on the timeline" % HOLD)
+    nxt = following_item(project, item) if mode in ("bridge", "merge") else None
+    if mode in ("bridge", "merge"):
+        if not nxt or not active_take(find_clip(project, nxt["clip"])):
+            raise ValueError("%s needs a rendered clip after this one" % mode)
+        if item_length(nxt) < HOLD:
+            raise ValueError("the next clip needs at least %s frames on the timeline" % HOLD)
+    if mode == "merge":
+        away = (MERGE_FRAMES + 1) // 2
+        rest = MERGE_FRAMES - away
+        if nxt["start"] != item_end(item):
+            raise ValueError("put the two clips side by side to merge them")
+        if clean_speed(item.get("speed")) != 1 or clean_speed(nxt.get("speed")) != 1:
+            raise ValueError("set both clips to 100% speed to merge them")
+        if item["out"] - item["in"] < HOLD + away or nxt["out"] - nxt["in"] < HOLD + rest:
+            raise ValueError("both clips need at least %s frames on the timeline to merge" % (HOLD + away))
+        item["out"] -= away
+        nxt["in"] += rest
+        nxt["start"] += rest
+        side = side_of(project, item)
+        seconds = 2.625
+
+    link = {"mode": "bridge" if mode == "merge" else mode, "hold": HOLD, "a": side}
+    if nxt:
+        link["b"] = side_of(project, nxt)
+    seconds = float(seconds if seconds is not None else 4.25)
+    if not math.isfinite(seconds) or not 0.5 <= seconds <= 60:
+        raise ValueError("seconds must be between 0.5 and 60")
+    default = "One continuous shot that moves naturally from the opening frames into the closing frames." if mode == "merge" else ""
+    clip = {"id": new_id("c"), "name": LINK_TITLES[mode] + source["name"], "action": action or default,
+            "camera": "", "speaker": "", "dialogue": "", "sound": "", "music": "", "seconds": seconds,
+            "takes": [], "active": None, "link": link}
+    project["clips"].append(clip)
+    first, last = linked_range(link, linked_length(link, seconds))
+    length = last - first
+    start = item_end(item)
+    if mode == "extend_before":
+        start = item["start"]
+        shift_from(project, item["start"], length)
+    elif mode == "extend_after":
+        shift_from(project, start, length)
+    elif mode == "bridge":
+        shift_from(project, nxt["start"], start + length - nxt["start"])
+    placed = {"id": new_id("i"), "clip": clip["id"], "start": start, "in": first, "out": last}
+    project["timeline"].append(placed)
+    return clip, placed
+
+
+def choose_take(project, clip_id, take_id):
+    clip = find_clip(project, clip_id)
+    take = next((t for t in clip.get("takes", []) if t["id"] == take_id), None)
+    if take is None:
+        raise KeyError("no take %s on clip %s" % (take_id, clip_id))
+    clip["active"] = take_id
+    _, last = linked_range(clip.get("link"), take["frames"])
+    for item in project.get("timeline", []):
+        if item["clip"] == clip_id:
+            item["out"] = min(item["out"], last)
+    return clip
+
+
+def accept_take(project, clip_id, take):
+    """A finished render becomes the clip's active take. A first render sets its timeline range."""
+    clip = find_clip(project, clip_id)
+    fresh = not clip.get("takes")
+    clip.setdefault("takes", []).append(take)
+    clip["active"] = take["id"]
+    clip.pop("error", None)
+    first, last = linked_range(clip.get("link"), take["frames"])
+    for item in project.get("timeline", []):
+        if item["clip"] != clip_id:
+            continue
+        if fresh:
+            end = item_end(item)
+            item["in"], item["out"] = first, last
+            shift_from(project, end, item_end(item) - end, skip=item)
+        else:
+            item["out"] = min(item["out"], last)
+    settle(project)
+    return clip
+
+
+def set_project(project, fields):
+    check_fields(fields, PROJECT_FIELDS)
+    for key, value in fields.items():
+        if not isinstance(value, str):
+            raise ValueError("%s must be text" % key)
+        project[key] = value
+
+
+def add_cast(project, fields):
+    asset = clean_asset(fields, "a cast member")
+    check_fields({k: v for k, v in fields.items() if k not in ("file", "subfolder")}, CAST_FIELDS)
+    project.setdefault("cast", [])
+    person = {"id": new_id("p"), "name": str(fields.get("name") or "Person %s" % (len(project["cast"]) + 1)),
+              "description": str(fields.get("description") or "")}
+    person.update(asset)
+    project["cast"].append(person)
+    return person
+
+
+def update_cast(project, cast_id, fields):
+    check_fields(fields, CAST_FIELDS)
+    person = find_cast(project, cast_id)
+    for key, value in fields.items():
+        if not isinstance(value, str):
+            raise ValueError("%s must be text" % key)
+        person[key] = value.strip() or person[key] if key == "name" else value
+    return person
+
+
+def remove_cast(project, cast_id):
+    find_cast(project, cast_id)
+    project["cast"] = [c for c in project["cast"] if c["id"] != cast_id]
+    for clip in project.get("clips", []):
+        if cast_id in (clip.get("cast") or []):
+            clip["cast"] = [c for c in clip["cast"] if c != cast_id]
+
+
+# Renders. The server queues the graph; these keep the project's record of it.
+
+def plan_render(project, folder, clip_id, quality, seed=None):
+    """The graph for a new take, and the job that will turn its file into a take."""
+    clip = find_clip(project, clip_id)
+    if any(j["clip"] == clip_id for j in project.get("pending", [])):
+        raise ValueError("%s is already rendering" % clip["name"])
+    refresh_link(project, clip)
+    if seed in (None, ""):
+        seed = clip.get("seed")
+    if seed in (None, ""):
+        seed = random.randrange(2 ** 31)
+    take = new_id("t")
+    graph = render_graph(project, folder, clip, take, quality, int(seed))
+    job = {"clip": clip_id, "take": take, "quality": quality, "seed": int(seed),
+           "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS}}
+    return job, graph
+
+
+def add_pending(project, job):
+    find_clip(project, job["clip"]).pop("error", None)
+    project.setdefault("pending", []).append(job)
+
+
+def pop_pending(project, job_id):
+    pending = project.get("pending") or []
+    job = next((j for j in pending if j.get("id") == job_id), None)
+    project["pending"] = [j for j in pending if j.get("id") != job_id]
+    return job
+
+
+def finish_render(project, job_id, file, info):
+    """Attach a finished render. Returns the clip, or None when the clip was removed meanwhile."""
+    job = pop_pending(project, job_id)
+    if not job:
+        return None
+    try:
+        find_clip(project, job["clip"])
+    except KeyError:
+        return None
+    take = {"id": job["take"], "file": file["filename"], "subfolder": file.get("subfolder") or "",
+            "poster": info["poster"], "frames": int(info["frames"]), "quality": job["quality"],
+            "seed": job["seed"], "saved": job.get("saved")}
+    if info.get("strip"):
+        take["strip"] = info["strip"]
+    return accept_take(project, job["clip"], take)
+
+
+def fail_render(project, job_id, message=None):
+    job = pop_pending(project, job_id)
+    if job and message:
+        clip = next((c for c in project.get("clips", []) if c["id"] == job["clip"]), None)
+        if clip is not None:
+            clip["error"] = str(message)[:400]
+    return job
+
+
+# Merging. Two writers can change a project at once: the editor, an agent, and finished renders.
+
+MISSING = object()   # a key or element that one side does not have
+UNKNOWN = object()   # no common version to compare against
+THEIRS_ON_CONFLICT = ("active", "error", "revision")
+
+
+def _copy(value):
+    return value if value is MISSING else copy.deepcopy(value)
+
+
+def _is_id_list(value):
+    return isinstance(value, list) and all(isinstance(x, dict) and "id" in x for x in value)
+
+
+def _merge_lists(base, mine, theirs, keep_theirs=False):
+    """Lists of things with ids merge by id. A removal wins over an edit, unless keep_theirs protects theirs.
+
+    Without a common version a removal cannot be told from an addition, so nothing is dropped.
+    """
+    unknown = base is UNKNOWN
+    base_by = {x["id"]: x for x in base} if _is_id_list(base) else {}
+    mine_by = {x["id"]: x for x in mine}
+    theirs_by = {x["id"]: x for x in theirs}
+    out = []
+    for element in theirs:
+        key = element["id"]
+        if key in mine_by:
+            out.append(merge(UNKNOWN if unknown else base_by.get(key, MISSING), mine_by[key], element))
+        elif unknown or keep_theirs or key not in base_by:
+            out.append(copy.deepcopy(element))
+    for element in mine:
+        if element["id"] not in theirs_by and (unknown or element["id"] not in base_by):
+            out.append(copy.deepcopy(element))
+    return out
+
+
+def merge(base, mine, theirs, key=None):
+    """Three-way merge of a project, or of any part of one.
+
+    base is the version both sides started from, or UNKNOWN. Renders and the render queue belong
+    to the server, so a stale copy can never drop a take or a job.
+    """
+    if key == "pending":
+        return _copy(theirs)
+    if key == "takes":
+        return _merge_lists(base if base is UNKNOWN or isinstance(base, list) else [],
+                            mine if isinstance(mine, list) else [], theirs if isinstance(theirs, list) else [],
+                            keep_theirs=True)
+    if mine == theirs:
+        return _copy(theirs)
+    if base is not UNKNOWN and mine == base:
+        return _copy(theirs)
+    nested = (isinstance(mine, dict) and isinstance(theirs, dict)) or (_is_id_list(mine) and _is_id_list(theirs))
+    if base is not UNKNOWN and theirs == base and not nested:
+        return _copy(mine)
+    # Containers are always walked, even when only one side changed, so takes and the queue stay protected inside them.
+    if isinstance(mine, dict) and isinstance(theirs, dict):
+        out = {}
+        for name in list(theirs) + [n for n in mine if n not in theirs]:
+            known = base.get(name, MISSING) if isinstance(base, dict) else (UNKNOWN if base is UNKNOWN else MISSING)
+            value = merge(known, mine.get(name, MISSING), theirs.get(name, MISSING), name)
+            if value is not MISSING:
+                out[name] = value
+        return out
+    if _is_id_list(mine) and _is_id_list(theirs):
+        return _merge_lists(base, mine, theirs)
+    if mine is MISSING or theirs is MISSING:
+        # One side removed what the other changed. The removal wins, unless there is nothing to tell them apart.
+        return _copy(theirs if mine is MISSING else mine) if base is UNKNOWN else MISSING
+    return _copy(theirs if key in THEIRS_ON_CONFLICT else mine)
+
+
+# A short account of a project, for agents and for checking work.
+
+def clip_state(project, clip):
+    if any(j["clip"] == clip["id"] for j in project.get("pending", [])):
+        return "rendering"
+    if clip.get("error"):
+        return "failed"
+    if not clip.get("takes"):
+        return "not rendered"
+    if is_stale(project, clip):
+        return "source changed"
+    return (active_take(clip) or {}).get("quality", "draft")
+
+
+def describe(project):
+    clips = []
+    for clip in project.get("clips", []):
+        take = active_take(clip)
+        entry = {"id": clip["id"], "name": clip["name"], "state": clip_state(project, clip),
+                 "seconds": clip.get("seconds"), "action": clip.get("action", ""), "takes": len(clip.get("takes") or [])}
+        if take:
+            entry.update({"take": take["id"], "frames": take["frames"], "seed": take.get("seed"), "quality": take.get("quality")})
+        if clip.get("link"):
+            entry["link"] = clip["link"]["mode"]
+        if clip.get("error"):
+            entry["error"] = clip["error"]
+        for name in ("speaker", "dialogue", "cast"):
+            if clip.get(name):
+                entry[name] = clip[name]
+        clips.append(entry)
+    names = {c["id"]: c["name"] for c in project.get("clips", [])}
+    timeline = []
+    for item in ordered(project):
+        entry = {"item": item["id"], "clip": item["clip"], "name": names.get(item["clip"], "?"),
+                 "start": item["start"], "end": item_end(item), "at": timecode(item["start"]),
+                 "in": item["in"], "out": item["out"]}
+        if clean_speed(item.get("speed")) != 1:
+            entry["speed"] = item["speed"]
+        if item.get("transition"):
+            entry["transition"] = item["transition"]
+        timeline.append(entry)
+    gaps = []
+    end = 0
+    for item in ordered(project):
+        if item["start"] > end:
+            gaps.append({"start": end, "end": item["start"]})
+        end = max(end, item_end(item))
+    return {
+        "name": project.get("name"), "revision": project.get("revision", 0), "style": project.get("style", ""),
+        "frames": scene_end(project), "length": timecode(scene_end(project)), "fps": FPS,
+        "cast": [{"id": p["id"], "name": p["name"], "description": p.get("description", "")} for p in project.get("cast", [])],
+        "clips": clips, "timeline": timeline, "gaps": gaps,
+        "rendering": [{"job": j.get("id"), "clip": j["clip"], "quality": j["quality"]} for j in project.get("pending", [])],
+    }
+
+
+# A batch of operations, as an agent sends them. Later operations can name what earlier ones made.
+
+def _resolve(value, names, kind):
+    if not isinstance(value, str) or not value.startswith("$"):
+        return value
+    name, _, part = value[1:].partition(".")
+    if name not in names:
+        raise ValueError("nothing earlier in this batch is called $%s" % name)
+    made = names[name]
+    found = made.get(part or kind) or made.get("clip" if kind == "clip" else "item")
+    if not found:
+        raise ValueError("$%s has no %s" % (name, part or kind))
+    return found
+
+
+def apply_op(project, op, names):
+    """One edit. Returns what it made, so an agent can refer to it. Renders are queued by the server."""
+    if not isinstance(op, dict) or not op.get("op"):
+        raise ValueError("each operation needs an op")
+    kind = op["op"]
+    clip_id = _resolve(op.get("clip"), names, "clip")
+    item_id = _resolve(op.get("item"), names, "item")
+    if kind == "add_clip":
+        clip, item = add_clip(project, op.get("fields") or {}, op.get("start"), op.get("place", True))
+        result = {"clip": clip["id"], "item": item["id"] if item else None}
+    elif kind == "update_clip":
+        update_clip(project, clip_id, op.get("fields") or {})
+        result = {"clip": clip_id}
+    elif kind == "remove_clip":
+        remove_clip(project, clip_id)
+        result = {"clip": clip_id}
+    elif kind == "place_clip":
+        result = {"clip": clip_id, "item": place_clip(project, clip_id, op.get("start"))["id"]}
+    elif kind == "update_item":
+        update_item(project, item_id, op.get("fields") or {}, bool(op.get("ripple")))
+        result = {"item": item_id}
+    elif kind == "remove_item":
+        remove_item(project, item_id, bool(op.get("ripple")))
+        result = {"item": item_id}
+    elif kind == "split_item":
+        result = {"item": item_id, "right": split_item(project, item_id, op["frame"])["id"]}
+    elif kind == "close_gap":
+        result = {"removed": close_gap(project, op.get("frame"))}
+    elif kind in LINK_MODES:
+        clip, item = add_linked(project, item_id, kind, op.get("seconds"), op.get("action") or "")
+        if op.get("fields"):
+            update_clip(project, clip["id"], op["fields"])
+        result = {"clip": clip["id"], "item": item["id"]}
+    elif kind == "choose_take":
+        choose_take(project, clip_id, op["take"])
+        result = {"clip": clip_id}
+    elif kind == "set_project":
+        set_project(project, op.get("fields") or {})
+        result = {}
+    elif kind == "add_cast":
+        result = {"cast": add_cast(project, op.get("fields") or {})["id"]}
+    elif kind == "update_cast":
+        update_cast(project, _resolve(op.get("cast"), names, "cast"), op.get("fields") or {})
+        result = {}
+    elif kind == "remove_cast":
+        remove_cast(project, _resolve(op.get("cast"), names, "cast"))
+        result = {}
+    else:
+        raise ValueError("unknown op %s" % kind)
+    if op.get("as"):
+        names[str(op["as"])] = result
+    return result

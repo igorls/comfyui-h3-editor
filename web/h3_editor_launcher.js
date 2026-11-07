@@ -1,4 +1,5 @@
 import { app } from "/scripts/app.js";
+import { api } from "/scripts/api.js";
 
 const FRAME_ID = "h3-editor-frame";
 
@@ -16,6 +17,10 @@ function openEditor() {
   frame.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;border:0;z-index:10000;background:#1b1e23";
   document.body.appendChild(frame);
 }
+
+// Project changes are announced to every window. The editor listens in its own frame; this keeps
+// the graph page from reporting them as unknown messages.
+api.addEventListener("h3take_project", () => {});
 
 window.addEventListener("message", (event) => {
   if (event.origin === location.origin && event.data === "h3-editor-close") closeEditor();
