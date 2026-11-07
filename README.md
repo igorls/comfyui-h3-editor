@@ -1,12 +1,41 @@
 # H3 Take
 
-One ComfyUI node for a MiniMax H3 shot. It calls ComfyUI's own H3 nodes and
+An editor and a ComfyUI node for MiniMax H3. It uses ComfyUI's own H3 nodes and
 needs no other custom node pack.
 
-Sampling, the checkpoint, and `MiniMaxH3SigmaShift` stay on the graph.
-Hiding those is how a pack takes control away.
+## Editor
 
-## What it does
+Open H3 Editor from the ComfyUI sidebar. It is a full-screen timeline editor.
+
+- Add a clip, describe it, and render a draft or a final. Each render goes
+  through the ComfyUI queue, and the player shows its live preview.
+- Rendered clips stay on disk. Moving, trimming, or splitting them on the
+  timeline never renders anything again.
+- A new render of a clip becomes another take. Choose the take to use in the
+  inspector.
+- Export joins the timeline with ffmpeg and does not use the GPU. A gap becomes
+  black and silence.
+- Renders belong to the project, so closing or refreshing the editor does not
+  lose one.
+
+Projects live in `h3take_projects` in ComfyUI's output folder.
+
+| Key | Does |
+|---|---|
+| Space | Play or pause |
+| Left, Right | Move one frame. Hold Shift for one second |
+| S | Split at the playhead |
+| Delete | Remove from the timeline |
+| Ctrl+Z, Ctrl+Shift+Z | Undo, redo |
+
+The editor writes each prompt in the structure from MiniMax's H3 prompt guides.
+
+## H3 Take node
+
+One H3 shot in a graph. Sampling, the checkpoint, and `MiniMaxH3SigmaShift` stay
+on the graph. The editor builds the same graph for each clip.
+
+### What it does
 
 | You want | Set |
 |---|---|
@@ -85,23 +114,10 @@ pins, and held video do not do this.
 
 The `fl2va` route has not been run on a real checkpoint.
 
-A loaded H3 stack needs about 34 GiB of system RAM. With little more than that
-available, several takes in a row can get ComfyUI killed. `/free` did not
-release that memory in testing. Restarting ComfyUI between takes did.
-
-## Timeline
-
-`H3 Timeline` is the editor. Place a held source and the generate regions
-before and after it. Drag a block to move it. Drag an edge to trim. A region
-longer than the VRAM cap becomes sequential passes. Under 24 GB the cap is
-124 frames, under 48 GB it is 243, otherwise 362. Later passes hold the last
-39 frames of the one before them. The node describes the passes. It does not
-run them yet.
-
 ## Install
 
 Clone this folder into ComfyUI `custom_nodes/` and restart ComfyUI. The
-timeline script loads with the node. It does not download a model.
+editor loads with the node. It does not download a model.
 
 ## Develop
 
@@ -109,5 +125,7 @@ timeline script loads with the node. It does not download a model.
 need torch and ComfyUI, and skip without them.
 
 `tools/deploy.sh` copies the repo into a running container, runs the tests
-there, and restarts ComfyUI. `tools/run_take.py` queues a real take.
+there, and reloads the pack in place, so models stay loaded. Refresh the browser
+afterwards. `--restart` restarts ComfyUI instead. `tools/run_take.py` queues a
+real take.
 `tools/compare_takes.py` measures how closely a span matches its source.
