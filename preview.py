@@ -6,6 +6,7 @@ H3's tiny autoencoder, sound included, so motion and timing show while sampling.
 
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -29,7 +30,18 @@ FPS = 24
 TAE_PREFIX = "taeh3"
 MAX_WIDTH = 640
 KEY = "h3take_live_preview"
+# Only clips this node wrote look like this, so cleanup can never touch a render.
+OWN_CLIP = re.compile(r"^[0-9a-f-]{36}_[0-9]+\.mp4$")
 _tae = {}
+
+
+def preview_folder(subfolder):
+    """The preview folder, which must sit inside the output folder."""
+    base = os.path.realpath(folder_paths.get_output_directory())
+    folder = os.path.realpath(os.path.join(base, subfolder))
+    if not folder.startswith(base + os.sep):
+        raise ValueError("the preview folder must be inside the output folder")
+    return folder
 
 
 def downscale(images):
@@ -156,10 +168,10 @@ class LivePreview:
         model = executor.class_obj.model_patcher.model
         server = PromptServer.instance
         prompt_id = server.last_prompt_id
-        folder = os.path.join(folder_paths.get_output_directory(), self.subfolder)
+        folder = preview_folder(self.subfolder)
         os.makedirs(folder, exist_ok=True)
         for old in os.listdir(folder):
-            if old.endswith(".mp4"):
+            if OWN_CLIP.match(old):
                 os.remove(os.path.join(folder, old))
         worker = ThreadPoolExecutor(max_workers=1)
         busy = threading.Event()
@@ -226,6 +238,7 @@ class H3LivePreview(io.ComfyNode):
 
     @classmethod
     def execute(cls, model, folder, audio_vae=None) -> io.NodeOutput:
+        preview_folder(folder)
         if tiny_decoder() is None:
             logging.info("H3 live preview is off: no %s file in models/vae_approx", TAE_PREFIX)
             return io.NodeOutput(model)
