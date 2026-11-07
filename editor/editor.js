@@ -171,8 +171,15 @@ function sideChanged(side) {
   return take.file !== side.file || item.in !== side.first || item.out !== side.last;
 }
 
+// Only a join that still exists can show, so a clip that moved away from its source is left alone.
+function touches(clip, side) {
+  const source = state.project.timeline.find((i) => i.id === side.item);
+  if (!source) return false;
+  return state.project.timeline.some((item) => item.clip === clip.id && (itemEnd(item) === source.start || itemEnd(source) === item.start));
+}
+
 function isStale(clip) {
-  return clip.takes.length > 0 && linkSides(clip.link).some(sideChanged);
+  return clip.takes.length > 0 && linkSides(clip.link).some((side) => sideChanged(side) && touches(clip, side));
 }
 
 function refreshLink(clip) {
