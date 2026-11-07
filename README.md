@@ -34,8 +34,18 @@ Open H3 Editor from the ComfyUI sidebar. It is a full-screen timeline editor.
   `taeh3.safetensors` in `models/vae_approx`. Without it you get a rough still.
 - Export joins the timeline with ffmpeg and does not use the GPU. A gap becomes
   black and silence.
-- Renders belong to the project, so closing or refreshing the editor does not
-  lose one.
+- Renders are queued by the server, which adds each finished take to the
+  project. Closing or refreshing the editor never loses one.
+- Import brings in real video or a picture. It is fitted to the project's size
+  at 24 fps and becomes footage, which you can trim, extend, and bridge from
+  like a render.
+- Set the project's format (16:9, 9:16, or 1:1) and the language people speak
+  in the Scene panel. A clip can speak another language.
+- Give a cast member a voice, uploaded or taken from a clip on the timeline, or
+  add a voice with no picture for a narrator. Write @Name in Who speaks and
+  their lines use that voice.
+- Two editors, or an editor and an agent, can work on one project at once.
+  Changes are merged, and every change is a revision you can go back to.
 
 Projects live in `h3take_projects` in ComfyUI's output folder.
 
@@ -53,6 +63,50 @@ Projects live in `h3take_projects` in ComfyUI's output folder.
 | Ctrl+Z, Ctrl+Shift+Z | Undo, redo |
 
 The editor writes each prompt in the structure from MiniMax's H3 prompt guides.
+
+## Drive the editor from code
+
+Everything the editor does is an HTTP call, so an agent can build and render a
+cut without a browser. Routes are under `/h3take/api`, and `{name}` is the
+project's folder name.
+
+| Route | Does |
+|---|---|
+| `GET /projects`, `POST /projects` | List projects, or create one from `{"name"}` |
+| `GET /project/{name}/summary` | The cut in brief: clips, their state, the timeline with timecodes, gaps, renders running |
+| `POST /project/{name}/ops` | A batch of edits and renders. The edits apply together or not at all |
+| `GET /project/{name}/wait` | Waits until nothing is rendering, then returns the summary. `?timeout=` in seconds |
+| `POST /project/{name}/import` | A video or picture, as an upload or as `{"source": {"folder": "input", "file"}}` |
+| `POST /project/{name}/asset` | A picture or sound file to use as a cast picture, a frame, or a voice |
+| `POST /project/{name}/grab_sound` | Part of a clip's sound as a voice: `{"file", "subfolder", "first", "last"}` |
+| `POST /project/{name}/export` | Joins the timeline into one video |
+| `GET /project/{name}/history`, `POST /project/{name}/restore` | Revisions, and going back to one |
+
+An operation is an object with an `op`. `as` names its result, so later
+operations in the batch can write `"$name"` for the clip or item it made.
+
+| op | Takes |
+|---|---|
+| `add_clip` | `fields`: name, action, camera, speaker, dialogue, sound, music, seconds, cast, seed, first, last, language. Optional `start` |
+| `update_clip`, `remove_clip`, `place_clip` | `clip`, and `fields` or `start` |
+| `update_item` | `item`, `fields`: start, in, out, speed, transition. `ripple` moves the clips after it |
+| `remove_item`, `split_item`, `close_gap` | `item` with `ripple`, `item` with `frame`, or an optional `frame` |
+| `extend_after`, `extend_before`, `bridge`, `merge` | `item`, optional `seconds`, `action`, `fields` |
+| `choose_take` | `clip`, `take` |
+| `set_project` | `fields`: style, format, language |
+| `add_cast`, `update_cast`, `remove_cast` | A picture asset, a `voice` asset, or both, with name and description |
+| `render`, `cancel` | `clip`, with `quality` draft or final |
+
+```json
+{"ops": [
+  {"op": "add_clip", "as": "open", "fields": {"name": "Desk", "seconds": 4,
+   "action": "A mug of coffee steams on a desk by a window."}},
+  {"op": "render", "clip": "$open"}
+]}
+```
+
+A refused batch answers with the operation that failed and why, and changes
+nothing.
 
 ## Use the nodes in ComfyUI
 
@@ -75,6 +129,7 @@ save the video. Each template carries a note with the settings that matter.
 | H3 Live Preview | Shows the whole clip moving, with sound, at every sampling step |
 | H3 Load Clip | Reads frames and sound from a clip in the output folder |
 | H3 Load Still | Reads a picture from the output folder |
+| H3 Load Sound | Reads a sound from the output folder, such as a cast voice |
 
 ## H3 Take node
 
