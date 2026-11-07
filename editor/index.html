@@ -4,23 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>H3 Editor</title>
-<link rel="stylesheet" href="/h3take/editor-files/editor.css">
+<link rel="stylesheet" href="/h3take/editor-files/editor.css?v=__VERSION__">
 </head>
 <body>
-<div class="app">
+<div class="app" id="app">
   <header class="bar">
     <select id="project" aria-label="Project"></select>
     <button id="newProject" class="quiet">New project</button>
     <div class="spacer"></div>
     <div id="queue" class="queue" aria-live="polite"></div>
+    <button id="shortcuts" class="quiet" title="Keyboard shortcuts (?)">Shortcuts</button>
     <button id="renderAll" class="quiet">Render all drafts</button>
     <button id="export" class="primary">Export</button>
     <button id="close" class="quiet" title="Back to the graph">Close</button>
   </header>
 
   <main class="work">
-    <aside class="bin">
-      <div class="panel-head"><h2>Clips</h2><button id="newClip" class="quiet">New clip</button></div>
+    <aside class="bin" aria-label="Clips and cast">
+      <div class="panel-head"><h2>Clips <span id="clipCount" class="count"></span></h2><button id="newClip" class="quiet">New clip</button></div>
       <div id="clips" class="clips"></div>
       <div class="panel-head cast-head"><h2>Cast</h2><button id="addCast" class="quiet">Add reference</button></div>
       <div id="cast" class="cast"></div>
@@ -28,7 +29,7 @@
       <input id="frameFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
     </aside>
 
-    <section class="stage">
+    <section class="stage" aria-label="Viewer">
       <div id="screen" class="screen">
         <video id="videoA" playsinline></video>
         <video id="videoB" playsinline></video>
@@ -38,35 +39,48 @@
         <div id="live" class="live" hidden></div>
       </div>
       <div class="transport">
-        <button id="toStart" class="icon" aria-label="Go to start" title="Go to start">⏮</button>
-        <button id="back" class="icon" aria-label="One frame back" title="One frame back">◀</button>
-        <button id="play" class="icon play" aria-label="Play" title="Play or pause (Space)">▶</button>
-        <button id="forward" class="icon" aria-label="One frame forward" title="One frame forward">▶︎</button>
-        <span id="time" class="time">00:00:00</span>
-        <span id="total" class="total"></span>
+        <button id="toStart" class="icon" aria-label="Go to start" title="Go to start (Home)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 5.5v13"/><path class="solid" d="M18 6.2v11.6L9.4 12z"/></svg>
+        </button>
+        <button id="back" class="icon" aria-label="One frame back" title="One frame back (Left)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5L9 12l5.5 5.5"/></svg>
+        </button>
+        <button id="play" class="icon play" aria-label="Play" title="Play or pause (Space)">
+          <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M8.5 5.6v12.8L18.6 12z"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect class="solid" x="7" y="5.5" width="3.6" height="13" rx="1"/><rect class="solid" x="13.4" y="5.5" width="3.6" height="13" rx="1"/></svg>
+        </button>
+        <button id="forward" class="icon" aria-label="One frame forward" title="One frame forward (Right)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6.5L15 12l-5.5 5.5"/></svg>
+        </button>
+        <span class="clock"><span id="time" class="time">00:00:00</span><span id="total" class="total"></span></span>
       </div>
     </section>
 
-    <aside class="inspector" id="inspector"></aside>
+    <aside class="inspector" id="inspector" aria-label="Inspector"></aside>
   </main>
 
-  <section class="timeline" id="timeline">
+  <div class="splitter" id="splitter" role="separator" aria-orientation="horizontal" aria-label="Resize the timeline" tabindex="0"></div>
+
+  <section class="timeline" id="timeline" aria-label="Timeline">
     <div class="tl-tools">
-      <button id="split" class="quiet" title="Split at the playhead (S)">Split</button>
-      <button id="remove" class="quiet" title="Remove from the timeline (Delete)">Remove</button>
-      <button id="ripple" class="quiet" title="Remove and close the space (Shift+Delete)">Ripple delete</button>
-      <button id="closeGap" class="quiet" title="Close the selected gap (Delete)">Close gap</button>
-      <span class="tool-gap"></span>
-      <button id="extendBack" class="quiet" title="Generate what happens before the selected clip">Extend back</button>
-      <button id="extendForward" class="quiet" title="Generate what happens after the selected clip">Extend forward</button>
-      <button id="bridge" class="quiet" title="Generate what connects the selected clip to the next one">Bridge to next</button>
-      <button id="merge" class="quiet" title="Replace the join with a generated crossing, keeping the scene's length">Merge with next</button>
+      <div class="group" role="group" aria-label="Edit">
+        <button id="split" title="Split at the playhead (S)">Split</button>
+        <button id="remove" title="Remove from the timeline (Delete)">Remove</button>
+        <button id="ripple" title="Remove and close the space (Shift+Delete)">Ripple delete</button>
+        <button id="closeGap" title="Close the selected gap (Delete)">Close gap</button>
+      </div>
+      <div class="group" role="group" aria-label="Generate">
+        <button id="extendBack" title="Generate what happens before the selected clip">Extend back</button>
+        <button id="extendForward" title="Generate what happens after the selected clip">Extend forward</button>
+        <button id="bridge" title="Generate what connects the selected clip to the next one">Bridge to next</button>
+        <button id="merge" title="Replace the join with a generated crossing, keeping the scene's length">Merge with next</button>
+      </div>
       <div class="spacer"></div>
       <button id="fit" class="quiet" title="Show the whole scene (\)">Fit</button>
       <label class="zoom">Zoom <input id="zoom" type="range" min="0.1" max="12" step="0.1" value="3"></label>
     </div>
     <div class="tl-body" id="tlBody">
-      <div class="tl-heads"><div class="tl-head ruler-head"></div><div class="tl-head v">Picture</div><div class="tl-head a">Sound</div></div>
+      <div class="tl-heads"><div class="tl-head ruler-head"></div><div class="tl-head">Picture</div><div class="tl-head">Sound</div></div>
       <div class="tl-scroll" id="tlScroll">
         <div class="tl-content" id="tlContent">
           <div class="ruler" id="ruler"></div>
@@ -78,7 +92,26 @@
     </div>
   </section>
 </div>
+
+<dialog id="keys" class="keys" aria-labelledby="keysTitle">
+  <div class="keys-head"><h2 id="keysTitle">Keyboard shortcuts</h2><button id="keysClose" class="quiet">Close</button></div>
+  <dl>
+    <dt>Space</dt><dd>Play or pause</dd>
+    <dt>J, K, L</dt><dd>Back one second, pause, play</dd>
+    <dt>Left, Right</dt><dd>One frame. Hold Shift for one second</dd>
+    <dt>Up, Down</dt><dd>Previous or next edit</dd>
+    <dt>Home, End</dt><dd>Start or end of the scene</dd>
+    <dt>S</dt><dd>Split at the playhead</dd>
+    <dt>Delete</dt><dd>Remove a clip, or close a selected gap</dd>
+    <dt>Shift+Delete</dt><dd>Remove a clip and close the space</dd>
+    <dt>[ and ]</dt><dd>Flip between takes of the selected clip</dd>
+    <dt>Ctrl+wheel</dt><dd>Zoom the timeline at the pointer</dd>
+    <dt>\</dt><dd>Fit the whole scene</dd>
+    <dt>Ctrl+Z, Ctrl+Shift+Z</dt><dd>Undo, redo</dd>
+    <dt>?</dt><dd>Show this list</dd>
+  </dl>
+</dialog>
 <div id="toast" class="toast" role="status" hidden></div>
-<script type="module" src="/h3take/editor-files/editor.js"></script>
+<script type="module" src="/h3take/editor-files/editor.js?v=__VERSION__"></script>
 </body>
 </html>

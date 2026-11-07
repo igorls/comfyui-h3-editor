@@ -577,44 +577,92 @@ function selectClip(clipId, itemId = null) {
   showFrame();
 }
 
+function clipStatus(clip) {
+  const job = jobFor(clip.id);
+  if (job) {
+    if (state.running !== job) return { kind: "live", text: "Queued" };
+    return { kind: "live", text: job.max ? "Rendering " + Math.round((job.progress || 0) * 100) + "%" : "Rendering" };
+  }
+  if (!clip.takes.length) return { kind: "muted", text: "Not rendered" };
+  if (isStale(clip)) return { kind: "danger", text: "Source changed" };
+  const take = activeTake(clip);
+  const quality = take.quality === "final" ? "Final" : "Draft";
+  return { kind: "", text: clip.takes.length > 1 ? quality + ", take " + (clip.takes.indexOf(take) + 1) + " of " + clip.takes.length : quality };
+}
+
+function clipSeconds(clip) {
+  const take = activeTake(clip);
+  return (take ? take.frames / FPS : clip.seconds).toFixed(1) + " s";
+}
+
+// Run the pointer across a thumbnail to scrub through the clip, frame strip permitting.
+function skim(thumb, take) {
+  const poster = "url(" + viewUrl(take.poster, take.subfolder) + ")";
+  thumb.style.backgroundImage = poster;
+  if (!take.strip) return;
+  const sprite = "url(" + viewUrl(take.strip.sprite, take.subfolder) + ")";
+  const line = document.createElement("span");
+  line.className = "skim";
+  line.hidden = true;
+  thumb.append(line);
+  thumb.addEventListener("pointermove", (event) => {
+    const rect = thumb.getBoundingClientRect();
+    const share = Math.min(0.999, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const index = Math.floor(share * take.strip.count);
+    thumb.style.backgroundImage = sprite;
+    thumb.style.backgroundSize = take.strip.count * 100 + "% 100%";
+    thumb.style.backgroundPosition = (take.strip.count > 1 ? (index / (take.strip.count - 1)) * 100 : 0) + "% 0";
+    line.hidden = false;
+    line.style.left = share * 100 + "%";
+  });
+  thumb.addEventListener("pointerleave", () => {
+    thumb.style.backgroundImage = poster;
+    thumb.style.backgroundSize = "";
+    thumb.style.backgroundPosition = "";
+    line.hidden = true;
+  });
+}
+
 function renderBin() {
   const list = $("clips");
+  $("clipCount").textContent = state.project.clips.length ? String(state.project.clips.length) : "";
   if (!state.project.clips.length) {
-    list.innerHTML = '<p class="empty">Add a clip to start your scene.</p>';
+    list.innerHTML = '<p class="empty">Add a clip, describe the shot, and render a draft.</p>';
     return;
   }
   list.replaceChildren(...state.project.clips.map((clip) => {
     const take = activeTake(clip);
+    const status = clipStatus(clip);
     const button = document.createElement("button");
     button.className = "clip" + (clip.id === state.clip ? " on" : "");
     button.draggable = true;
     button.addEventListener("click", () => selectClip(clip.id));
     button.addEventListener("dragstart", (event) => event.dataTransfer.setData("text/h3clip", clip.id));
-    if (take) {
-      const img = document.createElement("img");
-      img.className = "thumb";
-      img.alt = "";
-      img.src = viewUrl(take.poster, take.subfolder);
-      button.append(img);
-    } else {
-      const none = document.createElement("span");
-      none.className = "thumb none";
-      none.textContent = jobFor(clip.id) ? "Rendering" : "Not rendered";
-      button.append(none);
-    }
+    const thumb = document.createElement("span");
+    thumb.className = "thumb" + (take ? "" : " none");
+    if (take) skim(thumb, take);
+    const text = document.createElement("span");
+    text.className = "text";
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = clip.name;
     const meta = document.createElement("span");
     meta.className = "meta";
-    const name = document.createElement("span");
-    name.textContent = clip.name;
     const length = document.createElement("span");
-    length.textContent = (take ? take.frames / FPS : clip.seconds).toFixed(1) + "s";
-    meta.append(name, length);
-    button.append(meta);
+    length.textContent = clipSeconds(clip);
+    const state_ = document.createElement("span");
+    state_.className = "state " + status.kind;
+    state_.dataset.status = clip.id;
+    state_.textContent = status.text;
+    meta.append(length, state_);
+    text.append(title, meta);
+    button.append(thumb, text);
     return button;
   }));
+  list.querySelector(".clip.on")?.scrollIntoView({ block: "nearest" });
 }
 
-function field(label, value, onInput, { big = false, area = false, type = "text" } = {}) {
+function field(label, value, onInput, { big = false, area = false, type = "text", placeholder = "" } = {}) {
   const wrap = document.createElement("label");
   wrap.className = "field";
   const title = document.createElement("span");
@@ -622,6 +670,7 @@ function field(label, value, onInput, { big = false, area = false, type = "text"
   const input = document.createElement(area || big ? "textarea" : "input");
   if (big) input.className = "big";
   if (!area && !big) input.type = type;
+  if (placeholder) input.placeholder = placeholder;
   input.value = value ?? "";
   input.addEventListener("focus", () => checkpoint(), { once: true });
   input.addEventListener("input", () => {
@@ -630,6 +679,62 @@ function field(label, value, onInput, { big = false, area = false, type = "text"
   });
   wrap.append(title, input);
   return wrap;
+}
+
+function section(title, children) {
+  const box = document.createElement("section");
+  box.className = "section";
+  const head = document.createElement("h3");
+  head.textContent = title;
+  box.append(head, ...children);
+  return box;
+}
+
+function disclosure(title, open, note, children) {
+  const box = document.createElement("details");
+  box.className = "section";
+  box.open = open;
+  const summary = document.createElement("summary");
+  summary.textContent = title;
+  if (note) {
+    const filled = document.createElement("span");
+    filled.className = "filled";
+    filled.textContent = note;
+    summary.append(filled);
+  }
+  box.append(summary, ...children);
+  return box;
+}
+
+function renderScene(panel) {
+  const head = document.createElement("div");
+  head.className = "inspector-head";
+  const title = document.createElement("h2");
+  title.textContent = "Scene";
+  const line = document.createElement("p");
+  line.className = "status";
+  line.textContent = "Select a clip to edit it. Press ? for shortcuts.";
+  head.append(title, line);
+  const rendered = state.project.clips.filter((c) => c.takes.length).length;
+  const facts = document.createElement("dl");
+  facts.className = "facts";
+  for (const [name, value] of [
+    ["Length", timecode(sceneEnd())],
+    ["Clips", String(state.project.clips.length)],
+    ["Rendered", rendered + " of " + state.project.clips.length],
+    ["Cast", String((state.project.cast || []).length)],
+  ]) {
+    const dt = document.createElement("dt");
+    dt.textContent = name;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    facts.append(dt, dd);
+  }
+  panel.replaceChildren(
+    head,
+    section("Look", [field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true })]),
+    section("Overview", [facts]),
+  );
 }
 
 function renderInspector() {
@@ -641,42 +746,92 @@ function renderInspector() {
     return;
   }
   if (!clip) {
-    const head = document.createElement("div");
-    head.className = "panel-head";
-    head.innerHTML = "<h2>Scene</h2>";
-    panel.replaceChildren(
-      head,
-      field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true }),
-    );
+    renderScene(panel);
     return;
   }
-  const head = document.createElement("div");
-  head.className = "panel-head";
-  head.innerHTML = "<h2></h2>";
-  head.firstChild.textContent = clip.name;
+  const job = jobFor(clip.id);
+  const status = clipStatus(clip);
 
-  const two = document.createElement("div");
-  two.className = "two";
-  two.append(
-    field("Name", clip.name, (v) => {
-      clip.name = v;
-      renderBin();
-      renderTimeline();
-    }),
+  const head = document.createElement("div");
+  head.className = "inspector-head";
+  const name = document.createElement("input");
+  name.className = "name-input";
+  name.value = clip.name;
+  name.setAttribute("aria-label", "Clip name");
+  name.addEventListener("focus", () => checkpoint(), { once: true });
+  name.addEventListener("input", () => {
+    clip.name = name.value;
+    save();
+    renderBin();
+    renderTimeline();
+  });
+  const line = document.createElement("p");
+  line.className = "status " + status.kind;
+  line.dataset.status = clip.id;
+  line.textContent = status.text + ", " + clipSeconds(clip);
+  head.append(name, line);
+
+  const parts = [head];
+  if (isStale(clip) && !job) {
+    const notice = document.createElement("p");
+    notice.className = "notice";
+    notice.textContent = "The clip this one joins has changed, so the join may show. Render it again to fix that.";
+    parts.push(notice);
+  }
+
+  const timing = document.createElement("div");
+  timing.className = "two";
+  timing.append(
+    field("Camera", clip.camera, (v) => (clip.camera = v), { placeholder: "Slow push in" }),
     field("Seconds", clip.seconds, (v) => {
       if (Number(v) > 0) clip.seconds = Number(v);
     }, { type: "number" }),
   );
+  parts.push(section("Shot", [
+    field("What happens", clip.action, (v) => (clip.action = v), { big: true, placeholder: "Describe what we see and hear, in the order it happens." }),
+    timing,
+    ...framesFor(clip),
+    ...(state.project.cast?.length ? castPicker(clip) : []),
+  ]));
 
+  const voiced = ["speaker", "dialogue", "sound", "music"].filter((k) => String(clip[k] || "").trim()).length;
+  parts.push(disclosure("Dialogue and sound", voiced > 0, voiced ? voiced + " set" : "", [
+    field("Who speaks", clip.speaker, (v) => (clip.speaker = v), { placeholder: "The old keeper, low and gravelly" }),
+    field("What they say", clip.dialogue, (v) => (clip.dialogue = v), { area: true }),
+    field("Sound", clip.sound, (v) => (clip.sound = v), { area: true, placeholder: "Rain on glass, distant thunder" }),
+    field("Music", clip.music, (v) => (clip.music = v), { placeholder: "None" }),
+  ]));
+
+  const seed = field("Seed. Leave empty for a new one each render", clip.seed ?? "", (v) => {
+    clip.seed = v.trim() === "" ? null : Number(v);
+  }, { type: "number" });
+  if (clip.takes.length) {
+    parts.push(section("Takes", [...versions(clip), seed]));
+  } else {
+    const none = document.createElement("p");
+    none.className = "hint";
+    none.textContent = "No takes yet. Render a draft to make the first one.";
+    parts.push(section("Takes", [none, seed]));
+  }
+
+  const item = state.project.timeline.find((i) => i.id === state.item);
+  if (item) parts.push(section("On the timeline", timelineControls(item)));
+
+  const foot = document.createElement("div");
+  foot.className = "inspector-foot";
   const actions = document.createElement("div");
   actions.className = "actions";
-  const job = jobFor(clip.id);
   if (job) {
+    const progress = document.createElement("p");
+    progress.className = "foot-status";
+    progress.dataset.status = clip.id;
+    progress.textContent = status.text;
     const cancel = document.createElement("button");
     cancel.className = "quiet";
     cancel.textContent = "Cancel render";
     cancel.addEventListener("click", () => cancelJob(job));
     actions.append(cancel);
+    foot.append(progress);
   } else {
     for (const [quality, label, style] of [["draft", "Render draft", "quiet"], ["final", "Render final", "primary"]]) {
       const button = document.createElement("button");
@@ -686,32 +841,9 @@ function renderInspector() {
       actions.append(button);
     }
   }
-
-  const stale = isStale(clip) && !job;
-  const notice = document.createElement("p");
-  notice.className = "notice";
-  notice.textContent = "The clip this one joins has changed, so the join may show. Render it again to fix that.";
-  const item = state.project.timeline.find((i) => i.id === state.item);
-  const children = [
-    head,
-    ...(stale ? [notice] : []),
-    actions,
-    ...versions(clip),
-    ...(item ? timelineControls(item) : []),
-    two,
-    field("What happens", clip.action, (v) => (clip.action = v), { big: true }),
-    ...framesFor(clip),
-    ...(state.project.cast?.length ? castPicker(clip) : []),
-    field("Camera", clip.camera, (v) => (clip.camera = v)),
-    field("Who speaks", clip.speaker, (v) => (clip.speaker = v)),
-    field("What they say", clip.dialogue, (v) => (clip.dialogue = v), { area: true }),
-    field("Sound", clip.sound, (v) => (clip.sound = v), { area: true }),
-    field("Music", clip.music, (v) => (clip.music = v)),
-    field("Seed. Leave empty for a new one each render", clip.seed ?? "", (v) => {
-      clip.seed = v.trim() === "" ? null : Number(v);
-    }, { type: "number" }),
-  ];
-  panel.replaceChildren(...children);
+  foot.append(actions);
+  parts.push(foot);
+  panel.replaceChildren(...parts);
 }
 
 const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast"];
@@ -737,9 +869,6 @@ function cycleTake(step) {
 }
 
 function versions(clip) {
-  if (!clip.takes.length) return [];
-  const title = document.createElement("h3");
-  title.textContent = "Takes. Press [ or ] to flip between them";
   const takes = document.createElement("div");
   takes.className = "takes";
   const current = activeTake(clip);
@@ -789,7 +918,7 @@ function versions(clip) {
     save();
     renderAll();
   }, clip.takes.length < 2);
-  return [title, takes, tools];
+  return [takes, tools];
 }
 
 function setSpeed(item, speed) {
@@ -832,8 +961,6 @@ function setTransition(item, type, frames) {
 }
 
 function timelineControls(item) {
-  const title = document.createElement("h3");
-  title.textContent = "On the timeline";
   const box = document.createElement("div");
   box.className = "on-timeline";
 
@@ -895,7 +1022,7 @@ function timelineControls(item) {
   unit.textContent = "frames";
   row.append(name, kind, length, unit);
   box.append(speeds, row);
-  return [title, box];
+  return [box];
 }
 
 function framesFor(clip) {
@@ -905,6 +1032,136 @@ function framesFor(clip) {
   row.className = "frames";
   row.append(...slots.map(([side, label]) => frameSlot(clip, side, label)));
   return [row];
+}
+
+/* Frame strips and waveforms, made once per render on the server */
+
+const peakCache = new Map();
+
+async function ensureStrips() {
+  const project = state.project;
+  for (const clip of project.clips) {
+    for (const take of clip.takes) {
+      if (take.strip || state.project !== project) continue;
+      try {
+        take.strip = await postJson("/strip", { filename: take.file, subfolder: take.subfolder, frames: take.frames });
+      } catch (_) {
+        continue;
+      }
+      save();
+      renderBin();
+      renderTimeline();
+    }
+  }
+}
+
+async function loadPeaks(take) {
+  const key = take.file;
+  if (!peakCache.has(key)) {
+    peakCache.set(key, fetch(viewUrl(take.strip.peaks, take.subfolder)).then((r) => r.json()).catch(() => []));
+  }
+  return peakCache.get(key);
+}
+
+// Real frames from across the clip, matched to the trim and speed rather than stretched.
+function fillFilm(film, item, take, height) {
+  if (!take.strip) {
+    film.style.backgroundImage = "url(" + viewUrl(take.poster, take.subfolder) + ")";
+    return;
+  }
+  const { count, step, w, h } = take.strip;
+  const tile = height * (w / h);
+  const width = px(itemLength(item));
+  const sprite = "url(" + viewUrl(take.strip.sprite, take.subfolder) + ")";
+  const tiles = [];
+  for (let x = 0; x < width && tiles.length < 400; x += tile) {
+    const frame = item.in + ((x + tile / 2) / state.zoom) * speedOf(item);
+    const index = Math.min(count - 1, Math.max(0, Math.floor(frame / step)));
+    const cell = document.createElement("div");
+    cell.className = "tile";
+    cell.style.left = x + "px";
+    cell.style.width = tile + "px";
+    cell.style.backgroundImage = sprite;
+    cell.style.backgroundSize = count * tile + "px " + height + "px";
+    cell.style.backgroundPosition = -index * tile + "px 0";
+    tiles.push(cell);
+  }
+  film.replaceChildren(...tiles);
+}
+
+function drawWave(canvas, item, take, height, selected) {
+  const width = Math.max(1, Math.round(px(itemLength(item))));
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  const scale = Math.min(1, 16000 / (width * ratio));
+  canvas.width = Math.max(1, Math.round(width * ratio * scale));
+  canvas.height = Math.max(1, Math.round(height * ratio));
+  canvas.style.width = width + "px";
+  canvas.style.height = height + "px";
+  if (!take.strip) return;
+  loadPeaks(take).then((peaks) => {
+    if (!peaks.length || !canvas.isConnected) return;
+    // Each clip is drawn against its own loudest moment, so quiet takes still read.
+    const loudest = Math.max(35, ...peaks);
+    const context = canvas.getContext("2d");
+    context.setTransform(ratio * scale, 0, 0, ratio, 0, 0);
+    context.clearRect(0, 0, width, height);
+    context.fillStyle = selected ? "#8fd6c8" : "#5fae9f";
+    const middle = height / 2;
+    for (let x = 0; x < width; x += 2) {
+      const frame = item.in + (x / state.zoom) * speedOf(item);
+      const value = peaks[Math.min(peaks.length - 1, Math.max(0, Math.floor(frame)))] || 0;
+      const bar = Math.max(1, (value / loudest) * (height - 6));
+      context.fillRect(x, middle - bar / 2, 1.4, bar);
+    }
+  });
+}
+
+/* Timeline height */
+
+function setTimelineHeight(value, keep = false) {
+  const height = Math.round(Math.min(window.innerHeight * 0.72, Math.max(190, value)));
+  document.documentElement.style.setProperty("--tl-h", height + "px");
+  if (keep) {
+    try { localStorage.setItem("h3take.timeline", String(height)); } catch (_) {}
+  }
+  return height;
+}
+
+function bindSplitter() {
+  const handle = $("splitter");
+  try {
+    const saved = Number(localStorage.getItem("h3take.timeline"));
+    if (saved) setTimelineHeight(saved);
+  } catch (_) {}
+  let frame = 0;
+  const redraw = () => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => state.project && renderTimeline());
+  };
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    handle.classList.add("dragging");
+    const move = (ev) => {
+      setTimelineHeight(window.innerHeight - ev.clientY - 3);
+      redraw();
+    };
+    const up = (ev) => {
+      handle.classList.remove("dragging");
+      setTimelineHeight(window.innerHeight - ev.clientY - 3, true);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      redraw();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+  handle.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const now = $("timeline").getBoundingClientRect().height;
+    setTimelineHeight(now + (event.key === "ArrowUp" ? 24 : -24), true);
+    redraw();
+  });
 }
 
 function renderRuler(width) {
@@ -918,6 +1175,10 @@ function renderRuler(width) {
     tick.style.left = px(s * FPS) + "px";
     tick.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
     ticks.push(tick);
+    const half = document.createElement("div");
+    half.className = "tick minor";
+    half.style.left = px((s + step / 2) * FPS) + "px";
+    ticks.push(half);
   }
   ruler.replaceChildren(...ticks);
 }
@@ -928,6 +1189,8 @@ function renderTimeline() {
   renderRuler(width);
   const blocks = [];
   const waves = [];
+  const filmHeight = Math.max(30, $("laneV").clientHeight - 20);
+  const waveHeight = Math.max(16, $("laneA").clientHeight - 12);
   for (const item of state.project.timeline) {
     const clip = clipOf(item.clip);
     if (!clip) continue;
@@ -939,15 +1202,34 @@ function renderTimeline() {
     block.style.left = px(item.start) + "px";
     block.style.width = Math.max(14, px(itemLength(item))) + "px";
     block.dataset.item = item.id;
-    const strip = document.createElement("div");
-    strip.className = "strip";
-    if (job?.preview) strip.style.backgroundImage = "url(" + job.preview + ")";
-    else if (take) strip.style.backgroundImage = "url(" + viewUrl(take.poster, take.subfolder) + ")";
+    const film = document.createElement("div");
+    film.className = "film";
+    if (job && state.running === job && job.motion) {
+      const live = document.createElement("video");
+      live.className = "livestrip";
+      live.muted = true;
+      live.loop = true;
+      live.autoplay = true;
+      live.playsInline = true;
+      live.dataset.url = job.motion;
+      live.src = job.motion;
+      film.append(live);
+    } else if (job?.preview) {
+      film.classList.add("still");
+      film.style.backgroundImage = "url(" + job.preview + ")";
+    } else if (take) {
+      fillFilm(film, item, take, filmHeight);
+    }
     const name = document.createElement("div");
     name.className = "name";
-    const rate = speedOf(item) !== 1 ? " " + Math.round(speedOf(item) * 100) + "%" : "";
-    name.textContent = (status === "stale" ? clip.name + ", source changed" : clip.name) + rate;
-    block.append(strip, name);
+    name.textContent = status === "stale" ? clip.name + ", source changed" : clip.name;
+    if (speedOf(item) !== 1) {
+      const rate = document.createElement("span");
+      rate.className = "rate";
+      rate.textContent = " " + Math.round(speedOf(item) * 100) + "%";
+      name.append(rate);
+    }
+    block.append(film, name);
     if (item.transition) {
       const mark = document.createElement("div");
       mark.className = "tr";
@@ -973,6 +1255,11 @@ function renderTimeline() {
     wave.className = "wave" + (take ? "" : " todo") + (item.id === state.item ? " on" : "");
     wave.style.left = block.style.left;
     wave.style.width = block.style.width;
+    if (take) {
+      const canvas = document.createElement("canvas");
+      wave.append(canvas);
+      drawWave(canvas, item, take, waveHeight, item.id === state.item);
+    }
     waves.push(wave);
   }
   if (state.gap) {
@@ -1116,6 +1403,9 @@ function load(video, url) {
   if (video.dataset.url !== url) {
     video.dataset.url = url;
     video.src = url;
+    video.addEventListener("loadeddata", () => {
+      if (!state.playing) showFrame();
+    }, { once: true });
   }
 }
 
@@ -1240,7 +1530,7 @@ function swap() {
 
 function setPlaying(on) {
   state.playing = on;
-  $("play").textContent = on ? "❚❚" : "▶";
+  $("play").classList.toggle("playing", on);
   $("play").setAttribute("aria-label", on ? "Pause" : "Play");
   if (!on) {
     front.pause();
@@ -1318,7 +1608,7 @@ function seek(frame) {
 
 function updateQueue() {
   const count = state.jobs.size;
-  $("queue").textContent = count ? "Rendering " + count + (count === 1 ? " clip" : " clips") : "";
+  $("queue").textContent = count ? (count === 1 ? "Rendering 1 clip" : "Rendering " + count + " clips") : "";
 }
 
 async function renderClip(clip, quality) {
@@ -1375,7 +1665,7 @@ async function acceptRender(job, file) {
   const clip = clipOf(job.clip);
   if (!clip) return finishJob(job);
   const info = await postJson("/probe", file);
-  const take = { id: job.take, file: file.filename, subfolder: file.subfolder, poster: info.poster, frames: info.frames, quality: job.quality, seed: job.seed, saved: job.saved };
+  const take = { id: job.take, file: file.filename, subfolder: file.subfolder, poster: info.poster, frames: info.frames, quality: job.quality, seed: job.seed, saved: job.saved, strip: info.strip || undefined };
   const fresh = !clip.takes.length;
   clip.takes.push(take);
   clip.active = take.id;
@@ -1452,8 +1742,8 @@ function onBinary(buffer) {
   if (!job) return;
   if (job.preview) URL.revokeObjectURL(job.preview);
   job.preview = URL.createObjectURL(new Blob([new Uint8Array(buffer, start)], { type: mime }));
-  const strip = document.querySelector('.block.rendering .strip');
-  if (strip) strip.style.backgroundImage = "url(" + job.preview + ")";
+  const still = document.querySelector(".block.rendering .film.still");
+  if (still) still.style.backgroundImage = "url(" + job.preview + ")";
   showLive(job);
 }
 
@@ -1463,6 +1753,13 @@ function onMessage({ type, data }) {
   if (type === "h3take_preview") {
     job.motion = viewUrl(data.filename, data.subfolder);
     showLive(job);
+    const live = document.querySelector(".block.rendering video.livestrip");
+    if (!live) renderTimeline();
+    else if (live.dataset.url !== job.motion) {
+      live.dataset.url = job.motion;
+      live.src = job.motion;
+      live.play().catch(() => {});
+    }
     return;
   }
   if (state.running !== job) {
@@ -1481,6 +1778,13 @@ function onMessage({ type, data }) {
     job.progress = data.value / data.max;
     const bar = document.querySelector(".block.rendering .bar");
     if (bar) bar.style.width = Math.round(job.progress * 100) + "%";
+    const clip = clipOf(job.clip);
+    if (clip) {
+      const text = clipStatus(clip).text;
+      document.querySelectorAll('[data-status="' + clip.id + '"]').forEach((el) => {
+        el.textContent = el.classList.contains("status") ? text + ", " + clipSeconds(clip) : text;
+      });
+    }
     showLive(job);
   } else if (type === "executed" && String(data.node) === "19") {
     const groups = Object.values(data.output || {}).filter(Array.isArray).flat();
@@ -1517,6 +1821,7 @@ async function openProject(folder) {
   state.running = null;
   renderAll();
   await resumeJobs();
+  ensureStrips();
 }
 
 async function refreshProjects(selected) {
@@ -1572,6 +1877,9 @@ $("export").addEventListener("click", async () => {
   $("export").disabled = false;
 });
 $("play").addEventListener("click", () => setPlaying(!state.playing));
+$("shortcuts").addEventListener("click", () => $("keys").showModal());
+$("keysClose").addEventListener("click", () => $("keys").close());
+bindSplitter();
 $("toStart").addEventListener("click", () => seek(0));
 $("back").addEventListener("click", () => seek(state.playhead - 1));
 $("forward").addEventListener("click", () => seek(state.playhead + 1));
@@ -1631,10 +1939,15 @@ $("laneV").addEventListener("pointerdown", (event) => {
 
 window.addEventListener("keydown", (event) => {
   if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
+  if ($("keys").open) return;
   if (event.code === "Space") {
     event.preventDefault();
     setPlaying(!state.playing);
-  } else if (event.key === "ArrowLeft") seek(state.playhead - (event.shiftKey ? FPS : 1));
+  } else if (event.key === "?") $("keys").showModal();
+  else if (event.key.toLowerCase() === "k" && !event.ctrlKey && !event.metaKey) setPlaying(false);
+  else if (event.key.toLowerCase() === "l" && !event.ctrlKey && !event.metaKey) {
+    if (!state.playing) setPlaying(true);
+  } else if (event.key.toLowerCase() === "j" && !event.ctrlKey && !event.metaKey) seek(state.playhead - FPS); else if (event.key === "ArrowLeft") seek(state.playhead - (event.shiftKey ? FPS : 1));
   else if (event.key === "ArrowRight") seek(state.playhead + (event.shiftKey ? FPS : 1));
   else if (event.key === "ArrowUp") {
     event.preventDefault();

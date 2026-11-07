@@ -10,7 +10,8 @@ function openEditor() {
   if (document.getElementById(FRAME_ID)) return;
   const frame = document.createElement("iframe");
   frame.id = FRAME_ID;
-  frame.src = "/h3take/editor";
+  // A unique address each time, so a browser can never reuse an editor page from before an update.
+  frame.src = "/h3take/editor?open=" + Date.now();
   frame.title = "H3 Editor";
   frame.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;border:0;z-index:10000;background:#1b1e23";
   document.body.appendChild(frame);

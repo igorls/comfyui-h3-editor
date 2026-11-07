@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import os
 import subprocess
 import sys
@@ -59,8 +60,67 @@ async def run(args):
     return out.decode(errors="replace")
 
 
+async def run_bytes(args):
+    process = await asyncio.create_subprocess_exec(*args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = await process.communicate()
+    if process.returncode != 0:
+        raise web.HTTPInternalServerError(text=err.decode(errors="replace")[-600:])
+    return out
+
+
+STRIP_HEIGHT = 90
+STRIP_TILES = 48
+
+
+async def make_strip(path, frames):
+    """A row of frames from across a clip and its loudness per frame, made once and kept beside it."""
+    base = os.path.splitext(path)[0]
+    sprite, peaks = base + ".strip.jpg", base + ".peaks.json"
+    size = (await run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                       "-of", "csv=p=0", path])).strip().split(",")
+    width, height = int(size[0]), int(size[1])
+    tile_w = max(2, int(round(STRIP_HEIGHT * width / float(height) / 2.0)) * 2)
+    step = max(1, int(math.ceil(frames / float(STRIP_TILES))))
+    count = max(1, int(math.ceil(frames / float(step))))
+    if not os.path.exists(sprite):
+        await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf",
+                   "select=not(mod(n\\,%d)),scale=%d:%d,tile=%dx1" % (step, tile_w, STRIP_HEIGHT, count),
+                   "-vsync", "0", "-frames:v", "1", "-q:v", "4", sprite])
+    if not os.path.exists(peaks):
+        values = []
+        try:
+            import numpy as np
+
+            rate = 4800
+            pcm = await run_bytes(["ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"])
+            samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+            per = rate // store.FPS
+            usable = (len(samples) // per) * per
+            if usable:
+                loud = np.abs(samples[:usable].reshape(-1, per)).max(axis=1)
+                values = [int(round(v)) for v in np.sqrt(np.clip(loud, 0, 1)) * 100]
+        except web.HTTPException:
+            values = []
+        with open(peaks, "w", encoding="utf-8") as f:
+            json.dump(values, f)
+    return {"sprite": os.path.basename(sprite), "peaks": os.path.basename(peaks), "w": tile_w, "h": STRIP_HEIGHT,
+            "count": count, "step": step}
+
+
+async def strip(request):
+    body = await request.json()
+    path = output_path(body.get("subfolder"), body["filename"])
+    if not os.path.exists(path):
+        raise web.HTTPNotFound(text="that clip is gone")
+    return web.json_response(await make_strip(path, int(body.get("frames") or 1)))
+
+
 async def page(request):
-    return web.FileResponse(os.path.join(PAGE, "index.html"))
+    """The page always comes fresh and names its files by version, so a browser never mixes old and new."""
+    version = int(max(os.path.getmtime(os.path.join(PAGE, n)) for n in os.listdir(PAGE)))
+    with open(os.path.join(PAGE, "index.html"), encoding="utf-8") as f:
+        html = f.read().replace("__VERSION__", str(version))
+    return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
 
 async def projects(request):
@@ -103,7 +163,12 @@ async def probe(request):
                      "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", path])
     poster = os.path.splitext(path)[0] + ".jpg"
     await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf", "select=eq(n\\,12),scale=480:-2", "-vsync", "0", "-frames:v", "1", poster])
-    return web.json_response({"frames": int(out.strip().strip(",")), "poster": os.path.basename(poster)})
+    frames = int(out.strip().strip(","))
+    try:
+        made = await make_strip(path, frames)
+    except web.HTTPException:
+        made = None
+    return web.json_response({"frames": frames, "poster": os.path.basename(poster), "strip": made})
 
 
 def asset_target(name, extension):
@@ -178,6 +243,7 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/asset", "upload"),
     ("POST", "/h3take/api/project/{name}/grab", "grab"),
     ("POST", "/h3take/api/probe", "probe"),
+    ("POST", "/h3take/api/strip", "strip"),
 )
 
 
