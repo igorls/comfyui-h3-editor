@@ -54,6 +54,28 @@ Projects live in `h3take_projects` in ComfyUI's output folder.
 
 The editor writes each prompt in the structure from MiniMax's H3 prompt guides.
 
+## Use the nodes in ComfyUI
+
+There are two ways in.
+
+- **H3 Editor** in the sidebar builds and runs every graph for you. Use it to
+  write shots, render them, and cut them together.
+- **Templates** in ComfyUI list two ready workflows under comfyui-h3-take:
+  *H3 Take - text to video* and *H3 Take - extend a clip*. Open one, write the
+  shot in H3 Take, and press Run.
+
+The template graph is: load the model, text encoder, and the two H3 VAEs; set
+`MiniMaxH3SigmaShift` to 12 and 3; pass the model through **H3 Live Preview**;
+connect **H3 Take** to the guider and sampler; then decode picture and sound and
+save the video. Each template carries a note with the settings that matter.
+
+| Node | What it does |
+|---|---|
+| H3 Take | One shot: the prompt, pinned frames, references, held video or sound |
+| H3 Live Preview | Shows the whole clip moving, with sound, at every sampling step |
+| H3 Load Clip | Reads frames and sound from a clip in the output folder |
+| H3 Load Still | Reads a picture from the output folder |
+
 ## H3 Take node
 
 One H3 shot in a graph. Sampling, the checkpoint, and `MiniMaxH3SigmaShift` stay
