@@ -74,6 +74,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 .timeline { display: grid; grid-template-rows: 48px minmax(0, 1fr); background: var(--panel); border-top: 1px solid var(--line); min-height: 0; }
 .tl-tools { display: flex; align-items: center; gap: 10px; padding: 0 16px; }
+.tool-gap { width: 14px; }
 .zoom { display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .tl-body { display: grid; grid-template-columns: var(--head) minmax(0, 1fr); min-height: 0; border-top: 1px solid var(--line); }
 .tl-heads { background: var(--panel); border-right: 1px solid var(--line); }
@@ -97,6 +98,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .block.todo.on { border-color: var(--tungsten); }
 .block.queued { background: repeating-linear-gradient(135deg, var(--raised) 0 10px, var(--panel) 10px 20px); }
 .block.rendering { border-color: var(--live); }
+.block.stale { border-color: var(--danger); border-style: dashed; }
+.notice { margin: 0 0 16px; padding: 10px 12px; border-radius: 6px; background: var(--raised); color: var(--danger); }
 .strip { position: absolute; inset: 0; background-size: auto 100%; background-repeat: repeat-x; opacity: 0.92; }
 .block .name { position: absolute; left: 8px; top: 6px; right: 8px; padding: 2px 6px; width: fit-content; max-width: calc(100% - 16px); border-radius: 4px; background: rgba(20, 24, 28, 0.74); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .block .bar { position: absolute; left: 0; bottom: 0; height: 5px; background: var(--live); transition: width 0.25s linear; }

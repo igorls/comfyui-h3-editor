@@ -1,6 +1,7 @@
 import unittest
 
-from project import active_take, clip_prompt, export_command, new_project, render_graph, slug, snap_frames
+from policy import bridge_spans, legal_length, video_span
+from project import active_take, clip_prompt, export_command, linked_length, new_project, render_graph, slug, snap_frames
 from prompting import compose_prompt
 
 
@@ -60,6 +61,51 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(active_take({"takes": takes, "active": "t1"})["id"], "t1")
         self.assertEqual(active_take({"takes": takes})["id"], "t2")
         self.assertIsNone(active_take({"takes": []}))
+
+
+class LinkTest(unittest.TestCase):
+    side = {"file": "a.mp4", "subfolder": "p/clips", "first": 0, "last": 73}
+
+    def test_extend_lengths_start_on_the_shared_boundary(self):
+        for seconds in (1, 2.5, 4, 9):
+            length = linked_length({"mode": "extend_after", "hold": 39}, seconds)
+            self.assertTrue(legal_length(length))
+            self.assertEqual((length - 39) % 51, 0)
+            self.assertTrue(video_span("extend_before", 39, length, hold_frames=39)["audio_exact"])
+
+    def test_bridge_lengths_put_the_far_hold_on_the_shared_boundary(self):
+        for seconds in (1, 2, 4, 8):
+            length = linked_length({"mode": "bridge", "hold": 39}, seconds)
+            self.assertTrue(legal_length(length))
+            self.assertTrue(bridge_spans(39, 39, length)[1]["audio_exact"])
+
+    def test_extending_after_reads_the_tail_the_timeline_shows(self):
+        link = {"mode": "extend_after", "hold": 39, "a": dict(self.side, last=60)}
+        graph = render_graph(new_project("x"), "x", clip(link=link, seconds=2), "t1", "draft", 3)
+        self.assertEqual(graph["6"]["inputs"], {"file": "p/clips/a.mp4", "first": 21, "last": 60})
+        self.assertEqual(graph["10"]["inputs"]["video_mode"], "extend_after")
+        self.assertEqual(graph["10"]["inputs"]["source_audio"], ["6", 1])
+        self.assertEqual(graph["10"]["inputs"]["audio_hold"], "span")
+
+    def test_extending_before_reads_the_head_the_timeline_shows(self):
+        link = {"mode": "extend_before", "hold": 39, "a": dict(self.side, first=10)}
+        graph = render_graph(new_project("x"), "x", clip(link=link, seconds=2), "t1", "draft", 3)
+        self.assertEqual((graph["6"]["inputs"]["first"], graph["6"]["inputs"]["last"]), (10, 49))
+
+    def test_a_bridge_reads_both_clips(self):
+        link = {"mode": "bridge", "hold": 39, "a": self.side, "b": dict(self.side, file="b.mp4")}
+        graph = render_graph(new_project("x"), "x", clip(link=link, seconds=3), "t1", "draft", 3)
+        self.assertEqual(graph["6"]["inputs"]["first"], 34)
+        self.assertEqual(graph["7"]["inputs"], {"file": "p/clips/b.mp4", "first": 0, "last": 39})
+        self.assertEqual(graph["10"]["inputs"]["end_video"], ["7", 0])
+
+    def test_a_bridge_is_guided_onto_its_arrival_frame(self):
+        link = {"mode": "bridge", "hold": 39, "a": self.side, "b": dict(self.side, file="b.mp4")}
+        graph = render_graph(new_project("x"), "x", clip(link=link, seconds=3), "t1", "draft", 3)
+        length = graph["10"]["inputs"]["length"]
+        self.assertEqual(graph["10"]["inputs"]["mid_frames"], str(length - 39))
+        self.assertEqual(graph["10"]["inputs"]["mid_images.mid_image_0"], ["8", 0])
+        self.assertEqual(graph["8"]["inputs"]["image"], ["7", 0])
 
 
 class ExportTest(unittest.TestCase):

@@ -1,6 +1,9 @@
 """One H3 take. Calls ComfyUI's own MiniMax nodes. Does not import any other pack."""
 
-from comfy_api.latest import io
+import os
+
+import folder_paths
+from comfy_api.latest import InputImpl, io
 
 from .latent_writer import carry_tail, encode_audio, encode_video, write_holds
 from .policy import (
@@ -15,10 +18,12 @@ from .policy import (
     VIDEO_MODES,
     audio_ticks,
     audio_window,
+    bridge_spans,
     frame_count,
     frame_to_step,
     hold_curve,
     latent_frames,
+    merge_curves,
     parse_frames,
     plan,
     resolve_keep,
@@ -75,6 +80,8 @@ class H3Take(io.ComfyNode):
                     prefix="mid_image_", min=0, max=8)),
                 io.Combo.Input("video_mode", options=list(VIDEO_MODES), default="off"),
                 io.Image.Input("source_video", optional=True, tooltip="24 fps frames to hold."),
+                io.Image.Input("end_video", optional=True, tooltip="With video_mode bridge, the clip the take must arrive at."),
+                io.Audio.Input("end_audio", optional=True, tooltip="Soundtrack of end_video."),
                 io.Latent.Input("carry", optional=True, tooltip="A finished H3 latent. Its last hold_frames open this take, with no re-encode. Leave video_mode off."),
                 io.Int.Input("hold_frames", default=39, min=5, max=3600, step=1),
                 io.Combo.Input("strength", options=list(STRENGTHS) + ["custom"], default="hold", tooltip="How much the held video may change. light tints it, medium and heavy keep the shot but follow the prompt, regenerate keeps nothing."),
@@ -109,11 +116,22 @@ class H3Take(io.ComfyNode):
     @classmethod
     def execute(cls, clip, vae, prompt, width, height, length, checkpoint, anchor, mid_frames, video_mode,
                 hold_frames, strength, keep, align, video_feather, audio_hold, audio_feather, ref_image_size,
-                audio_vae=None, start_image=None, end_image=None, mid_images=None, source_video=None, carry=None,
-                region=None, source_audio=None, ref_images=None, ref_videos=None, ref_video_audios=None,
+                audio_vae=None, start_image=None, end_image=None, mid_images=None, source_video=None, end_video=None,
+                end_audio=None, carry=None, region=None, source_audio=None, ref_images=None, ref_videos=None, ref_video_audios=None,
                 ref_audios=None) -> io.NodeOutput:
         keep = resolve_keep(strength, keep)
-        if carry is not None:
+        second = None
+        if video_mode == "bridge":
+            if source_video is None or end_video is None:
+                raise ValueError("a bridge needs source_video and end_video")
+            span, end_span = bridge_spans(
+                frame_count(source_video, "source video"), frame_count(end_video, "end video"),
+                length, hold_frames=hold_frames, align=align, keep=keep,
+            )
+            window = audio_window(audio_hold, span, length, audio_seconds(source_audio))
+            end_window = audio_window(audio_hold, end_span, length, audio_seconds(end_audio))
+            second = (end_span, end_video, end_audio, end_window)
+        elif carry is not None:
             if source_video is not None or video_mode != "off":
                 raise ValueError("carry replaces the source video. Disconnect it and leave video_mode off.")
             if audio_hold == "full":
@@ -187,8 +205,11 @@ class H3Take(io.ComfyNode):
             positive = MiniMaxH3AddGuide.execute(positive, latent, frame, vae=vae, image=images[role])[0]
 
         if span is not None or window is not None:
-            latent = cls.hold(latent, vae, audio_vae, source_video, source_audio, span, window, length,
-                              width, height, video_feather, audio_feather, region, carry)
+            pieces = [(span, source_video, source_audio, window)]
+            if second is not None:
+                pieces.append(second)
+            latent = cls.hold(latent, vae, audio_vae, pieces, length, width, height,
+                              video_feather, audio_feather, region, carry)
 
         card = "; ".join(decided["labels"])
         if decided["length_note"] == "short":
@@ -196,37 +217,82 @@ class H3Take(io.ComfyNode):
         return io.NodeOutput(positive, latent, card)
 
     @staticmethod
-    def hold(latent, vae, audio_vae, source_video, source_audio, span, window, length, width, height,
-             video_feather, audio_feather, region, carry=None):
+    def hold(latent, vae, audio_vae, pieces, length, width, height, video_feather, audio_feather, region, carry=None):
         total_steps = video_steps(length)
-        video_latent = None
-        video_first = 0
         video_curve = None
-        audio_latent = None
-        audio_first = 0
         audio_curve = None
-        if span is not None:
-            video_first = frame_to_step(span["insert"])
-            steps = video_steps(span["hold"])
-            if carry is not None:
-                video_latent, audio_tail = carry_tail(carry, steps, audio_ticks(span["hold"]))
-                if tuple(video_latent.shape[3:]) != (height // 16, width // 16):
-                    raise ValueError("carry is a different size from this take")
-            else:
-                start = span["source_start"]
-                frames = source_video[start:start + span["hold"]]
-                video_latent = encode_video(vae, frames, width, height, steps)
-            video_curve = hold_curve(total_steps, video_first, steps, base=span["keep"], feather=video_feather)
-        if window is not None:
-            audio_first = window["first"]
-            if carry is not None:
-                audio_latent = audio_tail
-            else:
-                audio_latent = encode_audio(audio_vae, source_audio, window["source_second"], window["ticks"])
-            audio_curve = hold_curve(audio_ticks(length), audio_first, audio_latent.shape[-1], feather=audio_feather)
-        return write_holds(latent, video_latent, video_first, audio_latent, audio_first,
-                           video_curve, audio_curve, region)
+        writes = []
+        for span, frames, audio, window in pieces:
+            video_latent = None
+            video_first = 0
+            audio_latent = None
+            audio_first = 0
+            audio_tail = None
+            if span is not None:
+                video_first = frame_to_step(span["insert"])
+                steps = video_steps(span["hold"])
+                if carry is not None:
+                    video_latent, audio_tail = carry_tail(carry, steps, audio_ticks(span["hold"]))
+                    if tuple(video_latent.shape[3:]) != (height // 16, width // 16):
+                        raise ValueError("carry is a different size from this take")
+                else:
+                    start = span["source_start"]
+                    video_latent = encode_video(vae, frames[start:start + span["hold"]], width, height, steps)
+                video_curve = merge_curves(
+                    video_curve, hold_curve(total_steps, video_first, steps, base=span["keep"], feather=video_feather)
+                )
+            if window is not None:
+                audio_first = window["first"]
+                if carry is not None:
+                    audio_latent = audio_tail
+                else:
+                    audio_latent = encode_audio(audio_vae, audio, window["source_second"], window["ticks"])
+                audio_curve = merge_curves(
+                    audio_curve,
+                    hold_curve(audio_ticks(length), audio_first, audio_latent.shape[-1], feather=audio_feather),
+                )
+            writes.append((video_latent, video_first, audio_latent, audio_first))
+        for video_latent, video_first, audio_latent, audio_first in writes:
+            latent = write_holds(latent, video_latent, video_first, audio_latent, audio_first,
+                                 video_curve, audio_curve, region)
+        return latent
 
 
-NODE_CLASS_MAPPINGS = {"H3Take": H3Take}
-NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take"}
+class H3LoadClip(io.ComfyNode):
+    """Part of a rendered clip from ComfyUI's output folder, with its sound."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3LoadClip",
+            display_name="H3 Load Clip",
+            category="minimax/h3",
+            description="Read frames and sound from a clip in the output folder. Used by the editor to extend and bridge clips.",
+            inputs=[
+                io.String.Input("file", tooltip="Path inside the output folder."),
+                io.Int.Input("first", default=0, min=0, max=100000),
+                io.Int.Input("last", default=0, min=0, max=100000, tooltip="Stops before this frame. 0 reads to the end."),
+            ],
+            outputs=[io.Image.Output(display_name="frames"), io.Audio.Output(display_name="audio")],
+        )
+
+    @classmethod
+    def execute(cls, file, first, last) -> io.NodeOutput:
+        base = os.path.realpath(folder_paths.get_output_directory())
+        path = os.path.realpath(os.path.join(base, file))
+        if not path.startswith(base + os.sep) or not os.path.exists(path):
+            raise ValueError("no clip at %s in the output folder" % file)
+        video = InputImpl.VideoFromFile(path).get_components()
+        frames = video.images
+        stop = last or frames.shape[0]
+        audio = video.audio
+        if audio is not None:
+            rate = audio["sample_rate"]
+            rate_first = int(first / float(FPS) * rate)
+            rate_stop = int(stop / float(FPS) * rate)
+            audio = {"waveform": audio["waveform"][..., rate_first:rate_stop], "sample_rate": rate}
+        return io.NodeOutput(frames[first:stop], audio)
+
+
+NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip"}

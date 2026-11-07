@@ -1,9 +1,8 @@
 """Reload this pack in a running ComfyUI. Loaded only when a dev.enable file sits beside it.
 
 POST /h3take/reload re-imports the pack and swaps its node classes. Models stay
-loaded. Refresh the browser afterwards to pick up changed inputs and JS. ComfyUI
-still reuses a cached node whose inputs did not change, so change an input to
-re-run one.
+loaded. It also resets ComfyUI's execution caches, because those hold instances
+of the old classes. Refresh the browser afterwards to pick up changed inputs and JS.
 """
 
 import importlib
@@ -37,4 +36,6 @@ def install(package):
                 core.NODE_CLASS_MAPPINGS[node_id] = cls
                 core.NODE_DISPLAY_NAME_MAPPINGS[node_id] = module.NODE_DISPLAY_NAME_MAPPINGS.get(node_id, node_id)
                 names.append(node_id)
+        server.prompt_queue.set_flag("unload_models", False)
+        server.prompt_queue.set_flag("free_memory", True)
         return web.json_response({"reloaded": True, "nodes": names})

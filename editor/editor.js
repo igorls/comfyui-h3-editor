@@ -124,11 +124,117 @@ function addClip() {
 
 function placeOnTimeline(clip, start) {
   const take = activeTake(clip);
-  const frames = take ? take.frames : Math.round(clip.seconds * FPS);
-  const item = { id: uid("i"), clip: clip.id, start, in: 0, out: frames };
+  const frames = take ? take.frames : clip.link ? linkedFrames(clip.link, clip.seconds) : Math.round(clip.seconds * FPS);
+  const [first, last] = linkedRange(clip.link, frames);
+  const item = { id: uid("i"), clip: clip.id, start, in: first, out: last };
   state.project.timeline.push(item);
   settle(item);
   return item;
+}
+
+const HOLD = 39;
+const JOINT = 51;
+
+// Mirrors linked_length in project.py.
+function linkedFrames(link, seconds) {
+  const frames = seconds * FPS;
+  if (link.mode === "bridge") return link.hold + JOINT * Math.max(2, Math.round((frames + link.hold) / JOINT));
+  return link.hold + JOINT * Math.max(1, Math.round(frames / JOINT));
+}
+
+// The part of a linked render the timeline shows. Held frames are already on screen in the source clip.
+function linkedRange(link, frames) {
+  if (!link) return [0, frames];
+  if (link.mode === "extend_after") return [link.hold, frames];
+  if (link.mode === "extend_before") return [0, frames - link.hold];
+  return [link.hold, frames - link.hold];
+}
+
+function sideOf(item) {
+  const take = activeTake(clipOf(item.clip));
+  return { clip: item.clip, item: item.id, file: take.file, subfolder: take.subfolder, first: item.in, last: item.out };
+}
+
+function linkSides(link) {
+  return link ? [link.a, link.b].filter(Boolean) : [];
+}
+
+// A linked clip was generated from specific frames. It no longer joins cleanly once those change.
+function sideChanged(side) {
+  const item = state.project.timeline.find((i) => i.id === side.item);
+  const take = activeTake(clipOf(side.clip));
+  if (!item || !take) return false;
+  return take.file !== side.file || item.in !== side.first || item.out !== side.last;
+}
+
+function isStale(clip) {
+  return clip.takes.length > 0 && linkSides(clip.link).some(sideChanged);
+}
+
+function refreshLink(clip) {
+  for (const side of linkSides(clip.link)) {
+    const item = state.project.timeline.find((i) => i.id === side.item);
+    if (item && activeTake(clipOf(item.clip))) Object.assign(side, sideOf(item));
+  }
+}
+
+function followingItem(item) {
+  return sorted().find((other) => other !== item && other.start >= itemEnd(item)) || null;
+}
+
+function selectedRendered() {
+  const item = state.project.timeline.find((i) => i.id === state.item);
+  return item && activeTake(clipOf(item.clip)) ? item : null;
+}
+
+function updateTools() {
+  const item = selectedRendered();
+  const next = item && followingItem(item);
+  const holdable = item && itemLength(item) >= HOLD;
+  $("extendBack").disabled = !holdable;
+  $("extendForward").disabled = !holdable;
+  $("bridge").disabled = !(holdable && next && activeTake(clipOf(next.clip)) && itemLength(next) >= HOLD);
+}
+
+function shiftFrom(frame, by, skip = null) {
+  for (const other of state.project.timeline) {
+    if (other !== skip && other.start >= frame) other.start += by;
+  }
+}
+
+function addLinked(mode) {
+  const item = selectedRendered();
+  if (!item) return;
+  const source = clipOf(item.clip);
+  const next = followingItem(item);
+  const seconds = 4.25;
+  const link = { mode, hold: HOLD, a: sideOf(item) };
+  if (mode === "bridge") link.b = sideOf(next);
+  checkpoint();
+  const titles = { extend_after: "After ", extend_before: "Before ", bridge: "Bridge from " };
+  const clip = {
+    id: uid("c"), name: titles[mode] + source.name, action: "", camera: "", speaker: "", dialogue: "",
+    sound: "", music: "", seconds, takes: [], active: null, link,
+  };
+  state.project.clips.push(clip);
+  const [first, last] = linkedRange(link, linkedFrames(link, seconds));
+  const length = last - first;
+  let start = itemEnd(item);
+  if (mode === "extend_before") {
+    start = item.start;
+    shiftFrom(item.start, length);
+  } else if (mode === "extend_after") {
+    shiftFrom(start, length);
+  } else {
+    shiftFrom(next.start, start + length - next.start);
+  }
+  const placed = { id: uid("i"), clip: clip.id, start, in: first, out: last };
+  state.project.timeline.push(placed);
+  state.clip = clip.id;
+  state.item = placed.id;
+  save();
+  renderAll();
+  document.querySelector("#inspector textarea.big")?.focus();
 }
 
 function selectClip(clipId, itemId = null) {
@@ -245,8 +351,13 @@ function renderInspector() {
     }
   }
 
+  const stale = isStale(clip) && !job;
+  const notice = document.createElement("p");
+  notice.className = "notice";
+  notice.textContent = "The clip this one joins has changed, so the join may show. Render it again to fix that.";
   const children = [
     head,
+    ...(stale ? [notice] : []),
     two,
     field("What happens", clip.action, (v) => (clip.action = v), { big: true }),
     field("Camera", clip.camera, (v) => (clip.camera = v)),
@@ -313,7 +424,7 @@ function renderTimeline() {
     const take = activeTake(clip);
     const job = jobFor(clip.id);
     const block = document.createElement("div");
-    const status = job ? (state.running === job ? "rendering" : "queued") : take ? "" : "todo";
+    const status = job ? (state.running === job ? "rendering" : "queued") : !take ? "todo" : isStale(clip) ? "stale" : "";
     block.className = ("block " + status + (item.id === state.item ? " on" : "")).trim();
     block.style.left = px(item.start) + "px";
     block.style.width = Math.max(14, px(itemLength(item))) + "px";
@@ -324,7 +435,7 @@ function renderTimeline() {
     else if (take) strip.style.backgroundImage = "url(" + viewUrl(take.poster, take.subfolder) + ")";
     const name = document.createElement("div");
     name.className = "name";
-    name.textContent = clip.name;
+    name.textContent = status === "stale" ? clip.name + ", source changed" : clip.name;
     block.append(strip, name);
     if (job && state.running === job) {
       const bar = document.createElement("div");
@@ -350,6 +461,7 @@ function renderTimeline() {
   $("laneA").replaceChildren(...waves);
   $("total").textContent = "of " + timecode(sceneEnd());
   placePlayhead();
+  updateTools();
 }
 
 function placePlayhead() {
@@ -596,6 +708,7 @@ async function renderClip(clip, quality) {
     toast("Describe what happens in " + clip.name + " before rendering it.", true);
     return;
   }
+  refreshLink(clip);
   const take = uid("t");
   const seed = Math.floor(Math.random() * 2 ** 31);
   try {
@@ -645,9 +758,11 @@ async function acceptRender(job, file) {
   const fresh = !clip.takes.length;
   clip.takes.push(take);
   clip.active = take.id;
+  const [first, last] = linkedRange(clip.link, info.frames);
   for (const item of state.project.timeline) {
     if (item.clip !== clip.id) continue;
-    item.out = fresh ? info.frames : Math.min(item.out, info.frames);
+    item.in = fresh ? first : item.in;
+    item.out = fresh ? last : Math.min(item.out, last);
   }
   settle(null);
   save();
@@ -833,6 +948,9 @@ $("toStart").addEventListener("click", () => seek(0));
 $("back").addEventListener("click", () => seek(state.playhead - 1));
 $("forward").addEventListener("click", () => seek(state.playhead + 1));
 $("split").addEventListener("click", splitAtPlayhead);
+$("extendBack").addEventListener("click", () => addLinked("extend_before"));
+$("extendForward").addEventListener("click", () => addLinked("extend_after"));
+$("bridge").addEventListener("click", () => addLinked("bridge"));
 $("remove").addEventListener("click", removeSelected);
 $("zoom").addEventListener("input", (event) => {
   state.zoom = Number(event.target.value);

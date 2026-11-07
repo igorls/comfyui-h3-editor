@@ -115,7 +115,7 @@ async def export(request):
             paths[clip["id"]] = output_path(take.get("subfolder"), take["file"])
     folder = os.path.join(root(), name, "exports")
     os.makedirs(folder, exist_ok=True)
-    number = len(os.listdir(folder)) + 1
+    number = len([n for n in os.listdir(folder) if n.endswith(".mp4")]) + 1
     target = os.path.join(folder, "%s_%03d.mp4" % (name, number))
     try:
         args = store.export_command(data, paths, target)

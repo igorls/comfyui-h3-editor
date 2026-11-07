@@ -2,10 +2,12 @@ import unittest
 from policy import (
     audio_ticks,
     audio_window,
+    bridge_spans,
     frame_to_step,
     hold_curve,
     latent_frames,
     legal_length,
+    merge_curves,
     parse_frames,
     plan,
     resolve_keep,
@@ -84,6 +86,25 @@ class PolicyTest(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             video_span("v2v", source_frames=124, length=192)
         self.assertIn("extend_both", str(caught.exception))
+
+    def test_a_bridge_holds_both_ends(self):
+        first, last = bridge_spans(73, 73, 141)
+        self.assertEqual((first["insert"], first["hold"], first["source_start"]), (0, 39, 34))
+        self.assertEqual((last["insert"], last["hold"], last["source_start"]), (102, 39, 0))
+        self.assertEqual(first["generate_after"], 63)
+        self.assertEqual(last["generate_before"], 63)
+        self.assertTrue(last["audio_exact"])
+        self.assertEqual(frame_to_step(last["insert"]) % 5, 0)
+
+    def test_a_bridge_needs_room_between_its_holds(self):
+        with self.assertRaises(ValueError):
+            bridge_spans(73, 73, 73)
+
+    def test_merging_curves_keeps_the_stronger_hold(self):
+        first = hold_curve(6, 0, 2)
+        last = hold_curve(6, 4, 2)
+        self.assertEqual(merge_curves(first, last), [0, 0, 1, 1, 0, 0])
+        self.assertEqual(merge_curves(None, last), last)
 
     def test_named_strengths_and_custom(self):
         self.assertEqual(resolve_keep("hold"), 0.0)

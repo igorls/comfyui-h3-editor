@@ -3,7 +3,7 @@
 import math
 
 ANCHORS = ("none", "start", "end", "both")
-VIDEO_MODES = ("off", "v2v", "extend_after", "extend_before", "extend_both")
+VIDEO_MODES = ("off", "v2v", "extend_after", "extend_before", "extend_both", "bridge")
 CHECKPOINTS = ("ref2va", "fl2va")
 AUDIO_HOLDS = ("off", "span", "full")
 FPS = 24
@@ -169,6 +169,43 @@ def video_span(mode, source_frames, length, hold_frames=39, align="av", keep=0.0
         "mask_hold": float(keep),
         "mask_generate": 1.0,
     }
+
+
+def bridge_spans(first_frames, last_frames, length, hold_frames=39, align="av", keep=0.0):
+    """Hold the end of one clip at the start of a take and the start of another at its end."""
+    length = int(length)
+    check_length(length)
+    hold = snap_hold(hold_frames, min(int(first_frames), int(last_frames)), length, align)
+    insert = length - hold
+    if insert - hold < 5:
+        raise ValueError("no room to generate: two %s-frame holds inside %s frames" % (hold, length))
+
+    def span(at, source_start, before, after):
+        return {
+            "mode": "bridge",
+            "insert": at,
+            "hold": hold,
+            "keep": float(keep),
+            "generate_before": before,
+            "generate_after": after,
+            "slice_from": "tail" if at == 0 else "head",
+            "source_start": source_start,
+            "audio_exact": at % 51 == 0,
+            "mask_hold": float(keep),
+            "mask_generate": 1.0,
+        }
+
+    gap = insert - hold
+    return [span(0, int(first_frames) - hold, 0, gap), span(insert, 0, gap, 0)]
+
+
+def merge_curves(first, second):
+    """Two mask curves over one axis. The stronger hold wins at each point."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return [min(a, b) for a, b in zip(first, second)]
 
 
 def latent_frames(steps):

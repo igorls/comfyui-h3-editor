@@ -13,6 +13,12 @@ Open H3 Editor from the ComfyUI sidebar. It is a full-screen timeline editor.
   timeline never renders anything again.
 - A new render of a clip becomes another take. Choose the take to use in the
   inspector.
+- Select a clip and press Extend forward or Extend back to generate what happens
+  next or before. Bridge to next generates what connects it to the following
+  clip. These clips hold 39 real frames and their sound from the clips they
+  join, so the cut does not show.
+- If you change a clip that another one joins, the joined clip is marked. Render
+  it again to pick up the new frames.
 - Export joins the timeline with ffmpeg and does not use the GPU. A gap becomes
   black and silence.
 - Renders belong to the project, so closing or refreshing the editor does not

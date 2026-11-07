@@ -11,6 +11,7 @@ except ImportError:
     from prompting import compose_prompt
 
 FPS = 24
+JOINT = 51
 ROOT = "h3take_projects"
 QUALITIES = {
     "draft": {"width": 640, "height": 352, "steps": 4},
@@ -50,6 +51,28 @@ def snap_frames(seconds):
     return 5 + 17 * max(1, int(round((frames - 5) / 17.0)))
 
 
+def linked_length(link, seconds):
+    """Take length for a linked clip, so every hold starts on a shared video and audio boundary."""
+    hold = int(link["hold"])
+    frames = float(seconds) * FPS
+    if link["mode"] == "bridge":
+        return hold + JOINT * max(2, int(round((frames + hold) / JOINT)))
+    return hold + JOINT * max(1, int(round(frames / JOINT)))
+
+
+def source_range(side, hold, tail):
+    """The held part of a source clip, from what is actually on the timeline."""
+    if tail:
+        return max(side["first"], side["last"] - hold), side["last"]
+    return side["first"], side["first"] + hold
+
+
+def load_node(side, hold, tail):
+    first, last = source_range(side, hold, tail)
+    file = "%s/%s" % (side["subfolder"], side["file"]) if side.get("subfolder") else side["file"]
+    return {"class_type": "H3LoadClip", "inputs": {"file": file, "first": first, "last": last}}
+
+
 def clip_prompt(project, clip):
     return compose_prompt(
         project.get("style", ""),
@@ -70,7 +93,9 @@ def render_graph(project, folder, clip, take, quality, seed):
         raise ValueError("quality must be one of %s" % (tuple(QUALITIES),))
     size = QUALITIES[quality]
     models = project.get("models") or MODELS
-    return {
+    link = clip.get("link")
+    length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
+    graph = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": models["unet"], "weight_dtype": "default"}},
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": models["clip"], "type": "minimax", "device": "default"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": models["vae"]}},
@@ -79,7 +104,7 @@ def render_graph(project, folder, clip, take, quality, seed):
         "10": {"class_type": "H3Take", "inputs": {
             "clip": ["2", 0], "vae": ["3", 0], "audio_vae": ["4", 0],
             "prompt": clip_prompt(project, clip), "width": size["width"], "height": size["height"],
-            "length": snap_frames(clip.get("seconds", 5)), "checkpoint": "ref2va", "anchor": "none", "mid_frames": "",
+            "length": length, "checkpoint": "ref2va", "anchor": "none", "mid_frames": "",
             "video_mode": "off", "hold_frames": 39, "strength": "hold", "keep": 0.0, "align": "av", "video_feather": 0,
             "audio_hold": "off", "audio_feather": 8, "ref_image_size": "match"}},
         "11": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": project.get("sampler", "euler")}},
@@ -95,6 +120,23 @@ def render_graph(project, folder, clip, take, quality, seed):
             "video": ["18", 0], "filename_prefix": "%s/%s/clips/%s_%s" % (ROOT, folder, clip["id"], take),
             "format": "auto", "codec": "auto"}},
     }
+    if link:
+        hold = int(link["hold"])
+        take_inputs = graph["10"]["inputs"]
+        graph["6"] = load_node(link["a"], hold, link["mode"] != "extend_before")
+        take_inputs.update({
+            "video_mode": link["mode"], "hold_frames": hold, "audio_hold": "span",
+            "source_video": ["6", 0], "source_audio": ["6", 1],
+        })
+        if link["mode"] == "bridge":
+            graph["7"] = load_node(link["b"], hold, False)
+            # A hold alone does not make the take arrive. The guide tells H3 what it must land on.
+            graph["8"] = {"class_type": "ImageFromBatch", "inputs": {"image": ["7", 0], "batch_index": 0, "length": 1}}
+            take_inputs.update({
+                "end_video": ["7", 0], "end_audio": ["7", 1],
+                "mid_frames": str(length - hold), "mid_images.mid_image_0": ["8", 0],
+            })
+    return graph
 
 
 def active_take(clip):
