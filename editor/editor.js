@@ -19,6 +19,7 @@ const state = {
   project: null,
   clip: null,
   item: null,
+  person: null,
   playhead: 0,
   playing: false,
   zoom: 3,
@@ -116,6 +117,7 @@ function addClip() {
   state.project.clips.push(clip);
   placeOnTimeline(clip, sceneEnd());
   state.clip = clip.id;
+  state.person = null;
   state.item = state.project.timeline.at(-1).id;
   save();
   renderAll();
@@ -231,15 +233,215 @@ function addLinked(mode) {
   const placed = { id: uid("i"), clip: clip.id, start, in: first, out: last };
   state.project.timeline.push(placed);
   state.clip = clip.id;
+  state.person = null;
   state.item = placed.id;
   save();
   renderAll();
   document.querySelector("#inspector textarea.big")?.focus();
 }
 
+const assetUrl = (asset) => viewUrl(asset.file, asset.subfolder);
+
+async function uploadPicture(file) {
+  const form = new FormData();
+  form.append("image", file);
+  return api("/project/" + state.folder + "/asset", { method: "POST", body: form });
+}
+
+function pickFile(input) {
+  return new Promise((resolve) => {
+    input.value = "";
+    input.onchange = () => resolve(input.files[0] || null);
+    input.click();
+  });
+}
+
+async function addCastMember() {
+  const file = await pickFile($("castFile"));
+  if (!file) return;
+  try {
+    const asset = await uploadPicture(file);
+    checkpoint();
+    state.project.cast = state.project.cast || [];
+    const person = { id: uid("p"), name: "Person " + (state.project.cast.length + 1), description: "", ...asset };
+    state.project.cast.push(person);
+    state.person = person.id;
+    state.clip = null;
+    state.item = null;
+    save();
+    renderAll();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function setClipFrame(clip, side, asset) {
+  checkpoint();
+  if (asset) clip[side] = asset;
+  else delete clip[side];
+  save();
+  renderInspector();
+}
+
+async function uploadFrame(clip, side) {
+  const file = await pickFile($("frameFile"));
+  if (!file) return;
+  try {
+    setClipFrame(clip, side, await uploadPicture(file));
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function grabFrame(clip, side) {
+  const item = itemAt(state.playhead);
+  const take = activeTake(clipOf(item?.clip));
+  if (!take) {
+    toast("Move the playhead over a rendered clip, then press Use playhead frame.");
+    return;
+  }
+  try {
+    const frame = Math.min(take.frames - 1, Math.round(item.in + state.playhead - item.start));
+    setClipFrame(clip, side, await postJson("/project/" + state.folder + "/grab", { file: take.file, subfolder: take.subfolder, frame }));
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+// Mirrors frame_of in project.py: a held end already has its real frames.
+function frameUsable(clip, side) {
+  const mode = clip.link?.mode;
+  if (!mode) return true;
+  return mode !== "bridge" && (side === "first") !== (mode === "extend_after");
+}
+
+function frameSlot(clip, side, label) {
+  const slot = document.createElement("div");
+  slot.className = "slot";
+  const title = document.createElement("h3");
+  title.textContent = label;
+  const picture = document.createElement("div");
+  picture.className = "picture";
+  const ways = document.createElement("div");
+  ways.className = "ways";
+  const button = (text, run) => {
+    const element = document.createElement("button");
+    element.className = "quiet";
+    element.textContent = text;
+    element.addEventListener("click", run);
+    ways.append(element);
+  };
+  if (clip[side]) {
+    const image = document.createElement("img");
+    image.alt = label;
+    image.src = assetUrl(clip[side]);
+    picture.append(image);
+    button("Remove", () => setClipFrame(clip, side, null));
+  } else {
+    picture.textContent = "None";
+    button("Use playhead frame", () => grabFrame(clip, side));
+    button("Upload", () => uploadFrame(clip, side));
+  }
+  slot.append(title, picture, ways);
+  return slot;
+}
+
+function castPicker(clip) {
+  const title = document.createElement("h3");
+  title.textContent = "Cast in this clip";
+  const picks = document.createElement("div");
+  picks.className = "picks";
+  for (const person of state.project.cast) {
+    const on = (clip.cast || []).includes(person.id);
+    const pick = document.createElement("button");
+    pick.className = "pick" + (on ? " on" : "");
+    pick.setAttribute("aria-pressed", String(on));
+    const image = document.createElement("img");
+    image.alt = "";
+    image.src = assetUrl(person);
+    const name = document.createElement("span");
+    name.textContent = person.name;
+    pick.append(image, name);
+    pick.addEventListener("click", () => {
+      checkpoint();
+      clip.cast = on ? clip.cast.filter((id) => id !== person.id) : [...(clip.cast || []), person.id];
+      save();
+      renderInspector();
+    });
+    picks.append(pick);
+  }
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Write @" + state.project.cast[0].name + " in What happens to place them in the shot.";
+  return [title, picks, hint];
+}
+
+function renderCast() {
+  const list = $("cast");
+  const cast = state.project.cast || [];
+  if (!cast.length) {
+    list.innerHTML = '<p class="empty">Add a picture of a person or place to keep them the same across clips.</p>';
+    list.style.display = "block";
+    return;
+  }
+  list.style.display = "";
+  list.replaceChildren(...cast.map((person) => {
+    const button = document.createElement("button");
+    button.className = "person" + (person.id === state.person ? " on" : "");
+    const image = document.createElement("img");
+    image.alt = "";
+    image.src = assetUrl(person);
+    const name = document.createElement("span");
+    name.textContent = person.name;
+    button.append(image, name);
+    button.addEventListener("click", () => {
+      state.person = person.id;
+      state.clip = null;
+      state.item = null;
+      renderAll();
+    });
+    return button;
+  }));
+}
+
+function renderPerson(panel, person) {
+  const head = document.createElement("div");
+  head.className = "panel-head";
+  const title = document.createElement("h2");
+  title.textContent = person.name;
+  const remove = document.createElement("button");
+  remove.className = "quiet";
+  remove.textContent = "Remove";
+  remove.addEventListener("click", () => {
+    checkpoint();
+    state.project.cast = state.project.cast.filter((c) => c !== person);
+    for (const clip of state.project.clips) clip.cast = (clip.cast || []).filter((id) => id !== person.id);
+    state.person = null;
+    save();
+    renderAll();
+  });
+  head.append(title, remove);
+  const image = document.createElement("img");
+  image.className = "portrait";
+  image.alt = person.name;
+  image.src = assetUrl(person);
+  panel.replaceChildren(
+    head,
+    image,
+    field("Name", person.name, (v) => {
+      person.name = v.trim() || person.name;
+      title.textContent = person.name;
+      renderCast();
+    }),
+    field("What they look like", person.description, (v) => (person.description = v), { big: true }),
+  );
+}
+
 function selectClip(clipId, itemId = null) {
   state.clip = clipId;
   state.item = itemId;
+  state.person = null;
+  renderCast();
   renderBin();
   renderInspector();
   renderTimeline();
@@ -304,6 +506,11 @@ function field(label, value, onInput, { big = false, area = false, type = "text"
 function renderInspector() {
   const panel = $("inspector");
   const clip = clipOf(state.clip);
+  const person = (state.project.cast || []).find((c) => c.id === state.person);
+  if (person) {
+    renderPerson(panel, person);
+    return;
+  }
   if (!clip) {
     const head = document.createElement("div");
     head.className = "panel-head";
@@ -360,6 +567,8 @@ function renderInspector() {
     ...(stale ? [notice] : []),
     two,
     field("What happens", clip.action, (v) => (clip.action = v), { big: true }),
+    ...framesFor(clip),
+    ...(state.project.cast?.length ? castPicker(clip) : []),
     field("Camera", clip.camera, (v) => (clip.camera = v)),
     field("Who speaks", clip.speaker, (v) => (clip.speaker = v)),
     field("What they say", clip.dialogue, (v) => (clip.dialogue = v), { area: true }),
@@ -395,6 +604,15 @@ function renderInspector() {
     children.push(title, takes);
   }
   panel.replaceChildren(...children);
+}
+
+function framesFor(clip) {
+  const slots = [["first", "First frame"], ["last", "Last frame"]].filter(([side]) => frameUsable(clip, side));
+  if (!slots.length) return [];
+  const row = document.createElement("div");
+  row.className = "frames";
+  row.append(...slots.map(([side, label]) => frameSlot(clip, side, label)));
+  return [row];
 }
 
 function renderRuler(width) {
@@ -871,6 +1089,7 @@ function onMessage({ type, data }) {
 /* Project */
 
 function renderAll() {
+  renderCast();
   renderBin();
   renderInspector();
   renderTimeline();
@@ -925,6 +1144,7 @@ $("newProject").addEventListener("click", () => {
   if (name) createProject(name).catch((e) => toast(e.message, true));
 });
 $("newClip").addEventListener("click", addClip);
+$("addCast").addEventListener("click", addCastMember);
 $("close").addEventListener("click", () => window.parent.postMessage("h3-editor-close", location.origin));
 $("renderAll").addEventListener("click", () => {
   const waiting = sorted().map((i) => clipOf(i.clip)).filter((c, i, all) => c && !c.takes.length && all.indexOf(c) === i);

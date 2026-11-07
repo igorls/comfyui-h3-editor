@@ -3,7 +3,10 @@
 import os
 
 import folder_paths
+import numpy as np
+import torch
 from comfy_api.latest import InputImpl, io
+from PIL import Image, ImageOps
 
 from .latent_writer import carry_tail, encode_audio, encode_video, write_holds
 from .policy import (
@@ -258,6 +261,35 @@ class H3Take(io.ComfyNode):
         return latent
 
 
+def output_file(file):
+    base = os.path.realpath(folder_paths.get_output_directory())
+    path = os.path.realpath(os.path.join(base, file))
+    if not path.startswith(base + os.sep) or not os.path.exists(path):
+        raise ValueError("no file at %s in the output folder" % file)
+    return path
+
+
+class H3LoadStill(io.ComfyNode):
+    """A picture from ComfyUI's output folder. The editor keeps references there, with the project."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3LoadStill",
+            display_name="H3 Load Still",
+            category="minimax/h3",
+            description="Read a picture from the output folder. Used by the editor for references and first and last frames.",
+            inputs=[io.String.Input("file", tooltip="Path inside the output folder.")],
+            outputs=[io.Image.Output(display_name="image")],
+        )
+
+    @classmethod
+    def execute(cls, file) -> io.NodeOutput:
+        with Image.open(output_file(file)) as image:
+            pixels = np.array(ImageOps.exif_transpose(image).convert("RGB")).astype(np.float32) / 255.0
+        return io.NodeOutput(torch.from_numpy(pixels)[None])
+
+
 class H3LoadClip(io.ComfyNode):
     """Part of a rendered clip from ComfyUI's output folder, with its sound."""
 
@@ -278,11 +310,7 @@ class H3LoadClip(io.ComfyNode):
 
     @classmethod
     def execute(cls, file, first, last) -> io.NodeOutput:
-        base = os.path.realpath(folder_paths.get_output_directory())
-        path = os.path.realpath(os.path.join(base, file))
-        if not path.startswith(base + os.sep) or not os.path.exists(path):
-            raise ValueError("no clip at %s in the output folder" % file)
-        video = InputImpl.VideoFromFile(path).get_components()
+        video = InputImpl.VideoFromFile(output_file(file)).get_components()
         frames = video.images
         stop = last or frames.shape[0]
         audio = video.audio
@@ -294,5 +322,5 @@ class H3LoadClip(io.ComfyNode):
         return io.NodeOutput(frames[first:stop], audio)
 
 
-NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip}
-NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip"}
+NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3LoadStill": H3LoadStill}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3LoadStill": "H3 Load Still"}

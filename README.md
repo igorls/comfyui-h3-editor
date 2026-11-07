@@ -19,6 +19,10 @@ Open H3 Editor from the ComfyUI sidebar. It is a full-screen timeline editor.
   join, so the cut does not show.
 - If you change a clip that another one joins, the joined clip is marked. Render
   it again to pick up the new frames.
+- Add pictures to Cast to keep a person or place the same across clips, and
+  choose who is in each clip. Write @Name in What happens to place them.
+- Give a clip a first or last frame by uploading one, or press Use playhead
+  frame to take the frame under the playhead.
 - Export joins the timeline with ffmpeg and does not use the GPU. A gap becomes
   black and silence.
 - Renders belong to the project, so closing or refreshing the editor does not

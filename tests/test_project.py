@@ -1,8 +1,8 @@
 import unittest
 
 from policy import bridge_spans, legal_length, video_span
-from project import active_take, clip_prompt, export_command, linked_length, new_project, render_graph, slug, snap_frames
-from prompting import compose_prompt
+from project import active_take, clip_prompt, export_command, frame_of, linked_length, new_project, render_graph, slug, snap_frames
+from prompting import compose_prompt, compose_reference_prompt, tag_subjects
 
 
 def clip(**extra):
@@ -26,6 +26,38 @@ class PromptTest(unittest.TestCase):
         text = compose_prompt("", "He turns.", first_frame=True)
         self.assertTrue(text.startswith("For the target video, at 0.00 seconds"))
         self.assertIn("\n\nintegrated_multimodal_description:", text)
+
+
+class ReferencePromptTest(unittest.TestCase):
+    tom = {"name": "Tom", "description": "the elderly keeper with a white beard"}
+    sea = {"name": "Sea", "description": "the black storm sea"}
+
+    def test_six_sections_in_order(self):
+        text = compose_reference_prompt("Cinematic", "@Tom walks.", subjects=[self.tom])
+        names = ["subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:"]
+        self.assertEqual(sorted(text.index(n) for n in names), [text.index(n) for n in names])
+        self.assertIn("[reference generation] <Subject 1> walks.", text)
+        self.assertIn("<Subject 1> is the elderly keeper with a white beard in <Picture 1>.", text)
+
+    def test_frames_take_the_first_picture_numbers(self):
+        text = compose_reference_prompt("", "@Tom walks.", subjects=[self.tom], first_frame=True, last_frame=True)
+        self.assertIn("<Picture 1> is the first frame of [Shot 1].", text)
+        self.assertIn("<Picture 2> is the last frame of [Shot 1].", text)
+        self.assertIn("in <Picture 3>.", text)
+        self.assertIn("The shot begins from <Picture 1>.", text)
+        self.assertIn("The shot ends on <Picture 2>.", text)
+        self.assertIn("[keyframe completion + reference generation]", text)
+
+    def test_an_unmentioned_subject_is_still_placed_in_the_shot(self):
+        text = compose_reference_prompt("", "Rain falls.", subjects=[self.tom])
+        self.assertIn("[Shot 1] <Subject 1> appears in the shot. Rain falls.", text)
+
+    def test_names_become_tags_whatever_the_case(self):
+        self.assertEqual(tag_subjects("@tom and @SEA", [self.tom, self.sea]), "<Subject 1> and <Subject 2>")
+
+    def test_a_speaker_can_be_a_subject(self):
+        text = compose_reference_prompt("", "@Tom turns.", subjects=[self.tom], speaker="@Tom", dialogue="Who goes there?")
+        self.assertIn("<Subject 1> (S1) says: <d>[English] Who goes there?</d>", text)
 
 
 class ProjectTest(unittest.TestCase):
@@ -61,6 +93,43 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(active_take({"takes": takes, "active": "t1"})["id"], "t1")
         self.assertEqual(active_take({"takes": takes})["id"], "t2")
         self.assertIsNone(active_take({"takes": []}))
+
+
+class CastTest(unittest.TestCase):
+    asset = {"file": "a.png", "subfolder": "p/assets"}
+
+    def project(self):
+        project = new_project("x")
+        project["cast"] = [
+            {"id": "a", "name": "Tom", "description": "the keeper", **self.asset},
+            {"id": "b", "name": "Sea", "description": "the sea", "file": "b.png", "subfolder": "p/assets"},
+        ]
+        return project
+
+    def test_a_clip_only_gets_the_cast_it_chose(self):
+        graph = render_graph(self.project(), "x", clip(cast=["b"]), "t1", "draft", 3)
+        self.assertEqual(graph["50"]["inputs"]["file"], "p/assets/b.png")
+        self.assertEqual(graph["10"]["inputs"]["ref_images.ref_image_0"], ["50", 0])
+        self.assertNotIn("51", graph)
+        self.assertIn("subject_definitions:", graph["10"]["inputs"]["prompt"])
+
+    def test_no_references_keeps_the_three_field_prompt(self):
+        graph = render_graph(self.project(), "x", clip(), "t1", "draft", 3)
+        self.assertTrue(graph["10"]["inputs"]["prompt"].startswith("integrated_multimodal_description:"))
+
+    def test_frames_set_the_anchor(self):
+        for extra, anchor in (({"first": self.asset}, "start"), ({"last": self.asset}, "end"),
+                              ({"first": self.asset, "last": self.asset}, "both"), ({}, "none")):
+            graph = render_graph(self.project(), "x", clip(**extra), "t1", "draft", 3)
+            self.assertEqual(graph["10"]["inputs"]["anchor"], anchor)
+        graph = render_graph(self.project(), "x", clip(first=self.asset), "t1", "draft", 3)
+        self.assertEqual(graph["10"]["inputs"]["start_image"], ["40", 0])
+
+    def test_a_held_end_ignores_a_frame_there(self):
+        self.assertIsNone(frame_of({"first": self.asset, "link": {"mode": "extend_after"}}, "first"))
+        self.assertEqual(frame_of({"last": self.asset, "link": {"mode": "extend_after"}}, "last"), self.asset)
+        self.assertIsNone(frame_of({"last": self.asset, "link": {"mode": "extend_before"}}, "last"))
+        self.assertIsNone(frame_of({"first": self.asset, "link": {"mode": "bridge"}}, "first"))
 
 
 class LinkTest(unittest.TestCase):

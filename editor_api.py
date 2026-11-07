@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 
 from aiohttp import web
 
@@ -105,6 +106,42 @@ async def probe(request):
     return web.json_response({"frames": int(out.strip().strip(",")), "poster": os.path.basename(poster)})
 
 
+def asset_target(name, extension):
+    folder = store.slug(name)
+    directory = os.path.join(root(), folder, "assets")
+    os.makedirs(directory, exist_ok=True)
+    file = uuid.uuid4().hex[:12] + extension
+    return os.path.join(directory, file), {"file": file, "subfolder": "%s/%s/assets" % (store.ROOT, folder)}
+
+
+async def upload(request):
+    """Keep an uploaded picture with the project."""
+    form = await request.post()
+    part = form.get("image")
+    if part is None or not hasattr(part, "file"):
+        raise web.HTTPBadRequest(text="choose a picture to upload")
+    extension = os.path.splitext(part.filename or "")[1].lower()
+    if extension not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise web.HTTPBadRequest(text="use a PNG, JPEG, or WebP picture")
+    target, asset = asset_target(request.match_info["name"], extension)
+    with open(target, "wb") as f:
+        f.write(part.file.read())
+    return web.json_response(asset)
+
+
+async def grab(request):
+    """Save one frame of a rendered clip as a picture."""
+    body = await request.json()
+    source = output_path(body.get("subfolder"), body["file"])
+    target, asset = asset_target(request.match_info["name"], ".png")
+    frame = max(0, int(body.get("frame", 0)))
+    await run(["ffmpeg", "-y", "-v", "error", "-i", source, "-vf", "select=eq(n\\,%s)" % frame,
+               "-vsync", "0", "-frames:v", "1", target])
+    if not os.path.exists(target):
+        raise web.HTTPBadRequest(text="that clip has no frame %s" % frame)
+    return web.json_response(asset)
+
+
 async def export(request):
     name = store.slug(request.match_info["name"])
     data = read_project(name)
@@ -138,6 +175,8 @@ ROUTES = (
     ("PUT", "/h3take/api/project/{name}", "save"),
     ("POST", "/h3take/api/project/{name}/graph", "graph"),
     ("POST", "/h3take/api/project/{name}/export", "export"),
+    ("POST", "/h3take/api/project/{name}/asset", "upload"),
+    ("POST", "/h3take/api/project/{name}/grab", "grab"),
     ("POST", "/h3take/api/probe", "probe"),
 )
 

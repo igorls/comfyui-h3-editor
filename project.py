@@ -6,9 +6,9 @@ Moving or trimming on the timeline never touches a render. No Comfy import.
 import re
 
 try:
-    from .prompting import compose_prompt
+    from .prompting import compose_prompt, compose_reference_prompt
 except ImportError:
-    from prompting import compose_prompt
+    from prompting import compose_prompt, compose_reference_prompt
 
 FPS = 24
 JOINT = 51
@@ -73,16 +73,40 @@ def load_node(side, hold, tail):
     return {"class_type": "H3LoadClip", "inputs": {"file": file, "first": first, "last": last}}
 
 
+def clip_cast(project, clip):
+    chosen = clip.get("cast") or []
+    return [c for c in project.get("cast", []) if c["id"] in chosen]
+
+
+def frame_of(clip, side):
+    """A first or last frame. A clip that holds real frames there has no use for one."""
+    link = clip.get("link")
+    if link and (link["mode"] == "bridge" or (side == "first") == (link["mode"] == "extend_after")):
+        return None
+    return clip.get(side)
+
+
 def clip_prompt(project, clip):
-    return compose_prompt(
-        project.get("style", ""),
-        clip.get("action", ""),
-        camera=clip.get("camera", ""),
-        speaker=clip.get("speaker", ""),
-        dialogue=clip.get("dialogue", ""),
-        sound=clip.get("sound", ""),
-        music=clip.get("music", ""),
-    )
+    fields = {
+        "camera": clip.get("camera", ""),
+        "speaker": clip.get("speaker", ""),
+        "dialogue": clip.get("dialogue", ""),
+        "sound": clip.get("sound", ""),
+        "music": clip.get("music", ""),
+    }
+    cast = clip_cast(project, clip)
+    first, last = frame_of(clip, "first"), frame_of(clip, "last")
+    if cast or first or last:
+        return compose_reference_prompt(
+            project.get("style", ""), clip.get("action", ""), subjects=cast,
+            first_frame=bool(first), last_frame=bool(last), **fields,
+        )
+    return compose_prompt(project.get("style", ""), clip.get("action", ""), **fields)
+
+
+def still_node(asset):
+    file = "%s/%s" % (asset["subfolder"], asset["file"]) if asset.get("subfolder") else asset["file"]
+    return {"class_type": "H3LoadStill", "inputs": {"file": file}}
 
 
 def render_graph(project, folder, clip, take, quality, seed):
@@ -120,9 +144,21 @@ def render_graph(project, folder, clip, take, quality, seed):
             "video": ["18", 0], "filename_prefix": "%s/%s/clips/%s_%s" % (ROOT, folder, clip["id"], take),
             "format": "auto", "codec": "auto"}},
     }
+    take_inputs = graph["10"]["inputs"]
+    first, last = frame_of(clip, "first"), frame_of(clip, "last")
+    if first:
+        graph["40"] = still_node(first)
+        take_inputs["start_image"] = ["40", 0]
+    if last:
+        graph["41"] = still_node(last)
+        take_inputs["end_image"] = ["41", 0]
+    take_inputs["anchor"] = "both" if first and last else "start" if first else "end" if last else "none"
+    for index, member in enumerate(clip_cast(project, clip)):
+        node = str(50 + index)
+        graph[node] = still_node(member)
+        take_inputs["ref_images.ref_image_%s" % index] = [node, 0]
     if link:
         hold = int(link["hold"])
-        take_inputs = graph["10"]["inputs"]
         graph["6"] = load_node(link["a"], hold, link["mode"] != "extend_before")
         take_inputs.update({
             "video_mode": link["mode"], "hold_frames": hold, "audio_hold": "span",
