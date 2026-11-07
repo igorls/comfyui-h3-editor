@@ -44,6 +44,10 @@ Open H3 Editor from the ComfyUI sidebar. It is a full-screen timeline editor.
 - Give a cast member a voice, uploaded or taken from a clip on the timeline, or
   add a voice with no picture for a narrator. Write @Name in Who speaks and
   their lines use that voice.
+- Picture to a track: a clip can hold a recorded sound, such as an approved
+  narration, and its picture is generated to it. Extend forward carries on with
+  the next part of the same track, so a long talking performance can be built
+  from short windows. Each take keeps the exact sound.
 - Two editors, or an editor and an agent, can work on one project at once.
   Changes are merged, and every change is a revision you can go back to.
 
@@ -70,6 +74,11 @@ Everything the editor does is an HTTP call, so an agent can build and render a
 cut without a browser. Routes are under `/h3take/api`, and `{name}` is the
 project's folder name.
 
+For agents there is a skill in [skills/h3-editor](skills/h3-editor/SKILL.md). It
+teaches the whole workflow, from shot list to export, and comes with
+`scripts/h3.py`, a client that needs only Python. Copy the folder into an
+agent's skills folder to install it.
+
 | Route | Does |
 |---|---|
 | `GET /projects`, `POST /projects` | List projects, or create one from `{"name"}` |
@@ -81,13 +90,14 @@ project's folder name.
 | `POST /project/{name}/grab_sound` | Part of a clip's sound as a voice: `{"file", "subfolder", "first", "last"}` |
 | `POST /project/{name}/export` | Joins the timeline into one video |
 | `GET /project/{name}/history`, `POST /project/{name}/restore` | Revisions, and going back to one |
+| `POST /sheet` | Twelve frames from across a clip in one picture, to judge a take at a glance |
 
 An operation is an object with an `op`. `as` names its result, so later
 operations in the batch can write `"$name"` for the clip or item it made.
 
 | op | Takes |
 |---|---|
-| `add_clip` | `fields`: name, action, camera, speaker, dialogue, sound, music, seconds, cast, seed, first, last, language. Optional `start` |
+| `add_clip` | `fields`: name, action, camera, speaker, dialogue, sound, music, seconds, cast, seed, first, last, language, track. Optional `start` |
 | `update_clip`, `remove_clip`, `place_clip` | `clip`, and `fields` or `start` |
 | `update_item` | `item`, `fields`: start, in, out, speed, transition. `ripple` moves the clips after it |
 | `remove_item`, `split_item`, `close_gap` | `item` with `ripple`, `item` with `frame`, or an optional `frame` |

@@ -6,6 +6,7 @@ ANCHORS = ("none", "start", "end", "both")
 VIDEO_MODES = ("off", "v2v", "extend_after", "extend_before", "extend_both", "bridge")
 CHECKPOINTS = ("ref2va", "fl2va")
 AUDIO_HOLDS = ("off", "span", "full")
+AUDIO_ALIGNS = ("video", "take")
 FPS = 24
 AUDIO_HZ = 40
 MAX_PICTURES = 9
@@ -213,16 +214,20 @@ def latent_frames(steps):
     return ((int(steps) - 2) // 5) * 17 + 5
 
 
-def audio_window(mode, span, length, audio_seconds):
+def audio_window(mode, span, length, audio_seconds, align="video"):
     """Which audio ticks of the take are held, and where they come from in the source.
 
     span holds the source audio across the held video. full lays the source
-    along the whole take, lined up with the held video when there is one, so
-    the picture can be generated to an existing track. Ticks outside the
-    source audio stay generated.
+    along the whole take, so the picture can be generated to an existing track.
+    With align video it lines up with the held video, when there is one. With
+    align take it starts at the take's first frame whatever is held, which is
+    how a long track continues through extensions and bridges. Ticks outside
+    the source audio stay generated.
     """
     if mode not in AUDIO_HOLDS:
         raise ValueError("audio hold must be one of %s" % (AUDIO_HOLDS,))
+    if align not in AUDIO_ALIGNS:
+        raise ValueError("audio align must be one of %s" % (AUDIO_ALIGNS,))
     if mode == "off":
         return None
     if audio_seconds is None or float(audio_seconds) <= 0:
@@ -237,7 +242,7 @@ def audio_window(mode, span, length, audio_seconds):
     else:
         first = 0
         ticks = total
-        offset = (span["source_start"] - span["insert"]) if span is not None else 0
+        offset = (span["source_start"] - span["insert"]) if span is not None and align == "video" else 0
         source_second = offset / float(FPS)
     if source_second < 0:
         skip = int(math.ceil(-source_second * AUDIO_HZ))

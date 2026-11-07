@@ -11,6 +11,7 @@ from PIL import Image, ImageOps
 
 from .latent_writer import carry_tail, encode_audio, encode_video, write_holds
 from .policy import (
+    AUDIO_ALIGNS,
     ANCHORS,
     AUDIO_HOLDS,
     CHECKPOINTS,
@@ -109,6 +110,9 @@ class H3Take(io.ComfyNode):
                 io.Autogrow.Input("ref_audios", optional=True, template=io.Autogrow.TemplatePrefix(
                     input=io.Audio.Input("ref_audio", tooltip="A voice or sound the model may use."),
                     prefix="ref_audio_", min=0, max=MAX_REF_AUDIOS)),
+                io.Combo.Input("audio_align", options=list(AUDIO_ALIGNS), default="video", optional=True,
+                               tooltip="With audio_hold full: video lines the source audio up with the held video, "
+                                       "take starts it at the take's first frame."),
             ],
             outputs=[
                 io.Conditioning.Output(display_name="positive"),
@@ -122,7 +126,7 @@ class H3Take(io.ComfyNode):
                 hold_frames, strength, keep, align, video_feather, audio_hold, audio_feather, ref_image_size,
                 audio_vae=None, start_image=None, end_image=None, mid_images=None, source_video=None, end_video=None,
                 end_audio=None, carry=None, region=None, source_audio=None, ref_images=None, ref_videos=None, ref_video_audios=None,
-                ref_audios=None) -> io.NodeOutput:
+                ref_audios=None, audio_align="video") -> io.NodeOutput:
         keep = resolve_keep(strength, keep)
         second = None
         if video_mode == "bridge":
@@ -132,8 +136,8 @@ class H3Take(io.ComfyNode):
                 frame_count(source_video, "source video"), frame_count(end_video, "end video"),
                 length, hold_frames=hold_frames, align=align, keep=keep,
             )
-            window = audio_window(audio_hold, span, length, audio_seconds(source_audio))
-            end_window = audio_window(audio_hold, end_span, length, audio_seconds(end_audio))
+            window = audio_window(audio_hold, span, length, audio_seconds(source_audio), audio_align)
+            end_window = audio_window(audio_hold, end_span, length, audio_seconds(end_audio), audio_align)
             second = (end_span, end_video, end_audio, end_window)
         elif carry is not None:
             if source_video is not None or video_mode != "off":
@@ -146,7 +150,7 @@ class H3Take(io.ComfyNode):
         else:
             source_frames = frame_count(source_video, "source video") if source_video is not None else 0
             span = video_span(video_mode, source_frames, length, hold_frames=hold_frames, align=align, keep=keep)
-            window = audio_window(audio_hold, span, length, audio_seconds(source_audio))
+            window = audio_window(audio_hold, span, length, audio_seconds(source_audio), audio_align)
         soft = [image for _, image in ordered(ref_images)]
         mids = [image for _, image in ordered(mid_images)]
         videos = ordered(ref_videos)
@@ -303,16 +307,19 @@ class H3LoadSound(io.ComfyNode):
             description="Read a sound file from the output folder. Used by the editor for cast voices.",
             inputs=[
                 io.String.Input("file", tooltip="Path inside the output folder."),
-                io.Float.Input("seconds", default=30.0, min=1.0, max=120.0, step=0.5, tooltip="Reads at most this much from the start."),
+                io.Float.Input("start", default=0.0, min=0.0, max=36000.0, step=0.001, tooltip="Seconds into the file to start reading."),
+                io.Float.Input("seconds", default=30.0, min=0.1, max=600.0, step=0.5, tooltip="Reads at most this much."),
             ],
             outputs=[io.Audio.Output(display_name="audio")],
         )
 
     @classmethod
-    def execute(cls, file, seconds) -> io.NodeOutput:
+    def execute(cls, file, start, seconds) -> io.NodeOutput:
         rate = 48000
+        # Decoding from the start and trimming after is sample accurate, unlike seeking in compressed audio.
         pcm = subprocess.run(
-            ["ffmpeg", "-v", "error", "-i", output_file(file), "-t", str(seconds), "-vn", "-ac", "2", "-ar", str(rate), "-f", "f32le", "-"],
+            ["ffmpeg", "-v", "error", "-i", output_file(file), "-vn", "-af", "atrim=start=%.6f:duration=%.6f" % (start, seconds),
+             "-ac", "2", "-ar", str(rate), "-f", "f32le", "-"],
             capture_output=True, check=False)
         if pcm.returncode != 0 or not pcm.stdout:
             raise ValueError("could not read sound from %s: %s" % (file, pcm.stderr.decode(errors="replace")[-300:]))

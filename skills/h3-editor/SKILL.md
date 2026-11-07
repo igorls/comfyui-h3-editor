@@ -1,0 +1,248 @@
+---
+name: h3-editor
+description: Make videos with the H3 Editor, the timeline video editor for MiniMax H3 that runs inside the user's ComfyUI. Plan shots, generate them as drafts, review them, join them with generated extensions and bridges, add real footage and pictures, give characters and narrators consistent faces and voices, and export the cut. Use this skill whenever the user wants a video, ad, teaser, explainer, product demo, trailer, or scene made or edited with H3, MiniMax, ComfyUI, or "the editor", or hands you a script, storyboard, or shot list to turn into video, even if they never say "H3 Editor".
+---
+
+# H3 Editor
+
+The H3 Editor is a timeline editor that lives inside the user's ComfyUI. Each clip is
+rendered by MiniMax H3 as a video with sound. The timeline only points at those
+renders, so moving, trimming, splitting, speed changes and transitions never render
+anything again. A new render of a clip becomes another take; the clip keeps all of them.
+
+You drive it over HTTP with `scripts/h3.py`, which needs only Python. The user can have
+the editor open in ComfyUI while you work: your changes appear there as you make them,
+and theirs merge with yours. Treat it as a shared cutting room, not a file you own.
+
+Read `references/api.md` when you need an operation's exact fields, the summary format,
+or the rules for linked clips. Everything else you need is here.
+
+## Before you start
+
+1. Run `python scripts/h3.py check`. If it cannot reach the editor, tell the user. The
+   editor runs in their ComfyUI and renders on its GPU, so never start a ComfyUI of
+   your own or render some other way. If ComfyUI is somewhere other than
+   `http://127.0.0.1:8188`, set `H3_EDITOR_URL` or pass `--url`.
+2. Pin down the brief: how long the cut runs, its shape (16:9, 9:16 or 1:1), the
+   language people speak, who appears, the look, and any real material to use such as
+   screen recordings, product shots or logos. Ask for what you cannot infer. A wrong
+   guess about format or language costs a full set of renders.
+
+## How a cut gets made
+
+1. **Write the shot list first.** One line per shot: what we see and hear, how long it
+   runs, who is in it, what is said. Shots of 2 to 8 seconds work best. H3 makes one
+   continuous shot per render, so a cut is several clips.
+2. **Create the project** with `python scripts/h3.py create "Morning teaser"`. It
+   prints the project's folder name, here `Morning_teaser`, which every later command
+   takes. Then set it up in one batch: `set_project` with the style, the format and the
+   language, then the cast (see below).
+3. **Add every clip in one batch** with `add_clip`, then render them all as drafts.
+   Drafts are small and fast. They exist to judge the idea, the framing and the
+   timing.
+4. **Wait, then look at every draft.** `python scripts/h3.py wait PROJECT` blocks until
+   nothing is rendering. `look PROJECT` then saves a sheet of 12 frames for every clip on
+   the timeline, and prints the paths. Open each one. Check the subject, framing, motion,
+   continuity with its neighbours, and anything that came out wrong. For faces, hands or
+   lettering, `look PROJECT CLIP --detail` gives 4 large frames, and `--first`/`--last`
+   narrow it to part of the take. A summary line that says `draft` only means the
+   render finished, not that it is good.
+5. **Fix what is wrong.** Rewrite the clip's action and render it again, which makes a
+   new take. To render variations of a result you like, set its seed on the clip.
+   `choose_take` switches between takes. Tell the user which shots you redid and why.
+6. **Join shots that must flow.** An ordinary cut between clips is fine when the camera
+   changes. When the action must continue, use the linked clips described below
+   instead of hoping two renders match.
+7. **Render finals only for the clips you keep**, after the user has seen the drafts if
+   they are around. Say what it will cost first (see Costs). A final is a new render at
+   a larger size. Even with the draft's seed set on the clip, it will not repeat the
+   draft frame for frame: expect the same idea with different details, and look at the
+   finals as carefully as the drafts. Export takes its size from the first clip on the
+   timeline, so an all-draft cut exports at draft size.
+8. **Export** and report back (see Reporting).
+
+## Batches
+
+Every edit goes through `ops`: a JSON list of operations, applied together or not at all.
+Write it to a file, then run `python scripts/h3.py ops PROJECT shots.json`. Name a result
+with `as`, and later operations in the same batch can use `"$name"` for its clip or
+timeline item.
+
+```json
+[
+  {"op": "set_project", "fields": {"style": "Live-action, cinematic, soft daylight", "format": "16:9", "language": "English"}},
+  {"op": "add_clip", "as": "open", "fields": {"name": "Desk", "seconds": 4,
+    "action": "A mug of coffee steams on a wooden desk by a rain-streaked window.",
+    "camera": "Slow push in"}},
+  {"op": "add_clip", "as": "phone", "fields": {"name": "Phone", "seconds": 3,
+    "action": "A smartphone on the desk lights up with a new message. A hand picks it up."}},
+  {"op": "render", "clip": "$open"},
+  {"op": "render", "clip": "$phone"}
+]
+```
+
+`render` makes a draft unless you add `"quality": "final"`. The reply lists what each
+operation made, labelled with its `op` and `as`, and then the summary. Ids change as clips are
+added and removed. The user may also be editing, so read `summary` again before a batch
+that refers to existing items, rather than reusing ids from memory. If a batch is
+refused, the error names the operation and the reason, and nothing changed.
+
+## Writing a shot
+
+The editor writes the actual H3 prompt from a clip's fields, in the structure MiniMax's
+prompt guides ask for. Your job is the fields.
+
+- **action** is the shot itself: what we see and hear, in the order it happens,
+  in plain present tense. Be concrete about people, place, light and movement. Keep
+  it to one continuous shot with no cuts inside it. Write it in English, whatever
+  language people speak.
+- **camera** is framing and movement: "Close-up, handheld", "Slow dolly out".
+- **style** belongs to the project and goes into every clip, so do not repeat it.
+- **dialogue** is the exact words spoken, in their own language. Set the project's
+  `language` to match, or a clip's `language` when that line differs. **speaker** says
+  who talks, for example "The barista, cheerful". Allow about 2.5 words per second of
+  clip, or the line gets rushed or cut. H3 decides where in the shot a line falls.
+  Phrases like "at the very end of the shot" help a little, but when a line must land
+  on a precise moment, make that moment its own short shot, or record the line and
+  use a track (below).
+- **sound** is the soundscape, and **music** is music laid under the shot. Music is
+  made per clip, so it changes at every cut. There is no music bed across the
+  timeline yet. For a continuous score, leave music empty and tell the user to lay
+  one over the export.
+- H3 draws short words fairly well when you spell them out, for example "a sign with
+  the word OPEN in large white capital letters". Check the detail sheet. It cannot
+  reproduce logos, long text or a real app's interface. For product screens, logos and
+  anything that must be exact, import the real recording or picture. Then generate the
+  shots around it, or extend and bridge from it.
+
+H3 renders set lengths, so `seconds` snaps to the nearest one. The reply and the
+summary show the real frame counts at 24 fps.
+
+| seconds asked | 2 | 3 | 4 | 4.5 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| frames rendered | 56 | 73 | 90 | 107 | 124 | 141 | 175 | 192 |
+| seconds rendered | 2.33 | 3.04 | 3.75 | 4.46 | 5.17 | 5.88 | 7.29 | 8.00 |
+
+## Cast: same face, same voice
+
+Upload a picture with `python scripts/h3.py asset PROJECT face.png`, then use the
+returned asset in `add_cast` with a name and a description. Choose who is in a clip with
+its `cast` field, and write `@Name` in its action to place them. A cast member keeps the
+same face and look from clip to clip.
+
+A voice works the same way. Give a cast member a `voice` asset, or add a voice with no
+picture, such as a narrator. Write `@Name` in a clip's speaker field, for example
+`"@Narrator, off-screen"`. Every line they say then uses that voice's timbre. A cast
+member needs a picture or a voice to exist, so get the voice first:
+
+- upload a clean recording of it, 5 to 30 seconds, with `asset`; or
+- make a voice sample: a clip of 6 seconds or more with `place: false`, where only
+  this person speaks a few sentences, with `sound` set to "No sound effects, no room
+  noise, no music, only the voice". Render it, then run `voice-from PROJECT CLIP`.
+  It takes the whole sound of the clip, so anything else in it ends up in the voice.
+
+Then `add_cast` with the voice asset and a description of how they sound, for example
+"a warm, calm female narrator in her forties". Render the lines that use it after that.
+A clip only uses the voice when it has dialogue. You cannot hear, so you cannot judge a
+voice or a line. Tell the user which clips to listen to, rather than claiming they sound
+right.
+
+## Picture to a recorded track
+
+When the sound already exists, hold it and have the picture generated to it, instead of
+generating new speech. Examples are an approved narration, a voice-over from a speech
+service, or an interview. This is how a talking presenter follows a fixed take, lips and
+all.
+
+1. Upload the sound with `asset`. MP3, WAV and the like all work.
+2. Make the first window an ordinary `add_clip` with a `track` field: the asset plus
+   `from`, the second of the sound where this clip's first frame sits, usually 0. Add
+   `dialogue` with the words spoken in that window, which helps the mouth, and
+   `language`. Use `cast` for the presenter's identity, and `first` to start exactly on
+   an approved still. About 5 seconds per window works well.
+3. Render it and look at it. Then `extend_after` from its timeline item. The new clip
+   holds the next slice of the same track by itself, and keeps the cast. Give it an
+   action and, in `fields`, the next words. Repeat until the track is covered. Each
+   extension needs its source rendered first, so this is a loop of render, wait,
+   extend. At the default 4.25 seconds, each one adds 102 new frames.
+4. When a take finishes, the server replaces its sound with that exact slice of the
+   track: sample aligned, level untouched. The cut plays the track straight through,
+   with no drift at the joins.
+
+Keep those items at 100% speed. If you trim a clip in the chain after its extension was
+rendered, the extension shows `source changed` and needs another render. A cast voice is
+ignored on a clip that holds a track, because the track already is the voice. To find the
+words for each window, use word timings if the user has them. A window starting at `from`
+covers about `from` to `from + seconds`.
+
+## Linked clips: extend, bridge, merge
+
+These generate new footage from frames already on the timeline. They hold 39 real
+frames and their sound, so the join does not show. The source item must be rendered.
+
+| op | Use it when |
+|---|---|
+| `extend_after` | The shot should carry on: what happens next, same camera |
+| `extend_before` | You need what led up to a shot |
+| `bridge` | Two rendered shots should connect through new footage. It is placed between them and pushes the later one along |
+| `merge` | Two side-by-side shots should become one continuous move. It replaces their join and keeps the length of the scene |
+
+Give each one an `action` describing the new part, plus `seconds` for extend and bridge.
+Linked clips render like any other. When a source changes later, the summary marks the
+linked clip `source changed`, and it needs another render.
+
+## Footage and pictures
+
+`python scripts/h3.py import PROJECT recording.mp4` turns a real video into footage. It
+is fitted to the project's size at 24 fps, gets a sound track, and is placed at the end
+of the timeline. Use `--fit contain`, the default, for screen recordings, so nothing is
+cut off. Use `--fit cover` to fill the frame. `--from` and `--to` take part of a long
+recording. A picture becomes a still clip of `--seconds` seconds. Footage trims, moves
+and joins like a render and can be extended or bridged, but it is never rendered itself.
+For a file already in ComfyUI's input folder, see the import route in the reference.
+
+## Costs
+
+Renders queue on the user's GPU one at a time. Measured with the models loaded:
+
+- a draft (640x352, 4 steps) takes 10 to 15 seconds per clip;
+- a final (1344x768, 8 steps) takes about 25 seconds of GPU per second of footage. A
+  4 second shot takes around 100 seconds;
+- the first render after ComfyUI starts also loads the models.
+
+Draft freely. Before a batch of finals, tell the user how many clips and roughly how long
+it will take. While renders run, there is nothing to poll: `wait` returns when they finish.
+
+`look` saves its sheets under `h3-look/<project>` in the system's temporary folder unless
+you pass `--out`. Keep downloads and batch files out of the skill's own folder.
+
+## Working alongside the user
+
+- They may be watching or editing in the editor. Your batches merge with their edits.
+  Do not reverse a change they made unless they ask.
+- Every change is a revision. `history` lists them, and `restore` goes back to one
+  without losing takes rendered since. Use it to recover from a bad batch.
+- Never delete a project, a clip with takes the user may want, or files in the output
+  folder unless the user asks.
+
+## Checking the cut
+
+`python scripts/h3.py summary PROJECT` shows the timeline with timecodes, item and clip
+ids, and each clip's state. Before you export, check:
+
+- no clip is `not rendered`, `rendering` or `failed`. A failed clip's error says why;
+- no gaps, because a gap exports as black and silence. `close_gap` without a frame
+  closes all of them;
+- nothing is `source changed`;
+- the total length matches the brief.
+
+## Reporting
+
+When you hand back, tell the user:
+
+- the project name to open in H3 Editor, and where the export landed. Exports go to
+  ComfyUI's output folder under `h3take_projects/<project>/exports/`;
+- the shots, in order, with what each shows and whether it is a draft or a final;
+- what you could not judge, for example how a line sounds. You can see frames but
+  cannot hear the audio, so say so, and ask the user to listen;
+- what is left, such as finals to render or shots to redo.

@@ -101,8 +101,11 @@ def clip_language(project, clip):
 
 
 def clip_voice(project, clip):
-    """The cast member whose voice the speaker uses: named with @ in Who speaks, and holding a voice."""
-    if not str(clip.get("dialogue", "")).strip():
+    """The cast member whose voice the speaker uses: named with @ in Who speaks, and holding a voice.
+
+    A clip that holds a track already has its sound, so it never takes a voice reference.
+    """
+    if not str(clip.get("dialogue", "")).strip() or clip.get("track"):
         return None
     speaker = str(clip.get("speaker", "")).lower()
     named = [p for p in project.get("cast", []) if p.get("voice") and "@" + p["name"].lower() in speaker]
@@ -224,7 +227,7 @@ def render_graph(project, folder, clip, take, quality, seed):
     if voice:
         sound = voice["voice"]
         file = "%s/%s" % (sound["subfolder"], sound["file"]) if sound.get("subfolder") else sound["file"]
-        graph["60"] = {"class_type": "H3LoadSound", "inputs": {"file": file, "seconds": 30.0}}
+        graph["60"] = {"class_type": "H3LoadSound", "inputs": {"file": file, "start": 0.0, "seconds": 30.0}}
         take_inputs["ref_audios.ref_audio_0"] = ["60", 0]
     if link:
         hold = int(link["hold"])
@@ -241,6 +244,15 @@ def render_graph(project, folder, clip, take, quality, seed):
                 "end_video": ["7", 0], "end_audio": ["7", 1],
                 "mid_frames": str(length - hold), "mid_images.mid_image_0": ["8", 0],
             })
+    track = clip.get("track")
+    if track:
+        # The picture is generated to this slice of the track, laid from the take's first frame.
+        file = "%s/%s" % (track["subfolder"], track["file"]) if track.get("subfolder") else track["file"]
+        graph["61"] = {"class_type": "H3LoadSound", "inputs": {
+            "file": file, "start": float(track.get("from") or 0), "seconds": round(length / float(FPS) + 1.0, 3)}}
+        take_inputs.update({"audio_hold": "full", "audio_align": "take", "source_audio": ["61", 0]})
+        if link and link["mode"] == "bridge":
+            take_inputs["end_audio"] = ["61", 0]
     return graph
 
 
@@ -363,13 +375,13 @@ def export_command(project, paths, out_path, width=None, height=None):
 HOLD = 39
 MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
-               "first", "last", "language")
+               "first", "last", "language", "track")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
 PROJECT_FIELDS = ("style", "format", "language")
 CAST_FIELDS = ("name", "description", "voice")
 LINK_MODES = ("extend_after", "extend_before", "bridge", "merge")
 LINK_TITLES = {"extend_after": "After ", "extend_before": "Before ", "bridge": "Bridge from ", "merge": "Merge from "}
-SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast")
+SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track")
 
 
 def new_id(prefix):
@@ -488,7 +500,37 @@ def clean_clip_fields(fields):
     for side in ("first", "last"):
         if side in out:
             out[side] = clean_asset(out[side], "a %s frame" % side)
+    if "track" in out:
+        out["track"] = clean_track(out["track"])
     return out
+
+
+def clean_track(value):
+    """A sound the picture is generated to: an asset, and the second of it where the clip's first frame sits."""
+    if value is None:
+        return None
+    asset = clean_asset(value, "a track")
+    start = float(value.get("from") or 0)
+    if not math.isfinite(start) or start < 0:
+        raise ValueError("a track's from is the second of the sound where the clip starts, 0 or more")
+    asset["from"] = round(start, 6)
+    return asset
+
+
+def continued_track(source, item, mode, frames):
+    """The slice of the source's track a linked clip holds, so one long performance carries on across clips."""
+    track = source.get("track")
+    if not track:
+        return None
+    if clean_speed(item.get("speed")) != 1:
+        raise ValueError("set %s to 100%% speed to continue its track" % source["name"])
+    if mode == "extend_before":
+        start = track["from"] + (item["in"] - (frames - HOLD)) / float(FPS)
+        if start < -1e-6:
+            raise ValueError("the track starts %.2f s too late for this extension. Use fewer seconds" % -start)
+    else:
+        start = track["from"] + (item["out"] - HOLD) / float(FPS)
+    return dict(track, **{"from": round(max(0.0, start), 6)})
 
 
 def place_clip(project, clip_id, start=None):
@@ -518,7 +560,7 @@ def update_clip(project, clip_id, fields):
     fields = clean_clip_fields(fields)
     before = planned_frames(clip)
     for key, value in fields.items():
-        if value is None and key in ("first", "last"):
+        if value is None and key in ("first", "last", "track"):
             clip.pop(key, None)
         else:
             clip[key] = value
@@ -749,6 +791,11 @@ def add_linked(project, item_id, mode, seconds=None, action=""):
     clip = {"id": new_id("c"), "name": LINK_TITLES[mode] + source["name"], "action": action or default,
             "camera": "", "speaker": "", "dialogue": "", "sound": "", "music": "", "seconds": seconds,
             "takes": [], "active": None, "link": link}
+    if source.get("cast"):
+        clip["cast"] = list(source["cast"])
+    track = continued_track(source, item, link["mode"], linked_length(link, seconds))
+    if track:
+        clip["track"] = track
     project["clips"].append(clip)
     first, last = linked_range(link, linked_length(link, seconds))
     length = last - first
@@ -881,6 +928,9 @@ def plan_render(project, folder, clip_id, quality, seed=None):
     graph = render_graph(project, folder, clip, take, quality, int(seed))
     job = {"clip": clip_id, "take": take, "quality": quality, "seed": int(seed),
            "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS}}
+    if clip.get("track"):
+        # Once rendered, the take's sound is replaced by this exact slice of the track.
+        job["track"] = dict(clip["track"], seconds=graph["10"]["inputs"]["length"] / float(FPS))
     return job, graph
 
 
@@ -1016,11 +1066,15 @@ def describe(project):
         entry = {"id": clip["id"], "name": clip["name"], "state": clip_state(project, clip),
                  "seconds": clip.get("seconds"), "action": clip.get("action", ""), "takes": len(clip.get("takes") or [])}
         if take:
-            entry.update({"take": take["id"], "frames": take["frames"], "seed": take.get("seed"), "quality": take.get("quality")})
+            entry.update({"take": take["id"], "frames": take["frames"], "take_seed": take.get("seed"), "quality": take.get("quality")})
+        if clip.get("seed") is not None:
+            entry["seed"] = clip["seed"]
         if clip.get("link"):
             entry["link"] = clip["link"]["mode"]
         if clip.get("kind") == "footage":
             entry["footage"] = True
+        if clip.get("track"):
+            entry["track"] = {"file": clip["track"]["file"], "from": clip["track"]["from"]}
         if clip.get("error"):
             entry["error"] = clip["error"]
         for name in ("speaker", "dialogue", "cast"):
@@ -1077,6 +1131,10 @@ def apply_op(project, op, names):
     kind = op["op"]
     clip_id = _resolve(op.get("clip"), names, "clip")
     item_id = _resolve(op.get("item"), names, "item")
+    fields = op.get("fields")
+    if isinstance(fields, dict) and isinstance(fields.get("cast"), list):
+        # A cast member added earlier in the batch can be named in a clip's cast list.
+        op = dict(op, fields=dict(fields, cast=[_resolve(c, names, "cast") for c in fields["cast"]]))
     if kind == "add_clip":
         clip, item = add_clip(project, op.get("fields") or {}, op.get("start"), op.get("place", True))
         result = {"clip": clip["id"], "item": item["id"] if item else None}

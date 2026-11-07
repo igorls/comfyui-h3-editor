@@ -262,6 +262,79 @@ class LanguageAndVoiceTest(unittest.TestCase):
         self.assertNotIn("<Audio 1>", store.clip_prompt(project, clip))
 
 
+class TrackTest(unittest.TestCase):
+    track = {"file": "narration.mp3", "subfolder": "h3take_projects/Test/assets", "from": 0}
+
+    def presenter(self):
+        project = new_project("Test")
+        clip, item = add_clip(project, {"action": "A woman talks to the camera.", "seconds": 5, "track": self.track})
+        return project, clip, item
+
+    def test_a_clip_is_generated_to_its_slice_of_the_track(self):
+        project, clip, _ = self.presenter()
+        graph = store.render_graph(project, "Test", clip, "t1", "draft", 1)
+        inputs = graph["10"]["inputs"]
+        self.assertEqual((inputs["audio_hold"], inputs["audio_align"], inputs["source_audio"]), ("full", "take", ["61", 0]))
+        self.assertEqual(graph["61"]["inputs"]["file"], "h3take_projects/Test/assets/narration.mp3")
+        self.assertEqual(graph["61"]["inputs"]["start"], 0.0)
+        job, _ = plan_render(project, "Test", clip["id"], "draft")
+        self.assertAlmostEqual(job["track"]["seconds"], 124 / 24.0)
+
+    def test_an_extension_holds_the_next_slice(self):
+        project, clip, item = self.presenter()
+        accept_take(project, clip["id"], take("t0", 124))
+        after, placed = add_linked(project, item["id"], "extend_after", seconds=4.25, action="She keeps talking.")
+        # Its first frame is the first held frame, 39 before the end of the source.
+        self.assertAlmostEqual(after["track"]["from"], (124 - 39) / 24.0, places=5)
+        # The timeline shows it from frame 39, so the track runs on without a jump at the cut.
+        self.assertAlmostEqual(after["track"]["from"] + placed["in"] / 24.0, item_end(item) / 24.0, places=5)
+        graph = store.render_graph(project, "Test", after, "t2", "draft", 1)
+        self.assertEqual(graph["10"]["inputs"]["source_audio"], ["61", 0])
+        self.assertEqual(graph["10"]["inputs"]["source_video"], ["6", 0])
+
+    def test_a_chain_keeps_the_track_in_step(self):
+        project, clip, item = self.presenter()
+        accept_take(project, clip["id"], take("t0", 124))
+        for index in range(3):
+            clip, item = add_linked(project, item["id"], "extend_after", seconds=4.25)
+            accept_take(project, clip["id"], take("t%s" % (index + 1), clip_frames(clip)))
+            self.assertAlmostEqual(clip["track"]["from"] + item["in"] / 24.0, item["start"] / 24.0, places=5)
+
+    def test_extending_before_the_start_of_the_track_is_refused(self):
+        project, clip, item = self.presenter()
+        accept_take(project, clip["id"], take("t0", 124))
+        with self.assertRaisesRegex(ValueError, "too late"):
+            add_linked(project, item["id"], "extend_before")
+
+    def test_a_track_needs_full_speed_to_continue(self):
+        project, clip, item = self.presenter()
+        accept_take(project, clip["id"], take("t0", 124))
+        set_speed(project, item["id"], 2)
+        with self.assertRaisesRegex(ValueError, "100% speed"):
+            add_linked(project, item["id"], "extend_after")
+
+    def test_linked_clips_keep_the_cast(self):
+        project, clip, item = self.presenter()
+        update_clip(project, clip["id"], {"cast": ["p1"]})
+        accept_take(project, clip["id"], take("t0", 124))
+        after, _ = add_linked(project, item["id"], "extend_after")
+        self.assertEqual(after["cast"], ["p1"])
+
+    def test_a_track_takes_the_place_of_a_voice(self):
+        project, clip, _ = self.presenter()
+        store.add_cast(project, {"name": "Ana", "voice": {"file": "v.wav", "subfolder": "s"}})
+        update_clip(project, clip["id"], {"speaker": "@Ana", "dialogue": "Oi!"})
+        self.assertNotIn("60", store.render_graph(project, "Test", clip, "t1", "draft", 1))
+
+    def test_a_bad_from_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "0 or more"):
+            add_clip(new_project("Test"), {"action": "x", "track": dict(self.track, **{"from": -1})})
+
+
+def clip_frames(clip):
+    return store.linked_length(clip["link"], clip["seconds"])
+
+
 class FormatTest(unittest.TestCase):
     def test_a_vertical_project_renders_vertical(self):
         project = new_project("Test")
@@ -293,6 +366,13 @@ class BatchTest(unittest.TestCase):
         apply_op(project, {"op": "update_clip", "clip": "$open", "fields": {"name": "Opening"}}, names)
         self.assertEqual(project["clips"][0]["name"], "Opening")
         self.assertEqual(project["timeline"][0]["start"], 10)
+
+    def test_a_new_cast_member_can_be_named_in_the_same_batch(self):
+        project = new_project("Test")
+        names = {}
+        apply_op(project, {"op": "add_cast", "as": "her", "fields": {"name": "Ana", "file": "a.png"}}, names)
+        apply_op(project, {"op": "add_clip", "fields": {"action": "Ana talks.", "cast": ["$her"]}}, names)
+        self.assertEqual(project["clips"][0]["cast"], [project["cast"][0]["id"]])
 
     def test_an_unknown_name_is_refused(self):
         with self.assertRaisesRegex(ValueError, r"\$nope"):

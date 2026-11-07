@@ -177,6 +177,40 @@ async def strip(request):
     return web.json_response(await make_strip(path, int(body.get("frames") or 1)))
 
 
+async def sheet(request):
+    """Frames from a clip in one grid, large enough for someone, or an agent, to judge it.
+
+    By default 12 frames spread across the whole clip, 384 pixels wide each. first and last narrow
+    the range, count sets how many frames (1 to 24), and tile_width how wide each one is.
+    """
+    body = await request.json()
+    path = output_path(body.get("subfolder"), body["filename"])
+    if not os.path.exists(path):
+        raise web.HTTPNotFound(text="that clip is gone")
+    frames = int(body.get("frames") or 0)
+    if frames <= 0:
+        out = await run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets",
+                         "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", path])
+        frames = int(out.strip().strip(","))
+    try:
+        first = max(0, min(frames - 1, int(body.get("first") or 0)))
+        last = max(first + 1, min(frames, int(body.get("last") or frames)))
+        count = max(1, min(24, int(body.get("count") or 12), last - first))
+        width = max(160, min(1344, int(body.get("tile_width") or 384)))
+    except (TypeError, ValueError):
+        return refused("first, last, count and tile_width are whole numbers")
+    picked = sorted({first + (i * (last - first)) // count for i in range(count)})
+    columns = 4 if len(picked) > 6 else 2 if len(picked) > 1 else 1
+    rows = -(-len(picked) // columns)
+    target = os.path.splitext(path)[0] + ".sheet-%d-%d-%d-%d.jpg" % (first, last, len(picked), width)
+    if not os.path.exists(target):
+        chosen = "+".join("eq(n\\,%d)" % n for n in picked)
+        await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf",
+                   "select=%s,scale=%d:-2,tile=%dx%d:padding=6:color=black" % (chosen, width, columns, rows),
+                   "-vsync", "0", "-frames:v", "1", "-q:v", "3", target])
+    return web.json_response({"sheet": os.path.basename(target), "picked": picked, "frames": frames})
+
+
 async def page(request):
     """The page always comes fresh and names its files by version, so a browser never mixes old and new."""
     version = int(max(os.path.getmtime(os.path.join(PAGE, n)) for n in os.listdir(PAGE)))
@@ -442,6 +476,12 @@ async def operations(request):
                 break
         if work != data:
             commit(folder, work, "ops", body.get("client"))
+    for index, op in enumerate(ops):
+        if isinstance(results[index], dict):
+            label = {"op": op.get("op")}
+            if op.get("as"):
+                label["as"] = op["as"]
+            results[index] = dict(label, **results[index])
     reply = {"results": results, "revision": work.get("revision", 0), "summary": store.describe(work)}
     if problem:
         reply["error"] = problem
@@ -465,6 +505,25 @@ async def wait(request):
             reply["timed_out"] = not done
             return web.json_response(reply)
         await asyncio.sleep(1.0)
+
+
+async def lay_track(path, track):
+    """Give a take the exact slice of the track it was generated to, in place of the model's decoded copy.
+
+    The picture is kept as it is. The sound is trimmed from the decoded track, so it is sample aligned,
+    and its level is never changed.
+    """
+    source = output_path(track.get("subfolder"), track["file"])
+    temporary = os.path.splitext(path)[0] + ".track.mp4"
+    try:
+        await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-i", source, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+                   "-af", "atrim=start=%.6f:duration=%.6f,asetpts=PTS-STARTPTS,apad" % (float(track["from"]), float(track["seconds"])),
+                   "-t", "%.6f" % float(track["seconds"]), "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
+                   "-movflags", "+faststart", temporary])
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def saved_file(entry):
@@ -536,7 +595,10 @@ async def watch_once():
                 finished.append((job, None, None, failure(entry)))
                 continue
             try:
-                info = await probe_file(output_path(file.get("subfolder"), file["filename"]))
+                path = output_path(file.get("subfolder"), file["filename"])
+                if job.get("track"):
+                    await lay_track(path, job["track"])
+                info = await probe_file(path)
                 finished.append((job, file, info, None))
             except web.HTTPException as error:
                 finished.append((job, None, None, "The render saved a file that cannot be read: %s" % error.text))
@@ -819,6 +881,7 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/import", "import_media"),
     ("POST", "/h3take/api/probe", "probe"),
     ("POST", "/h3take/api/strip", "strip"),
+    ("POST", "/h3take/api/sheet", "sheet"),
 )
 
 

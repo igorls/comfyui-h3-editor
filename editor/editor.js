@@ -307,6 +307,24 @@ function shiftFrom(frame, by, skip = null) {
   }
 }
 
+// Mirrors continued_track in project.py: a linked clip holds the next slice of its source's track,
+// so one long performance carries on across clips. Returns false, with a toast, when it cannot.
+function continuedTrack(source, item, mode, frames, out = item.out) {
+  if (!source.track) return null;
+  if (speedOf(item) !== 1) {
+    toast("Set " + source.name + " to 100% speed to continue its track.", true);
+    return false;
+  }
+  const from = mode === "extend_before"
+    ? source.track.from + (item.in - (frames - HOLD)) / FPS
+    : source.track.from + (out - HOLD) / FPS;
+  if (from < -1e-6) {
+    toast("The track starts " + (-from).toFixed(2) + " s too late for this extension.", true);
+    return false;
+  }
+  return { ...source.track, from: Math.round(Math.max(0, from) * 1e6) / 1e6 };
+}
+
 function addLinked(mode) {
   const item = selectedRendered();
   if (!item) return;
@@ -315,12 +333,16 @@ function addLinked(mode) {
   const seconds = 4.25;
   const link = { mode, hold: HOLD, a: sideOf(item) };
   if (mode === "bridge") link.b = sideOf(next);
+  const track = continuedTrack(source, item, mode, linkedFrames(link, seconds));
+  if (track === false) return;
   checkpoint();
   const titles = { extend_after: "After ", extend_before: "Before ", bridge: "Bridge from " };
   const clip = {
     id: uid("c"), name: titles[mode] + source.name, action: "", camera: "", speaker: "", dialogue: "",
     sound: "", music: "", seconds, takes: [], active: null, link,
   };
+  if (source.cast?.length) clip.cast = [...source.cast];
+  if (track) clip.track = track;
   state.project.clips.push(clip);
   const [first, last] = linkedRange(link, linkedFrames(link, seconds));
   const length = last - first;
@@ -412,6 +434,56 @@ async function grabVoice(person) {
   } catch (error) {
     toast(error.message, true);
   }
+}
+
+// A clip can hold a slice of a recorded track, such as a narration, and have its picture made to it.
+function trackSection(clip) {
+  const box = document.createElement("div");
+  box.className = "voice";
+  const ways = document.createElement("div");
+  ways.className = "ways";
+  const button = (text, run) => {
+    const element = document.createElement("button");
+    element.className = "quiet";
+    element.textContent = text;
+    element.addEventListener("click", run);
+    ways.append(element);
+  };
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  if (clip.track) {
+    const player = document.createElement("audio");
+    player.controls = true;
+    player.preload = "none";
+    player.src = assetUrl(clip.track) + "#t=" + clip.track.from;
+    box.append(player, field("Starts this many seconds into the track", clip.track.from, (v) => {
+      if (Number(v) >= 0) clip.track.from = Number(v);
+    }, { type: "number" }));
+    button("Remove track", () => {
+      checkpoint();
+      delete clip.track;
+      save();
+      renderInspector();
+    });
+    hint.textContent = "The picture is made to this sound, and the take keeps it exactly. Extend forward to carry on with the next part of the track.";
+  } else {
+    button("Use a sound file", async () => {
+      const file = await pickFile($("voiceFile"));
+      if (!file) return;
+      try {
+        const asset = await uploadPicture(file);
+        checkpoint();
+        clip.track = { ...asset, from: 0 };
+        save();
+        renderInspector();
+      } catch (error) {
+        toast(error.message, true);
+      }
+    });
+    hint.textContent = "Hold a recorded track, such as a narration, and the picture is made to it, lips and all.";
+  }
+  box.append(ways, hint);
+  return [box];
 }
 
 function voiceSection(person) {
@@ -678,6 +750,8 @@ function mergeWithNext() {
     toast("Both clips need at least " + (HOLD + away) + " frames on the timeline to merge.", true);
     return;
   }
+  const track = continuedTrack(clipOf(item.clip), item, "bridge", 0, item.out - away);
+  if (track === false) return;
   checkpoint();
   item.out -= away;
   next.in += rest;
@@ -689,6 +763,8 @@ function mergeWithNext() {
     camera: "", speaker: "", dialogue: "", sound: "", music: "", seconds: 2.625, takes: [], active: null,
     link: { mode: "bridge", hold: HOLD, a: sideOf(item), b: sideOf(next) },
   };
+  if (source.cast?.length) clip.cast = [...source.cast];
+  if (track) clip.track = track;
   state.project.clips.push(clip);
   const [first, last] = linkedRange(clip.link, linkedFrames(clip.link, clip.seconds));
   const placed = { id: uid("i"), clip: clip.id, start: itemEnd(item), in: first, out: last };
@@ -1069,6 +1145,8 @@ function renderInspector() {
     field("Music", clip.music, (v) => (clip.music = v), { placeholder: "None" }),
   ]));
 
+  parts.push(disclosure("Picture to a track", Boolean(clip.track), clip.track ? "Set" : "", trackSection(clip)));
+
   const seed = field("Seed. Leave empty for a new one each render", clip.seed ?? "", (v) => {
     clip.seed = v.trim() === "" ? null : Number(v);
   }, { type: "number" });
@@ -1113,7 +1191,7 @@ function renderInspector() {
   panel.replaceChildren(...parts);
 }
 
-const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast"];
+const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track"];
 
 function chooseTake(clip, take) {
   checkpoint();

@@ -181,6 +181,11 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(window["ticks"], 65)
         self.assertLess(abs(window["source_second"]), 1 / 40)
 
+    def test_full_audio_aligned_to_the_take_ignores_the_held_video(self):
+        span = video_span("extend_before", source_frames=124, length=192, hold_frames=39)
+        window = audio_window("full", span, 192, 30.0, align="take")
+        self.assertEqual((window["first"], window["ticks"], window["source_second"]), (0, 320, 0))
+
     def test_full_audio_without_video_starts_at_zero_and_stops_with_the_track(self):
         window = audio_window("full", None, 124, 2.0)
         self.assertEqual((window["first"], window["ticks"]), (0, 80))
