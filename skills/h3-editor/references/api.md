@@ -161,7 +161,11 @@ rendering. Renders run after the edits in the same batch. `cancel`: `clip` or `j
 | quality | 16:9 | 9:16 | 1:1 | steps |
 |---|---|---|---|---|
 | draft | 640x352 | 352x640 | 480x480 | 4 |
-| final | 1344x768 | 768x1344 | 1024x1024 | 8 |
+| final | 1344x768 | 768x1344 | 1024x1024 | 6 |
+
+Both render on HyperFlow H3 Flash. A final is then doubled by RelayVSR, so its take is
+twice the size above, 1536x2688 for 9:16. A take records what made it in `models` (`unet`,
+`checkpoint`, and `upscaler` for a final) and in `upscale`.
 
 ## Replies and errors
 

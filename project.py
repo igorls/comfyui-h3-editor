@@ -19,7 +19,8 @@ JOINT = 51
 ROOT = "h3take_projects"
 QUALITIES = {
     "draft": {"width": 640, "height": 352, "steps": 4},
-    "final": {"width": 1344, "height": 768, "steps": 8},
+    # A final is rendered at the final size, then doubled by the upscaler.
+    "final": {"width": 1344, "height": 768, "steps": 6, "upscale": 2},
 }
 # Picture sizes per project format. Draft is for trying things, final for the cut.
 FORMATS = {
@@ -34,12 +35,29 @@ def frame_size(project, quality):
     """Width and height for a quality in this project's format. Imported footage counts as final."""
     sizes = FORMATS.get(project.get("format") or "16:9", FORMATS["16:9"])
     return sizes["draft" if quality == "draft" else "final"]
+# Renders use HyperFlow H3 Flash: its ref2va model when a clip has references, and its
+# fl2va model when a clip is only a prompt. A .gguf unet loads as HyperFlow. RelayVSR
+# doubles finals.
 MODELS = {
-    "unet": "fasth3_omniref_qad_nvfp4_comfy.safetensors",
+    "unet": "hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf",
+    "unet_text": "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf",
     "clip": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
     "vae": "minimax_h3_video_vae_fp16.safetensors",
     "audio_vae": "minimax_h3_audio_vae_fp32.safetensors",
+    "upscaler": "relayvsr/relayvsr_x2_lightx2v_int8_convrot.safetensors",
+    "upscaler_vae": "relayvsr/relayvsr_flash_vae_x2_fp32.safetensors",
 }
+# Models that older projects name but the editor no longer renders with.
+RETIRED = {"fasth3_omniref_qad_nvfp4_comfy.safetensors"}
+
+
+def project_models(project):
+    """The models a render uses: the defaults, with any the project names, except retired ones."""
+    models = dict(MODELS)
+    for key, name in (project.get("models") or {}).items():
+        if name and name not in RETIRED:
+            models[key] = name
+    return models
 
 
 def slug(name):
@@ -54,7 +72,6 @@ def new_project(name):
     return {
         "name": str(name),
         "style": "Live-action, cinematic",
-        "models": dict(MODELS),
         "sampler": "euler",
         "shift": 12.0,
         "clips": [],
@@ -141,6 +158,12 @@ def frame_of(clip, side):
     return clip.get(side)
 
 
+def has_references(project, clip):
+    """Does the clip show a cast picture, pin a first or last frame, or speak with a cast voice."""
+    return bool(clip_cast(project, clip) or frame_of(clip, "first") or frame_of(clip, "last")
+                or clip_voice(project, clip))
+
+
 def clip_prompt(project, clip):
     fields = {
         "camera": clip.get("camera", ""),
@@ -151,16 +174,15 @@ def clip_prompt(project, clip):
         "language": clip_language(project, clip),
     }
     cast = clip_cast(project, clip)
-    first, last = frame_of(clip, "first"), frame_of(clip, "last")
     voice = clip_voice(project, clip)
-    if cast or first or last or voice:
+    if has_references(project, clip):
         owner = None
         if voice:
             number = next((n for n, c in enumerate(cast, 1) if c["id"] == voice["id"]), None)
             owner = {"subject": number} if number else {"description": voice.get("description") or voice["name"]}
         return compose_reference_prompt(
             project.get("style", ""), clip.get("action", ""), subjects=cast,
-            first_frame=bool(first), last_frame=bool(last), voice=owner, **fields,
+            first_frame=bool(frame_of(clip, "first")), last_frame=bool(frame_of(clip, "last")), voice=owner, **fields,
         )
     return compose_prompt(project.get("style", ""), clip.get("action", ""), **fields)
 
@@ -180,11 +202,15 @@ def render_graph(project, folder, clip, take, quality, seed):
         raise ValueError("quality must be one of %s" % (tuple(QUALITIES),))
     width, height = frame_size(project, quality)
     size = dict(QUALITIES[quality], width=width, height=height)
-    models = project.get("models") or MODELS
+    models = project_models(project)
+    references = has_references(project, clip)
+    hyperflow = models["unet"].endswith(".gguf")
+    # HyperFlow's fl2va model takes a prompt alone. Anything with references goes to its ref2va model.
+    unet = models["unet"] if references or not hyperflow else models["unet_text"]
     link = clip.get("link")
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
     graph = {
-        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": models["unet"], "weight_dtype": "default"}},
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": models["clip"], "type": "minimax", "device": "default"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": models["vae"]}},
         "4": {"class_type": "VAELoader", "inputs": {"vae_name": models["audio_vae"]}},
@@ -210,6 +236,26 @@ def render_graph(project, folder, clip, take, quality, seed):
             "video": ["18", 0], "filename_prefix": "%s/%s/clips/%s_%s" % (ROOT, folder, clip["id"], take),
             "format": "auto", "codec": "auto"}},
     }
+    if hyperflow:
+        # Few-step and CFG-free, on its own two-time schedule.
+        graph["1"] = {"class_type": "HyperFlowGGUFLoader", "inputs": {"unet_name": unet, "weights_in": "auto"}}
+        graph["12"] = {"class_type": "HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": size["steps"]}}
+        if unet == models["unet_text"]:
+            graph["10"]["inputs"]["checkpoint"] = "fl2va"
+    if size.get("upscale") and models.get("upscaler"):
+        # RelayVSR doubles the decoded picture in one step. The sound passes through unchanged.
+        graph.update({
+            "20": {"class_type": "UNETLoader", "inputs": {"unet_name": models["upscaler"], "weight_dtype": "default"}},
+            "21": {"class_type": "VAELoader", "inputs": {"vae_name": models["upscaler_vae"]}},
+            "22": {"class_type": "RelayVSRConditioning", "inputs": {"model": ["20", 0], "images": ["16", 0]}},
+            "23": {"class_type": "BasicGuider", "inputs": {"model": ["20", 0], "conditioning": ["22", 0]}},
+            "24": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+            "25": {"class_type": "BasicScheduler", "inputs": {"model": ["20", 0], "scheduler": "simple", "steps": 1, "denoise": 1.0}},
+            "26": {"class_type": "SamplerCustomAdvanced", "inputs": {
+                "noise": ["14", 0], "guider": ["23", 0], "sampler": ["24", 0], "sigmas": ["25", 0], "latent_image": ["22", 1]}},
+            "27": {"class_type": "VSRDecode", "inputs": {"vae": ["21", 0], "samples": ["26", 0], "images": ["16", 0], "detail": 1.0}},
+        })
+        graph["18"]["inputs"]["images"] = ["27", 0]
     take_inputs = graph["10"]["inputs"]
     first, last = frame_of(clip, "first"), frame_of(clip, "last")
     if first:
@@ -312,8 +358,14 @@ def export_command(project, paths, out_path, width=None, height=None):
     if not items:
         raise ValueError("there are no rendered clips on the timeline to export")
     if width is None or height is None:
-        take = active_take(clips[items[0]["clip"]]) or {}
-        width, height = frame_size(project, take.get("quality"))
+        # The cut takes the size of its largest picture, so upscaled finals keep their detail.
+        width = height = 0
+        for item in items:
+            take = active_take(clips[item["clip"]]) or {}
+            w, h = frame_size(project, take.get("quality"))
+            scale = int(take.get("upscale") or 1)
+            if w * scale > width:
+                width, height = w * scale, h * scale
 
     args = ["ffmpeg", "-y", "-v", "error"]
     chains = []
@@ -912,6 +964,14 @@ def remove_cast(project, cast_id):
 
 # Renders. The server queues the graph; these keep the project's record of it.
 
+def render_models(graph):
+    """The models a render graph samples with, so a take records what made it."""
+    used = {"unet": graph["1"]["inputs"]["unet_name"], "checkpoint": graph["10"]["inputs"]["checkpoint"]}
+    if "20" in graph:
+        used["upscaler"] = graph["20"]["inputs"]["unet_name"]
+    return used
+
+
 def plan_render(project, folder, clip_id, quality, seed=None):
     """The graph for a new take, and the job that will turn its file into a take."""
     clip = find_clip(project, clip_id)
@@ -927,7 +987,10 @@ def plan_render(project, folder, clip_id, quality, seed=None):
     take = new_id("t")
     graph = render_graph(project, folder, clip, take, quality, int(seed))
     job = {"clip": clip_id, "take": take, "quality": quality, "seed": int(seed),
-           "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS}}
+           "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
+           "models": render_models(graph)}
+    if "27" in graph:
+        job["upscale"] = QUALITIES[quality]["upscale"]
     if clip.get("track"):
         # Once rendered, the take's sound is replaced by this exact slice of the track.
         job["track"] = dict(clip["track"], seconds=graph["10"]["inputs"]["length"] / float(FPS))
@@ -958,6 +1021,9 @@ def finish_render(project, job_id, file, info):
     take = {"id": job["take"], "file": file["filename"], "subfolder": file.get("subfolder") or "",
             "poster": info["poster"], "frames": int(info["frames"]), "quality": job["quality"],
             "seed": job["seed"], "saved": job.get("saved")}
+    for key in ("models", "upscale"):
+        if job.get(key):
+            take[key] = job[key]
     if info.get("strip"):
         take["strip"] = info["strip"]
     return accept_take(project, job["clip"], take)

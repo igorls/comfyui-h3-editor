@@ -1,7 +1,9 @@
 # H3 Take
 
-An editor and a ComfyUI node for MiniMax H3. It uses ComfyUI's own H3 nodes and
-needs no other custom node pack.
+An editor and a ComfyUI node for MiniMax H3. The node uses ComfyUI's own H3
+nodes and needs no other custom node pack. The editor renders with HyperFlow H3
+Flash and upscales finals with RelayVSR, which need the models and packs listed
+under Install.
 
 ## Editor
 
@@ -229,6 +231,27 @@ The `fl2va` route has not been run on a real checkpoint.
 
 Clone this folder into ComfyUI `custom_nodes/` and restart ComfyUI. The
 editor loads with the node. It does not download a model.
+
+The editor's renders need:
+
+- the ComfyUI-HyperFlow-Flash and ComfyUI-GGUF node packs;
+- HyperFlow H3 Flash in `models/diffusion_models/hyperflow`:
+  `minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf` renders clips with cast
+  pictures, first or last frames, or voices, and
+  `minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf` renders clips that are only
+  a prompt;
+- the H3 text encoder and the video and audio VAEs, as for ComfyUI's own H3
+  workflows;
+- for finals, a ComfyUI recent enough to have the RelayVSR nodes, with
+  `relayvsr/relayvsr_x2_lightx2v_int8_convrot.safetensors` in
+  `models/diffusion_models` and `relayvsr/relayvsr_flash_vae_x2_fp32.safetensors`
+  in `models/vae`.
+
+A draft renders at the project's draft size in 4 steps. A final renders at the
+final size in 6 steps, then RelayVSR doubles it, so a 9:16 final is 1536x2688.
+Export takes the size of the largest picture in the cut. A project can name
+other models under `models`. A `.gguf` unet loads as HyperFlow, and any other
+unet loads with ComfyUI's plain loader and scheduler.
 
 ## Develop
 

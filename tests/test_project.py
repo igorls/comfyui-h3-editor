@@ -1,7 +1,8 @@
 import unittest
 
 from policy import bridge_spans, legal_length, video_span
-from project import active_take, clip_prompt, export_command, frame_of, item_length, linked_length, new_project, render_graph, slug, snap_frames, tempo_chain
+from project import (MODELS, active_take, clip_prompt, export_command, frame_of, item_length, linked_length, new_project,
+                     render_graph, render_models, slug, snap_frames, tempo_chain)
 from prompting import compose_prompt, compose_reference_prompt, tag_subjects
 
 
@@ -83,6 +84,48 @@ class ProjectTest(unittest.TestCase):
         graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3)
         self.assertEqual(graph["13"]["inputs"]["model"], ["9", 0])
         self.assertEqual(graph["9"]["inputs"]["folder"], "h3take_projects/x/preview")
+
+    def test_a_prompt_only_clip_renders_on_hyperflow_fl2va(self):
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3)
+        self.assertEqual(graph["1"]["class_type"], "HyperFlowGGUFLoader")
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], MODELS["unet_text"])
+        self.assertEqual(graph["10"]["inputs"]["checkpoint"], "fl2va")
+        self.assertEqual(graph["12"], {"class_type": "HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": 4}})
+
+    def test_a_clip_with_references_renders_on_hyperflow_ref2va(self):
+        graph = render_graph(new_project("x"), "x", clip(first={"file": "f.png"}), "t1", "draft", 3)
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], MODELS["unet"])
+        self.assertEqual(graph["10"]["inputs"]["checkpoint"], "ref2va")
+
+    def test_a_final_is_doubled_by_the_upscaler(self):
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "final", 3)
+        self.assertEqual(graph["12"]["inputs"]["steps"], 6)
+        self.assertEqual(graph["22"]["inputs"]["images"], ["16", 0])
+        self.assertEqual(graph["27"]["class_type"], "VSRDecode")
+        self.assertEqual(graph["18"]["inputs"]["images"], ["27", 0])
+        self.assertEqual(graph["18"]["inputs"]["audio"], ["17", 0])
+        self.assertEqual(render_models(graph)["upscaler"], MODELS["upscaler"])
+
+    def test_a_draft_is_not_upscaled(self):
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3)
+        self.assertNotIn("27", graph)
+        self.assertEqual(graph["18"]["inputs"]["images"], ["16", 0])
+
+    def test_a_project_that_names_a_retired_model_renders_with_the_current_one(self):
+        project = new_project("x")
+        project["models"] = {"unet": "fasth3_omniref_qad_nvfp4_comfy.safetensors", "clip": MODELS["clip"]}
+        graph = render_graph(project, "x", clip(first={"file": "f.png"}), "t1", "draft", 3)
+        self.assertEqual(graph["1"]["class_type"], "HyperFlowGGUFLoader")
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], MODELS["unet"])
+
+    def test_a_safetensors_unet_keeps_the_plain_loader_and_scheduler(self):
+        project = new_project("x")
+        project["models"] = {"unet": "other_h3.safetensors"}
+        graph = render_graph(project, "x", clip(), "t1", "draft", 3)
+        self.assertEqual(graph["1"]["class_type"], "UNETLoader")
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], "other_h3.safetensors")
+        self.assertEqual(graph["12"]["class_type"], "BasicScheduler")
+        self.assertEqual(graph["10"]["inputs"]["checkpoint"], "ref2va")
 
     def test_an_empty_clip_is_not_rendered(self):
         with self.assertRaises(ValueError):
@@ -246,6 +289,14 @@ class ExportTest(unittest.TestCase):
         self.assertIn("xfade=transition=fadeblack:duration=0.50000:offset=1.50000", text)
         self.assertIn("acrossfade=d=0.50000", text)
         self.assertNotIn("concat", text)
+
+    def test_the_cut_takes_the_size_of_its_largest_picture(self):
+        self.project["timeline"] = [{"clip": "a", "start": 0, "in": 0, "out": 24}, {"clip": "b", "start": 24, "in": 0, "out": 24}]
+        text = self.filter_of(export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4"))
+        self.assertIn("scale=640:352:", text)
+        self.project["clips"][1]["takes"] = [{"id": "t2", "quality": "final", "upscale": 2}]
+        text = self.filter_of(export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4"))
+        self.assertIn("scale=2688:1536:", text)
 
     def test_nothing_to_export_says_so(self):
         with self.assertRaises(ValueError):
