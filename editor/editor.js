@@ -347,8 +347,110 @@ const assetUrl = (asset) => viewUrl(asset.file, asset.subfolder);
 
 async function uploadPicture(file) {
   const form = new FormData();
-  form.append("image", file);
+  form.append("file", file);
   return api("/project/" + state.folder + "/asset", { method: "POST", body: form });
+}
+
+// Real footage and pictures become clips on the server, sized and timed like the renders.
+async function importFootage() {
+  const file = await pickFile($("importFile"));
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  form.append("client", clientId);
+  toast("Importing " + file.name);
+  try {
+    await flush();
+    const result = await api("/project/" + state.folder + "/import", { method: "POST", body: form });
+    if (!unsaved()) adopt(result.project);
+    selectClip(result.clip, result.item);
+    toast(file.name + " is on the timeline.");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+// A voice with no picture, such as a narrator. Its lines use the voice; it never appears in the shot.
+async function addVoiceMember() {
+  const file = await pickFile($("voiceFile"));
+  if (!file) return;
+  try {
+    const voice = await uploadPicture(file);
+    checkpoint();
+    state.project.cast = state.project.cast || [];
+    const person = { id: uid("p"), name: "Narrator" + (state.project.cast.some((p) => p.name === "Narrator") ? " " + (state.project.cast.length + 1) : ""), description: "", voice };
+    state.project.cast.push(person);
+    state.person = person.id;
+    state.clip = null;
+    state.item = null;
+    save();
+    renderAll();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function setVoice(person, voice) {
+  checkpoint();
+  if (voice) person.voice = voice;
+  else delete person.voice;
+  save();
+  renderAll();
+}
+
+async function grabVoice(person) {
+  const item = itemAt(state.playhead);
+  const take = activeTake(clipOf(item?.clip));
+  if (!take) {
+    toast("Move the playhead over a clip where they speak, then press Use the clip under the playhead.");
+    return;
+  }
+  try {
+    const last = Math.min(item.out, item.in + 30 * FPS);
+    setVoice(person, await postJson("/project/" + state.folder + "/grab_sound", { file: take.file, subfolder: take.subfolder, first: item.in, last }));
+    toast(person.name + " now speaks with the voice from " + clipOf(item.clip).name + ".");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function voiceSection(person) {
+  const box = document.createElement("div");
+  box.className = "voice";
+  const ways = document.createElement("div");
+  ways.className = "ways";
+  const button = (text, run) => {
+    const element = document.createElement("button");
+    element.className = "quiet";
+    element.textContent = text;
+    element.addEventListener("click", run);
+    ways.append(element);
+  };
+  if (person.voice) {
+    const player = document.createElement("audio");
+    player.controls = true;
+    player.preload = "none";
+    player.src = assetUrl(person.voice);
+    box.append(player);
+    if (person.file) button("Remove voice", () => setVoice(person, null));
+  }
+  button(person.voice ? "Replace with a file" : "Upload a voice", async () => {
+    const file = await pickFile($("voiceFile"));
+    if (!file) return;
+    try {
+      setVoice(person, await uploadPicture(file));
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+  button("Use the clip under the playhead", () => grabVoice(person));
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = person.voice
+    ? "Write @" + person.name + " in Who speaks, and their lines use this voice. Up to 30 seconds of it is used."
+    : "Give " + person.name + " a voice so every line they say sounds like the same person.";
+  box.append(ways, hint);
+  return box;
 }
 
 function pickFile(input) {
@@ -454,7 +556,8 @@ function castPicker(clip) {
   title.textContent = "Cast in this clip";
   const picks = document.createElement("div");
   picks.className = "picks";
-  for (const person of state.project.cast) {
+  const pictured = state.project.cast.filter((p) => p.file);
+  for (const person of pictured) {
     const on = (clip.cast || []).includes(person.id);
     const pick = document.createElement("button");
     pick.className = "pick" + (on ? " on" : "");
@@ -475,7 +578,7 @@ function castPicker(clip) {
   }
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = "Write @" + state.project.cast[0].name + " in What happens to place them in the shot.";
+  hint.textContent = "Write @" + pictured[0].name + " in What happens to place them in the shot.";
   return [title, picks, hint];
 }
 
@@ -483,17 +586,24 @@ function renderCast() {
   const list = $("cast");
   const cast = state.project.cast || [];
   if (!cast.length) {
-    list.innerHTML = '<p class="empty">Add a picture of a person or place to keep them the same across clips.</p>';
+    list.innerHTML = '<p class="empty">Add a picture of a person or place to keep them the same across clips, or a voice for a narrator.</p>';
     list.style.display = "block";
     return;
   }
   list.style.display = "";
   list.replaceChildren(...cast.map((person) => {
     const button = document.createElement("button");
-    button.className = "person" + (person.id === state.person ? " on" : "");
-    const image = document.createElement("img");
-    image.alt = "";
-    image.src = assetUrl(person);
+    button.className = "person" + (person.id === state.person ? " on" : "") + (person.voice && person.file ? " voiced" : "");
+    if (person.voice) button.title = person.file ? person.name + " has a voice" : person.name + " is a voice";
+    let image;
+    if (person.file) {
+      image = document.createElement("img");
+      image.alt = "";
+      image.src = assetUrl(person);
+    } else {
+      image = document.createElement("span");
+      image.className = "voice-mark";
+    }
     const name = document.createElement("span");
     name.textContent = person.name;
     button.append(image, name);
@@ -524,20 +634,26 @@ function renderPerson(panel, person) {
     renderAll();
   });
   head.append(title, remove);
-  const image = document.createElement("img");
-  image.className = "portrait";
-  image.alt = person.name;
-  image.src = assetUrl(person);
-  panel.replaceChildren(
-    head,
-    image,
+  const parts = [head];
+  if (person.file) {
+    const image = document.createElement("img");
+    image.className = "portrait";
+    image.alt = person.name;
+    image.src = assetUrl(person);
+    parts.push(image);
+  }
+  parts.push(
     field("Name", person.name, (v) => {
       person.name = v.trim() || person.name;
       title.textContent = person.name;
       renderCast();
     }),
-    field("What they look like", person.description, (v) => (person.description = v), { big: true }),
+    person.file
+      ? field("What they look like", person.description, (v) => (person.description = v), { big: true })
+      : field("How they sound", person.description, (v) => (person.description = v), { area: true, placeholder: "A warm, calm female narrator" }),
+    section("Voice", [voiceSection(person)]),
   );
+  panel.replaceChildren(...parts);
 }
 
 const MERGE_FRAMES = 63;
@@ -676,6 +792,7 @@ function clipStatus(clip) {
   }
   if (clip.error) return { kind: "danger", text: "Render failed" };
   if (!clip.takes.length) return { kind: "muted", text: "Not rendered" };
+  if (clip.kind === "footage") return { kind: "", text: "Footage" };
   if (isStale(clip)) return { kind: "danger", text: "Source changed" };
   const take = activeTake(clip);
   const quality = take.quality === "final" ? "Final" : "Draft";
@@ -823,9 +940,39 @@ function renderScene(panel) {
     dd.textContent = value;
     facts.append(dt, dd);
   }
+  const shape = document.createElement("label");
+  shape.className = "choice";
+  const shapeTitle = document.createElement("span");
+  shapeTitle.textContent = "Format";
+  const shapes = document.createElement("select");
+  shapes.dataset.key = "Format";
+  for (const [value, label] of [["16:9", "Wide, 16:9"], ["9:16", "Vertical, 9:16"], ["1:1", "Square, 1:1"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = (state.project.format || "16:9") === value;
+    shapes.append(option);
+  }
+  shapes.addEventListener("change", () => {
+    checkpoint();
+    state.project.format = shapes.value;
+    save();
+  });
+  shape.append(shapeTitle, shapes);
+  const formatHint = document.createElement("p");
+  formatHint.className = "hint";
+  formatHint.textContent = "New renders and imports use this shape. Export fits every clip to it.";
   panel.replaceChildren(
     head,
     section("Look", [field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true })]),
+    section("Project", [
+      shape,
+      formatHint,
+      field("Language people speak", state.project.language || "", (v) => {
+        if (v.trim()) state.project.language = v.trim();
+        else delete state.project.language;
+      }, { placeholder: "English" }),
+    ]),
     section("Overview", [facts]),
   );
 }
@@ -879,6 +1026,18 @@ function renderInspector() {
     parts.push(notice);
   }
 
+  if (clip.kind === "footage") {
+    const take = activeTake(clip);
+    const about = document.createElement("p");
+    about.className = "hint";
+    about.textContent = "Imported from " + (take?.source || "a file") + ". Footage plays as it is. Select it on the timeline and use Extend or Bridge to generate new shots from it.";
+    parts.push(section("Footage", [about]));
+    const placed = state.project.timeline.find((i) => i.id === state.item);
+    if (placed) parts.push(section("On the timeline", timelineControls(placed)));
+    panel.replaceChildren(...parts);
+    return;
+  }
+
   const timing = document.createElement("div");
   timing.className = "two";
   timing.append(
@@ -893,13 +1052,19 @@ function renderInspector() {
     field("What happens", clip.action, (v) => (clip.action = v), { big: true, placeholder: "Describe what we see and hear, in the order it happens." }),
     timing,
     ...framesFor(clip),
-    ...(state.project.cast?.length ? castPicker(clip) : []),
+    ...(state.project.cast?.some((p) => p.file) ? castPicker(clip) : []),
   ]));
 
   const voiced = ["speaker", "dialogue", "sound", "music"].filter((k) => String(clip[k] || "").trim()).length;
   parts.push(disclosure("Dialogue and sound", voiced > 0, voiced ? voiced + " set" : "", [
-    field("Who speaks", clip.speaker, (v) => (clip.speaker = v), { placeholder: "The old keeper, low and gravelly" }),
+    field("Who speaks", clip.speaker, (v) => (clip.speaker = v), {
+      placeholder: (state.project.cast || []).some((p) => p.voice) ? "@" + state.project.cast.find((p) => p.voice).name + " uses their voice" : "The old keeper, low and gravelly",
+    }),
     field("What they say", clip.dialogue, (v) => (clip.dialogue = v), { area: true }),
+    field("Language of the lines", clip.language || "", (v) => {
+      if (v.trim()) clip.language = v.trim();
+      else delete clip.language;
+    }, { placeholder: state.project.language || "English" }),
     field("Sound", clip.sound, (v) => (clip.sound = v), { area: true, placeholder: "Rain on glass, distant thunder" }),
     field("Music", clip.music, (v) => (clip.music = v), { placeholder: "None" }),
   ]));
@@ -1932,6 +2097,8 @@ $("newProject").addEventListener("click", () => {
 });
 $("newClip").addEventListener("click", addClip);
 $("addCast").addEventListener("click", addCastMember);
+$("addVoice").addEventListener("click", addVoiceMember);
+$("importClip").addEventListener("click", importFootage);
 $("close").addEventListener("click", () => window.parent.postMessage("h3-editor-close", location.origin));
 $("renderAll").addEventListener("click", () => {
   const waiting = sorted().map((i) => clipOf(i.clip)).filter((c, i, all) => c && !c.takes.length && all.indexOf(c) === i);

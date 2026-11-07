@@ -582,19 +582,161 @@ def asset_target(name, extension):
     return os.path.join(directory, file), {"file": file, "subfolder": "%s/%s/assets" % (store.ROOT, folder)}
 
 
+PICTURES = (".png", ".jpg", ".jpeg", ".webp")
+SOUNDS = (".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus", ".aac")
+VIDEOS = (".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi")
+LONGEST_IMPORT = 900.0
+LONGEST_VOICE = 30.0
+
+
 async def upload(request):
-    """Keep an uploaded picture with the project."""
+    """Keep an uploaded picture or sound with the project."""
     form = await request.post()
-    part = form.get("image")
+    part = form.get("file") or form.get("image")
     if part is None or not hasattr(part, "file"):
-        raise web.HTTPBadRequest(text="choose a picture to upload")
+        return refused("choose a picture or a sound to upload")
     extension = os.path.splitext(part.filename or "")[1].lower()
-    if extension not in (".png", ".jpg", ".jpeg", ".webp"):
-        raise web.HTTPBadRequest(text="use a PNG, JPEG, or WebP picture")
+    if extension not in PICTURES + SOUNDS:
+        return refused("use a PNG, JPEG or WebP picture, or a WAV, MP3, FLAC, M4A or OGG sound")
     target, asset = asset_target(request.match_info["name"], extension)
     with open(target, "wb") as f:
         f.write(part.file.read())
     return web.json_response(asset)
+
+
+async def grab_sound(request):
+    """Save the sound of part of a clip, at most 30 seconds, as a voice a cast member can speak with."""
+    body = await request.json()
+    source = output_path(body.get("subfolder"), body["file"])
+    first = max(0, int(body.get("first", 0)))
+    last = int(body.get("last") or first + LONGEST_VOICE * store.FPS)
+    seconds = min(LONGEST_VOICE, max(0.5, (last - first) / float(store.FPS)))
+    target, asset = asset_target(request.match_info["name"], ".wav")
+    await run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % (first / float(store.FPS)), "-t", "%.3f" % seconds,
+               "-i", source, "-vn", "-ac", "2", "-ar", "48000", target])
+    if not os.path.exists(target) or os.path.getsize(target) < 1000:
+        return refused("that part of the clip has no sound")
+    return web.json_response(asset)
+
+
+def source_path(where, subfolder, filename):
+    """A file an agent already put in ComfyUI's input or output folder."""
+    if where not in ("input", "output"):
+        raise ValueError("source folder is input or output")
+    if not filename:
+        raise ValueError("name the file to import")
+    base = os.path.realpath(folder_paths.get_input_directory() if where == "input" else folder_paths.get_output_directory())
+    path = os.path.realpath(os.path.join(base, subfolder or "", filename))
+    if not path.startswith(base + os.sep) or not os.path.isfile(path):
+        raise ValueError("there is no %s in the %s folder" % (os.path.join(subfolder or "", filename), where))
+    return path
+
+
+async def receive_upload(request, allowed, directory):
+    """Stream a multipart upload to disk, so a long recording never sits in memory."""
+    reader = await request.multipart()
+    fields, saved, original = {}, None, None
+    while True:
+        part = await reader.next()
+        if part is None:
+            break
+        if part.filename:
+            extension = os.path.splitext(part.filename)[1].lower()
+            if extension not in allowed:
+                raise ValueError("import a video (%s) or a picture (%s)" % (", ".join(VIDEOS), ", ".join(PICTURES)))
+            os.makedirs(directory, exist_ok=True)
+            saved = os.path.join(directory, uuid.uuid4().hex[:12] + extension)
+            with open(saved, "wb") as f:
+                while True:
+                    chunk = await part.read_chunk(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            original = part.filename
+        else:
+            fields[part.name] = await part.text()
+    return saved, original, fields
+
+
+async def normalize(source, target, width, height, fit, still, seconds, start=None, end=None):
+    """Any video or picture as a clip like the renders: 24 fps, the project's size, H.264, a sound track."""
+    if fit == "cover":
+        frame = "scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d" % (width, height, width, height)
+    else:
+        frame = "scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black" % (
+            width, height, width, height)
+    args = ["ffmpeg", "-y", "-v", "error"]
+    if still:
+        args += ["-loop", "1", "-framerate", str(store.FPS), "-t", "%.3f" % seconds, "-i", source]
+        sound = False
+    else:
+        if start:
+            args += ["-ss", "%.3f" % start]
+        if end:
+            args += ["-t", "%.3f" % max(0.1, end - (start or 0))]
+        args += ["-i", source]
+        sound = bool((await run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
+                                 "-of", "csv=p=0", source])).strip())
+    if not sound:
+        args += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+    args += ["-map", "0:v:0", "-map", "0:a:0" if sound else "1:a:0",
+             "-vf", frame + ",setsar=1,fps=%d,format=yuv420p" % store.FPS, "-af", "aresample=48000,apad",
+             "-c:v", "libx264", "-crf", "16", "-preset", "medium", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-shortest", "-t", "%.3f" % LONGEST_IMPORT,
+             "-movflags", "+faststart", target]
+    await run(args)
+
+
+async def import_media(request):
+    """Bring in real footage or a picture as a clip. It sits on the timeline like a render and can be extended."""
+    folder = store.slug(request.match_info["name"])
+    data = read_project(folder)
+    cleanup, saved = False, None
+    try:
+        if request.content_type.startswith("multipart/"):
+            saved, original, fields = await receive_upload(request, PICTURES + VIDEOS, os.path.join(root(), folder, "incoming"))
+            cleanup = bool(saved)
+        else:
+            fields = await request.json()
+            found = fields.get("source") or {}
+            saved = source_path(found.get("folder", "input"), found.get("subfolder"), found.get("file"))
+            original = found.get("file")
+        if not saved:
+            return refused("choose a video or a picture to import")
+        extension = os.path.splitext(saved)[1].lower()
+        if extension not in PICTURES + VIDEOS:
+            return refused("import a video (%s) or a picture (%s)" % (", ".join(VIDEOS), ", ".join(PICTURES)))
+        fit = fields.get("fit") or "contain"
+        if fit not in ("contain", "cover"):
+            return refused("fit is contain, which keeps the whole picture, or cover, which fills the frame")
+        seconds = float(fields.get("seconds") or 4)
+        if not 0.5 <= seconds <= 60:
+            return refused("a picture can last 0.5 to 60 seconds")
+        start = float(fields["start_seconds"]) if fields.get("start_seconds") not in (None, "") else None
+        end = float(fields["end_seconds"]) if fields.get("end_seconds") not in (None, "") else None
+        clip_id, take_id = store.new_id("c"), store.new_id("t")
+        target = os.path.join(root(), folder, "clips", "%s_%s.mp4" % (clip_id, take_id))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        width, height = store.frame_size(data, "final")
+        await normalize(saved, target, width, height, fit, extension in PICTURES, seconds, start, end)
+    except ValueError as error:
+        return refused(plain(error))
+    finally:
+        if cleanup and saved and os.path.exists(saved):
+            os.remove(saved)
+    info = await probe_file(target)
+    take = {"id": take_id, "clip": clip_id, "file": os.path.basename(target), "subfolder": "%s/%s/clips" % (store.ROOT, folder),
+            "poster": info["poster"], "frames": info["frames"], "quality": "footage", "seed": None, "source": original}
+    if info.get("strip"):
+        take["strip"] = info["strip"]
+    place = str(fields.get("place", "true")).lower() not in ("false", "0", "no")
+    at = int(fields["start"]) if fields.get("start") not in (None, "") else None
+    async with lock(folder):
+        data = read_project(folder)
+        clip, item = store.add_footage(data, fields.get("name") or os.path.splitext(original or "Footage")[0], take, at, place)
+        commit(folder, data, "import", fields.get("client"))
+    return web.json_response({"clip": clip["id"], "item": item["id"] if item else None, "frames": info["frames"],
+                              "revision": data["revision"], "project": data})
 
 
 async def grab(request):
@@ -652,6 +794,8 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/export", "export"),
     ("POST", "/h3take/api/project/{name}/asset", "upload"),
     ("POST", "/h3take/api/project/{name}/grab", "grab"),
+    ("POST", "/h3take/api/project/{name}/grab_sound", "grab_sound"),
+    ("POST", "/h3take/api/project/{name}/import", "import_media"),
     ("POST", "/h3take/api/probe", "probe"),
     ("POST", "/h3take/api/strip", "strip"),
 )

@@ -1,6 +1,7 @@
 """One H3 take. Calls ComfyUI's own MiniMax nodes. Does not import any other pack."""
 
 import os
+import subprocess
 
 import folder_paths
 import numpy as np
@@ -290,6 +291,35 @@ class H3LoadStill(io.ComfyNode):
         return io.NodeOutput(torch.from_numpy(pixels)[None])
 
 
+class H3LoadSound(io.ComfyNode):
+    """A sound from ComfyUI's output folder, such as the voice a cast member speaks with."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3LoadSound",
+            display_name="H3 Load Sound",
+            category="minimax/h3",
+            description="Read a sound file from the output folder. Used by the editor for cast voices.",
+            inputs=[
+                io.String.Input("file", tooltip="Path inside the output folder."),
+                io.Float.Input("seconds", default=30.0, min=1.0, max=120.0, step=0.5, tooltip="Reads at most this much from the start."),
+            ],
+            outputs=[io.Audio.Output(display_name="audio")],
+        )
+
+    @classmethod
+    def execute(cls, file, seconds) -> io.NodeOutput:
+        rate = 48000
+        pcm = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", output_file(file), "-t", str(seconds), "-vn", "-ac", "2", "-ar", str(rate), "-f", "f32le", "-"],
+            capture_output=True, check=False)
+        if pcm.returncode != 0 or not pcm.stdout:
+            raise ValueError("could not read sound from %s: %s" % (file, pcm.stderr.decode(errors="replace")[-300:]))
+        samples = torch.from_numpy(np.frombuffer(pcm.stdout, dtype=np.float32).copy()).reshape(-1, 2).t()
+        return io.NodeOutput({"waveform": samples[None], "sample_rate": rate})
+
+
 class H3LoadClip(io.ComfyNode):
     """Part of a rendered clip from ComfyUI's output folder, with its sound."""
 
@@ -322,5 +352,6 @@ class H3LoadClip(io.ComfyNode):
         return io.NodeOutput(frames[first:stop], audio)
 
 
-NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3LoadStill": H3LoadStill}
-NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3LoadStill": "H3 Load Still"}
+NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound}
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3LoadStill": "H3 Load Still",
+                              "H3LoadSound": "H3 Load Sound"}

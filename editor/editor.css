@@ -74,6 +74,19 @@ button:disabled { opacity: 0.42; cursor: default; }
 .person:hover { background: var(--raised); }
 .person.on { border-color: var(--tungsten); background: var(--raised); }
 .person img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; }
+.person { position: relative; }
+.voice-mark { display: block; width: 100%; aspect-ratio: 1; border-radius: 4px; background:
+  repeating-linear-gradient(90deg, transparent 0 5px, var(--panel) 5px 9px),
+  linear-gradient(transparent 38%, var(--tungsten) 38% 62%, transparent 62%), var(--raised); }
+.person.voiced::after { content: ""; position: absolute; top: 5px; right: 5px; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--tungsten); box-shadow: 0 0 0 2px var(--room); }
+.head-tools { display: flex; gap: 6px; }
+.head-tools button { white-space: nowrap; }
+.panel-head { flex-wrap: wrap; row-gap: 8px; }
+.voice audio { display: block; width: 100%; margin-bottom: 8px; }
+.voice .ways { display: flex; flex-wrap: wrap; gap: 6px; }
+.choice { display: grid; gap: 6px; margin-bottom: 12px; }
+.choice > span { color: var(--muted); font-size: 13px; }
 .person span { display: block; padding: 4px 4px 3px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .stage { display: grid; grid-template-rows: minmax(0, 1fr) 56px; min-width: 0; min-height: 0; background: var(--room); }

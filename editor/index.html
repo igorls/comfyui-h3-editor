@@ -21,12 +21,14 @@
 
   <main class="work">
     <aside class="bin" aria-label="Clips and cast">
-      <div class="panel-head"><h2>Clips <span id="clipCount" class="count"></span></h2><button id="newClip" class="quiet">New clip</button></div>
+      <div class="panel-head"><h2>Clips <span id="clipCount" class="count"></span></h2><div class="head-tools"><button id="importClip" class="quiet" title="Bring in a video or a picture">Import</button><button id="newClip" class="quiet">New clip</button></div></div>
       <div id="clips" class="clips"></div>
-      <div class="panel-head cast-head"><h2>Cast</h2><button id="addCast" class="quiet">Add reference</button></div>
+      <div class="panel-head cast-head"><h2>Cast</h2><div class="head-tools"><button id="addVoice" class="quiet" title="A voice with no picture, such as a narrator">Add voice</button><button id="addCast" class="quiet">Add reference</button></div></div>
       <div id="cast" class="cast"></div>
       <input id="castFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
       <input id="frameFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+      <input id="importFile" type="file" accept="video/*,image/png,image/jpeg,image/webp" hidden>
+      <input id="voiceFile" type="file" accept="audio/*" hidden>
     </aside>
 
     <section class="stage" aria-label="Viewer">

@@ -206,6 +206,84 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(len(merged["timeline"]), 2)
 
 
+class LanguageAndVoiceTest(unittest.TestCase):
+    def voiced(self, pictured):
+        project = new_project("Test")
+        project["language"] = "Portuguese"
+        voice = {"file": "voice.wav", "subfolder": "h3take_projects/Test/assets"}
+        fields = {"name": "Ana", "description": "a calm woman in her thirties", "voice": voice}
+        if pictured:
+            fields.update({"file": "ana.png", "subfolder": "h3take_projects/Test/assets"})
+        person = store.add_cast(project, fields)
+        clip, _ = add_clip(project, {"action": "A sunny office.", "speaker": "@Ana", "dialogue": "Bom dia!",
+                                     "cast": [person["id"]] if pictured else []})
+        return project, clip
+
+    def test_dialogue_keeps_its_language(self):
+        project = new_project("Test")
+        project["language"] = "Portuguese"
+        clip, _ = add_clip(project, {"action": "A sunny office.", "speaker": "A woman", "dialogue": "Bom dia!"})
+        self.assertIn("<d>[Portuguese] Bom dia!</d>", store.clip_prompt(project, clip))
+        update_clip(project, clip["id"], {"language": "Spanish"})
+        self.assertIn("<d>[Spanish] Bom dia!</d>", store.clip_prompt(project, clip))
+
+    def test_a_pictured_speaker_uses_their_voice(self):
+        project, clip = self.voiced(pictured=True)
+        text = store.clip_prompt(project, clip)
+        self.assertIn("<Audio 1> is the voice-timbre reference for <Subject 1> (S1).", text)
+        self.assertIn("[reference generation + audio reference]", text)
+        self.assertIn("<Subject 1> (S1), using the voice timbre referenced from <Audio 1>, says: <d>[Portuguese] Bom dia!</d>", text)
+        graph = store.render_graph(project, "Test", clip, "t1", "draft", 1)
+        self.assertEqual(graph["10"]["inputs"]["ref_audios.ref_audio_0"], ["60", 0])
+        self.assertEqual(graph["60"]["inputs"]["file"], "h3take_projects/Test/assets/voice.wav")
+
+    def test_an_unseen_narrator_is_written_out(self):
+        project, clip = self.voiced(pictured=False)
+        text = store.clip_prompt(project, clip)
+        self.assertIn("<Audio 1> is the voice-timbre reference for a calm woman in her thirties (S1).", text)
+        self.assertIn("A calm woman in her thirties (S1), using the voice timbre", text)
+        self.assertNotIn("<Subject", text)
+        self.assertNotIn("ref_images.", str(store.render_graph(project, "Test", clip, "t1", "draft", 1)["10"]["inputs"]))
+
+    def test_the_speaker_id_follows_the_identity(self):
+        project, clip = self.voiced(pictured=False)
+        project["cast"][0]["description"] = "A warm, clear narrator"
+        update_clip(project, clip["id"], {"speaker": "@Ana, off-screen"})
+        text = store.clip_prompt(project, clip)
+        self.assertIn("is the voice-timbre reference for a warm, clear narrator (S1).", text)
+        self.assertIn("A warm, clear narrator (S1), off-screen, using the voice timbre referenced from <Audio 1>, says:", text)
+        pictured, shot = self.voiced(pictured=True)
+        update_clip(pictured, shot["id"], {"speaker": "@Ana, off-screen"})
+        self.assertIn("<Subject 1> (S1), off-screen, using the voice", store.clip_prompt(pictured, shot))
+
+    def test_no_line_means_no_voice(self):
+        project, clip = self.voiced(pictured=True)
+        update_clip(project, clip["id"], {"dialogue": ""})
+        self.assertNotIn("<Audio 1>", store.clip_prompt(project, clip))
+
+
+class FormatTest(unittest.TestCase):
+    def test_a_vertical_project_renders_vertical(self):
+        project = new_project("Test")
+        store.set_project(project, {"format": "9:16"})
+        clip, _ = add_clip(project, {"action": "One."})
+        inputs = store.render_graph(project, "Test", clip, "t1", "final", 1)["10"]["inputs"]
+        self.assertEqual((inputs["width"], inputs["height"]), (768, 1344))
+
+    def test_an_unknown_format_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "16:9, 9:16, 1:1"):
+            store.set_project(new_project("Test"), {"format": "4:3"})
+
+    def test_footage_edits_but_never_renders(self):
+        project = new_project("Test")
+        clip, item = store.add_footage(project, "Screen recording", take("f1", 240))
+        self.assertEqual((item["in"], item["out"], clip["seconds"]), (0, 240, 10.0))
+        with self.assertRaisesRegex(ValueError, "imported footage"):
+            plan_render(project, "Test", clip["id"], "draft")
+        extension, _ = add_linked(project, item["id"], "extend_after")
+        self.assertEqual(extension["link"]["a"]["file"], "f1.mp4")
+
+
 class BatchTest(unittest.TestCase):
     def test_later_operations_name_earlier_ones(self):
         project = new_project("Test")

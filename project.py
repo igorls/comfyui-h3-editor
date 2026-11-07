@@ -21,6 +21,19 @@ QUALITIES = {
     "draft": {"width": 640, "height": 352, "steps": 4},
     "final": {"width": 1344, "height": 768, "steps": 8},
 }
+# Picture sizes per project format. Draft is for trying things, final for the cut.
+FORMATS = {
+    "16:9": {"draft": (640, 352), "final": (1344, 768)},
+    "9:16": {"draft": (352, 640), "final": (768, 1344)},
+    "1:1": {"draft": (480, 480), "final": (1024, 1024)},
+}
+LANGUAGE = "English"
+
+
+def frame_size(project, quality):
+    """Width and height for a quality in this project's format. Imported footage counts as final."""
+    sizes = FORMATS.get(project.get("format") or "16:9", FORMATS["16:9"])
+    return sizes["draft" if quality == "draft" else "final"]
 MODELS = {
     "unet": "fasth3_omniref_qad_nvfp4_comfy.safetensors",
     "clip": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
@@ -78,8 +91,43 @@ def load_node(side, hold, tail):
 
 
 def clip_cast(project, clip):
+    """The cast members pictured in a clip. A voice with no picture is never a subject."""
     chosen = clip.get("cast") or []
-    return [c for c in project.get("cast", []) if c["id"] in chosen]
+    return [c for c in project.get("cast", []) if c["id"] in chosen and c.get("file")]
+
+
+def clip_language(project, clip):
+    return (clip.get("language") or project.get("language") or LANGUAGE).strip()
+
+
+def clip_voice(project, clip):
+    """The cast member whose voice the speaker uses: named with @ in Who speaks, and holding a voice."""
+    if not str(clip.get("dialogue", "")).strip():
+        return None
+    speaker = str(clip.get("speaker", "")).lower()
+    named = [p for p in project.get("cast", []) if p.get("voice") and "@" + p["name"].lower() in speaker]
+    return max(named, key=lambda p: len(p["name"])) if named else None
+
+
+def speaker_text(project, clip):
+    """Who speaks, with any unseen cast member written out, since only pictured ones become subjects.
+
+    The speaker ID goes right after the identity it belongs to, before anything like "off-screen".
+    """
+    text = str(clip.get("speaker", ""))
+    pictured = {p["id"] for p in clip_cast(project, clip)}
+    marked = []
+    for person in sorted(project.get("cast", []), key=lambda p: -len(p["name"])):
+        if person["id"] in pictured:
+            continue
+        words = (person.get("description") or person["name"]).strip().rstrip(".")
+
+        def put(match, words=words):
+            marked.append(True)
+            return words + (" (S1)" if len(marked) == 1 else "")
+
+        text = re.sub("@" + re.escape(person["name"]), put, text, flags=re.IGNORECASE)
+    return text
 
 
 def frame_of(clip, side):
@@ -93,17 +141,23 @@ def frame_of(clip, side):
 def clip_prompt(project, clip):
     fields = {
         "camera": clip.get("camera", ""),
-        "speaker": clip.get("speaker", ""),
+        "speaker": speaker_text(project, clip),
         "dialogue": clip.get("dialogue", ""),
         "sound": clip.get("sound", ""),
         "music": clip.get("music", ""),
+        "language": clip_language(project, clip),
     }
     cast = clip_cast(project, clip)
     first, last = frame_of(clip, "first"), frame_of(clip, "last")
-    if cast or first or last:
+    voice = clip_voice(project, clip)
+    if cast or first or last or voice:
+        owner = None
+        if voice:
+            number = next((n for n, c in enumerate(cast, 1) if c["id"] == voice["id"]), None)
+            owner = {"subject": number} if number else {"description": voice.get("description") or voice["name"]}
         return compose_reference_prompt(
             project.get("style", ""), clip.get("action", ""), subjects=cast,
-            first_frame=bool(first), last_frame=bool(last), **fields,
+            first_frame=bool(first), last_frame=bool(last), voice=owner, **fields,
         )
     return compose_prompt(project.get("style", ""), clip.get("action", ""), **fields)
 
@@ -115,11 +169,14 @@ def still_node(asset):
 
 def render_graph(project, folder, clip, take, quality, seed):
     """One clip as a ComfyUI graph, saved as its own file in the project."""
+    if clip.get("kind") == "footage":
+        raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip.get("name", "this clip"))
     if not str(clip.get("action", "")).strip():
         raise ValueError("describe what happens in this clip before rendering it")
     if quality not in QUALITIES:
         raise ValueError("quality must be one of %s" % (tuple(QUALITIES),))
-    size = QUALITIES[quality]
+    width, height = frame_size(project, quality)
+    size = dict(QUALITIES[quality], width=width, height=height)
     models = project.get("models") or MODELS
     link = clip.get("link")
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
@@ -163,6 +220,12 @@ def render_graph(project, folder, clip, take, quality, seed):
         node = str(50 + index)
         graph[node] = still_node(member)
         take_inputs["ref_images.ref_image_%s" % index] = [node, 0]
+    voice = clip_voice(project, clip)
+    if voice:
+        sound = voice["voice"]
+        file = "%s/%s" % (sound["subfolder"], sound["file"]) if sound.get("subfolder") else sound["file"]
+        graph["60"] = {"class_type": "H3LoadSound", "inputs": {"file": file, "seconds": 30.0}}
+        take_inputs["ref_audios.ref_audio_0"] = ["60", 0]
     if link:
         hold = int(link["hold"])
         graph["6"] = load_node(link["a"], hold, link["mode"] != "extend_before")
@@ -238,8 +301,7 @@ def export_command(project, paths, out_path, width=None, height=None):
         raise ValueError("there are no rendered clips on the timeline to export")
     if width is None or height is None:
         take = active_take(clips[items[0]["clip"]]) or {}
-        size = QUALITIES.get(take.get("quality"), QUALITIES["final"])
-        width, height = size["width"], size["height"]
+        width, height = frame_size(project, take.get("quality"))
 
     args = ["ffmpeg", "-y", "-v", "error"]
     chains = []
@@ -301,10 +363,10 @@ def export_command(project, paths, out_path, width=None, height=None):
 HOLD = 39
 MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
-               "first", "last")
-TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music")
-PROJECT_FIELDS = ("style",)
-CAST_FIELDS = ("name", "description")
+               "first", "last", "language")
+TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
+PROJECT_FIELDS = ("style", "format", "language")
+CAST_FIELDS = ("name", "description", "voice")
 LINK_MODES = ("extend_after", "extend_before", "bridge", "merge")
 LINK_TITLES = {"extend_after": "After ", "extend_before": "Before ", "bridge": "Bridge from ", "merge": "Merge from "}
 SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast")
@@ -742,16 +804,25 @@ def set_project(project, fields):
     for key, value in fields.items():
         if not isinstance(value, str):
             raise ValueError("%s must be text" % key)
-        project[key] = value
+        if key == "format" and value not in FORMATS:
+            raise ValueError("format must be one of %s" % ", ".join(FORMATS))
+        if key == "language" and not value.strip():
+            raise ValueError("language names the language people speak, such as English or Portuguese")
+        project[key] = value.strip() if key == "language" else value
 
 
 def add_cast(project, fields):
-    asset = clean_asset(fields, "a cast member")
+    """A person or place from a picture, a voice with no picture, or both."""
     check_fields({k: v for k, v in fields.items() if k not in ("file", "subfolder")}, CAST_FIELDS)
+    voice = clean_asset(fields.get("voice"), "a voice")
+    asset = clean_asset(fields, "a cast member") if fields.get("file") or not voice else None
     project.setdefault("cast", [])
     person = {"id": new_id("p"), "name": str(fields.get("name") or "Person %s" % (len(project["cast"]) + 1)),
               "description": str(fields.get("description") or "")}
-    person.update(asset)
+    if asset:
+        person.update(asset)
+    if voice:
+        person["voice"] = voice
     project["cast"].append(person)
     return person
 
@@ -760,10 +831,28 @@ def update_cast(project, cast_id, fields):
     check_fields(fields, CAST_FIELDS)
     person = find_cast(project, cast_id)
     for key, value in fields.items():
+        if key == "voice":
+            if value is None and not person.get("file"):
+                raise ValueError("%s is only a voice. Remove the cast member instead" % person["name"])
+            if value is None:
+                person.pop("voice", None)
+            else:
+                person["voice"] = clean_asset(value, "a voice")
+            continue
         if not isinstance(value, str):
             raise ValueError("%s must be text" % key)
         person[key] = value.strip() or person[key] if key == "name" else value
     return person
+
+
+def add_footage(project, name, take, start=None, place=True):
+    """Real video or a picture, already made into a take. It edits like any clip but is never rendered."""
+    clip = {"id": take.pop("clip", None) or new_id("c"), "kind": "footage", "name": str(name or "Footage"),
+            "action": "", "camera": "", "speaker": "", "dialogue": "", "sound": "", "music": "",
+            "seconds": round(take["frames"] / float(FPS), 3), "takes": [take], "active": take["id"]}
+    project.setdefault("clips", []).append(clip)
+    item = place_clip(project, clip["id"], start) if place else None
+    return clip, item
 
 
 def remove_cast(project, cast_id):
@@ -779,6 +868,8 @@ def remove_cast(project, cast_id):
 def plan_render(project, folder, clip_id, quality, seed=None):
     """The graph for a new take, and the job that will turn its file into a take."""
     clip = find_clip(project, clip_id)
+    if clip.get("kind") == "footage":
+        raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip["name"])
     if any(j["clip"] == clip_id for j in project.get("pending", [])):
         raise ValueError("%s is already rendering" % clip["name"])
     refresh_link(project, clip)
@@ -928,6 +1019,8 @@ def describe(project):
             entry.update({"take": take["id"], "frames": take["frames"], "seed": take.get("seed"), "quality": take.get("quality")})
         if clip.get("link"):
             entry["link"] = clip["link"]["mode"]
+        if clip.get("kind") == "footage":
+            entry["footage"] = True
         if clip.get("error"):
             entry["error"] = clip["error"]
         for name in ("speaker", "dialogue", "cast"):
@@ -953,8 +1046,10 @@ def describe(project):
         end = max(end, item_end(item))
     return {
         "name": project.get("name"), "revision": project.get("revision", 0), "style": project.get("style", ""),
+        "format": project.get("format") or "16:9", "language": project.get("language") or LANGUAGE,
         "frames": scene_end(project), "length": timecode(scene_end(project)), "fps": FPS,
-        "cast": [{"id": p["id"], "name": p["name"], "description": p.get("description", "")} for p in project.get("cast", [])],
+        "cast": [{"id": p["id"], "name": p["name"], "description": p.get("description", ""),
+                  "picture": bool(p.get("file")), "voice": bool(p.get("voice"))} for p in project.get("cast", [])],
         "clips": clips, "timeline": timeline, "gaps": gaps,
         "rendering": [{"job": j.get("id"), "clip": j["clip"], "quality": j["quality"]} for j in project.get("pending", [])],
     }
