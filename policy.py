@@ -171,58 +171,9 @@ def video_span(mode, source_frames, length, hold_frames=39, align="av", keep=0.0
     }
 
 
-def snap_down_legal(length):
-    length = int(length)
-    if length < 5:
-        return None
-    k = (length - 5) // 17
-    return 5 + 17 * k
-
-
-def max_block_for_vram(gib):
-    """Trained H3 spans are 124, 243, and 362 frames. VRAM picks the longest one that fits."""
-    gib = float(gib)
-    if gib < 24:
-        return 124
-    if gib < 48:
-        return 243
-    return 362
-
-
-def split_span(total, max_block=243, overlap=39):
-    """Break a long generate into sequential blocks. Later blocks hold `overlap` frames of the previous one."""
-    total = int(total)
-    max_block = snap_down_legal(max_block)
-    if max_block is None:
-        raise ValueError("max block is below one H3 frame count")
-    if not av_hold(overlap) and overlap != 0:
-        raise ValueError("overlap %s is not an audio-aligned hold (39, 90, 141, ...)" % overlap)
-    if total <= max_block:
-        length = snap_down_legal(total)
-        if length is None or length < 5:
-            raise ValueError("span %s is too short to sample" % total)
-        return [{"start": 0, "length": length, "hold": 0, "pass": 1}]
-    blocks = []
-    covered = 0
-    while covered < total:
-        if not blocks:
-            length = min(max_block, snap_down_legal(total))
-            blocks.append({"start": 0, "length": length, "hold": 0, "pass": 1})
-            covered = length
-            continue
-        remain = total - covered
-        length = snap_down_legal(min(max_block, remain + overlap))
-        if length is None or length - overlap < 5:
-            raise ValueError("cannot fit the remaining %s frames under a %s-frame cap" % (remain, max_block))
-        start = covered - overlap
-        blocks.append({
-            "start": start,
-            "length": length,
-            "hold": overlap,
-            "pass": len(blocks) + 1,
-        })
-        covered = start + length
-    return blocks
+def latent_frames(steps):
+    """Frames covered by a latent of this many steps. The inverse of video_steps."""
+    return ((int(steps) - 2) // 5) * 17 + 5
 
 
 def audio_window(mode, span, length, audio_seconds):

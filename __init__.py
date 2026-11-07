@@ -1,12 +1,17 @@
 """H3 Take. Relative imports only: ComfyUI owns the top-level name `nodes`."""
 
-from .nodes import NODE_CLASS_MAPPINGS as TAKE_NODES
-from .nodes import NODE_DISPLAY_NAME_MAPPINGS as TAKE_NAMES
-from .timeline import NODE_CLASS_MAPPINGS as TIMELINE_NODES
-from .timeline import NODE_DISPLAY_NAME_MAPPINGS as TIMELINE_NAMES
+import os
 
-NODE_CLASS_MAPPINGS = {**TAKE_NODES, **TIMELINE_NODES}
-NODE_DISPLAY_NAME_MAPPINGS = {**TAKE_NAMES, **TIMELINE_NAMES}
+from . import editor_api
+from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+
 WEB_DIRECTORY = "./web"
+
+editor_api.install()
+
+if os.path.exists(os.path.join(os.path.dirname(__file__), "dev.enable")):
+    from .dev_reload import install
+
+    install(__name__)
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

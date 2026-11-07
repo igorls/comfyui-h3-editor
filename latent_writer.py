@@ -64,6 +64,12 @@ def region_steps(mask, steps, height, width):
     return mask.movedim(0, 1).unsqueeze(0).clamp(0.0, 1.0)
 
 
+def carry_tail(latent, steps, ticks):
+    """The last frames of a finished take, still in latent form, so a later pass never re-encodes them."""
+    video, audio = latent["samples"].unbind()
+    return video[:, :, -steps:], audio[..., -ticks:]
+
+
 def write_holds(latent, video_latent=None, video_first=0, audio_latent=None, audio_first=0,
                 video_curve=None, audio_curve=None, region=None):
     """Return a new latent dict with the held streams written and a nested noise mask set."""

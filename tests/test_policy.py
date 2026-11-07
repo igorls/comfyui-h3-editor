@@ -4,6 +4,7 @@ from policy import (
     audio_window,
     frame_to_step,
     hold_curve,
+    latent_frames,
     legal_length,
     parse_frames,
     plan,
@@ -83,33 +84,6 @@ class PolicyTest(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             video_span("v2v", source_frames=124, length=192)
         self.assertIn("extend_both", str(caught.exception))
-
-    def test_vram_picks_a_trained_span(self):
-        from policy import max_block_for_vram, split_span
-        self.assertEqual(max_block_for_vram(16), 124)
-        self.assertEqual(max_block_for_vram(32), 243)
-        self.assertEqual(max_block_for_vram(96), 362)
-
-    def test_the_default_after_region_splits_on_a_16gb_mac(self):
-        from policy import split_span
-        blocks = split_span(243, max_block=124, overlap=39)
-        self.assertEqual([b["length"] for b in blocks], [124, 124, 73])
-        self.assertGreaterEqual(blocks[-1]["start"] + blocks[-1]["length"], 243)
-
-    def test_an_off_grid_region_fails_instead_of_hanging(self):
-        from policy import split_span
-        with self.assertRaises(ValueError) as caught:
-            split_span(248, max_block=124, overlap=39)
-        self.assertIn("remaining", str(caught.exception))
-
-    def test_a_long_take_becomes_sequential_passes(self):
-        from policy import split_span
-        blocks = split_span(600, max_block=243, overlap=39)
-        self.assertGreater(len(blocks), 1)
-        self.assertEqual(blocks[0]["hold"], 0)
-        self.assertTrue(all(b["length"] <= 243 for b in blocks))
-        self.assertTrue(all(b["hold"] == 39 for b in blocks[1:]))
-        self.assertGreaterEqual(blocks[-1]["start"] + blocks[-1]["length"], 600)
 
     def test_named_strengths_and_custom(self):
         self.assertEqual(resolve_keep("hold"), 0.0)
@@ -217,6 +191,10 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(video_span("extend_before", 124, 192, hold_frames=39)["source_start"], 0)
         self.assertEqual(video_span("extend_both", 124, 243, hold_frames=90)["source_start"], 17)
         self.assertEqual(video_span("v2v", 124, 124)["source_start"], 0)
+
+    def test_latent_frames_inverts_video_steps(self):
+        for frames in (5, 22, 39, 124, 243, 498):
+            self.assertEqual(latent_frames(video_steps(frames)), frames)
 
 
 if __name__ == "__main__":

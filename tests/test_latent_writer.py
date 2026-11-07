@@ -5,7 +5,14 @@ import unittest
 try:
     import torch
     import comfy.nested_tensor
-    from latent_writer import audio_pcm, encode_audio, encode_video, region_steps, write_holds
+    from latent_writer import (
+        audio_pcm,
+        carry_tail,
+        encode_audio,
+        encode_video,
+        region_steps,
+        write_holds,
+    )
 except ImportError:
     torch = None
 
@@ -73,6 +80,17 @@ class WriterTest(unittest.TestCase):
         self.assertEqual(tuple(out.shape), (1, 1, 12, 4, 6))
         self.assertEqual(out[0, 0, 0].max().item(), 0.0)
         self.assertEqual(out[0, 0, 11].min().item(), 1.0)
+
+    def test_carry_takes_the_last_steps_and_ticks(self):
+        latent = _empty()
+        video, audio = latent["samples"].unbind()
+        video[:, :, -3:] = 2.0
+        audio[..., -5:] = 3.0
+        tail_video, tail_audio = carry_tail(latent, 3, 5)
+        self.assertEqual(tuple(tail_video.shape), (1, 24, 3, 4, 6))
+        self.assertEqual(tail_video.min().item(), 2.0)
+        self.assertEqual(tail_audio.shape[-1], 5)
+        self.assertEqual(tail_audio.min().item(), 3.0)
 
     def test_curves_must_match_the_latent(self):
         with self.assertRaises(ValueError):

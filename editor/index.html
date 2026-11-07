@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>H3 Editor</title>
+<link rel="stylesheet" href="/h3take/editor-files/editor.css">
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <select id="project" aria-label="Project"></select>
+    <button id="newProject" class="quiet">New project</button>
+    <div class="spacer"></div>
+    <div id="queue" class="queue" aria-live="polite"></div>
+    <button id="renderAll" class="quiet">Render all drafts</button>
+    <button id="export" class="primary">Export</button>
+    <button id="close" class="quiet" title="Back to the graph">Close</button>
+  </header>
+
+  <main class="work">
+    <aside class="bin">
+      <div class="panel-head"><h2>Clips</h2><button id="newClip" class="quiet">New clip</button></div>
+      <div id="clips" class="clips"></div>
+    </aside>
+
+    <section class="stage">
+      <div id="screen" class="screen">
+        <video id="videoA" playsinline></video>
+        <video id="videoB" playsinline></video>
+        <img id="preview" alt="Live render preview" hidden>
+        <div id="slate" class="slate"></div>
+        <div id="live" class="live" hidden></div>
+      </div>
+      <div class="transport">
+        <button id="toStart" class="icon" aria-label="Go to start" title="Go to start">⏮</button>
+        <button id="back" class="icon" aria-label="One frame back" title="One frame back">◀</button>
+        <button id="play" class="icon play" aria-label="Play" title="Play or pause (Space)">▶</button>
+        <button id="forward" class="icon" aria-label="One frame forward" title="One frame forward">▶︎</button>
+        <span id="time" class="time">00:00:00</span>
+        <span id="total" class="total"></span>
+      </div>
+    </section>
+
+    <aside class="inspector" id="inspector"></aside>
+  </main>
+
+  <section class="timeline" id="timeline">
+    <div class="tl-tools">
+      <button id="split" class="quiet" title="Split at the playhead (S)">Split</button>
+      <button id="remove" class="quiet" title="Remove from the timeline (Delete)">Remove</button>
+      <div class="spacer"></div>
+      <label class="zoom">Zoom <input id="zoom" type="range" min="0.5" max="12" step="0.1" value="3"></label>
+    </div>
+    <div class="tl-body" id="tlBody">
+      <div class="tl-heads"><div class="tl-head ruler-head"></div><div class="tl-head v">Picture</div><div class="tl-head a">Sound</div></div>
+      <div class="tl-scroll" id="tlScroll">
+        <div class="tl-content" id="tlContent">
+          <div class="ruler" id="ruler"></div>
+          <div class="lane v" id="laneV"></div>
+          <div class="lane a" id="laneA"></div>
+          <div class="playhead" id="playhead"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+<div id="toast" class="toast" role="status" hidden></div>
+<script type="module" src="/h3take/editor-files/editor.js"></script>
+</body>
+</html>
