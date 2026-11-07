@@ -632,29 +632,50 @@ def source_path(where, subfolder, filename):
     return path
 
 
+LARGEST_UPLOAD = 4 << 30
+LARGEST_FIELD = 4096
+
+
 async def receive_upload(request, allowed, directory):
-    """Stream a multipart upload to disk, so a long recording never sits in memory."""
+    """Stream one uploaded file to disk, so a long recording never sits in memory.
+
+    One file per upload and at most 4 GiB. Whatever was written is removed if the upload fails.
+    """
     reader = await request.multipart()
     fields, saved, original = {}, None, None
-    while True:
-        part = await reader.next()
-        if part is None:
-            break
-        if part.filename:
+    try:
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if not part.filename:
+                value = await part.read_chunk(LARGEST_FIELD + 1)
+                if len(value) > LARGEST_FIELD:
+                    raise ValueError("the %s field is too long" % part.name)
+                fields[part.name] = value.decode("utf-8", errors="replace")
+                continue
+            if saved:
+                raise ValueError("import one file at a time")
             extension = os.path.splitext(part.filename)[1].lower()
             if extension not in allowed:
                 raise ValueError("import a video (%s) or a picture (%s)" % (", ".join(VIDEOS), ", ".join(PICTURES)))
             os.makedirs(directory, exist_ok=True)
             saved = os.path.join(directory, uuid.uuid4().hex[:12] + extension)
+            original = part.filename
+            written = 0
             with open(saved, "wb") as f:
                 while True:
                     chunk = await part.read_chunk(1 << 20)
                     if not chunk:
                         break
+                    written += len(chunk)
+                    if written > LARGEST_UPLOAD:
+                        raise ValueError("that file is larger than 4 GiB. Put it in ComfyUI's input folder and import it from there")
                     f.write(chunk)
-            original = part.filename
-        else:
-            fields[part.name] = await part.text()
+    except BaseException:
+        if saved and os.path.exists(saved):
+            os.remove(saved)
+        raise
     return saved, original, fields
 
 
