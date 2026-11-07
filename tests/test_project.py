@@ -221,6 +221,16 @@ class ExportTest(unittest.TestCase):
         self.assertIn("trim=start_frame=10:end_frame=110,setpts=(PTS-STARTPTS)/2.00000", text)
         self.assertIn("atempo=2", text.replace("atempo=2.00000", "atempo=2"))
 
+    def test_bad_speeds_are_refused_instead_of_looping(self):
+        for bad in (0, -1, float("inf"), float("-inf"), float("nan"), 5, 0.1, "fast"):
+            with self.assertRaises(ValueError):
+                tempo_chain(bad)
+            with self.assertRaises(ValueError):
+                item_length({"in": 0, "out": 10, "speed": bad})
+        self.project["timeline"] = [{"clip": "a", "start": 0, "in": 0, "out": 48, "speed": -2}]
+        with self.assertRaises(ValueError):
+            export_command(self.project, {"a": "a.mp4"}, "o.mp4")
+
     def test_large_speed_changes_chain_atempo(self):
         self.assertEqual(tempo_chain(1), "")
         self.assertEqual(tempo_chain(4), "atempo=2.0,atempo=2.00000")

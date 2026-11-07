@@ -3,6 +3,7 @@
 Moving or trimming on the timeline never touches a render. No Comfy import.
 """
 
+import math
 import re
 
 try:
@@ -188,14 +189,25 @@ def active_take(clip):
 TRANSITIONS = {"dissolve": "fade", "black": "fadeblack", "wipe": "wipeleft"}
 
 
+MIN_SPEED, MAX_SPEED = 0.25, 4.0
+
+
+def clean_speed(value):
+    """A timeline speed. The project file comes from the client, so anything else is refused."""
+    speed = 1.0 if value in (None, "") else float(value)
+    if not math.isfinite(speed) or not MIN_SPEED <= speed <= MAX_SPEED:
+        raise ValueError("speed must be between %s and %s" % (MIN_SPEED, MAX_SPEED))
+    return speed
+
+
 def item_length(item):
     """Frames an item fills on the timeline, after its speed."""
-    return max(1, int(round((item["out"] - item["in"]) / float(item.get("speed") or 1))))
+    return max(1, int(round((item["out"] - item["in"]) / clean_speed(item.get("speed")))))
 
 
 def tempo_chain(speed):
     """atempo only takes 0.5 to 2 at a time, so larger changes are chained."""
-    speed = float(speed)
+    speed = clean_speed(speed)
     steps = []
     while speed > 2.0:
         steps.append("atempo=2.0")
@@ -253,7 +265,7 @@ def export_command(project, paths, out_path, width=None, height=None):
 
     for index, item in enumerate(items):
         args += ["-i", paths[item["clip"]]]
-        speed = float(item.get("speed") or 1)
+        speed = clean_speed(item.get("speed"))
         first, last = int(item["in"]), int(item["out"])
         chains.append("[%s:v]trim=start_frame=%s:end_frame=%s,setpts=(PTS-STARTPTS)/%.5f,%s[v%s]" % (index, first, last, speed, finish, index))
         tempo = tempo_chain(speed)
