@@ -163,9 +163,11 @@ rendering. Renders run after the edits in the same batch. `cancel`: `clip` or `j
 | draft | 640x352 | 352x640 | 480x480 | 4 |
 | final | 1344x768 | 768x1344 | 1024x1024 | 6 |
 
-Both render on HyperFlow H3 Flash. A final is then doubled by RelayVSR, so its take is
-twice the size above, 1536x2688 for 9:16. A take records what made it in `models` (`unet`,
-`checkpoint`, and `upscaler` for a final) and in `upscale`.
+Both render on HyperFlow H3 Flash. A final's picture is then enlarged and its last 3 steps
+redrawn at the larger size, so its take is 1920x1088 for 16:9, 1088x1920 for 9:16 and
+1440x1440 for 1:1. The sound is the first pass's. A take records its picture size in `size`
+and what made it in `models` (`unet`, `checkpoint`, and for a final `upscaler`, `lora` and
+`lora_strength`). Finals from before this record `upscale` instead of `size`.
 
 ## Replies and errors
 

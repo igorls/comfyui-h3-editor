@@ -2,8 +2,8 @@
 
 An editor and a ComfyUI node for MiniMax H3. The node uses ComfyUI's own H3
 nodes and needs no other custom node pack. The editor renders with HyperFlow H3
-Flash and upscales finals with RelayVSR, which need the models and packs listed
-under Install.
+Flash and refines finals at a larger size, which needs the models and packs
+listed under Install.
 
 ## Editor
 
@@ -142,6 +142,8 @@ save the video. Each template carries a note with the settings that matter.
 | H3 Load Clip | Reads frames and sound from a clip in the output folder |
 | H3 Load Still | Reads a picture from the output folder |
 | H3 Load Sound | Reads a sound from the output folder, such as a cast voice |
+| H3 LoRA | Applies an H3 LoRA. On HyperFlow H3 Flash it renumbers the LoRA's blocks to fit |
+| H3 Refine Latent | Prepares an upscaled H3 latent for a few more steps, keeping held frames and the sound |
 
 ## H3 Take node
 
@@ -242,14 +244,23 @@ The editor's renders need:
   a prompt;
 - the H3 text encoder and the video and audio VAEs, as for ComfyUI's own H3
   workflows;
-- for finals, a ComfyUI recent enough to have the RelayVSR nodes, with
-  `relayvsr/relayvsr_x2_lightx2v_int8_convrot.safetensors` in
-  `models/diffusion_models` and `relayvsr/relayvsr_flash_vae_x2_fp32.safetensors`
-  in `models/vae`.
+- for finals, a ComfyUI recent enough to have the MiniMax H3 latent upscale
+  node, with `minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors` in
+  `models/latent_upscale_models`, and the MMH3 Realism Slider LoRA
+  (Civitai model 3014078) as `MMH3-RealismSlider-V1.safetensors` in
+  `models/loras`.
 
 A draft renders at the project's draft size in 4 steps. A final renders at the
-final size in 6 steps, then RelayVSR doubles it, so a 9:16 final is 1536x2688.
-Export takes the size of the largest picture in the cut. A project can name
+final size in 6 steps, which is H3's own size of about a megapixel. The learned
+latent upscaler then enlarges the picture, and HyperFlow redraws its last 3
+steps at that size. A 9:16 final comes out at 1088x1920, a 16:9 one at
+1920x1088 and a 1:1 one at 1440x1440. The sound is the first pass's, and held
+frames stay as they are. The Realism Slider runs at 1.5 on both passes, for a
+matte, less made-up skin. HyperFlow H3 Flash prunes some of H3's blocks: its
+ref2va dropped block 9 and its fl2va blocks 6, 21 and 22. The H3 LoRA node
+moves an H3 LoRA's later blocks down to match, so they land on the layers they
+were trained for. A LoRA attaches only where HyperFlow keeps a layer whole, and
+ComfyUI skips the rest with a warning: on fl2va the slider's last `fc2` is one. Export takes the size of the largest picture in the cut. A project can name
 other models under `models`. A `.gguf` unet loads as HyperFlow, and any other
 unet loads with ComfyUI's plain loader and scheduler.
 

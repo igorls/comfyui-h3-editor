@@ -206,9 +206,10 @@ For a file already in ComfyUI's input folder, see the import route in the refere
 Renders queue on the user's GPU one at a time. Measured with the models loaded:
 
 - a draft (640x352, 4 steps) takes 10 to 15 seconds per clip;
-- a final (1344x768, 6 steps) is rendered by HyperFlow H3 Flash, then doubled by
-  RelayVSR, so it comes out at twice the final size. Together that is about 21 seconds of GPU
-  per second of footage. A 5 second shot takes around 110 seconds;
+- a final (1344x768, 6 steps) is rendered by HyperFlow H3 Flash, then enlarged and
+  redrawn for its last 3 steps at 1920x1088 (1088x1920 for 9:16), with a skin LoRA on
+  both passes. That is about 50 seconds of GPU per second of footage. A 5 second shot
+  takes around 4.5 minutes;
 - the first render after ComfyUI starts also loads the models.
 
 Draft freely. Before a batch of finals, tell the user how many clips and roughly how long

@@ -5,6 +5,8 @@ from policy import (
     bridge_spans,
     frame_to_step,
     hold_curve,
+    HYPERFLOW_DROPPED,
+    hyperflow_lora_key,
     latent_frames,
     legal_length,
     merge_curves,
@@ -221,6 +223,40 @@ class PolicyTest(unittest.TestCase):
     def test_latent_frames_inverts_video_steps(self):
         for frames in (5, 22, 39, 124, 243, 498):
             self.assertEqual(latent_frames(video_steps(frames)), frames)
+
+
+
+def block_of(key):
+    return int(key.split("blocks.")[1].split(".")[0])
+
+
+class HyperFlowLoraKeyTest(unittest.TestCase):
+    REF2VA = HYPERFLOW_DROPPED[49]
+    FL2VA = HYPERFLOW_DROPPED[47]
+
+    def moved(self, block, dropped):
+        key = hyperflow_lora_key("diffusion_model.blocks.%s.mlp.fc1.lora_A.weight" % block, dropped)
+        return None if key is None else block_of(key)
+
+    def test_on_ref2va_blocks_after_9_move_down_by_one(self):
+        self.assertEqual([self.moved(b, self.REF2VA) for b in (8, 9, 10, 25, 49)], [8, None, 9, 24, 48])
+        self.assertEqual(hyperflow_lora_key("lora_unet_blocks_10_attn_qkv_proj.lora_down.weight", self.REF2VA),
+                         "lora_unet_blocks_9_attn_qkv_proj.lora_down.weight")
+
+    def test_on_fl2va_blocks_move_past_6_21_and_22(self):
+        self.assertEqual([self.moved(b, self.FL2VA) for b in (5, 6, 7, 20, 21, 22, 23, 25, 49)],
+                         [5, None, 6, 19, None, None, 20, 22, 46])
+
+    def test_every_kept_block_lands_on_its_own_layer(self):
+        for count, dropped in HYPERFLOW_DROPPED.items():
+            kept = [self.moved(b, dropped) for b in range(50) if b not in dropped]
+            self.assertEqual(kept, list(range(count)))
+
+    def test_other_layers_stay(self):
+        for key in ("diffusion_model.token_refiner.blocks.0.mlp.fc1.lora_A.weight",
+                    "lora_unet_token_refiner_blocks_1_mlp_fc1.alpha",
+                    "diffusion_model.final_layer.video_out.lora_A.weight"):
+            self.assertEqual(hyperflow_lora_key(key, self.FL2VA), key)
 
 
 if __name__ == "__main__":

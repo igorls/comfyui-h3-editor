@@ -121,6 +121,18 @@ class RenderRecordTest(unittest.TestCase):
         self.assertEqual(store.active_take(clip)["file"], "x.mp4")
         self.assertEqual(clip["takes"][0]["saved"]["action"], "One.")
 
+    def test_a_final_records_the_size_it_comes_out_at(self):
+        project = new_project("Test")
+        clip, _ = add_clip(project, {"action": "One."})
+        job, _ = plan_render(project, "Test", clip["id"], "final")
+        self.assertEqual(job["size"], [1920, 1088])
+        job["id"] = "prompt-1"
+        add_pending(project, job)
+        finish_render(project, "prompt-1", {"filename": "x.mp4", "subfolder": "s"}, {"frames": 124, "poster": "x.jpg"})
+        take = store.active_take(clip)
+        self.assertEqual(take["size"], [1920, 1088])
+        self.assertEqual(take["models"]["lora_strength"], 1.5)
+
     def test_a_failed_render_says_why(self):
         project = new_project("Test")
         clip, _ = add_clip(project, {"action": "One."})

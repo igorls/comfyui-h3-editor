@@ -18,15 +18,18 @@ FPS = 24
 JOINT = 51
 ROOT = "h3take_projects"
 QUALITIES = {
-    "draft": {"width": 640, "height": 352, "steps": 4},
-    # A final is rendered at the final size, then doubled by the upscaler.
-    "final": {"width": 1344, "height": 768, "steps": 6, "upscale": 2},
+    "draft": {"steps": 4},
+    # A final renders at the final size, H3's own size of about a megapixel. Its picture is
+    # then upscaled to the refine size, where the model redraws its last steps from refine_from.
+    # The Realism Slider runs on both passes at this strength.
+    "final": {"steps": 6, "refine_from": 3, "lora": 1.5},
 }
-# Picture sizes per project format. Draft is for trying things, final for the cut.
+# Picture sizes per project format. Draft is for trying things, final for the cut, and
+# refine is the size a final comes out at.
 FORMATS = {
-    "16:9": {"draft": (640, 352), "final": (1344, 768)},
-    "9:16": {"draft": (352, 640), "final": (768, 1344)},
-    "1:1": {"draft": (480, 480), "final": (1024, 1024)},
+    "16:9": {"draft": (640, 352), "final": (1344, 768), "refine": (1920, 1088)},
+    "9:16": {"draft": (352, 640), "final": (768, 1344), "refine": (1088, 1920)},
+    "1:1": {"draft": (480, 480), "final": (1024, 1024), "refine": (1440, 1440)},
 }
 LANGUAGE = "English"
 
@@ -35,17 +38,23 @@ def frame_size(project, quality):
     """Width and height for a quality in this project's format. Imported footage counts as final."""
     sizes = FORMATS.get(project.get("format") or "16:9", FORMATS["16:9"])
     return sizes["draft" if quality == "draft" else "final"]
+
+
+def refine_size(project):
+    """Width and height a final comes out at in this project's format."""
+    return FORMATS.get(project.get("format") or "16:9", FORMATS["16:9"])["refine"]
 # Renders use HyperFlow H3 Flash: its ref2va model when a clip has references, and its
-# fl2va model when a clip is only a prompt. A .gguf unet loads as HyperFlow. RelayVSR
-# doubles finals.
+# fl2va model when a clip is only a prompt. A .gguf unet loads as HyperFlow. A final's
+# picture is enlarged by MiniMax's learned latent upscaler and refined at that size, with
+# the MMH3 Realism Slider LoRA on the model.
 MODELS = {
     "unet": "hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf",
     "unet_text": "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf",
     "clip": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
     "vae": "minimax_h3_video_vae_fp16.safetensors",
     "audio_vae": "minimax_h3_audio_vae_fp32.safetensors",
-    "upscaler": "relayvsr/relayvsr_x2_lightx2v_int8_convrot.safetensors",
-    "upscaler_vae": "relayvsr/relayvsr_flash_vae_x2_fp32.safetensors",
+    "latent_upscaler": "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+    "lora": "MMH3-RealismSlider-V1.safetensors",
 }
 # Models that older projects name but the editor no longer renders with.
 RETIRED = {"fasth3_omniref_qad_nvfp4_comfy.safetensors"}
@@ -242,20 +251,10 @@ def render_graph(project, folder, clip, take, quality, seed):
         graph["12"] = {"class_type": "HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": size["steps"]}}
         if unet == models["unet_text"]:
             graph["10"]["inputs"]["checkpoint"] = "fl2va"
-    if size.get("upscale") and models.get("upscaler"):
-        # RelayVSR doubles the decoded picture in one step. The sound passes through unchanged.
-        graph.update({
-            "20": {"class_type": "UNETLoader", "inputs": {"unet_name": models["upscaler"], "weight_dtype": "default"}},
-            "21": {"class_type": "VAELoader", "inputs": {"vae_name": models["upscaler_vae"]}},
-            "22": {"class_type": "RelayVSRConditioning", "inputs": {"model": ["20", 0], "images": ["16", 0]}},
-            "23": {"class_type": "BasicGuider", "inputs": {"model": ["20", 0], "conditioning": ["22", 0]}},
-            "24": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
-            "25": {"class_type": "BasicScheduler", "inputs": {"model": ["20", 0], "scheduler": "simple", "steps": 1, "denoise": 1.0}},
-            "26": {"class_type": "SamplerCustomAdvanced", "inputs": {
-                "noise": ["14", 0], "guider": ["23", 0], "sampler": ["24", 0], "sigmas": ["25", 0], "latent_image": ["22", 1]}},
-            "27": {"class_type": "VSRDecode", "inputs": {"vae": ["21", 0], "samples": ["26", 0], "images": ["16", 0], "detail": 1.0}},
-        })
-        graph["18"]["inputs"]["images"] = ["27", 0]
+    if size.get("lora") and models.get("lora"):
+        # The Realism Slider, on the model both passes sample with.
+        graph["95"] = {"class_type": "H3Lora", "inputs": {"model": ["1", 0], "lora_name": models["lora"], "strength": size["lora"]}}
+        graph["5"]["inputs"]["model"] = ["95", 0]
     take_inputs = graph["10"]["inputs"]
     first, last = frame_of(clip, "first"), frame_of(clip, "last")
     if first:
@@ -299,7 +298,34 @@ def render_graph(project, folder, clip, take, quality, seed):
         take_inputs.update({"audio_hold": "full", "audio_align": "take", "source_audio": ["61", 0]})
         if link and link["mode"] == "bridge":
             take_inputs["end_audio"] = ["61", 0]
+    if size.get("refine_from") and models.get("latent_upscaler"):
+        add_refine(graph, refine_size(project), size["refine_from"], models["latent_upscaler"])
     return graph
+
+
+def add_refine(graph, size, refine_from, upscaler):
+    """Enlarge the sampled latent and redraw its last steps at that size, keeping the sound.
+
+    A second take at the refine size gives the conditioning there (pinned frames and pictures
+    at that size) and its held frames. The picture comes out at the refine size, and the sound
+    is the first pass's.
+    """
+    width, height = size
+    take = copy.deepcopy(graph["10"])
+    take["inputs"].update({"width": width, "height": height})
+    graph.update({
+        "80": take,
+        "81": {"class_type": "LatentUpscaleModelLoader", "inputs": {"model_name": upscaler}},
+        "82": {"class_type": "MiniMaxH3LatentUpscaleWithModel", "inputs": {
+            "model": ["81", 0], "samples": ["15", 0], "width": width, "height": height}},
+        "83": {"class_type": "H3RefineLatent", "inputs": {"upscaled": ["82", 0], "take": ["80", 1]}},
+        "87": {"class_type": "SplitSigmas", "inputs": {"sigmas": ["12", 0], "step": refine_from}},
+        "88": {"class_type": "BasicGuider", "inputs": {"model": ["9", 0], "conditioning": ["80", 0]}},
+        "90": {"class_type": "SamplerCustomAdvanced", "inputs": {
+            "noise": ["14", 0], "guider": ["88", 0], "sampler": ["11", 0], "sigmas": ["87", 1], "latent_image": ["83", 0]}},
+        "91": {"class_type": "VAEDecode", "inputs": {"samples": ["90", 0], "vae": ["3", 0]}},
+    })
+    graph["18"]["inputs"]["images"] = ["91", 0]
 
 
 def active_take(clip):
@@ -362,10 +388,14 @@ def export_command(project, paths, out_path, width=None, height=None):
         width = height = 0
         for item in items:
             take = active_take(clips[item["clip"]]) or {}
-            w, h = frame_size(project, take.get("quality"))
-            scale = int(take.get("upscale") or 1)
-            if w * scale > width:
-                width, height = w * scale, h * scale
+            if take.get("size"):
+                w, h = take["size"]
+            else:
+                # Takes from before refined finals record how much they were upscaled.
+                scale = int(take.get("upscale") or 1)
+                w, h = (side * scale for side in frame_size(project, take.get("quality")))
+            if w > width:
+                width, height = w, h
 
     args = ["ffmpeg", "-y", "-v", "error"]
     chains = []
@@ -967,8 +997,11 @@ def remove_cast(project, cast_id):
 def render_models(graph):
     """The models a render graph samples with, so a take records what made it."""
     used = {"unet": graph["1"]["inputs"]["unet_name"], "checkpoint": graph["10"]["inputs"]["checkpoint"]}
-    if "20" in graph:
-        used["upscaler"] = graph["20"]["inputs"]["unet_name"]
+    if "81" in graph:
+        used["upscaler"] = graph["81"]["inputs"]["model_name"]
+    if "95" in graph:
+        used["lora"] = graph["95"]["inputs"]["lora_name"]
+        used["lora_strength"] = graph["95"]["inputs"]["strength"]
     return used
 
 
@@ -989,8 +1022,8 @@ def plan_render(project, folder, clip_id, quality, seed=None):
     job = {"clip": clip_id, "take": take, "quality": quality, "seed": int(seed),
            "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
            "models": render_models(graph)}
-    if "27" in graph:
-        job["upscale"] = QUALITIES[quality]["upscale"]
+    if "91" in graph:
+        job["size"] = [graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]]
     if clip.get("track"):
         # Once rendered, the take's sound is replaced by this exact slice of the track.
         job["track"] = dict(clip["track"], seconds=graph["10"]["inputs"]["length"] / float(FPS))
@@ -1021,7 +1054,7 @@ def finish_render(project, job_id, file, info):
     take = {"id": job["take"], "file": file["filename"], "subfolder": file.get("subfolder") or "",
             "poster": info["poster"], "frames": int(info["frames"]), "quality": job["quality"],
             "seed": job["seed"], "saved": job.get("saved")}
-    for key in ("models", "upscale"):
+    for key in ("models", "upscale", "size"):
         if job.get(key):
             take[key] = job[key]
     if info.get("strip"):

@@ -1,5 +1,6 @@
 """One H3 take. Calls ComfyUI's own MiniMax nodes. Does not import any other pack."""
 
+import logging
 import os
 import subprocess
 
@@ -16,6 +17,8 @@ from .policy import (
     AUDIO_HOLDS,
     CHECKPOINTS,
     FPS,
+    H3_BLOCKS,
+    HYPERFLOW_DROPPED,
     MAX_PICTURES,
     MAX_REF_AUDIOS,
     MAX_REF_VIDEOS,
@@ -27,6 +30,7 @@ from .policy import (
     frame_count,
     frame_to_step,
     hold_curve,
+    hyperflow_lora_key,
     latent_frames,
     merge_curves,
     parse_frames,
@@ -359,6 +363,98 @@ class H3LoadClip(io.ComfyNode):
         return io.NodeOutput(frames[first:stop], audio)
 
 
-NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound}
+class H3Lora(io.ComfyNode):
+    """A LoRA on an H3 model. On HyperFlow H3 Flash, an H3 LoRA's blocks are renumbered to match it."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3Lora",
+            display_name="H3 LoRA",
+            category="minimax/h3",
+            description=(
+                "Apply a LoRA trained on MiniMax H3. HyperFlow H3 Flash prunes some of H3's blocks, "
+                "so on it the LoRA's later blocks move down to land on the layers they were trained for."
+            ),
+            inputs=[
+                io.Model.Input("model"),
+                io.Combo.Input("lora_name", options=folder_paths.get_filename_list("loras")),
+                io.Float.Input("strength", default=1.0, min=-4.0, max=4.0, step=0.05),
+            ],
+            outputs=[io.Model.Output(display_name="model")],
+        )
+
+    @classmethod
+    def execute(cls, model, lora_name, strength) -> io.NodeOutput:
+        import comfy.sd
+        import comfy.utils
+
+        if strength == 0:
+            return io.NodeOutput(model)
+        lora = comfy.utils.load_torch_file(folder_paths.get_full_path_or_raise("loras", lora_name), safe_load=True)
+        blocks = getattr(model.model.diffusion_model, "blocks", None)
+        count = len(blocks) if blocks is not None else H3_BLOCKS
+        if count != H3_BLOCKS:
+            dropped = HYPERFLOW_DROPPED.get(count)
+            if dropped is None:
+                logging.warning("H3 LoRA: no block map for a model with %s blocks. %s loads as it is.", count, lora_name)
+            else:
+                moved = {}
+                for key, value in lora.items():
+                    key = hyperflow_lora_key(key, dropped)
+                    if key is not None:
+                        moved[key] = value
+                lora = moved
+        patched, _ = comfy.sd.load_lora_for_models(model, None, lora, strength, 0)
+        return io.NodeOutput(patched)
+
+
+class H3RefineLatent(io.ComfyNode):
+    """The latent for a refine pass: the upscaled picture to sample again, with the take's held parts and its sound kept."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3RefineLatent",
+            display_name="H3 Refine Latent",
+            category="minimax/h3",
+            description=(
+                "Prepare a finished H3 latent, upscaled to a larger size, for a few more steps at that size. "
+                "Held frames come from the take at the larger size and stay as they are, and so does the sound."
+            ),
+            inputs=[
+                io.Latent.Input("upscaled", tooltip="The sampled H3 latent with its picture upscaled, for example by MiniMax H3 Latent Upscale With Model."),
+                io.Latent.Input("take", tooltip="The latent of the same H3 Take at the larger size, with its held frames and mask."),
+            ],
+            outputs=[io.Latent.Output(display_name="latent")],
+        )
+
+    @classmethod
+    def execute(cls, upscaled, take) -> io.NodeOutput:
+        import comfy.nested_tensor
+
+        streams, held = upscaled["samples"], take["samples"]
+        if not getattr(streams, "is_nested", False) or not getattr(held, "is_nested", False):
+            raise ValueError("H3 Refine Latent needs H3 latents with picture and sound")
+        video, audio = streams.tensors
+        held_video = held.tensors[0]
+        if video.shape != held_video.shape:
+            raise ValueError("the upscaled picture is %s but the take is %s. Upscale to the take's size"
+                             % (tuple(video.shape), tuple(held_video.shape)))
+        mask = take.get("noise_mask")
+        if mask is not None:
+            video_mask = mask.tensors[0].to(device=video.device, dtype=video.dtype)
+            # Where the take holds frames (mask 0), sample from its own frames, not from the upscaled ones.
+            video = video * video_mask + held_video.to(video) * (1.0 - video_mask)
+        else:
+            video_mask = torch.ones_like(video[:, :1])
+        out = dict(upscaled)
+        out["samples"] = comfy.nested_tensor.NestedTensor((video, audio))
+        out["noise_mask"] = comfy.nested_tensor.NestedTensor((video_mask, torch.zeros_like(audio[:, :1])))
+        return io.NodeOutput(out)
+
+
+NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
+                       "H3Lora": H3Lora, "H3RefineLatent": H3RefineLatent}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3LoadStill": "H3 Load Still",
-                              "H3LoadSound": "H3 Load Sound"}
+                              "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3RefineLatent": "H3 Refine Latent"}

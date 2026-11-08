@@ -97,19 +97,44 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(graph["1"]["inputs"]["unet_name"], MODELS["unet"])
         self.assertEqual(graph["10"]["inputs"]["checkpoint"], "ref2va")
 
-    def test_a_final_is_doubled_by_the_upscaler(self):
-        graph = render_graph(new_project("x"), "x", clip(), "t1", "final", 3)
+    def test_a_final_is_refined_at_the_larger_size(self):
+        project = new_project("x")
+        project["format"] = "9:16"
+        graph = render_graph(project, "x", clip(), "t1", "final", 3)
         self.assertEqual(graph["12"]["inputs"]["steps"], 6)
-        self.assertEqual(graph["22"]["inputs"]["images"], ["16", 0])
-        self.assertEqual(graph["27"]["class_type"], "VSRDecode")
-        self.assertEqual(graph["18"]["inputs"]["images"], ["27", 0])
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (768, 1344))
+        self.assertEqual((graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]), (1088, 1920))
+        self.assertEqual(graph["82"]["inputs"]["samples"], ["15", 0])
+        self.assertEqual((graph["82"]["inputs"]["width"], graph["82"]["inputs"]["height"]), (1088, 1920))
+        self.assertEqual(graph["83"]["inputs"], {"upscaled": ["82", 0], "take": ["80", 1]})
+        self.assertEqual(graph["87"]["inputs"], {"sigmas": ["12", 0], "step": 3})
+        self.assertEqual(graph["88"]["inputs"]["conditioning"], ["80", 0])
+        self.assertEqual(graph["90"]["inputs"]["sigmas"], ["87", 1])
+        self.assertEqual(graph["18"]["inputs"]["images"], ["91", 0])
+        # The sound is the first pass's.
         self.assertEqual(graph["18"]["inputs"]["audio"], ["17", 0])
-        self.assertEqual(render_models(graph)["upscaler"], MODELS["upscaler"])
+        self.assertEqual(render_models(graph)["upscaler"], MODELS["latent_upscaler"])
 
-    def test_a_draft_is_not_upscaled(self):
+    def test_a_final_samples_both_passes_with_the_realism_slider(self):
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "final", 3)
+        self.assertEqual(graph["95"]["inputs"], {"model": ["1", 0], "lora_name": MODELS["lora"], "strength": 1.5})
+        self.assertEqual(graph["5"]["inputs"]["model"], ["95", 0])
+        used = render_models(graph)
+        self.assertEqual((used["lora"], used["lora_strength"]), (MODELS["lora"], 1.5))
+
+    def test_the_refine_take_holds_what_the_first_take_holds(self):
+        track = {"file": "t.wav", "subfolder": "s", "from": 2.0}
+        graph = render_graph(new_project("x"), "x", clip(track=track, first={"file": "f.png"}), "t1", "final", 3)
+        first, refine = graph["10"]["inputs"], graph["80"]["inputs"]
+        for key in ("audio_hold", "source_audio", "start_image", "anchor", "prompt"):
+            self.assertEqual(refine[key], first[key])
+
+    def test_a_draft_is_not_refined(self):
         graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3)
-        self.assertNotIn("27", graph)
+        for node in ("80", "91", "95"):
+            self.assertNotIn(node, graph)
         self.assertEqual(graph["18"]["inputs"]["images"], ["16", 0])
+        self.assertEqual(graph["5"]["inputs"]["model"], ["1", 0])
 
     def test_a_project_that_names_a_retired_model_renders_with_the_current_one(self):
         project = new_project("x")
@@ -297,6 +322,12 @@ class ExportTest(unittest.TestCase):
         self.project["clips"][1]["takes"] = [{"id": "t2", "quality": "final", "upscale": 2}]
         text = self.filter_of(export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4"))
         self.assertIn("scale=2688:1536:", text)
+
+    def test_a_refined_final_sets_the_cut_to_its_size(self):
+        self.project["timeline"] = [{"clip": "a", "start": 0, "in": 0, "out": 24}, {"clip": "b", "start": 24, "in": 0, "out": 24}]
+        self.project["clips"][1]["takes"] = [{"id": "t2", "quality": "final", "size": [1920, 1088]}]
+        text = self.filter_of(export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4"))
+        self.assertIn("scale=1920:1088:", text)
 
     def test_nothing_to_export_says_so(self):
         with self.assertRaises(ValueError):

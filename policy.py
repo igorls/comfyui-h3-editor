@@ -1,6 +1,7 @@
 """Rules for one H3 take. No Comfy import. The node calls these before it touches a latent."""
 
 import math
+import re
 
 ANCHORS = ("none", "start", "end", "both")
 VIDEO_MODES = ("off", "v2v", "extend_after", "extend_before", "extend_both", "bridge")
@@ -15,6 +16,13 @@ MAX_REF_AUDIOS = 3
 # Mask values measured on FastH3 Omni NVFP4, 8 steps. Below 0.95 the source wins
 # outright and above 0.996 the composition is lost, so a linear slider would waste most of its travel.
 STRENGTHS = {"hold": 0.0, "light": 0.95, "medium": 0.99, "heavy": 0.996, "regenerate": 1.0}
+H3_BLOCKS = 50
+# HyperFlow H3 Flash prunes some of H3's 50 blocks, and which ones depends on the checkpoint:
+# its ref2va has 49 blocks and dropped H3 block 9, its fl2va has 47 and dropped 6, 21 and 22.
+# Found by matching every block's norm weights against H3's. Keyed by block count.
+HYPERFLOW_DROPPED = {49: (9,), 47: (6, 21, 22)}
+# A block number in a LoRA key, as blocks.12. or blocks_12_, after any prefix.
+LORA_BLOCK = re.compile(r"(?<![A-Za-z0-9])blocks([._])(\d+)(?=[._])")
 
 
 def legal_length(length):
@@ -399,3 +407,19 @@ def plan(anchor, start=None, end=None, soft=(), length=124, video=None, checkpoi
         "labels": labels,
         "length_note": note,
     }
+
+
+def hyperflow_lora_key(key, dropped):
+    """An H3 LoRA key renumbered for a model that dropped these H3 blocks, or None for a key of a dropped block.
+
+    Each later block moves down by the number of dropped blocks before it. Keys outside the main
+    blocks, the token refiner's blocks among them, stay as they are.
+    """
+    match = LORA_BLOCK.search(key)
+    if not match or re.search(r"refiner[._]$", key[:match.start()]):
+        return key
+    block = int(match.group(2))
+    if block in dropped:
+        return None
+    moved = block - sum(1 for gone in dropped if gone < block)
+    return key[:match.start(2)] + str(moved) + key[match.end(2):]
