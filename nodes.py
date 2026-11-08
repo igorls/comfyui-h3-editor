@@ -21,7 +21,7 @@ except ImportError as error:  # the gguf package, which this pack's requirements
     hyperflow = None
     HYPERFLOW_MISSING = ("HyperFlow H3 Flash needs the gguf Python package (%s). Install this pack's requirements: "
                          "pip install -r requirements.txt in its folder, then restart ComfyUI" % error)
-    logging.warning("H3 Take: %s", HYPERFLOW_MISSING)
+    logging.warning("H3 Editor: %s", HYPERFLOW_MISSING)
 from .policy import (
     AUDIO_ALIGNS,
     ANCHORS,

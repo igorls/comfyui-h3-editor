@@ -12,7 +12,7 @@ of each step beside its time t. The loader rebuilds that on ComfyUI's own MiniMa
 
 Adapted from ComfyUI-HyperFlow-Flash by Video Rebirth
 (https://github.com/Video-Rebirth/ComfyUI-HyperFlow-Flash, commit 20a22ab), under the GNU General
-Public License v3.0. See NOTICE. Changed for H3 Take on 2026-11-08: its gguf_io.py, model_patch.py
+Public License v3.0. See NOTICE. Changed for H3 Editor on 2026-11-08: its gguf_io.py, model_patch.py
 and loader_nodes.py are joined in this module; GGUF tensors and layers come from this pack's
 ggml_ops and ggml_dequant, instead of a ComfyUI-GGUF install found at run time; the folder of
 .gguf models is registered here; the nodes are H3 HyperFlow Loader and H3 HyperFlow Sigmas in

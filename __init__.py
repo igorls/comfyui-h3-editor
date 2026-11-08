@@ -1,4 +1,4 @@
-"""H3 Take. Relative imports only: ComfyUI owns the top-level name `nodes`."""
+"""H3 Editor. Relative imports only: ComfyUI owns the top-level name `nodes`."""
 
 import os
 

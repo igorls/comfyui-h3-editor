@@ -29,13 +29,15 @@ def install(package):
             loaded = [importlib.reload(sys.modules[full]) if full in sys.modules else importlib.import_module(full)
                       for full in ("%s.%s" % (package, name) for name in MODULES)]
         except Exception as error:
-            logging.exception("H3 Take reload failed")
+            logging.exception("H3 Editor reload failed")
             return web.json_response({"reloaded": False, "reason": repr(error)}, status=500)
         names = []
+        # A node new since ComfyUI started takes the folder the pack was installed under, whatever its name.
+        home = getattr(core.NODE_CLASS_MAPPINGS.get("H3Take"), "RELATIVE_PYTHON_MODULE", "custom_nodes.comfyui-h3-editor")
         for module in loaded:
             for node_id, cls in getattr(module, "NODE_CLASS_MAPPINGS", {}).items():
                 old = core.NODE_CLASS_MAPPINGS.get(node_id)
-                cls.RELATIVE_PYTHON_MODULE = getattr(old, "RELATIVE_PYTHON_MODULE", "custom_nodes.comfyui-h3-take")
+                cls.RELATIVE_PYTHON_MODULE = getattr(old, "RELATIVE_PYTHON_MODULE", home)
                 core.NODE_CLASS_MAPPINGS[node_id] = cls
                 core.NODE_DISPLAY_NAME_MAPPINGS[node_id] = module.NODE_DISPLAY_NAME_MAPPINGS.get(node_id, node_id)
                 names.append(node_id)
