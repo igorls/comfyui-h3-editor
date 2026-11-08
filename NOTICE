@@ -11,3 +11,20 @@ ComfyUI-MiniMax-H3-Turbo
   int8 fused fc2 rule and the adaLN re-injection on pruned bases), and
   data/h3_silu_temb_grid.safetensors, copied unchanged. h3lora.py's header says
   what was changed.
+
+ComfyUI-HyperFlow-Flash
+  Author: Video Rebirth
+  Source: https://github.com/Video-Rebirth/ComfyUI-HyperFlow-Flash (commit 20a22ab)
+  License: GNU General Public License v3.0, in LICENSE
+  Used in: hyperflow.py, adapted from its gguf_io.py, model_patch.py and
+  loader_nodes.py (reading HyperFlow GGUF files, the factorized blocks, the
+  two-time embedder and the step schedules). hyperflow.py's header says what was
+  changed.
+
+ComfyUI-GGUF
+  Author: City96
+  Source: https://github.com/city96/ComfyUI-GGUF (commit 6ea2651)
+  License: Apache License 2.0, in LICENSES/Apache-2.0.txt
+  Used in: ggml_dequant.py, its dequant.py copied unchanged, and ggml_ops.py,
+  its ops.py and the GGUFModelPatcher class from its nodes.py. Their headers say
+  what was changed.

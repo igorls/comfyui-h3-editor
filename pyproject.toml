@@ -3,7 +3,7 @@ name = "comfyui-h3-take"
 description = "A timeline video editor for MiniMax H3 inside ComfyUI, and H3 Take, a node for one shot with pinned frames, references and held video or sound."
 version = "0.1.0"
 license = { file = "LICENSE" }
-dependencies = ["imageio-ffmpeg>=0.5"]
+dependencies = ["imageio-ffmpeg>=0.5", "gguf>=0.13.0"]
 
 [project.urls]
 Repository = "https://github.com/igorls/comfyui-h3-take"

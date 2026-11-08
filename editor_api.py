@@ -379,6 +379,10 @@ async def comfy(method, path, body=None):
 
 
 async def queue_prompt(graph, client_id=None):
+    from . import nodes
+
+    if nodes.HYPERFLOW_MISSING and any(n.get("class_type") == "H3HyperFlowLoader" for n in graph.values()):
+        raise Refused(nodes.HYPERFLOW_MISSING)
     payload = {"prompt": graph}
     if client_id:
         payload["client_id"] = client_id

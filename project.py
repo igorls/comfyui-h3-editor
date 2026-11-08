@@ -89,8 +89,9 @@ PROFILES = {
     "hyperflow": {
         "title": "HyperFlow H3 Flash",
         "hint": "The fastest. Distilled to 6 steps.",
-        "unet": ["hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf"],
-        "unet_text": ["hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf"],
+        # Q8_0 in a hyperflow folder first, then any other quantization of the same model, anywhere.
+        "unet": ["hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf", "minimax_h3_ref2va_hyperflow_flash_14b-*"],
+        "unet_text": ["hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf", "minimax_h3_fl2va_hyperflow_flash_14b-*"],
         "steps": {"draft": 4, "final": 6}, "sampler": "euler", "refine_from": 3,
     },
     "h3_turbo": {
@@ -403,8 +404,8 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
         graph["10"]["inputs"]["checkpoint"] = "fl2va"
     if hyperflow:
         # Few-step and CFG-free, on its own two-time schedule.
-        graph["1"] = {"class_type": "HyperFlowGGUFLoader", "inputs": {"unet_name": unet, "weights_in": "auto"}}
-        graph["12"] = {"class_type": "HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": size["steps"]}}
+        graph["1"] = {"class_type": "H3HyperFlowLoader", "inputs": {"unet_name": unet, "weights_in": "auto"}}
+        graph["12"] = {"class_type": "H3HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": size["steps"]}}
     model = ["1", 0]
     if profile.get("lora") and models.get("profile_lora"):
         # A LoRA the family always samples with, such as a turbo LoRA.

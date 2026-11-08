@@ -9,7 +9,8 @@ import importlib
 import logging
 import sys
 
-MODULES = ("policy", "latent_writer", "prompting", "h3lora", "media", "project", "editor_api", "nodes", "preview")
+MODULES = ("policy", "latent_writer", "prompting", "h3lora", "media", "ggml_dequant", "ggml_ops", "hyperflow", "project",
+           "editor_api", "nodes", "preview")
 
 
 def install(package):
@@ -24,7 +25,9 @@ def install(package):
             return web.json_response({"reloaded": False, "reason": "a prompt is running"}, status=409)
         core = sys.modules["nodes"]
         try:
-            loaded = [importlib.reload(sys.modules["%s.%s" % (package, name)]) for name in MODULES]
+            # A module new since ComfyUI started is imported for the first time.
+            loaded = [importlib.reload(sys.modules[full]) if full in sys.modules else importlib.import_module(full)
+                      for full in ("%s.%s" % (package, name) for name in MODULES)]
         except Exception as error:
             logging.exception("H3 Take reload failed")
             return web.json_response({"reloaded": False, "reason": repr(error)}, status=500)

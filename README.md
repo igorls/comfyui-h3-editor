@@ -1,9 +1,9 @@
 # H3 Take
 
-An editor and a ComfyUI node for MiniMax H3. The node uses ComfyUI's own H3
-nodes and needs no other custom node pack. The editor renders with HyperFlow H3
+An editor and ComfyUI nodes for MiniMax H3. They build on ComfyUI's own H3
+nodes and need no other custom node pack. The editor renders with HyperFlow H3
 Flash, or another H3 checkpoint the project picks, and refines finals at a larger
-size, which needs the models and packs listed under Install.
+size, with the models listed under Install.
 
 ## Editor
 
@@ -154,6 +154,8 @@ save the video. Each template carries a note with the settings that matter.
 | H3 Load Sound | Reads a sound from the output folder, such as a cast voice |
 | H3 LoRA | Applies an H3 LoRA: renumbered for HyperFlow, added at run time on int8 and fp8 weights, with its time conditioning added at run time on pruned bases |
 | H3 Refine Latent | Prepares an upscaled H3 latent for a few more steps, keeping held frames and the sound |
+| H3 HyperFlow Loader | Loads a HyperFlow H3 Flash GGUF checkpoint, in any quantization |
+| H3 HyperFlow Sigmas | The 4, 6 or 8-step schedule a HyperFlow checkpoint samples, for euler without CFG |
 
 ## H3 Take node
 
@@ -251,9 +253,9 @@ The `fl2va` route has not been run on a real checkpoint.
    On the Windows portable build, run pip as
    `..\python_embeded\python.exe -m pip install -r comfyui-h3-take\requirements.txt`.
    The requirements bring ffmpeg, through the imageio-ffmpeg package, which the
-   editor runs to convert, trim and join video. Without that package it uses an
-   ffmpeg on the PATH, and the `H3TAKE_FFMPEG` environment variable names any
-   other build.
+   editor runs to convert, trim and join video, and the gguf package, which reads
+   HyperFlow's checkpoints. Without imageio-ffmpeg the editor uses an ffmpeg on
+   the PATH, and the `H3TAKE_FFMPEG` environment variable names any other build.
 2. Restart ComfyUI. H3 Editor appears in the sidebar. The pack does not
    download a model.
 3. Put the models in place. Every render needs ComfyUI's own H3 files, the ones
@@ -285,7 +287,7 @@ else on its ref2va model; a family with only ref2va renders every clip on it.
 
 | Profile | Files | Steps, draft and final |
 |---|---|---|
-| HyperFlow H3 Flash, the default | the ComfyUI-HyperFlow-Flash and ComfyUI-GGUF packs, and `minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf` and `minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf` in `models/diffusion_models/hyperflow` | 4 and 6, euler |
+| HyperFlow H3 Flash, the default | `minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf` and `minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf` from VideoRebirthAI/hyperflow-h3-flash on Hugging Face, in `models/diffusion_models/hyperflow`. Another quantization of the same models, such as Q4_K_M, works anywhere in `models/diffusion_models` | 4 and 6, euler |
 | MiniMax H3 Turbo | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` and `minimax_h3_fl2va_pruned_int8_convrot.safetensors` from Comfy-Org/MiniMax-H3 on Hugging Face, in `models/diffusion_models`, and the Turbo v4 LoRA `minimax_h3_turbo_v4_step600_ema.safetensors` from larryvrh/MiniMax-H3-Turbo-Lora on Hugging Face, in `models/loras` | 6 and 6, euler |
 | MiniMax H3 | the same two base files | 10 and 20, res_multistep |
 | Singularity v2 | `Minimax-h3_Singularity_ref2va_v2_pruned_int8.safetensors` | 10 and 20, res_multistep |
@@ -313,10 +315,16 @@ name its own models under `models`, which wins over its profile. A `.gguf` unet
 loads as HyperFlow, and any other unet loads with ComfyUI's plain loader and
 scheduler.
 
+The H3 HyperFlow Loader is adapted from ComfyUI-HyperFlow-Flash under the GNU
+GPL v3.0, and reads GGUF files with code from ComfyUI-GGUF under the Apache
+License 2.0; see NOTICE. Model files come under their own licenses, which this
+pack's license does not change.
+
 ## Develop
 
-`python -m unittest discover -s tests` runs from the repo root. The writer and
-LoRA tests need torch and ComfyUI, and skip without them.
+`python -m unittest discover -s tests` runs from the repo root. The writer,
+LoRA and HyperFlow tests need torch, gguf and ComfyUI, with `PYTHONPATH` set to
+ComfyUI's folder, and skip without them.
 
 `tools/deploy.sh` copies the repo into a running container, runs the tests
 there, and reloads the pack in place, so models stay loaded. Refresh the browser

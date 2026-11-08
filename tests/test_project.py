@@ -93,10 +93,10 @@ class ProjectTest(unittest.TestCase):
 
     def test_a_prompt_only_clip_renders_on_hyperflow_fl2va(self):
         graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3)
-        self.assertEqual(graph["1"]["class_type"], "HyperFlowGGUFLoader")
+        self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
         self.assertEqual(graph["1"]["inputs"]["unet_name"], MODELS["unet_text"])
         self.assertEqual(graph["10"]["inputs"]["checkpoint"], "fl2va")
-        self.assertEqual(graph["12"], {"class_type": "HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": 4}})
+        self.assertEqual(graph["12"], {"class_type": "H3HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": 4}})
 
     def test_a_clip_with_references_renders_on_hyperflow_ref2va(self):
         graph = render_graph(new_project("x"), "x", clip(first={"file": "f.png"}), "t1", "draft", 3)
@@ -148,8 +148,8 @@ class ProjectTest(unittest.TestCase):
                     self.assertEqual(graph["11"]["inputs"]["sampler_name"], profile["sampler"])
                     sigmas = graph["12"]
                     if unet.endswith(".gguf"):
-                        self.assertEqual(graph["1"]["class_type"], "HyperFlowGGUFLoader")
-                        self.assertEqual(sigmas["class_type"], "HyperFlowSigmas")
+                        self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
+                        self.assertEqual(sigmas["class_type"], "H3HyperFlowSigmas")
                     else:
                         self.assertEqual(graph["1"]["class_type"], "UNETLoader")
                         self.assertEqual((sigmas["class_type"], sigmas["inputs"]["scheduler"]), ("BasicScheduler", "simple"))
@@ -207,6 +207,13 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(graph["18"]["inputs"]["images"], ["16", 0])
         self.assertEqual(graph["5"]["inputs"]["model"], ["1", 0])
 
+    def test_hyperflow_takes_any_quantization_when_its_q8_is_not_installed(self):
+        q4 = {"minimax_h3_ref2va_hyperflow_flash_14b-Q4_K_M.gguf", "minimax_h3_fl2va_hyperflow_flash_14b-Q4_K_M.gguf"}
+        self.assertTrue({row["id"]: row for row in profile_status(q4)}["hyperflow"]["available"])
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3, q4)
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], "minimax_h3_fl2va_hyperflow_flash_14b-Q4_K_M.gguf")
+        self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
+
     def test_a_project_without_a_profile_renders_with_the_first_one_installed(self):
         self.assertEqual(installed_profile(BASE_TURBO), "h3_turbo")
         self.assertEqual(installed_profile(BASE_TURBO | HYPERFLOW), "hyperflow")
@@ -219,7 +226,7 @@ class ProjectTest(unittest.TestCase):
         project = new_project("x")
         project["profile"] = "hyperflow"
         graph = render_graph(project, "x", clip(), "t1", "draft", 3, BASE_TURBO)
-        self.assertEqual(graph["1"]["class_type"], "HyperFlowGGUFLoader")
+        self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
 
     def test_a_final_renders_without_the_slider_or_upscaler_when_they_are_missing(self):
         project = new_project("x")
@@ -241,7 +248,7 @@ class ProjectTest(unittest.TestCase):
         project = new_project("x")
         project["models"] = {"unet": "fasth3_omniref_qad_nvfp4_comfy.safetensors", "clip": MODELS["clip"]}
         graph = render_graph(project, "x", clip(first={"file": "f.png"}), "t1", "draft", 3)
-        self.assertEqual(graph["1"]["class_type"], "HyperFlowGGUFLoader")
+        self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
         self.assertEqual(graph["1"]["inputs"]["unet_name"], MODELS["unet"])
 
     def test_a_safetensors_unet_keeps_the_plain_loader_and_scheduler(self):

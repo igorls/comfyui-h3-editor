@@ -1,5 +1,6 @@
 """One H3 take. Calls ComfyUI's own MiniMax nodes. Does not import any other pack."""
 
+import logging
 import os
 import subprocess
 
@@ -12,6 +13,15 @@ from PIL import Image, ImageOps
 from .latent_writer import carry_tail, encode_audio, encode_video, write_holds
 from . import h3lora
 from . import media
+
+try:
+    from . import hyperflow
+    HYPERFLOW_MISSING = None
+except ImportError as error:  # the gguf package, which this pack's requirements install
+    hyperflow = None
+    HYPERFLOW_MISSING = ("HyperFlow H3 Flash needs the gguf Python package (%s). Install this pack's requirements: "
+                         "pip install -r requirements.txt in its folder, then restart ComfyUI" % error)
+    logging.warning("H3 Take: %s", HYPERFLOW_MISSING)
 from .policy import (
     AUDIO_ALIGNS,
     ANCHORS,
@@ -395,6 +405,64 @@ class H3Lora(io.ComfyNode):
         return io.NodeOutput(h3lora.apply(model, path, lora_name, strength, mode or "auto"))
 
 
+class H3HyperFlowLoader(io.ComfyNode):
+    """A HyperFlow H3 Flash checkpoint, read from its GGUF file."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3HyperFlowLoader",
+            display_name="H3 HyperFlow Loader",
+            category="minimax/h3",
+            description=(
+                "Load a HyperFlow H3 Flash GGUF checkpoint: MiniMax H3 distilled to 4, 6 or 8 steps, with some "
+                "blocks pruned. Sample it with H3 HyperFlow Sigmas, the euler sampler and no CFG."
+            ),
+            inputs=[
+                io.Combo.Input("unet_name", options=hyperflow.gguf_files() if hyperflow else []),
+                io.Combo.Input("weights_in", options=list(hyperflow.WEIGHTS_IN) if hyperflow else ["auto"], default="auto",
+                               optional=True,
+                               tooltip="disk keeps the weights that do not fit on the GPU in the file and streams them, "
+                                       "for machines with little RAM. ram copies them into RAM. auto picks disk with "
+                                       "--fast-disk or a fast NVMe drive."),
+            ],
+            outputs=[io.Model.Output(display_name="model")],
+        )
+
+    @classmethod
+    def execute(cls, unet_name, weights_in="auto") -> io.NodeOutput:
+        if hyperflow is None:
+            raise RuntimeError(HYPERFLOW_MISSING)
+        return io.NodeOutput(hyperflow.load(hyperflow.gguf_path(unet_name), weights_in or "auto"))
+
+
+class H3HyperFlowSigmas(io.ComfyNode):
+    """The step schedule a HyperFlow checkpoint samples."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3HyperFlowSigmas",
+            display_name="H3 HyperFlow Sigmas",
+            category="minimax/h3",
+            description=(
+                "The step schedule of a HyperFlow checkpoint: 4 steps for speed, 6 to balance speed and quality, "
+                "8 for quality. Use it with SamplerCustomAdvanced, euler and no CFG."
+            ),
+            inputs=[
+                io.Model.Input("model"),
+                io.Int.Input("steps", default=6, min=4, max=8, step=2, optional=True),
+            ],
+            outputs=[io.Sigmas.Output(display_name="sigmas")],
+        )
+
+    @classmethod
+    def execute(cls, model, steps=6) -> io.NodeOutput:
+        if hyperflow is None:
+            raise RuntimeError(HYPERFLOW_MISSING)
+        return io.NodeOutput(hyperflow.sigmas(model, 6 if steps is None else steps))
+
+
 class H3RefineLatent(io.ComfyNode):
     """The latent for a refine pass: the upscaled picture to sample again, with the take's held parts and its sound kept."""
 
@@ -441,6 +509,8 @@ class H3RefineLatent(io.ComfyNode):
 
 
 NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
-                       "H3Lora": H3Lora, "H3RefineLatent": H3RefineLatent}
+                       "H3Lora": H3Lora, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
+                       "H3HyperFlowSigmas": H3HyperFlowSigmas}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3LoadStill": "H3 Load Still",
-                              "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3RefineLatent": "H3 Refine Latent"}
+                              "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3RefineLatent": "H3 Refine Latent",
+                              "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas"}
