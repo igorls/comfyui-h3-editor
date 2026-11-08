@@ -210,7 +210,12 @@ Renders queue on the user's GPU one at a time. Measured with the models loaded:
   redrawn for its last 3 steps at 1920x1088 (1088x1920 for 9:16), with a skin LoRA on
   both passes. That is about 50 seconds of GPU per second of footage. A 5 second shot
   takes around 4.5 minutes;
-- the first render after ComfyUI starts also loads the models.
+- a project can render on another checkpoint family instead (`set_project` `profile`; the
+  reference lists them). In tests a 2 second 9:16 final took 1.5 to 2.5 minutes on
+  HyperFlow, MiniMax H3 Turbo and the 20-step MiniMax H3 alike. Keep HyperFlow unless the
+  user asks for another;
+- the first render after ComfyUI starts, or after a change of profile, also loads the
+  models, about 20 GB each.
 
 Draft freely. Before a batch of finals, tell the user how many clips and roughly how long
 it will take. While renders run, there is nothing to poll: `wait` returns when they finish.

@@ -1,6 +1,5 @@
 """One H3 take. Calls ComfyUI's own MiniMax nodes. Does not import any other pack."""
 
-import logging
 import os
 import subprocess
 
@@ -11,14 +10,15 @@ from comfy_api.latest import InputImpl, io
 from PIL import Image, ImageOps
 
 from .latent_writer import carry_tail, encode_audio, encode_video, write_holds
+from . import h3lora
+from . import media
 from .policy import (
     AUDIO_ALIGNS,
     ANCHORS,
     AUDIO_HOLDS,
     CHECKPOINTS,
     FPS,
-    H3_BLOCKS,
-    HYPERFLOW_DROPPED,
+    LORA_MODES,
     MAX_PICTURES,
     MAX_REF_AUDIOS,
     MAX_REF_VIDEOS,
@@ -30,7 +30,6 @@ from .policy import (
     frame_count,
     frame_to_step,
     hold_curve,
-    hyperflow_lora_key,
     latent_frames,
     merge_curves,
     parse_frames,
@@ -322,8 +321,9 @@ class H3LoadSound(io.ComfyNode):
         rate = 48000
         # Decoding from the start and trimming after is sample accurate, unlike seeking in compressed audio.
         pcm = subprocess.run(
-            ["ffmpeg", "-v", "error", "-i", output_file(file), "-vn", "-af", "atrim=start=%.6f:duration=%.6f" % (start, seconds),
-             "-ac", "2", "-ar", str(rate), "-f", "f32le", "-"],
+            media.command(["ffmpeg", "-v", "error", "-i", output_file(file), "-vn",
+                           "-af", "atrim=start=%.6f:duration=%.6f" % (start, seconds),
+                           "-ac", "2", "-ar", str(rate), "-f", "f32le", "-"]),
             capture_output=True, check=False)
         if pcm.returncode != 0 or not pcm.stdout:
             raise ValueError("could not read sound from %s: %s" % (file, pcm.stderr.decode(errors="replace")[-300:]))
@@ -364,7 +364,7 @@ class H3LoadClip(io.ComfyNode):
 
 
 class H3Lora(io.ComfyNode):
-    """A LoRA on an H3 model. On HyperFlow H3 Flash, an H3 LoRA's blocks are renumbered to match it."""
+    """A LoRA on an H3 model: renumbered for HyperFlow, added at run time on quantized bases."""
 
     @classmethod
     def define_schema(cls):
@@ -373,40 +373,26 @@ class H3Lora(io.ComfyNode):
             display_name="H3 LoRA",
             category="minimax/h3",
             description=(
-                "Apply a LoRA trained on MiniMax H3. HyperFlow H3 Flash prunes some of H3's blocks, "
-                "so on it the LoRA's later blocks move down to land on the layers they were trained for."
+                "Apply a LoRA trained on MiniMax H3. On int8 or fp8 weights it is added at run time, so small "
+                "updates are not rounded away. On a pruned base its time-conditioning part is added at run time "
+                "too. HyperFlow H3 Flash prunes some of H3's blocks, so there the LoRA's later blocks move down "
+                "to land on the layers they were trained for. Several H3 LoRA nodes in a row stack."
             ),
             inputs=[
                 io.Model.Input("model"),
                 io.Combo.Input("lora_name", options=folder_paths.get_filename_list("loras")),
                 io.Float.Input("strength", default=1.0, min=-4.0, max=4.0, step=0.05),
+                io.Combo.Input("mode", options=list(LORA_MODES), default="auto", optional=True,
+                               tooltip="auto adds the LoRA at run time where that keeps it sharp. merge folds it into "
+                                       "the weights: the least memory, but softer on int8 and fp8 weights."),
             ],
             outputs=[io.Model.Output(display_name="model")],
         )
 
     @classmethod
-    def execute(cls, model, lora_name, strength) -> io.NodeOutput:
-        import comfy.sd
-        import comfy.utils
-
-        if strength == 0:
-            return io.NodeOutput(model)
-        lora = comfy.utils.load_torch_file(folder_paths.get_full_path_or_raise("loras", lora_name), safe_load=True)
-        blocks = getattr(model.model.diffusion_model, "blocks", None)
-        count = len(blocks) if blocks is not None else H3_BLOCKS
-        if count != H3_BLOCKS:
-            dropped = HYPERFLOW_DROPPED.get(count)
-            if dropped is None:
-                logging.warning("H3 LoRA: no block map for a model with %s blocks. %s loads as it is.", count, lora_name)
-            else:
-                moved = {}
-                for key, value in lora.items():
-                    key = hyperflow_lora_key(key, dropped)
-                    if key is not None:
-                        moved[key] = value
-                lora = moved
-        patched, _ = comfy.sd.load_lora_for_models(model, None, lora, strength, 0)
-        return io.NodeOutput(patched)
+    def execute(cls, model, lora_name, strength, mode="auto") -> io.NodeOutput:
+        path = folder_paths.get_full_path_or_raise("loras", lora_name)
+        return io.NodeOutput(h3lora.apply(model, path, lora_name, strength, mode or "auto"))
 
 
 class H3RefineLatent(io.ComfyNode):

@@ -15,6 +15,7 @@ from aiohttp import web
 
 import folder_paths
 
+from . import media
 from . import project as store
 
 PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "editor")
@@ -114,20 +115,29 @@ def output_path(subfolder, filename):
     return path
 
 
-async def run(args):
-    process = await asyncio.create_subprocess_exec(*args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    out, err = await process.communicate()
-    if process.returncode != 0:
-        raise web.HTTPInternalServerError(text=err.decode(errors="replace")[-600:])
-    return out.decode(errors="replace")
-
-
 async def run_bytes(args):
+    """Run a command, ffmpeg found as media.ffmpeg says, and return what it printed."""
+    try:
+        args = media.command(args)
+    except RuntimeError as error:
+        raise web.HTTPInternalServerError(text=str(error))
     process = await asyncio.create_subprocess_exec(*args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = await process.communicate()
     if process.returncode != 0:
         raise web.HTTPInternalServerError(text=err.decode(errors="replace")[-600:])
     return out
+
+
+async def run(args):
+    return (await run_bytes(args)).decode(errors="replace")
+
+
+async def video_info(path, count=True):
+    """What a video holds, read in a thread so a long file never stalls the server."""
+    try:
+        return await asyncio.to_thread(media.video_info, path, count)
+    except Exception as error:  # PyAV raises its own errors for files it cannot read
+        raise web.HTTPInternalServerError(text="could not read %s: %s" % (os.path.basename(path), error))
 
 
 STRIP_HEIGHT = 90
@@ -138,16 +148,15 @@ async def make_strip(path, frames):
     """A row of frames from across a clip and its loudness per frame, made once and kept beside it."""
     base = os.path.splitext(path)[0]
     sprite, peaks = base + ".strip.jpg", base + ".peaks.json"
-    size = (await run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
-                       "-of", "csv=p=0", path])).strip().split(",")
-    width, height = int(size[0]), int(size[1])
+    info = await video_info(path, count=False)
+    width, height = info["width"], info["height"]
     tile_w = max(2, int(round(STRIP_HEIGHT * width / float(height) / 2.0)) * 2)
     step = max(1, int(math.ceil(frames / float(STRIP_TILES))))
     count = max(1, int(math.ceil(frames / float(step))))
     if not os.path.exists(sprite):
         await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf",
                    "select=not(mod(n\\,%d)),scale=%d:%d,tile=%dx1" % (step, tile_w, STRIP_HEIGHT, count),
-                   "-vsync", "0", "-frames:v", "1", "-q:v", "4", sprite])
+                   "-frames:v", "1", "-q:v", "4", sprite])
     if not os.path.exists(peaks):
         values = []
         try:
@@ -189,9 +198,7 @@ async def sheet(request):
         raise web.HTTPNotFound(text="that clip is gone")
     frames = int(body.get("frames") or 0)
     if frames <= 0:
-        out = await run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets",
-                         "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", path])
-        frames = int(out.strip().strip(","))
+        frames = (await video_info(path))["frames"]
     try:
         first = max(0, min(frames - 1, int(body.get("first") or 0)))
         last = max(first + 1, min(frames, int(body.get("last") or frames)))
@@ -207,7 +214,7 @@ async def sheet(request):
         chosen = "+".join("eq(n\\,%d)" % n for n in picked)
         await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf",
                    "select=%s,scale=%d:-2,tile=%dx%d:padding=6:color=black" % (chosen, width, columns, rows),
-                   "-vsync", "0", "-frames:v", "1", "-q:v", "3", target])
+                   "-frames:v", "1", "-q:v", "3", target])
     return web.json_response({"sheet": os.path.basename(target), "picked": picked, "frames": frames})
 
 
@@ -219,9 +226,22 @@ async def page(request):
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
 
+def available_models():
+    """The model files ComfyUI lists, for finding a checkpoint profile's files."""
+    import folder_paths
+
+    names = set()
+    for kind in ("diffusion_models", "unet_gguf", "loras", "latent_upscale_models"):
+        if kind in folder_paths.folder_names_and_paths:
+            names.update(folder_paths.get_filename_list(kind))
+    return names
+
+
 async def projects(request):
     names = sorted(n for n in os.listdir(root()) if os.path.exists(os.path.join(root(), n, "project.json")))
-    return web.json_response({"projects": names})
+    available = available_models()
+    return web.json_response({"projects": names, "profiles": store.profile_status(available),
+                              "finals": store.finals_status(available)})
 
 
 async def create(request):
@@ -229,7 +249,12 @@ async def create(request):
     name = store.slug(body.get("name"))
     async with lock(name):
         if not os.path.exists(project_file(name)):
-            commit(name, store.new_project(body.get("name")), "create")
+            data = store.new_project(body.get("name"))
+            available = available_models()
+            if any(row["available"] for row in store.profile_status(available)):
+                # A new project keeps the model it starts with, even if another is installed later.
+                data["profile"] = store.installed_profile(available)
+            commit(name, data, "create")
     return web.json_response({"folder": name, "project": read_project(name)})
 
 
@@ -293,7 +318,8 @@ async def graph(request):
     name = request.match_info["name"]
     body = await request.json()
     try:
-        built = store.render_graph(body["project"], store.slug(name), body["clip"], body["take"], body["quality"], body["seed"])
+        built = store.render_graph(body["project"], store.slug(name), body["clip"], body["take"], body["quality"], body["seed"],
+                                   available_models())
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error))
     return web.json_response({"graph": built})
@@ -301,11 +327,9 @@ async def graph(request):
 
 async def probe_file(path):
     """Frame count, a poster and a filmstrip for a finished render."""
-    out = await run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets",
-                     "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", path])
+    frames = (await video_info(path))["frames"]
     poster = os.path.splitext(path)[0] + ".jpg"
-    await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf", "select=eq(n\\,12),scale=480:-2", "-vsync", "0", "-frames:v", "1", poster])
-    frames = int(out.strip().strip(","))
+    await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf", "select=eq(n\\,12),scale=480:-2", "-frames:v", "1", poster])
     try:
         made = await make_strip(path, frames)
     except web.HTTPException:
@@ -380,7 +404,7 @@ def comfy_queue():
 
 
 async def start_render(data, folder, clip_id, quality, seed=None, client_id=None):
-    job, graph = store.plan_render(data, folder, clip_id, quality or "draft", seed)
+    job, graph = store.plan_render(data, folder, clip_id, quality or "draft", seed, available_models())
     job["id"] = await queue_prompt(graph, client_id)
     store.add_pending(data, job)
     return job
@@ -450,7 +474,8 @@ async def operations(request):
             try:
                 if kind == "render":
                     clip_id = store._resolve(op.get("clip"), names, "clip")
-                    store.plan_render(copy.deepcopy(work), folder, clip_id, op.get("quality") or "draft", op.get("seed"))
+                    store.plan_render(copy.deepcopy(work), folder, clip_id, op.get("quality") or "draft", op.get("seed"),
+                                      available_models())
                     later.append((index, op, clip_id))
                     results.append(None)
                 elif kind == "cancel":
@@ -758,8 +783,10 @@ async def normalize(source, target, width, height, fit, still, seconds, start=No
         if end:
             args += ["-t", "%.3f" % max(0.1, end - (start or 0))]
         args += ["-i", source]
-        sound = bool((await run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
-                                 "-of", "csv=p=0", source])).strip())
+        try:
+            sound = await asyncio.to_thread(media.has_sound, source)
+        except Exception as error:  # PyAV raises its own errors for files it cannot read
+            raise ValueError("could not read %s: %s" % (os.path.basename(source), error))
     if not sound:
         args += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
     args += ["-map", "0:v:0", "-map", "0:a:0" if sound else "1:a:0",
@@ -795,6 +822,8 @@ async def import_media(request):
         seconds = float(fields.get("seconds") or 4)
         if not 0.5 <= seconds <= 60:
             return refused("a picture can last 0.5 to 60 seconds")
+        if fields.get("bin") and not any(b["id"] == fields["bin"] for b in data.get("bins", [])):
+            return refused("no bin %s. GET the project for its bins" % fields["bin"])
         start = float(fields["start_seconds"]) if fields.get("start_seconds") not in (None, "") else None
         end = float(fields["end_seconds"]) if fields.get("end_seconds") not in (None, "") else None
         clip_id, take_id = store.new_id("c"), store.new_id("t")
@@ -816,7 +845,8 @@ async def import_media(request):
     at = int(fields["start"]) if fields.get("start") not in (None, "") else None
     async with lock(folder):
         data = read_project(folder)
-        clip, item = store.add_footage(data, fields.get("name") or os.path.splitext(original or "Footage")[0], take, at, place)
+        clip, item = store.add_footage(data, fields.get("name") or os.path.splitext(original or "Footage")[0], take, at, place,
+                                       fields.get("bin") or None)
         commit(folder, data, "import", fields.get("client"))
     return web.json_response({"clip": clip["id"], "item": item["id"] if item else None, "frames": info["frames"],
                               "revision": data["revision"], "project": data})
@@ -829,7 +859,7 @@ async def grab(request):
     target, asset = asset_target(request.match_info["name"], ".png")
     frame = max(0, int(body.get("frame", 0)))
     await run(["ffmpeg", "-y", "-v", "error", "-i", source, "-vf", "select=eq(n\\,%s)" % frame,
-               "-vsync", "0", "-frames:v", "1", target])
+               "-frames:v", "1", target])
     if not os.path.exists(target):
         raise web.HTTPBadRequest(text="that clip has no frame %s" % frame)
     return web.json_response(asset)

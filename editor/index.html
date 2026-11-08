@@ -21,7 +21,7 @@
 
   <main class="work">
     <aside class="bin" aria-label="Clips and cast">
-      <div class="panel-head"><h2>Clips <span id="clipCount" class="count"></span></h2><div class="head-tools"><button id="importClip" class="quiet" title="Bring in a video or a picture">Import</button><button id="newClip" class="quiet">New clip</button></div></div>
+      <div class="panel-head"><h2>Clips <span id="clipCount" class="count"></span></h2><div class="head-tools"><button id="newBin" class="quiet icon-button" aria-label="New bin" title="New bin, a folder for clips"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.2a1.7 1.7 0 0 1 1.7-1.7h3.9l2 2.1h7.7a1.7 1.7 0 0 1 1.7 1.7v7.5a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z"/><path d="M12 10.6v5M9.5 13.1h5"/></svg></button><button id="importClip" class="quiet" title="Bring in a video or a picture">Import</button><button id="newClip" class="quiet">New clip</button></div></div>
       <div id="clips" class="clips"></div>
       <div class="panel-head cast-head"><h2>Cast</h2><div class="head-tools"><button id="addVoice" class="quiet" title="A voice with no picture, such as a narrator">Add voice</button><button id="addCast" class="quiet">Add reference</button></div></div>
       <div id="cast" class="cast"></div>
@@ -39,6 +39,7 @@
         <video id="motion" playsinline loop hidden></video>
         <div id="slate" class="slate"></div>
         <div id="live" class="live" hidden></div>
+        <div id="sourceTag" class="source-tag" hidden><span id="sourceName"></span><button id="toTimeline" class="quiet" title="Show the cut again. Clicking the timeline does too">Back to timeline</button></div>
       </div>
       <div class="transport">
         <button id="toStart" class="icon" aria-label="Go to start" title="Go to start (Home)">
@@ -104,8 +105,8 @@
     <dt>Up, Down</dt><dd>Previous or next edit</dd>
     <dt>Home, End</dt><dd>Start or end of the scene</dd>
     <dt>S</dt><dd>Split at the playhead</dd>
-    <dt>Delete</dt><dd>Remove a clip, or close a selected gap</dd>
-    <dt>Shift+Delete</dt><dd>Remove a clip and close the space</dd>
+    <dt>Delete</dt><dd>On the timeline, remove a clip from it, or close a selected gap. In the Clips panel, delete the clip or bin</dd>
+    <dt>Shift+Delete</dt><dd>Remove a clip from the timeline and close the space</dd>
     <dt>[ and ]</dt><dd>Flip between takes of the selected clip</dd>
     <dt>Ctrl+wheel</dt><dd>Zoom the timeline at the pointer</dd>
     <dt>\</dt><dd>Fit the whole scene</dd>

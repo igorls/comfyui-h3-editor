@@ -9,7 +9,7 @@ import importlib
 import logging
 import sys
 
-MODULES = ("policy", "latent_writer", "prompting", "project", "editor_api", "nodes", "preview")
+MODULES = ("policy", "latent_writer", "prompting", "h3lora", "media", "project", "editor_api", "nodes", "preview")
 
 
 def install(package):

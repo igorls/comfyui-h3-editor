@@ -2,8 +2,8 @@
 
 An editor and a ComfyUI node for MiniMax H3. The node uses ComfyUI's own H3
 nodes and needs no other custom node pack. The editor renders with HyperFlow H3
-Flash and refines finals at a larger size, which needs the models and packs
-listed under Install.
+Flash, or another H3 checkpoint the project picks, and refines finals at a larger
+size, which needs the models and packs listed under Install.
 
 ## Editor
 
@@ -41,6 +41,15 @@ Open H3 Editor from the ComfyUI sidebar. It is a full-screen timeline editor.
 - Import brings in real video or a picture. It is fitted to the project's size
   at 24 fps and becomes footage, which you can trim, extend, and bridge from
   like a render.
+- Bins file clips into folders in the Clips panel. Make one with the folder
+  button, drag clips onto it, and fold it away. While a bin is selected, new
+  clips and imports go in it. Deleting a bin keeps its clips.
+- Delete a clip with the trash button at the top of its panel, or with Delete
+  in the Clips panel. It leaves the timeline too, and Ctrl+Z brings it back.
+- Click a clip in the Clips panel to play it on its own, with its sound, whether
+  or not it is on the timeline. The player and its keys then work on that clip's
+  active take. Click the timeline, or Back to timeline in the viewer, to return
+  to the cut.
 - Set the project's format (16:9, 9:16, or 1:1) and the language people speak
   in the Scene panel. A clip can speak another language.
 - Give a cast member a voice, uploaded or taken from a clip on the timeline, or
@@ -62,8 +71,8 @@ Projects live in `h3take_projects` in ComfyUI's output folder.
 | Up, Down | Jump to the previous or next edit |
 | Home, End | Go to the start or end |
 | S | Split at the playhead |
-| Delete | Remove a clip, or close a selected gap |
-| Shift+Delete | Remove a clip and close the space |
+| Delete | On the timeline, remove a clip from it, or close a selected gap. In the Clips panel, delete the clip or bin |
+| Shift+Delete | Remove a clip from the timeline and close the space |
 | [ , ] | Flip between takes of the selected clip |
 | Ctrl+wheel, \\ | Zoom at the pointer, fit the whole scene |
 | Ctrl+Z, Ctrl+Shift+Z | Undo, redo |
@@ -99,8 +108,9 @@ operations in the batch can write `"$name"` for the clip or item it made.
 
 | op | Takes |
 |---|---|
-| `add_clip` | `fields`: name, action, camera, speaker, dialogue, sound, music, seconds, cast, seed, first, last, language, track. Optional `start` |
-| `update_clip`, `remove_clip`, `place_clip` | `clip`, and `fields` or `start` |
+| `add_clip` | `fields`: name, action, camera, speaker, dialogue, sound, music, seconds, cast, seed, first, last, language, track, bin. Optional `start` |
+| `update_clip`, `remove_clip`, `place_clip` | `clip`, and `fields` or `start`. Removing a clip takes it off the timeline too |
+| `add_bin`, `update_bin`, `remove_bin` | A bin's `name` in `fields`, and `bin` to name one. Removing a bin keeps its clips |
 | `update_item` | `item`, `fields`: start, in, out, speed, transition. `ripple` moves the clips after it |
 | `remove_item`, `split_item`, `close_gap` | `item` with `ripple`, `item` with `frame`, or an optional `frame` |
 | `extend_after`, `extend_before`, `bridge`, `merge` | `item`, optional `seconds`, `action`, `fields` |
@@ -142,7 +152,7 @@ save the video. Each template carries a note with the settings that matter.
 | H3 Load Clip | Reads frames and sound from a clip in the output folder |
 | H3 Load Still | Reads a picture from the output folder |
 | H3 Load Sound | Reads a sound from the output folder, such as a cast voice |
-| H3 LoRA | Applies an H3 LoRA. On HyperFlow H3 Flash it renumbers the LoRA's blocks to fit |
+| H3 LoRA | Applies an H3 LoRA: renumbered for HyperFlow, added at run time on int8 and fp8 weights, with its time conditioning added at run time on pruned bases |
 | H3 Refine Latent | Prepares an upscaled H3 latent for a few more steps, keeping held frames and the sound |
 
 ## H3 Take node
@@ -231,46 +241,90 @@ The `fl2va` route has not been run on a real checkpoint.
 
 ## Install
 
-Clone this folder into ComfyUI `custom_nodes/` and restart ComfyUI. The
-editor loads with the node. It does not download a model.
+1. Clone this folder into ComfyUI's `custom_nodes` and install its requirements:
 
-The editor's renders need:
+   ```bash
+   git clone https://github.com/igorls/comfyui-h3-take
+   pip install -r comfyui-h3-take/requirements.txt
+   ```
 
-- the ComfyUI-HyperFlow-Flash and ComfyUI-GGUF node packs;
-- HyperFlow H3 Flash in `models/diffusion_models/hyperflow`:
-  `minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf` renders clips with cast
-  pictures, first or last frames, or voices, and
-  `minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf` renders clips that are only
-  a prompt;
-- the H3 text encoder and the video and audio VAEs, as for ComfyUI's own H3
-  workflows;
-- for finals, a ComfyUI recent enough to have the MiniMax H3 latent upscale
-  node, with `minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors` in
-  `models/latent_upscale_models`, and the MMH3 Realism Slider LoRA
-  (Civitai model 3014078) as `MMH3-RealismSlider-V1.safetensors` in
-  `models/loras`.
+   On the Windows portable build, run pip as
+   `..\python_embeded\python.exe -m pip install -r comfyui-h3-take\requirements.txt`.
+   The requirements bring ffmpeg, through the imageio-ffmpeg package, which the
+   editor runs to convert, trim and join video. Without that package it uses an
+   ffmpeg on the PATH, and the `H3TAKE_FFMPEG` environment variable names any
+   other build.
+2. Restart ComfyUI. H3 Editor appears in the sidebar. The pack does not
+   download a model.
+3. Put the models in place. Every render needs ComfyUI's own H3 files, the ones
+   its MiniMax H3 templates use:
 
-A draft renders at the project's draft size in 4 steps. A final renders at the
-final size in 6 steps, which is H3's own size of about a megapixel. The learned
-latent upscaler then enlarges the picture, and HyperFlow redraws its last 3
-steps at that size. A 9:16 final comes out at 1088x1920, a 16:9 one at
+   | File | Folder |
+   |---|---|
+   | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders` |
+   | `minimax_h3_video_vae_fp16.safetensors` | `models/vae` |
+   | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae` |
+
+   Then the files of at least one checkpoint profile, below.
+4. For finals at the larger size, add
+   `minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors` to
+   `models/latent_upscale_models` and the MMH3 Realism Slider LoRA (Civitai
+   model 3014078) as `MMH3-RealismSlider-V1.safetensors` to `models/loras`.
+   Without the upscaler a final stays at H3's own size, and without the slider
+   it renders without one. The editor says which, under Model.
+
+The ComfyUI must be recent enough to have the MiniMax H3 nodes and the H3 latent
+upscale node.
+
+A project renders with one checkpoint profile, chosen in the editor's Model menu
+and stored as `profile`. The menu marks profiles whose files are not installed.
+A new project takes the first installed profile in the menu's order, so a
+fresh install renders with whatever it has.
+A family with an fl2va model renders prompt-only clips on it, and everything
+else on its ref2va model; a family with only ref2va renders every clip on it.
+
+| Profile | Files | Steps, draft and final |
+|---|---|---|
+| HyperFlow H3 Flash, the default | the ComfyUI-HyperFlow-Flash and ComfyUI-GGUF packs, and `minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf` and `minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf` in `models/diffusion_models/hyperflow` | 4 and 6, euler |
+| MiniMax H3 Turbo | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` and `minimax_h3_fl2va_pruned_int8_convrot.safetensors` from Comfy-Org/MiniMax-H3 on Hugging Face, in `models/diffusion_models`, and the Turbo v4 LoRA `minimax_h3_turbo_v4_step600_ema.safetensors` from larryvrh/MiniMax-H3-Turbo-Lora on Hugging Face, in `models/loras` | 6 and 6, euler |
+| MiniMax H3 | the same two base files | 10 and 20, res_multistep |
+| Singularity v2 | `Minimax-h3_Singularity_ref2va_v2_pruned_int8.safetensors` | 10 and 20, res_multistep |
+| DaSiWa Hybrid v4 | its int8 ref2va file from Civitai model 2877206 | 10 and 20, res_multistep |
+| DaSiWa Hybrid v4 Turbo | its turbo int8 ref2va file from the same model | 8 and 8, euler |
+
+A draft renders at the project's draft size. A final renders at the final size,
+which is H3's own size of about a megapixel. The learned latent upscaler then
+enlarges the picture, and the model redraws its last steps at that size:
+HyperFlow its last 3 of 6, the 20-step families their last 3 of 20, and the
+turbo families a fixed tail from sigma 0.675. A 9:16 final comes out at 1088x1920, a 16:9 one at
 1920x1088 and a 1:1 one at 1440x1440. The sound is the first pass's, and held
 frames stay as they are. The Realism Slider runs at 1.5 on both passes, for a
-matte, less made-up skin. HyperFlow H3 Flash prunes some of H3's blocks: its
+matte, less made-up skin. The H3 LoRA node adds a LoRA at run time on int8 and
+fp8 weights, so small updates are not rounded away, and on the pruned base
+files it adds the LoRA's time-conditioning part at run time too, from a small
+bundled grid. That part is adapted from ComfyUI-MiniMax-H3-Turbo under the
+Apache License 2.0; see NOTICE. HyperFlow H3 Flash prunes some of H3's blocks: its
 ref2va dropped block 9 and its fl2va blocks 6, 21 and 22. The H3 LoRA node
 moves an H3 LoRA's later blocks down to match, so they land on the layers they
 were trained for. A LoRA attaches only where HyperFlow keeps a layer whole, and
-ComfyUI skips the rest with a warning: on fl2va the slider's last `fc2` is one. Export takes the size of the largest picture in the cut. A project can name
-other models under `models`. A `.gguf` unet loads as HyperFlow, and any other
-unet loads with ComfyUI's plain loader and scheduler.
+ComfyUI skips the rest with a warning: on fl2va the slider's last `fc2` is one.
+Export takes the size of the largest picture in the cut. A project can still
+name its own models under `models`, which wins over its profile. A `.gguf` unet
+loads as HyperFlow, and any other unet loads with ComfyUI's plain loader and
+scheduler.
 
 ## Develop
 
-`python -m unittest discover -s tests` runs from the repo root. Writer tests
-need torch and ComfyUI, and skip without them.
+`python -m unittest discover -s tests` runs from the repo root. The writer and
+LoRA tests need torch and ComfyUI, and skip without them.
 
 `tools/deploy.sh` copies the repo into a running container, runs the tests
 there, and reloads the pack in place, so models stay loaded. Refresh the browser
 afterwards. `--restart` restarts ComfyUI instead. `tools/run_take.py` queues a
 real take.
 `tools/compare_takes.py` measures how closely a span matches its source.
+
+## License
+
+GNU General Public License v3.0, in [LICENSE](LICENSE). Parts adapted from other
+projects keep their own licenses; [NOTICE](NOTICE) lists them.

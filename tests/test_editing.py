@@ -132,6 +132,7 @@ class RenderRecordTest(unittest.TestCase):
         take = store.active_take(clip)
         self.assertEqual(take["size"], [1920, 1088])
         self.assertEqual(take["models"]["lora_strength"], 1.5)
+        self.assertEqual(take["models"]["profile"], "hyperflow")
 
     def test_a_failed_render_says_why(self):
         project = new_project("Test")
@@ -216,6 +217,21 @@ class MergeTest(unittest.TestCase):
         mine["timeline"] = mine["timeline"][1:]
         merged = merge(UNKNOWN, mine, theirs)
         self.assertEqual(len(merged["timeline"]), 2)
+
+    def test_an_undone_delete_brings_the_clip_back_in_its_place(self):
+        before = scene(124, 124, 124)
+        deleted = copy.deepcopy(before)
+        store.remove_clip(deleted, deleted["clips"][1]["id"])
+        merged = merge(deleted, copy.deepcopy(before), deleted)
+        self.assertEqual([c["id"] for c in merged["clips"]], [c["id"] for c in before["clips"]])
+
+    def test_a_clip_the_other_side_added_stays_where_it_was_added(self):
+        base = scene(124, 124)
+        mine, theirs = copy.deepcopy(base), copy.deepcopy(base)
+        mine["clips"][0]["action"] = "Mine."
+        add_clip(theirs, {"action": "Theirs."})
+        merged = merge(base, mine, theirs)
+        self.assertEqual([c["action"] for c in merged["clips"]], ["Mine.", "Shot 1.", "Theirs."])
 
 
 class LanguageAndVoiceTest(unittest.TestCase):
@@ -395,6 +411,69 @@ class BatchTest(unittest.TestCase):
         summary = describe(project)
         self.assertEqual([t["at"] for t in summary["timeline"]], ["00:00:00", "00:05:04"])
         self.assertEqual(summary["length"], "00:10:08")
+
+
+class BinTest(unittest.TestCase):
+    def test_a_new_bin_can_be_named_in_the_same_batch(self):
+        project = new_project("Test")
+        names = {}
+        apply_op(project, {"op": "add_bin", "as": "broll", "fields": {"name": "B-roll"}}, names)
+        apply_op(project, {"op": "add_clip", "as": "shot", "fields": {"action": "Waves.", "bin": "$broll"}}, names)
+        apply_op(project, {"op": "add_clip", "fields": {"action": "Loose."}}, names)
+        summary = describe(project)
+        self.assertEqual(summary["bins"], [{"id": names["broll"]["bin"], "name": "B-roll", "clips": 1}])
+        self.assertEqual([c.get("bin") for c in summary["clips"]], [names["broll"]["bin"], None])
+
+    def test_a_clip_can_only_go_in_a_bin_the_project_has(self):
+        project = scene(124)
+        with self.assertRaisesRegex(KeyError, "no bin"):
+            update_clip(project, project["clips"][0]["id"], {"bin": "b-missing"})
+
+    def test_null_takes_a_clip_out_of_its_bin(self):
+        project = scene(124)
+        found = store.add_bin(project)
+        clip = project["clips"][0]
+        update_clip(project, clip["id"], {"bin": found["id"]})
+        self.assertEqual((found["name"], clip["bin"]), ("Bin 1", found["id"]))
+        update_clip(project, clip["id"], {"bin": None})
+        self.assertNotIn("bin", clip)
+
+    def test_removing_a_bin_keeps_its_clips(self):
+        project = scene(124, 124)
+        found = store.add_bin(project, {"name": "Selects"})
+        for clip in project["clips"]:
+            update_clip(project, clip["id"], {"bin": found["id"]})
+        apply_op(project, {"op": "remove_bin", "bin": found["id"]}, {})
+        self.assertEqual((project["bins"], len(project["clips"])), ([], 2))
+        self.assertFalse(any("bin" in c for c in project["clips"]))
+
+    def test_a_rename_to_nothing_keeps_the_name(self):
+        project = new_project("Test")
+        found = store.add_bin(project, {"name": "Selects"})
+        apply_op(project, {"op": "update_bin", "bin": found["id"], "fields": {"name": "  "}}, {})
+        self.assertEqual(found["name"], "Selects")
+        apply_op(project, {"op": "update_bin", "bin": found["id"], "fields": {"name": " Keepers "}}, {})
+        self.assertEqual(found["name"], "Keepers")
+
+    def test_an_extension_files_itself_with_its_source(self):
+        project = scene(124)
+        found = store.add_bin(project)
+        update_clip(project, project["clips"][0]["id"], {"bin": found["id"]})
+        clip, _ = add_linked(project, project["timeline"][0]["id"], "extend_after")
+        self.assertEqual(clip["bin"], found["id"])
+
+    def test_an_import_into_a_bin_removed_meanwhile_is_kept_loose(self):
+        project = new_project("Test")
+        clip, _ = store.add_footage(project, "Beach", take("f1", 96), bin_id="b-gone")
+        self.assertNotIn("bin", clip)
+        self.assertEqual(len(project["clips"]), 1)
+
+    def test_removing_a_clip_takes_it_off_the_timeline(self):
+        project = scene(124, 124)
+        gone = project["clips"][0]["id"]
+        apply_op(project, {"op": "remove_clip", "clip": gone}, {})
+        self.assertEqual([c["id"] for c in project["clips"]], [project["timeline"][0]["clip"]])
+        self.assertEqual(len(project["timeline"]), 1)
 
 
 if __name__ == "__main__":

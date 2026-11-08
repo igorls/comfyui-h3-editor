@@ -1,8 +1,14 @@
 import unittest
 
 from policy import bridge_spans, legal_length, video_span
-from project import (MODELS, active_take, clip_prompt, export_command, frame_of, item_length, linked_length, new_project,
-                     render_graph, render_models, slug, snap_frames, tempo_chain)
+from project import (MODELS, PROFILES, REFINE_TAIL, active_take, add_clip, clip_prompt, export_command, finals_status,
+                     frame_of, installed_profile, item_length, linked_length, new_project, pick_file, plan_render,
+                     profile_status, project_models, render_graph, render_models, set_project, slug, snap_frames,
+                     tempo_chain)
+
+HYPERFLOW = set(PROFILES["hyperflow"]["unet"] + PROFILES["hyperflow"]["unet_text"])
+BASE_TURBO = set(PROFILES["h3_turbo"]["unet"] + PROFILES["h3_turbo"]["unet_text"] + [PROFILES["h3_turbo"]["lora"][0]])
+FINALS = {MODELS["latent_upscaler"], MODELS["lora"]}
 from prompting import compose_prompt, compose_reference_prompt, tag_subjects
 
 
@@ -129,12 +135,107 @@ class ProjectTest(unittest.TestCase):
         for key in ("audio_hold", "source_audio", "start_image", "anchor", "prompt"):
             self.assertEqual(refine[key], first[key])
 
+    def test_each_profile_builds_its_own_graph(self):
+        for name, profile in PROFILES.items():
+            project = new_project("x")
+            project["profile"] = name
+            for quality in ("draft", "final"):
+                with self.subTest(profile=name, quality=quality):
+                    graph = render_graph(project, "x", clip(first={"file": "f.png"}), "t1", quality, 3)
+                    unet = profile["unet"][0]
+                    self.assertEqual(graph["1"]["inputs"]["unet_name"], unet)
+                    self.assertEqual(graph["10"]["inputs"]["checkpoint"], "ref2va")
+                    self.assertEqual(graph["11"]["inputs"]["sampler_name"], profile["sampler"])
+                    sigmas = graph["12"]
+                    if unet.endswith(".gguf"):
+                        self.assertEqual(graph["1"]["class_type"], "HyperFlowGGUFLoader")
+                        self.assertEqual(sigmas["class_type"], "HyperFlowSigmas")
+                    else:
+                        self.assertEqual(graph["1"]["class_type"], "UNETLoader")
+                        self.assertEqual((sigmas["class_type"], sigmas["inputs"]["scheduler"]), ("BasicScheduler", "simple"))
+                    self.assertEqual(sigmas["inputs"]["steps"], profile["steps"][quality])
+                    if profile.get("lora"):
+                        self.assertEqual(graph["94"]["inputs"]["model"], ["1", 0])
+                        self.assertEqual(graph["94"]["inputs"]["lora_name"], profile["lora"][0])
+                    else:
+                        self.assertNotIn("94", graph)
+                    if quality == "final":
+                        self.assertEqual(graph["95"]["inputs"]["model"], ["94", 0] if profile.get("lora") else ["1", 0])
+                        self.assertEqual(graph["5"]["inputs"]["model"], ["95", 0])
+                        refine = graph["87"]
+                        if profile.get("refine_sigmas"):
+                            self.assertEqual(refine, {"class_type": "ManualSigmas", "inputs": {"sigmas": REFINE_TAIL}})
+                            self.assertEqual(graph["90"]["inputs"]["sigmas"], ["87", 0])
+                        else:
+                            self.assertEqual(refine["inputs"], {"sigmas": ["12", 0], "step": profile["refine_from"]})
+                            self.assertEqual(graph["90"]["inputs"]["sigmas"], ["87", 1])
+                    else:
+                        self.assertEqual(graph["5"]["inputs"]["model"], ["94", 0] if profile.get("lora") else ["1", 0])
+
+    def test_a_prompt_only_clip_uses_the_familys_fl2va_or_else_its_ref2va(self):
+        for name, checkpoint in (("hyperflow", "fl2va"), ("h3", "fl2va"), ("singularity", "ref2va")):
+            project = new_project("x")
+            project["profile"] = name
+            graph = render_graph(project, "x", clip(), "t1", "draft", 3)
+            expected = (PROFILES[name].get("unet_text") or PROFILES[name]["unet"])[0]
+            self.assertEqual((graph["1"]["inputs"]["unet_name"], graph["10"]["inputs"]["checkpoint"]), (expected, checkpoint))
+
+    def test_a_profiles_files_are_found_among_the_installed_ones(self):
+        installed = {"DasiwaMinimaxH3_dasiwaHybridV4Turbo_123.safetensors", "minimax_h3_ref2va_pruned_int8_convrot.safetensors"}
+        self.assertEqual(pick_file(PROFILES["dasiwa_turbo"]["unet"], installed), "DasiwaMinimaxH3_dasiwaHybridV4Turbo_123.safetensors")
+        self.assertIsNone(pick_file(PROFILES["dasiwa"]["unet"], installed))
+        rows = {row["id"]: row for row in profile_status(installed)}
+        self.assertTrue(rows["h3"]["available"])
+        self.assertEqual(rows["h3_turbo"]["missing"], [PROFILES["h3_turbo"]["lora"][0]])
+        self.assertFalse(rows["hyperflow"]["available"])
+        project = new_project("x")
+        project["profile"] = "h3"
+        # Without its fl2va installed, a family renders prompt-only clips on its ref2va.
+        self.assertIsNone(project_models(project, {"minimax_h3_ref2va_pruned_int8_convrot.safetensors"})["unet_text"])
+
+    def test_an_unknown_profile_is_refused_and_an_old_one_renders_on_hyperflow(self):
+        with self.assertRaises(ValueError):
+            set_project(new_project("x"), {"profile": "nope"})
+        project = new_project("x")
+        project["profile"] = "gone"
+        self.assertEqual(render_graph(project, "x", clip(), "t1", "draft", 3)["1"]["inputs"]["unet_name"], MODELS["unet_text"])
+
     def test_a_draft_is_not_refined(self):
         graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3)
         for node in ("80", "91", "95"):
             self.assertNotIn(node, graph)
         self.assertEqual(graph["18"]["inputs"]["images"], ["16", 0])
         self.assertEqual(graph["5"]["inputs"]["model"], ["1", 0])
+
+    def test_a_project_without_a_profile_renders_with_the_first_one_installed(self):
+        self.assertEqual(installed_profile(BASE_TURBO), "h3_turbo")
+        self.assertEqual(installed_profile(BASE_TURBO | HYPERFLOW), "hyperflow")
+        self.assertEqual(installed_profile(set()), "hyperflow")
+        self.assertEqual(installed_profile(None), "hyperflow")
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3, BASE_TURBO | FINALS)
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], PROFILES["h3_turbo"]["unet_text"][0])
+        self.assertEqual(graph["94"]["inputs"]["lora_name"], PROFILES["h3_turbo"]["lora"][0])
+        # A profile the project names is kept, installed or not.
+        project = new_project("x")
+        project["profile"] = "hyperflow"
+        graph = render_graph(project, "x", clip(), "t1", "draft", 3, BASE_TURBO)
+        self.assertEqual(graph["1"]["class_type"], "HyperFlowGGUFLoader")
+
+    def test_a_final_renders_without_the_slider_or_upscaler_when_they_are_missing(self):
+        project = new_project("x")
+        project["format"] = "9:16"
+        made, _ = add_clip(project, {"action": "A keeper walks to the window."})
+        job, graph = plan_render(project, "x", made["id"], "final", 3, HYPERFLOW)
+        for node in ("80", "91", "95"):
+            self.assertNotIn(node, graph)
+        self.assertEqual(graph["18"]["inputs"]["images"], ["16", 0])
+        self.assertNotIn("size", job)
+        self.assertNotIn("lora", job["models"])
+        self.assertEqual(len(finals_status(HYPERFLOW)), 2)
+        self.assertEqual(finals_status(HYPERFLOW | FINALS), [])
+        _, graph = plan_render(project, "x", made["id"], "final", 3, HYPERFLOW | FINALS)
+        self.assertIn("91", graph)
+        self.assertEqual(graph["95"]["inputs"]["lora_name"], MODELS["lora"])
 
     def test_a_project_that_names_a_retired_model_renders_with_the_current_one(self):
         project = new_project("x")
@@ -322,6 +423,13 @@ class ExportTest(unittest.TestCase):
         self.project["clips"][1]["takes"] = [{"id": "t2", "quality": "final", "upscale": 2}]
         text = self.filter_of(export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4"))
         self.assertIn("scale=2688:1536:", text)
+
+    def test_a_recorded_size_must_be_two_numbers_in_range(self):
+        self.project["timeline"] = [{"clip": "b", "start": 0, "in": 0, "out": 24}]
+        for size in (["1920:1080,drawtext=x", 1080], [1920], [100000, 1080], "1920x1080"):
+            self.project["clips"][1]["takes"] = [{"id": "t2", "quality": "final", "size": size}]
+            with self.assertRaises(ValueError):
+                export_command(self.project, {"b": "b.mp4"}, "o.mp4")
 
     def test_a_refined_final_sets_the_cut_to_its_size(self):
         self.project["timeline"] = [{"clip": "a", "start": 0, "in": 0, "out": 24}, {"clip": "b", "start": 24, "in": 0, "out": 24}]

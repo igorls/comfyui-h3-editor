@@ -30,6 +30,12 @@ const state = {
   savedEdits: 0,
   saving: null,
   quiet: false,
+  profiles: [],
+  finals: [],
+  bin: null,
+  folded: new Set(),
+  source: null,
+  sourceFrame: 0,
 };
 let undo = [];
 let redo = [];
@@ -38,6 +44,14 @@ let saveTimer = 0;
 const px = (frames) => frames * state.zoom;
 const uid = (prefix) => prefix + Math.random().toString(36).slice(2, 8);
 const clipOf = (id) => state.project.clips.find((c) => c.id === id);
+const binOf = (id) => (id && (state.project.bins || []).find((b) => b.id === id)) || null;
+// A bin is selected only while no clip or cast member is.
+const selectedBin = () => (!state.clip && !state.person && binOf(state.bin)) || null;
+// The clip the viewer shows on its own, picked in the Clips panel. Any other selection ends it.
+const viewing = () => (state.source && state.source === state.clip && clipOf(state.source)) || null;
+const sourceEnd = () => activeTake(viewing())?.frames || 0;
+const here = () => (viewing() ? state.sourceFrame : state.playhead);
+const viewEnd = () => (viewing() ? sourceEnd() : sceneEnd());
 const itemLength = (item) => Math.max(1, Math.round((item.out - item.in) / (item.speed || 1)));
 const itemEnd = (item) => item.start + itemLength(item);
 const viewUrl = (file, subfolder) => "/view?type=output&filename=" + encodeURIComponent(file) + "&subfolder=" + encodeURIComponent(subfolder || "");
@@ -123,6 +137,7 @@ function adopt(project, { external = false } = {}) {
   if (!clipOf(state.clip)) state.clip = null;
   if (!state.project.timeline.some((i) => i.id === state.item)) state.item = null;
   if (state.person && !(state.project.cast || []).some((p) => p.id === state.person)) state.person = null;
+  if (!binOf(state.bin)) state.bin = null;
   if (external) {
     undo = [];
     redo = [];
@@ -184,6 +199,8 @@ function addClip() {
   checkpoint();
   const number = state.project.clips.length + 1;
   const clip = { id: uid("c"), name: "Clip " + number, action: "", camera: "", speaker: "", dialogue: "", sound: "", music: "", seconds: 5, takes: [], active: null };
+  const bin = selectedBin();
+  if (bin) clip.bin = bin.id;
   state.project.clips.push(clip);
   placeOnTimeline(clip, sceneEnd());
   state.clip = clip.id;
@@ -342,6 +359,7 @@ function addLinked(mode) {
     sound: "", music: "", seconds, takes: [], active: null, link,
   };
   if (source.cast?.length) clip.cast = [...source.cast];
+  if (binOf(source.bin)) clip.bin = source.bin;
   if (track) clip.track = track;
   state.project.clips.push(clip);
   const [first, last] = linkedRange(link, linkedFrames(link, seconds));
@@ -380,6 +398,8 @@ async function importFootage() {
   const form = new FormData();
   form.append("file", file);
   form.append("client", clientId);
+  const bin = selectedBin();
+  if (bin) form.append("bin", bin.id);
   toast("Importing " + file.name);
   try {
     await flush();
@@ -571,14 +591,18 @@ async function uploadFrame(clip, side) {
 }
 
 async function grabFrame(clip, side) {
-  const item = itemAt(state.playhead);
-  const take = activeTake(clipOf(item?.clip));
+  // The frame the viewer shows: of the clip on its own, or of the cut at the playhead.
+  const alone = viewing();
+  const item = alone ? null : itemAt(state.playhead);
+  const take = activeTake(alone || clipOf(item?.clip));
   if (!take) {
     toast("Move the playhead over a rendered clip, then press Use playhead frame.");
     return;
   }
   try {
-    const frame = Math.min(take.frames - 1, Math.round(item.in + (state.playhead - item.start) * speedOf(item)));
+    const frame = alone
+      ? Math.min(take.frames - 1, Math.round(state.sourceFrame))
+      : Math.min(take.frames - 1, Math.round(item.in + (state.playhead - item.start) * speedOf(item)));
     setClipFrame(clip, side, await postJson("/project/" + state.folder + "/grab", { file: take.file, subfolder: take.subfolder, frame }));
   } catch (error) {
     toast(error.message, true);
@@ -680,9 +704,11 @@ function renderCast() {
     name.textContent = person.name;
     button.append(image, name);
     button.addEventListener("click", () => {
+      setSource(null);
       state.person = person.id;
       state.clip = null;
       state.item = null;
+      state.bin = null;
       renderAll();
     });
     return button;
@@ -764,6 +790,7 @@ function mergeWithNext() {
     link: { mode: "bridge", hold: HOLD, a: sideOf(item), b: sideOf(next) },
   };
   if (source.cast?.length) clip.cast = [...source.cast];
+  if (binOf(source.bin)) clip.bin = source.bin;
   if (track) clip.track = track;
   state.project.clips.push(clip);
   const [first, last] = linkedRange(clip.link, linkedFrames(clip.link, clip.seconds));
@@ -829,6 +856,7 @@ function editPoints() {
 }
 
 function jumpEdit(step) {
+  setSource(null);
   const points = editPoints();
   const target = step > 0 ? points.find((p) => p > state.playhead) : points.filter((p) => p < state.playhead).at(-1);
   if (target !== undefined) seek(target);
@@ -849,10 +877,12 @@ function fitTimeline() {
 }
 
 function selectClip(clipId, itemId = null) {
+  if (itemId || clipId !== state.source) setSource(null);
   state.clip = clipId;
   state.item = itemId;
   state.gap = null;
   state.person = null;
+  state.bin = null;
   renderCast();
   renderBin();
   renderInspector();
@@ -893,10 +923,15 @@ function skim(thumb, take) {
   thumb.addEventListener("pointermove", (event) => {
     const rect = thumb.getBoundingClientRect();
     const share = Math.min(0.999, Math.max(0, (event.clientX - rect.left) / rect.width));
-    const index = Math.floor(share * take.strip.count);
+    const { count, w, h } = take.strip;
+    const index = Math.floor(share * count);
+    // Each frame covers the thumbnail like the poster does, cropped to fit and never squeezed.
+    const scale = w && h ? Math.max(rect.width / w, rect.height / h) : 0;
+    const tileW = scale ? w * scale : rect.width;
+    const tileH = scale ? h * scale : rect.height;
     thumb.style.backgroundImage = sprite;
-    thumb.style.backgroundSize = take.strip.count * 100 + "% 100%";
-    thumb.style.backgroundPosition = (take.strip.count > 1 ? (index / (take.strip.count - 1)) * 100 : 0) + "% 0";
+    thumb.style.backgroundSize = count * tileW + "px " + tileH + "px";
+    thumb.style.backgroundPosition = (rect.width - tileW) / 2 - index * tileW + "px " + (rect.height - tileH) / 2 + "px";
     line.hidden = false;
     line.style.left = share * 100 + "%";
   });
@@ -908,43 +943,223 @@ function skim(thumb, take) {
   });
 }
 
+// Bins are folders in the Clips panel. Folding one is a per-viewer convenience, kept in this browser only.
+function loadFolded() {
+  try {
+    state.folded = new Set(JSON.parse(localStorage.getItem("h3take.folded." + state.folder) || "[]"));
+  } catch (_) {
+    state.folded = new Set();
+  }
+}
+
+function saveFolded() {
+  try { localStorage.setItem("h3take.folded." + state.folder, JSON.stringify([...state.folded])); } catch (_) {}
+}
+
+function focusInBin(selector) {
+  $("clips").querySelector(selector)?.focus({ preventScroll: true });
+}
+
+function toggleBin(binId) {
+  if (state.folded.has(binId)) state.folded.delete(binId);
+  else state.folded.add(binId);
+  saveFolded();
+  renderBin();
+  focusInBin('.bin-group[data-bin="' + CSS.escape(binId) + '"] .fold');
+}
+
+function selectBin(binId) {
+  setSource(null);
+  state.bin = binId;
+  state.clip = null;
+  state.item = null;
+  state.person = null;
+  state.gap = null;
+  renderAll();
+  focusInBin('.bin-group[data-bin="' + CSS.escape(binId) + '"] .bin-name');
+}
+
+function addBin() {
+  checkpoint();
+  state.project.bins = state.project.bins || [];
+  let number = state.project.bins.length + 1;
+  while (state.project.bins.some((b) => b.name === "Bin " + number)) number++;
+  const bin = { id: uid("b"), name: "Bin " + number };
+  state.project.bins.push(bin);
+  save();
+  selectBin(bin.id);
+  const name = $("inspector").querySelector('[data-key="name"]');
+  if (!name) return;
+  // Naming a new bin is part of making it, so one undo takes back both.
+  state.quiet = true;
+  name.focus();
+  state.quiet = false;
+  name.select();
+}
+
+function deleteBin(bin) {
+  checkpoint();
+  const freed = state.project.clips.filter((c) => c.bin === bin.id);
+  for (const clip of freed) delete clip.bin;
+  state.project.bins = state.project.bins.filter((b) => b !== bin);
+  if (state.bin === bin.id) state.bin = null;
+  state.folded.delete(bin.id);
+  saveFolded();
+  save();
+  renderAll();
+  const kept = freed.length === 1 ? " Its clip stays in the list." : freed.length ? " Its " + freed.length + " clips stay in the list." : "";
+  toast("Deleted " + bin.name + "." + kept + " Ctrl+Z brings the bin back.");
+}
+
+function fileClip(clip, binId) {
+  checkpoint();
+  if (binId) clip.bin = binId;
+  else delete clip.bin;
+  save();
+  renderBin();
+  if (selectedBin()) renderInspector();
+}
+
+// Deletes the clip from the project, with its places on the timeline. Its render files stay on disk.
+function deleteClip(clip) {
+  if (!clip) return;
+  if (jobFor(clip.id)) {
+    toast(clip.name + " is rendering. Cancel its render, then delete it.", true);
+    return;
+  }
+  checkpoint();
+  if (state.source === clip.id) setSource(null);
+  const placed = state.project.timeline.some((i) => i.clip === clip.id);
+  state.project.clips = state.project.clips.filter((c) => c !== clip);
+  state.project.timeline = state.project.timeline.filter((i) => i.clip !== clip.id);
+  if (state.clip === clip.id) state.clip = null;
+  if (!state.project.timeline.some((i) => i.id === state.item)) state.item = null;
+  save();
+  renderAll();
+  toast("Deleted " + clip.name + (placed ? " and took it off the timeline" : "") + ". Ctrl+Z brings it back.");
+}
+
+function trashButton(label, onClick) {
+  const button = document.createElement("button");
+  button.className = "icon delete";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15"/><path d="M9.5 7V4.8h5V7"/><path d="M6.5 7l.8 11.6a1.6 1.6 0 0 0 1.6 1.4h6.2a1.6 1.6 0 0 0 1.6-1.4L17.5 7"/><path d="M10.2 10.8v5.6M13.8 10.8v5.6"/></svg>';
+  button.addEventListener("click", onClick);
+  return button;
+}
+
 function renderBin() {
   const list = $("clips");
-  $("clipCount").textContent = state.project.clips.length ? String(state.project.clips.length) : "";
-  if (!state.project.clips.length) {
+  const clips = state.project.clips;
+  const bins = state.project.bins || [];
+  $("clipCount").textContent = clips.length ? String(clips.length) : "";
+  if (!clips.length && !bins.length) {
     list.innerHTML = '<p class="empty">Add a clip, describe the shot, and render a draft.</p>';
     return;
   }
-  list.replaceChildren(...state.project.clips.map((clip) => {
-    const take = activeTake(clip);
-    const status = clipStatus(clip);
-    const button = document.createElement("button");
-    button.className = "clip" + (clip.id === state.clip ? " on" : "");
-    button.draggable = true;
-    button.addEventListener("click", () => selectClip(clip.id));
-    button.addEventListener("dragstart", (event) => event.dataTransfer.setData("text/h3clip", clip.id));
-    const thumb = document.createElement("span");
-    thumb.className = "thumb" + (take ? "" : " none");
-    if (take) skim(thumb, take);
-    const text = document.createElement("span");
-    text.className = "text";
-    const title = document.createElement("span");
-    title.className = "title";
-    title.textContent = clip.name;
-    const meta = document.createElement("span");
-    meta.className = "meta";
-    const length = document.createElement("span");
-    length.textContent = clipSeconds(clip);
-    const state_ = document.createElement("span");
-    state_.className = "state " + status.kind;
-    state_.dataset.status = clip.id;
-    state_.textContent = status.text;
-    meta.append(length, state_);
-    text.append(title, meta);
-    button.append(thumb, text);
-    return button;
-  }));
-  list.querySelector(".clip.on")?.scrollIntoView({ block: "nearest" });
+  const filed = new Set(bins.map((b) => b.id));
+  list.replaceChildren(
+    ...bins.map((bin) => binGroup(bin, clips.filter((c) => c.bin === bin.id))),
+    ...clips.filter((c) => !filed.has(c.bin)).map(clipRow),
+  );
+  list.querySelector(".clip.on, .bin-head.on")?.scrollIntoView({ block: "nearest" });
+}
+
+function binGroup(bin, inside) {
+  const open = !state.folded.has(bin.id);
+  const group = document.createElement("div");
+  group.className = "bin-group";
+  group.dataset.bin = bin.id;
+  const head = document.createElement("div");
+  head.className = "bin-head" + (selectedBin() === bin ? " on" : "") + (!open && inside.some((c) => c.id === state.clip) ? " holds" : "");
+  const fold = document.createElement("button");
+  fold.className = "fold";
+  fold.setAttribute("aria-expanded", String(open));
+  fold.setAttribute("aria-label", (open ? "Fold " : "Unfold ") + bin.name);
+  fold.title = open ? "Fold the bin" : "Unfold the bin";
+  fold.addEventListener("click", () => toggleBin(bin.id));
+  const name = document.createElement("button");
+  name.className = "bin-name";
+  name.addEventListener("click", () => selectBin(bin.id));
+  name.innerHTML = '<svg class="folder" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.2a1.7 1.7 0 0 1 1.7-1.7h3.9l2 2.1h7.7a1.7 1.7 0 0 1 1.7 1.7v7.5a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z"/></svg>';
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = bin.name;
+  const count = document.createElement("span");
+  count.className = "count";
+  count.textContent = String(inside.length);
+  name.append(label, count);
+  head.append(fold, name);
+  group.append(head);
+  if (open) {
+    const body = document.createElement("div");
+    body.className = "bin-clips";
+    if (inside.length) body.append(...inside.map(clipRow));
+    else {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "Drag clips here.";
+      body.append(empty);
+    }
+    group.append(body);
+  }
+  return group;
+}
+
+let draggedClip = null;
+
+function clipRow(clip) {
+  const take = activeTake(clip);
+  const status = clipStatus(clip);
+  const button = document.createElement("button");
+  button.className = "clip" + (clip.id === state.clip ? " on" : "");
+  button.dataset.clip = clip.id;
+  button.draggable = true;
+  button.addEventListener("click", () => {
+    setSource(clip.id);
+    selectClip(clip.id);
+    focusInBin('.clip[data-clip="' + CSS.escape(clip.id) + '"]');
+  });
+  button.addEventListener("dragstart", (event) => {
+    draggedClip = clip.id;
+    event.dataTransfer.setData("text/h3clip", clip.id);
+  });
+  button.addEventListener("dragend", () => {
+    draggedClip = null;
+    showDrop(undefined);
+  });
+  const thumb = document.createElement("span");
+  thumb.className = "thumb" + (take ? "" : " none");
+  if (take) skim(thumb, take);
+  const text = document.createElement("span");
+  text.className = "text";
+  const title = document.createElement("span");
+  title.className = "title";
+  title.textContent = clip.name;
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  const length = document.createElement("span");
+  length.textContent = clipSeconds(clip);
+  const state_ = document.createElement("span");
+  state_.className = "state " + status.kind;
+  state_.dataset.status = clip.id;
+  state_.textContent = status.text;
+  meta.append(length, state_);
+  text.append(title, meta);
+  button.append(thumb, text);
+  return button;
+}
+
+// Where a clip dragged over the Clips panel would land: a bin, or null for the loose list.
+function dropBin(event) {
+  return event.target.closest?.(".bin-group")?.dataset.bin || null;
+}
+
+function showDrop(target) {
+  const list = $("clips");
+  list.classList.toggle("drop", target === null);
+  for (const group of list.querySelectorAll(".bin-group")) group.classList.toggle("drop", group.dataset.bin === target);
 }
 
 function field(label, value, onInput, { big = false, area = false, type = "text", placeholder = "" } = {}) {
@@ -1038,12 +1253,45 @@ function renderScene(panel) {
   const formatHint = document.createElement("p");
   formatHint.className = "hint";
   formatHint.textContent = "New renders and imports use this shape. Export fits every clip to it.";
+  const model = document.createElement("label");
+  model.className = "choice";
+  const modelTitle = document.createElement("span");
+  modelTitle.textContent = "Model";
+  const models = document.createElement("select");
+  models.dataset.key = "Model";
+  // A project that names no model renders with the first one installed, as the server does.
+  const current = state.project.profile || state.profiles.find((p) => p.available)?.id || "hyperflow";
+  for (const profile of state.profiles) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = profile.available ? profile.title : profile.title + " (not installed)";
+    option.disabled = !profile.available && profile.id !== current;
+    option.selected = profile.id === current;
+    models.append(option);
+  }
+  const modelHint = document.createElement("p");
+  modelHint.className = "hint";
+  const describeModel = () => {
+    const profile = state.profiles.find((p) => p.id === models.value);
+    if (!profile) modelHint.textContent = "";
+    else if (profile.available) modelHint.textContent = [profile.hint + " New renders use it.", ...state.finals].join(" ");
+    else modelHint.textContent = "Not installed. Needs " + profile.missing.join(" and ") + ".";
+  };
+  describeModel();
+  models.addEventListener("change", () => {
+    checkpoint();
+    state.project.profile = models.value;
+    describeModel();
+    save();
+  });
+  model.append(modelTitle, models);
   panel.replaceChildren(
     head,
     section("Look", [field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true })]),
     section("Project", [
       shape,
       formatHint,
+      ...(state.profiles.length ? [model, modelHint] : []),
       field("Language people speak", state.project.language || "", (v) => {
         if (v.trim()) state.project.language = v.trim();
         else delete state.project.language;
@@ -1053,12 +1301,51 @@ function renderScene(panel) {
   );
 }
 
+function renderBinPanel(panel, bin) {
+  const inside = state.project.clips.filter((c) => c.bin === bin.id);
+  const head = document.createElement("div");
+  head.className = "inspector-head";
+  const name = document.createElement("input");
+  name.className = "name-input";
+  name.value = bin.name;
+  name.setAttribute("aria-label", "Bin name");
+  name.dataset.key = "name";
+  name.addEventListener("focus", () => checkpoint(), { once: true });
+  name.addEventListener("input", () => {
+    if (!name.value.trim()) return;
+    bin.name = name.value;
+    save();
+    renderBin();
+  });
+  name.addEventListener("change", () => {
+    if (!name.value.trim()) name.value = bin.name;
+  });
+  const row = document.createElement("div");
+  row.className = "head-row";
+  row.append(name, trashButton("Delete bin", () => deleteBin(bin)));
+  const line = document.createElement("p");
+  line.className = "status";
+  line.textContent = inside.length ? inside.length + (inside.length === 1 ? " clip" : " clips") : "Empty";
+  head.append(row, line);
+  const about = document.createElement("p");
+  about.className = "hint";
+  about.textContent = "Drag clips onto this bin in the Clips panel to file them here, or onto the list below the bins to take them out. While the bin is selected, new clips and imports go in it.";
+  const keep = document.createElement("p");
+  keep.className = "hint";
+  keep.textContent = "Deleting the bin keeps its clips.";
+  panel.replaceChildren(head, section("Bin", [about, keep]));
+}
+
 function renderInspector() {
   const panel = $("inspector");
   const clip = clipOf(state.clip);
   const person = (state.project.cast || []).find((c) => c.id === state.person);
   if (person) {
     renderPerson(panel, person);
+    return;
+  }
+  if (!clip && selectedBin()) {
+    renderBinPanel(panel, selectedBin());
     return;
   }
   if (!clip) {
@@ -1086,7 +1373,10 @@ function renderInspector() {
   line.className = "status " + status.kind;
   line.dataset.status = clip.id;
   line.textContent = status.text + ", " + clipSeconds(clip);
-  head.append(name, line);
+  const row = document.createElement("div");
+  row.className = "head-row";
+  row.append(name, trashButton("Delete clip", () => deleteClip(clip)));
+  head.append(row, line);
 
   const parts = [head];
   if (clip.error && !job) {
@@ -1616,14 +1906,18 @@ function renderTimeline() {
   }
   $("laneV").replaceChildren(...blocks);
   $("laneA").replaceChildren(...waves);
-  $("total").textContent = "of " + timecode(sceneEnd());
   placePlayhead();
   updateTools();
 }
 
 function placePlayhead() {
   $("playhead").style.left = px(state.playhead) + "px";
-  $("time").textContent = timecode(state.playhead);
+  updateClock();
+}
+
+function updateClock() {
+  $("time").textContent = timecode(here());
+  $("total").textContent = "of " + timecode(viewEnd());
 }
 
 function snapPoints(skip) {
@@ -1840,7 +2134,45 @@ function place(video, item, frame, tolerance = 0.01) {
   if (Math.abs(video.currentTime - seconds) > tolerance) video.currentTime = seconds;
 }
 
+// Switches the viewer between the cut (null) and one clip on its own.
+function setSource(clipId) {
+  if (state.source === clipId) return;
+  if (state.playing) setPlaying(false);
+  state.source = clipId;
+  state.sourceFrame = 0;
+}
+
+function showSource(clip) {
+  const take = activeTake(clip);
+  const job = jobFor(clip.id);
+  const slate = $("slate");
+  clearMix();
+  back.pause();
+  back.classList.remove("show");
+  if (take) {
+    state.sourceFrame = Math.min(state.sourceFrame, take.frames - 1);
+    load(front, viewUrl(take.file, take.subfolder));
+    front.playbackRate = 1;
+    if (!state.playing && Math.abs(front.currentTime - state.sourceFrame / FPS) > 0.01) front.currentTime = state.sourceFrame / FPS;
+    front.classList.add("show");
+    slate.textContent = "";
+  } else {
+    front.classList.remove("show");
+    slate.textContent = job ? "" : "This clip has not been rendered yet. Press Render draft.";
+  }
+  showLive(job);
+  updateClock();
+}
+
 function showFrame() {
+  const clip = viewing();
+  $("sourceTag").hidden = !clip;
+  $("timeline").classList.toggle("source", Boolean(clip));
+  if (clip) {
+    $("sourceName").textContent = clip.name;
+    showSource(clip);
+    return;
+  }
   const item = leading(state.playhead);
   const url = sourceOf(item);
   const job = state.running || jobFor(item?.clip || state.clip);
@@ -1881,6 +2213,17 @@ function setPlaying(on) {
     front.pause();
     back.pause();
     showFrame();
+    return;
+  }
+  if (viewing()) {
+    if (!sourceEnd()) {
+      setPlaying(false);
+      return;
+    }
+    if (state.sourceFrame >= sourceEnd() - 1) state.sourceFrame = 0;
+    showFrame();
+    front.play().catch(() => {});
+    requestAnimationFrame(tickSource);
     return;
   }
   if (state.playhead >= sceneEnd()) state.playhead = 0;
@@ -1943,8 +2286,27 @@ function tick(now) {
   requestAnimationFrame(tick);
 }
 
+// A clip on its own plays straight through its active take, at its own speed.
+function tickSource() {
+  if (!state.playing) return;
+  if (!viewing()) {
+    setPlaying(false);
+    return;
+  }
+  const end = sourceEnd();
+  if (front.ended || front.currentTime * FPS >= end - 0.5) {
+    state.sourceFrame = end - 1;
+    setPlaying(false);
+    return;
+  }
+  state.sourceFrame = front.currentTime * FPS;
+  updateClock();
+  requestAnimationFrame(tickSource);
+}
+
 function seek(frame) {
-  state.playhead = Math.max(0, Math.round(frame));
+  if (viewing()) state.sourceFrame = Math.max(0, Math.min(sourceEnd() - 1, Math.round(frame)));
+  else state.playhead = Math.max(0, Math.round(frame));
   if (state.playing) setPlaying(false);
   showFrame();
 }
@@ -2131,6 +2493,9 @@ async function openProject(folder) {
   state.edits = state.savedEdits = 0;
   state.clip = null;
   state.item = null;
+  state.bin = null;
+  setSource(null);
+  loadFolded();
   state.playhead = 0;
   undo = [];
   redo = [];
@@ -2142,7 +2507,9 @@ async function openProject(folder) {
 }
 
 async function refreshProjects(selected) {
-  const { projects } = await api("/projects");
+  const { projects, profiles, finals } = await api("/projects");
+  state.profiles = profiles || [];
+  state.finals = finals || [];
   $("project").replaceChildren(...projects.map((name) => {
     const option = document.createElement("option");
     option.value = name;
@@ -2177,6 +2544,32 @@ $("newClip").addEventListener("click", addClip);
 $("addCast").addEventListener("click", addCastMember);
 $("addVoice").addEventListener("click", addVoiceMember);
 $("importClip").addEventListener("click", importFootage);
+$("newBin").addEventListener("click", addBin);
+
+// Clips drag onto a bin to file them there, or onto the loose list to take them out of their bin.
+const clipList = $("clips");
+clipList.addEventListener("dragover", (event) => {
+  const clip = clipOf(draggedClip);
+  if (!clip) return;
+  const target = dropBin(event);
+  if ((binOf(clip.bin)?.id || null) === target) {
+    showDrop(undefined);
+    return;
+  }
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  showDrop(target);
+});
+clipList.addEventListener("dragleave", (event) => {
+  if (!clipList.contains(event.relatedTarget)) showDrop(undefined);
+});
+clipList.addEventListener("drop", (event) => {
+  const clip = clipOf(draggedClip);
+  showDrop(undefined);
+  if (!clip) return;
+  event.preventDefault();
+  fileClip(clip, dropBin(event));
+});
 $("close").addEventListener("click", () => window.parent.postMessage("h3-editor-close", location.origin));
 $("renderAll").addEventListener("click", () => {
   const waiting = sorted().map((i) => clipOf(i.clip)).filter((c, i, all) => c && !c.takes.length && all.indexOf(c) === i);
@@ -2202,8 +2595,12 @@ $("shortcuts").addEventListener("click", () => $("keys").showModal());
 $("keysClose").addEventListener("click", () => $("keys").close());
 bindSplitter();
 $("toStart").addEventListener("click", () => seek(0));
-$("back").addEventListener("click", () => seek(state.playhead - 1));
-$("forward").addEventListener("click", () => seek(state.playhead + 1));
+$("back").addEventListener("click", () => seek(here() - 1));
+$("forward").addEventListener("click", () => seek(here() + 1));
+$("toTimeline").addEventListener("click", () => {
+  setSource(null);
+  showFrame();
+});
 $("split").addEventListener("click", splitAtPlayhead);
 $("extendBack").addEventListener("click", () => addLinked("extend_before"));
 $("extendForward").addEventListener("click", () => addLinked("extend_after"));
@@ -2223,6 +2620,7 @@ $("tlScroll").addEventListener("wheel", (event) => {
 
 $("ruler").addEventListener("pointerdown", (event) => {
   const frameAt = (ev) => (ev.clientX - $("ruler").getBoundingClientRect().left) / state.zoom;
+  setSource(null);
   seek(frameAt(event));
   const move = (ev) => seek(frameAt(ev));
   const up = () => {
@@ -2268,8 +2666,9 @@ window.addEventListener("keydown", (event) => {
   else if (event.key.toLowerCase() === "k" && !event.ctrlKey && !event.metaKey) setPlaying(false);
   else if (event.key.toLowerCase() === "l" && !event.ctrlKey && !event.metaKey) {
     if (!state.playing) setPlaying(true);
-  } else if (event.key.toLowerCase() === "j" && !event.ctrlKey && !event.metaKey) seek(state.playhead - FPS); else if (event.key === "ArrowLeft") seek(state.playhead - (event.shiftKey ? FPS : 1));
-  else if (event.key === "ArrowRight") seek(state.playhead + (event.shiftKey ? FPS : 1));
+  } else if (event.key.toLowerCase() === "j" && !event.ctrlKey && !event.metaKey) seek(here() - FPS);
+  else if (event.key === "ArrowLeft") seek(here() - (event.shiftKey ? FPS : 1));
+  else if (event.key === "ArrowRight") seek(here() + (event.shiftKey ? FPS : 1));
   else if (event.key === "ArrowUp") {
     event.preventDefault();
     jumpEdit(-1);
@@ -2277,12 +2676,17 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     jumpEdit(1);
   } else if (event.key === "Home") seek(0);
-  else if (event.key === "End") seek(sceneEnd());
+  else if (event.key === "End") seek(viewEnd());
   else if (event.key === "[") cycleTake(-1);
   else if (event.key === "]") cycleTake(1);
   else if (event.key === "\\") fitTimeline();
   else if (event.key === "Delete" || event.key === "Backspace") {
-    if (event.shiftKey) rippleDelete();
+    // In the Clips panel the key deletes the clip or bin that has focus. On the timeline it only removes the clip from there.
+    const row = event.target.closest?.("#clips .clip");
+    const bin = event.target.closest?.("#clips .bin-head");
+    if (row) deleteClip(clipOf(row.dataset.clip));
+    else if (bin) deleteBin(binOf(bin.closest(".bin-group").dataset.bin));
+    else if (event.shiftKey) rippleDelete();
     else removeSelected();
   }
   else if (event.key.toLowerCase() === "s" && !event.ctrlKey && !event.metaKey) splitAtPlayhead();

@@ -68,6 +68,30 @@ button:disabled { opacity: 0.42; cursor: default; }
 .state.muted { color: var(--muted); }
 .empty { color: var(--muted); padding: 8px 2px; margin: 0; }
 
+/* Bins: folders of clips, folded or open, that clips are dragged into and out of. */
+.clips.drop, .bin-group.drop { outline: 1px dashed var(--tungsten); outline-offset: -1px; border-radius: var(--radius); }
+.bin-group { flex: none; display: flex; flex-direction: column; gap: 4px; }
+.bin-head { display: flex; align-items: center; border: 1px solid transparent; border-radius: var(--radius); }
+.bin-head:hover { background: var(--raised); }
+.bin-head.on { background: var(--raised); border-color: var(--tungsten); }
+.bin-head .fold { flex: none; display: grid; place-items: center; width: 28px; height: 34px; padding: 0; background: transparent; }
+.bin-head .fold::before { content: ""; width: 7px; height: 7px; border-right: 1.6px solid var(--muted); border-bottom: 1.6px solid var(--muted); transform: rotate(-45deg); transition: transform 0.15s ease-out; }
+.bin-head .fold[aria-expanded="true"]::before { transform: rotate(45deg); }
+.bin-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 0; background: transparent; text-align: left; font-weight: 600; }
+.bin-name .folder { flex: none; width: 18px; height: 18px; fill: none; stroke: var(--muted); stroke-width: 1.7; stroke-linejoin: round; }
+.bin-name .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bin-name .count { margin-left: auto; }
+.bin-head.holds .folder { stroke: var(--tungsten); }
+.bin-clips { display: flex; flex-direction: column; gap: 4px; margin-left: 13px; padding-left: 6px; border-left: 1px solid var(--line); }
+.bin-clips .empty { padding: 4px 4px 8px; font-size: 13px; }
+.icon-button { display: grid; place-items: center; padding: 0 9px; }
+.icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.head-row { display: flex; align-items: center; gap: 6px; }
+.head-row .name-input { flex: 1; min-width: 0; }
+.icon.delete { flex: none; width: 34px; height: 32px; color: var(--muted); }
+.icon.delete:hover { color: var(--danger); background: var(--raised); }
+.icon.delete svg { width: 18px; height: 18px; }
+
 .cast-head { flex: none; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
 .cast { flex: 0 1 38%; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 8px; padding-right: 4px; }
 .person { padding: 0; background: transparent; border: 1px solid transparent; overflow: hidden; text-align: left; }
@@ -97,6 +121,12 @@ button:disabled { opacity: 0.42; cursor: default; }
 .screen #preview, .screen #motion { z-index: 3; visibility: visible; background: #000; }
 .slate { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); pointer-events: none; }
 .screen > .live { z-index: 4; position: absolute; left: 14px; bottom: 14px; padding: 6px 12px; border-radius: var(--radius); background: rgba(20, 24, 28, 0.84); color: var(--live); font-variant-numeric: tabular-nums; }
+/* A clip played on its own, outside the cut. */
+.screen > .source-tag { z-index: 4; position: absolute; left: 14px; top: 14px; right: 14px; display: flex; align-items: center; gap: 12px; width: max-content; max-width: calc(100% - 28px); padding: 4px 4px 4px 12px; border-radius: var(--radius); background: rgba(20, 24, 28, 0.84); }
+.screen > .source-tag[hidden] { display: none; }
+.source-tag span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.source-tag button { flex: none; padding: 5px 10px; font-size: 13px; }
+.timeline.source .playhead { opacity: 0.35; }
 .transport { display: flex; align-items: center; justify-content: center; gap: 6px; }
 .icon { display: grid; place-items: center; width: 40px; height: 36px; padding: 0; background: transparent; color: var(--text); }
 .icon:hover { background: var(--raised); }

@@ -1,0 +1,13 @@
+H3 Take
+
+H3 Take is licensed under the GNU General Public License v3.0, in LICENSE.
+This pack includes work from other projects, each under its own license.
+
+ComfyUI-MiniMax-H3-Turbo
+  Author: Larryvrh
+  Source: https://github.com/Larryvrh/ComfyUI-MiniMax-H3-Turbo (commit 4274783)
+  License: Apache License 2.0, in LICENSES/Apache-2.0.txt
+  Used in: h3lora.py, adapted from its LoRA loader (the in-place bypass LoRA, the
+  int8 fused fc2 rule and the adaLN re-injection on pruned bases), and
+  data/h3_silu_temb_grid.safetensors, copied unchanged. h3lora.py's header says
+  what was changed.

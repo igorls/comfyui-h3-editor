@@ -21,6 +21,8 @@ H3_BLOCKS = 50
 # its ref2va has 49 blocks and dropped H3 block 9, its fl2va has 47 and dropped 6, 21 and 22.
 # Found by matching every block's norm weights against H3's. Keyed by block count.
 HYPERFLOW_DROPPED = {49: (9,), 47: (6, 21, 22)}
+# How H3 LoRA applies a LoRA: auto adds it at run time where that keeps it sharp, merge folds it in.
+LORA_MODES = ("auto", "merge")
 # A block number in a LoRA key, as blocks.12. or blocks_12_, after any prefix.
 LORA_BLOCK = re.compile(r"(?<![A-Za-z0-9])blocks([._])(\d+)(?=[._])")
 

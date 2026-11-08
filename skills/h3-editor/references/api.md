@@ -17,7 +17,7 @@ except the two uploads.
 
 | Method and path | Body | Reply |
 |---|---|---|
-| `GET /projects` | | `{"projects": [folder, ...]}` |
+| `GET /projects` | | `{"projects": [folder, ...], "profiles": [{"id", "title", "hint", "available", "missing"}, ...], "finals": [note, ...]}`. `finals` says what finals leave out because a file is missing |
 | `POST /projects` | `{"name"}` | `{"folder", "project"}`. Opens it if it exists |
 | `GET /project/{name}` | | The whole project |
 | `GET /project/{name}/summary` | | The summary, below |
@@ -36,7 +36,8 @@ except the two uploads.
 
 Import fields: `name`, `fit` (`contain` or `cover`), `seconds` for a picture (0.5 to
 60, default 4), `start_seconds` and `end_seconds` to take part of a video, `start` as a
-timeline frame, and `place` (`false` keeps it off the timeline). Videos can be MP4, MOV,
+timeline frame, `place` (`false` keeps it off the timeline), and `bin`, the id of a bin
+to file it in. Videos can be MP4, MOV,
 WebM, MKV, M4V or AVI. An upload is one file, 4 GiB at most. Put anything larger in
 ComfyUI's input folder and import it by name.
 
@@ -65,12 +66,16 @@ moves along. An **asset** is `{"file", "subfolder"}` in ComfyUI's output folder.
 
 A clip with `"kind": "footage"` was imported. It has one take and never renders.
 
+A **bin** is a folder in the editor's Clips panel: `{"id", "name"}` in the project's
+`bins`. A clip's `bin` field names the bin it is filed in. Clips without one sit loose
+below the bins. Bins only sort the panel, and never change a render or the timeline.
+
 ## Operations
 
 Every operation is `{"op": ..., ...}`. Add `"as": "label"` to name its result. Later
 operations in the batch can then write `"$label"`, and the clip or item is picked to fit
 the field. `"$label.item"` and `"$label.clip"` choose explicitly. A clip's `cast` list can name cast members
-added earlier in the batch the same way: `"cast": ["$her"]`.
+added earlier in the batch the same way: `"cast": ["$her"]`, and its `bin` a bin: `"bin": "$broll"`.
 
 ### Clips
 
@@ -90,10 +95,23 @@ the end) and `place` (default true). Returns `{"clip", "item"}`.
 | `seed` | A whole number repeats a result; `null` gives a new one at each render |
 | `first`, `last` | Picture assets the shot starts or ends on exactly. `null` removes one |
 | `track` | A sound asset plus `from`, the second of it at the clip's first frame. The picture is generated to that slice, and the take keeps the exact sound. `null` removes it |
+| `bin` | The id of the bin the clip is filed in. `null` takes it out |
 
 `update_clip`: `clip`, `fields`. Changing `seconds` on a clip with no render resizes its
 items, and later clips move with them. `remove_clip`: `clip`, together with all its
-timeline items. `place_clip`: `clip`, optional `start`. Returns a new `item`.
+timeline items. Its render files stay on disk, so older revisions still play. A render still
+running for it is thrown away when it finishes, so cancel it first. `place_clip`: `clip`,
+optional `start`. Returns a new `item`.
+
+### Bins
+
+| op | Takes | Notes |
+|---|---|---|
+| `add_bin` | optional `fields`: `name` | The default name is `Bin 1`, `Bin 2` and so on. Returns `{"bin"}` |
+| `update_bin` | `bin`, `fields`: `name` | An empty name keeps the old one |
+| `remove_bin` | `bin` | Its clips stay, loose |
+
+A clip extended, bridged or merged from a filed clip goes in the same bin.
 
 ### Timeline
 
@@ -132,8 +150,12 @@ needs a render.
 ### Project and cast
 
 `set_project`: `fields`: `style` (applies to every clip), `format` (`16:9`, `9:16` or
-`1:1`), and `language` (for example `English` or `Portuguese`). The format sets new
-renders and imports, and export fits every clip to it.
+`1:1`), `language` (for example `English` or `Portuguese`), and `profile`, the checkpoint
+family new renders use (`hyperflow`, the default, `h3_turbo`, `h3`, `singularity`, `dasiwa`
+or `dasiwa_turbo`). `GET /projects` lists the profiles with whether each is installed;
+pick only an `available` one. A new project starts on the first installed profile, and a
+project that names none renders on it. The format sets new renders and imports, and export fits
+every clip to it.
 
 `add_cast`: `fields`: `name`, `description`, and a picture asset (`file`, `subfolder`), a
 `voice` asset, or both. Returns `{"cast"}`. The picture's keys sit directly in `fields`,
@@ -143,7 +165,9 @@ while the voice is its own object:
 {"op": "add_cast", "as": "ana", "fields": {"name": "Ana", "description": "a woman in her thirties, short dark hair, white shirt",
   "file": "3f1c.png", "subfolder": "h3take_projects/Teaser/assets",
   "voice": {"file": "9a0b.wav", "subfolder": "h3take_projects/Teaser/assets"}}}
-``` `update_cast`: `cast`, `fields`: `name`,
+```
+
+`update_cast`: `cast`, `fields`: `name`,
 `description`, `voice` (`null` removes it, unless it is all they have). `remove_cast`:
 `cast`, which also takes them out of every clip.
 
@@ -158,16 +182,19 @@ speaker when they should not be seen.
 Returns `{"clip", "job", "take"}`. It is refused for footage, for a clip with no action, and for a clip already
 rendering. Renders run after the edits in the same batch. `cancel`: `clip` or `job`.
 
-| quality | 16:9 | 9:16 | 1:1 | steps |
-|---|---|---|---|---|
-| draft | 640x352 | 352x640 | 480x480 | 4 |
-| final | 1344x768 | 768x1344 | 1024x1024 | 6 |
+| quality | 16:9 | 9:16 | 1:1 |
+|---|---|---|---|
+| draft | 640x352 | 352x640 | 480x480 |
+| final | 1344x768 | 768x1344 | 1024x1024 |
 
-Both render on HyperFlow H3 Flash. A final's picture is then enlarged and its last 3 steps
-redrawn at the larger size, so its take is 1920x1088 for 16:9, 1088x1920 for 9:16 and
-1440x1440 for 1:1. The sound is the first pass's. A take records its picture size in `size`
-and what made it in `models` (`unet`, `checkpoint`, and for a final `upscaler`, `lora` and
-`lora_strength`). Finals from before this record `upscale` instead of `size`.
+Steps depend on the project's profile: HyperFlow takes 4 for a draft and 6 for a final,
+MiniMax H3 Turbo 6 and 6, the 20-step families (`h3`, `singularity`, `dasiwa`) 10 and 20,
+and DaSiWa Turbo 8 and 8. A final's picture is then enlarged and its last steps redrawn at
+the larger size, so its take is 1920x1088 for 16:9, 1088x1920 for 9:16 and 1440x1440 for 1:1.
+The sound is the first pass's. A take records its picture size in `size` and what made it in
+`models`: `profile`, `unet` and `checkpoint`, a turbo family's `profile_lora` and
+`profile_lora_strength`, and for a final `upscaler`, `lora` and `lora_strength`. Finals from
+before this record `upscale` instead of `size`.
 
 ## Replies and errors
 
@@ -196,9 +223,10 @@ left as rendered. In the summary such a clip shows `"track": {"file", "from"}`.
  "name": "Morning teaser", "revision": 12, "style": "...", "format": "16:9",
  "language": "Portuguese", "frames": 508, "length": "00:21:04", "fps": 24,
  "cast": [{"id": "p1a2b3c4", "name": "Ana", "description": "...", "picture": true, "voice": true}],
+ "bins": [{"id": "b1", "name": "Selects", "clips": 3}],
  "clips": [{"id": "c1", "name": "Desk", "state": "draft", "seconds": 4, "action": "...",
             "takes": 2, "take": "t9", "frames": 90, "take_seed": 123, "seed": 7, "quality": "draft",
-            "link": "extend_after", "footage": true, "error": "..."}],
+            "link": "extend_after", "footage": true, "bin": "b1", "error": "..."}],
  "timeline": [{"item": "i1", "clip": "c1", "name": "Desk", "start": 0, "end": 90,
                "at": "00:00:00", "in": 0, "out": 90, "speed": 2, "transition": {...}}],
  "gaps": [{"start": 90, "end": 96}],

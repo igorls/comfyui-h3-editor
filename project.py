@@ -18,11 +18,11 @@ FPS = 24
 JOINT = 51
 ROOT = "h3take_projects"
 QUALITIES = {
-    "draft": {"steps": 4},
+    "draft": {},
     # A final renders at the final size, H3's own size of about a megapixel. Its picture is
-    # then upscaled to the refine size, where the model redraws its last steps from refine_from.
-    # The Realism Slider runs on both passes at this strength.
-    "final": {"steps": 6, "refine_from": 3, "lora": 1.5},
+    # then upscaled to the refine size, where the model redraws its last steps. The Realism
+    # Slider runs on both passes at this strength.
+    "final": {"refine": True, "lora": 1.5},
 }
 # Picture sizes per project format. Draft is for trying things, final for the cut, and
 # refine is the size a final comes out at.
@@ -32,12 +32,31 @@ FORMATS = {
     "1:1": {"draft": (480, 480), "final": (1024, 1024), "refine": (1440, 1440)},
 }
 LANGUAGE = "English"
+# The range a recorded picture side must fall in before export trusts it.
+MIN_SIDE, MAX_SIDE = 16, 8192
 
 
 def frame_size(project, quality):
     """Width and height for a quality in this project's format. Imported footage counts as final."""
     sizes = FORMATS.get(project.get("format") or "16:9", FORMATS["16:9"])
     return sizes["draft" if quality == "draft" else "final"]
+
+
+def take_size(project, take):
+    """A take's picture size as two whole numbers in range, since it ends up in an ffmpeg filter."""
+    try:
+        if take.get("size"):
+            width, height = (int(side) for side in take["size"])
+        else:
+            # Takes from before refined finals record how much they were upscaled.
+            scale = int(take.get("upscale") or 1)
+            width, height = (side * scale for side in frame_size(project, take.get("quality")))
+    except (TypeError, ValueError):
+        raise ValueError("take %s records a picture size that is not two numbers" % take.get("id", ""))
+    if not (MIN_SIDE <= width <= MAX_SIDE and MIN_SIDE <= height <= MAX_SIDE):
+        raise ValueError("take %s records a picture size of %sx%s, outside %s to %s"
+                         % (take.get("id", ""), width, height, MIN_SIDE, MAX_SIDE))
+    return width, height
 
 
 def refine_size(project):
@@ -56,17 +75,149 @@ MODELS = {
     "latent_upscaler": "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
     "lora": "MMH3-RealismSlider-V1.safetensors",
 }
+# The last steps a final redraws at the refine size, for families whose own schedule has no
+# good place to start them: HyperFlow's 6-step tail from its fourth step.
+REFINE_TAIL = "0.675, 0.385, 0.159, 0.0"
+# Checkpoint profiles, one per family of H3 checkpoints. A project picks one under "profile".
+# unet names the ref2va file and unet_text the fl2va file; each is a list of names the file
+# may have, and a name ending in * matches any file it starts. A family with no fl2va renders
+# prompt-only clips on its ref2va. A .gguf loads as HyperFlow, with its own sigmas; any other
+# file loads with ComfyUI's loader and the simple scheduler. lora is a LoRA the family always
+# samples with. A final's second pass starts at refine_from in its own sigmas, or runs
+# refine_sigmas.
+PROFILES = {
+    "hyperflow": {
+        "title": "HyperFlow H3 Flash",
+        "hint": "The fastest. Distilled to 6 steps.",
+        "unet": ["hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf"],
+        "unet_text": ["hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf"],
+        "steps": {"draft": 4, "final": 6}, "sampler": "euler", "refine_from": 3,
+    },
+    "h3_turbo": {
+        "title": "MiniMax H3 Turbo",
+        "hint": "The original H3 with a 6-step Turbo LoRA. About as fast as HyperFlow.",
+        "unet": ["minimax_h3_ref2va_pruned_int8_convrot.safetensors"],
+        "unet_text": ["minimax_h3_fl2va_pruned_int8_convrot.safetensors"],
+        "lora": ["minimax_h3_turbo_v4_step600_ema.safetensors", 1.0],
+        "steps": {"draft": 6, "final": 6}, "sampler": "euler", "refine_sigmas": REFINE_TAIL,
+    },
+    "h3": {
+        "title": "MiniMax H3",
+        "hint": "The original H3 at 20 steps. About twice as slow as HyperFlow.",
+        "unet": ["minimax_h3_ref2va_pruned_int8_convrot.safetensors"],
+        "unet_text": ["minimax_h3_fl2va_pruned_int8_convrot.safetensors"],
+        "steps": {"draft": 10, "final": 20}, "sampler": "res_multistep", "refine_from": 17,
+    },
+    "singularity": {
+        "title": "Singularity v2",
+        "hint": "A sharp, expressive H3 fine-tune, ref2va only. 20 steps, about twice as slow.",
+        "unet": ["Minimax-h3_Singularity_ref2va_v2_pruned_int8.safetensors"],
+        "steps": {"draft": 10, "final": 20}, "sampler": "res_multistep", "refine_from": 17,
+    },
+    "dasiwa": {
+        "title": "DaSiWa Hybrid v4",
+        "hint": "A community H3 checkpoint, ref2va only. 20 steps, about twice as slow.",
+        "unet": ["dasiwa_minimax_h3_ref2va_v4_pruned_int8.safetensors", "DasiwaMinimaxH3_dasiwaHybridV4_*"],
+        "steps": {"draft": 10, "final": 20}, "sampler": "res_multistep", "refine_from": 17,
+    },
+    "dasiwa_turbo": {
+        "title": "DaSiWa Hybrid v4 Turbo",
+        "hint": "Its distilled version, 8 steps.",
+        "unet": ["dasiwa_minimax_h3_ref2va_v4_pruned_turbo_int8.safetensors", "DasiwaMinimaxH3_dasiwaHybridV4Turbo*"],
+        "steps": {"draft": 8, "final": 8}, "sampler": "euler", "refine_sigmas": REFINE_TAIL,
+    },
+}
+DEFAULT_PROFILE = "hyperflow"
 # Models that older projects name but the editor no longer renders with.
 RETIRED = {"fasth3_omniref_qad_nvfp4_comfy.safetensors"}
 
 
-def project_models(project):
-    """The models a render uses: the defaults, with any the project names, except retired ones."""
+def project_profile(project, available=None):
+    """The checkpoint profile a project renders with, and its id.
+
+    A project that names no profile takes the first one whose files are installed, so a fresh
+    install renders with whatever it has. available as in pick_file.
+    """
+    name = project.get("profile")
+    if name not in PROFILES:
+        name = installed_profile(available)
+    return name, PROFILES[name]
+
+
+def installed_profile(available=None):
+    """The first profile, in menu order, whose files are installed. The default when none is, or when unknown."""
+    if available is not None:
+        for row in profile_status(available):
+            if row["available"]:
+                return row["id"]
+    return DEFAULT_PROFILE
+
+
+def installed(name, available=None):
+    """Whether a model file is installed. Unknown counts as installed, so graphs stay as they were."""
+    return available is None or name in available
+
+
+def finals_status(available):
+    """What a final leaves out because its file is not installed, in words for the editor."""
+    notes = []
+    if not installed(MODELS["latent_upscaler"], available):
+        notes.append("Finals stay at H3's own size, because %s is not installed in models/latent_upscale_models."
+                     % MODELS["latent_upscaler"])
+    if not installed(MODELS["lora"], available):
+        notes.append("Finals render without the Realism Slider, because %s is not installed in models/loras."
+                     % MODELS["lora"])
+    return notes
+
+
+def pick_file(names, available=None):
+    """The first of a profile's file names that is installed, or the first name when nothing is known.
+
+    available is the set of model files ComfyUI lists, or None when it is not known.
+    """
+    if not names:
+        return None
+    if available is None:
+        return names[0]
+    for name in names:
+        if name.endswith("*"):
+            stem = name[:-1]
+            found = sorted(f for f in available if f.rsplit("/", 1)[-1].startswith(stem))
+            if found:
+                return found[0]
+        elif name in available:
+            return name
+    return None
+
+
+def project_models(project, available=None):
+    """The models a render uses: the profile's, with any the project names, except retired ones."""
+    _, profile = project_profile(project, available)
     models = dict(MODELS)
-    for key, name in (project.get("models") or {}).items():
-        if name and name not in RETIRED:
-            models[key] = name
+    models["unet"] = pick_file(profile["unet"], available) or profile["unet"][0]
+    models["unet_text"] = pick_file(profile.get("unet_text"), available)
+    if profile.get("lora"):
+        models["profile_lora"] = pick_file([profile["lora"][0]], available) or profile["lora"][0]
+    named = {key: name for key, name in (project.get("models") or {}).items() if name and name not in RETIRED}
+    if "unet" in named and "unet_text" not in named:
+        # A project that names its own model renders every clip on it.
+        models["unet_text"] = None
+    models.update(named)
     return models
+
+
+def profile_status(available):
+    """Every profile, with what it needs that is not installed. available as in pick_file."""
+    rows = []
+    for name, profile in PROFILES.items():
+        missing = []
+        if pick_file(profile["unet"], available) is None:
+            missing.append(profile["unet"][0])
+        if profile.get("lora") and pick_file([profile["lora"][0]], available) is None:
+            missing.append(profile["lora"][0])
+        rows.append({"id": name, "title": profile["title"], "hint": profile["hint"],
+                     "available": not missing, "missing": missing})
+    return rows
 
 
 def slug(name):
@@ -81,7 +232,6 @@ def new_project(name):
     return {
         "name": str(name),
         "style": "Live-action, cinematic",
-        "sampler": "euler",
         "shift": 12.0,
         "clips": [],
         "timeline": [],
@@ -201,8 +351,11 @@ def still_node(asset):
     return {"class_type": "H3LoadStill", "inputs": {"file": file}}
 
 
-def render_graph(project, folder, clip, take, quality, seed):
-    """One clip as a ComfyUI graph, saved as its own file in the project."""
+def render_graph(project, folder, clip, take, quality, seed, available=None):
+    """One clip as a ComfyUI graph, saved as its own file in the project.
+
+    available is the set of model files ComfyUI lists, used to find a profile's files.
+    """
     if clip.get("kind") == "footage":
         raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip.get("name", "this clip"))
     if not str(clip.get("action", "")).strip():
@@ -210,12 +363,13 @@ def render_graph(project, folder, clip, take, quality, seed):
     if quality not in QUALITIES:
         raise ValueError("quality must be one of %s" % (tuple(QUALITIES),))
     width, height = frame_size(project, quality)
-    size = dict(QUALITIES[quality], width=width, height=height)
-    models = project_models(project)
+    _, profile = project_profile(project, available)
+    size = dict(QUALITIES[quality], width=width, height=height, steps=profile["steps"][quality])
+    models = project_models(project, available)
     references = has_references(project, clip)
-    hyperflow = models["unet"].endswith(".gguf")
-    # HyperFlow's fl2va model takes a prompt alone. Anything with references goes to its ref2va model.
-    unet = models["unet"] if references or not hyperflow else models["unet_text"]
+    # A family's fl2va model takes a prompt alone. Anything with references goes to its ref2va model.
+    unet = models["unet"] if references or not models.get("unet_text") else models["unet_text"]
+    hyperflow = unet.endswith(".gguf")
     link = clip.get("link")
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
     graph = {
@@ -232,7 +386,7 @@ def render_graph(project, folder, clip, take, quality, seed):
             "audio_hold": "off", "audio_feather": 8, "ref_image_size": "match"}},
         "9": {"class_type": "H3LivePreview", "inputs": {
             "model": ["5", 0], "audio_vae": ["4", 0], "folder": "%s/%s/preview" % (ROOT, folder)}},
-        "11": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": project.get("sampler", "euler")}},
+        "11": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": profile["sampler"]}},
         "12": {"class_type": "BasicScheduler", "inputs": {"model": ["5", 0], "scheduler": "simple", "steps": size["steps"], "denoise": 1.0}},
         "13": {"class_type": "BasicGuider", "inputs": {"model": ["9", 0], "conditioning": ["10", 0]}},
         "14": {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)}},
@@ -245,16 +399,23 @@ def render_graph(project, folder, clip, take, quality, seed):
             "video": ["18", 0], "filename_prefix": "%s/%s/clips/%s_%s" % (ROOT, folder, clip["id"], take),
             "format": "auto", "codec": "auto"}},
     }
+    if unet == models.get("unet_text"):
+        graph["10"]["inputs"]["checkpoint"] = "fl2va"
     if hyperflow:
         # Few-step and CFG-free, on its own two-time schedule.
         graph["1"] = {"class_type": "HyperFlowGGUFLoader", "inputs": {"unet_name": unet, "weights_in": "auto"}}
         graph["12"] = {"class_type": "HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": size["steps"]}}
-        if unet == models["unet_text"]:
-            graph["10"]["inputs"]["checkpoint"] = "fl2va"
-    if size.get("lora") and models.get("lora"):
-        # The Realism Slider, on the model both passes sample with.
-        graph["95"] = {"class_type": "H3Lora", "inputs": {"model": ["1", 0], "lora_name": models["lora"], "strength": size["lora"]}}
-        graph["5"]["inputs"]["model"] = ["95", 0]
+    model = ["1", 0]
+    if profile.get("lora") and models.get("profile_lora"):
+        # A LoRA the family always samples with, such as a turbo LoRA.
+        graph["94"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": models["profile_lora"],
+                                                          "strength": profile["lora"][1]}}
+        model = ["94", 0]
+    if size.get("lora") and models.get("lora") and installed(models["lora"], available):
+        # The Realism Slider, on the model both passes sample with. Without it a final still renders.
+        graph["95"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": models["lora"], "strength": size["lora"]}}
+        model = ["95", 0]
+    graph["5"]["inputs"]["model"] = model
     take_inputs = graph["10"]["inputs"]
     first, last = frame_of(clip, "first"), frame_of(clip, "last")
     if first:
@@ -298,17 +459,20 @@ def render_graph(project, folder, clip, take, quality, seed):
         take_inputs.update({"audio_hold": "full", "audio_align": "take", "source_audio": ["61", 0]})
         if link and link["mode"] == "bridge":
             take_inputs["end_audio"] = ["61", 0]
-    if size.get("refine_from") and models.get("latent_upscaler"):
-        add_refine(graph, refine_size(project), size["refine_from"], models["latent_upscaler"])
+    if size.get("refine") and models.get("latent_upscaler") and installed(models["latent_upscaler"], available):
+        # Without the latent upscaler a final stays at H3's own size.
+        tail = profile.get("refine_sigmas") or profile["refine_from"]
+        add_refine(graph, refine_size(project), tail, models["latent_upscaler"])
     return graph
 
 
-def add_refine(graph, size, refine_from, upscaler):
+def add_refine(graph, size, tail, upscaler):
     """Enlarge the sampled latent and redraw its last steps at that size, keeping the sound.
 
     A second take at the refine size gives the conditioning there (pinned frames and pictures
     at that size) and its held frames. The picture comes out at the refine size, and the sound
-    is the first pass's.
+    is the first pass's. tail is the step in the final's own sigmas the redraw starts from, or
+    the sigmas it runs, as text.
     """
     width, height = size
     take = copy.deepcopy(graph["10"])
@@ -319,10 +483,12 @@ def add_refine(graph, size, refine_from, upscaler):
         "82": {"class_type": "MiniMaxH3LatentUpscaleWithModel", "inputs": {
             "model": ["81", 0], "samples": ["15", 0], "width": width, "height": height}},
         "83": {"class_type": "H3RefineLatent", "inputs": {"upscaled": ["82", 0], "take": ["80", 1]}},
-        "87": {"class_type": "SplitSigmas", "inputs": {"sigmas": ["12", 0], "step": refine_from}},
+        "87": ({"class_type": "ManualSigmas", "inputs": {"sigmas": tail}} if isinstance(tail, str)
+               else {"class_type": "SplitSigmas", "inputs": {"sigmas": ["12", 0], "step": tail}}),
         "88": {"class_type": "BasicGuider", "inputs": {"model": ["9", 0], "conditioning": ["80", 0]}},
         "90": {"class_type": "SamplerCustomAdvanced", "inputs": {
-            "noise": ["14", 0], "guider": ["88", 0], "sampler": ["11", 0], "sigmas": ["87", 1], "latent_image": ["83", 0]}},
+            "noise": ["14", 0], "guider": ["88", 0], "sampler": ["11", 0],
+            "sigmas": ["87", 0 if isinstance(tail, str) else 1], "latent_image": ["83", 0]}},
         "91": {"class_type": "VAEDecode", "inputs": {"samples": ["90", 0], "vae": ["3", 0]}},
     })
     graph["18"]["inputs"]["images"] = ["91", 0]
@@ -387,13 +553,7 @@ def export_command(project, paths, out_path, width=None, height=None):
         # The cut takes the size of its largest picture, so upscaled finals keep their detail.
         width = height = 0
         for item in items:
-            take = active_take(clips[item["clip"]]) or {}
-            if take.get("size"):
-                w, h = take["size"]
-            else:
-                # Takes from before refined finals record how much they were upscaled.
-                scale = int(take.get("upscale") or 1)
-                w, h = (side * scale for side in frame_size(project, take.get("quality")))
+            w, h = take_size(project, active_take(clips[item["clip"]]) or {})
             if w > width:
                 width, height = w, h
 
@@ -457,10 +617,11 @@ def export_command(project, paths, out_path, width=None, height=None):
 HOLD = 39
 MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
-               "first", "last", "language", "track")
+               "first", "last", "language", "track", "bin")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
-PROJECT_FIELDS = ("style", "format", "language")
+PROJECT_FIELDS = ("style", "format", "language", "profile")
 CAST_FIELDS = ("name", "description", "voice")
+BIN_FIELDS = ("name",)
 LINK_MODES = ("extend_after", "extend_before", "bridge", "merge")
 LINK_TITLES = {"extend_after": "After ", "extend_before": "Before ", "bridge": "Bridge from ", "merge": "Merge from "}
 SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track")
@@ -494,6 +655,13 @@ def find_cast(project, cast_id):
         if person["id"] == cast_id:
             return person
     raise KeyError("no cast member %s" % cast_id)
+
+
+def find_bin(project, bin_id):
+    for found in project.get("bins", []):
+        if found["id"] == bin_id:
+            return found
+    raise KeyError("no bin %s" % bin_id)
 
 
 def item_end(item):
@@ -584,7 +752,15 @@ def clean_clip_fields(fields):
             out[side] = clean_asset(out[side], "a %s frame" % side)
     if "track" in out:
         out["track"] = clean_track(out["track"])
+    if "bin" in out and out["bin"] is not None and not isinstance(out["bin"], str):
+        raise ValueError("bin is a bin id, or null for none")
     return out
+
+
+def check_bin(project, fields):
+    """A clip can only be filed in a bin the project has."""
+    if fields.get("bin") is not None:
+        find_bin(project, fields["bin"])
 
 
 def clean_track(value):
@@ -628,6 +804,7 @@ def place_clip(project, clip_id, start=None):
 
 def add_clip(project, fields, start=None, place=True):
     fields = clean_clip_fields(fields or {})
+    check_bin(project, fields)
     number = len(project.get("clips", [])) + 1
     clip = {"id": new_id("c"), "name": "Clip %s" % number, "action": "", "camera": "", "speaker": "",
             "dialogue": "", "sound": "", "music": "", "seconds": 5, "takes": [], "active": None}
@@ -640,9 +817,10 @@ def add_clip(project, fields, start=None, place=True):
 def update_clip(project, clip_id, fields):
     clip = find_clip(project, clip_id)
     fields = clean_clip_fields(fields)
+    check_bin(project, fields)
     before = planned_frames(clip)
     for key, value in fields.items():
-        if value is None and key in ("first", "last", "track"):
+        if value is None and key in ("first", "last", "track", "bin"):
             clip.pop(key, None)
         else:
             clip[key] = value
@@ -659,9 +837,48 @@ def update_clip(project, clip_id, fields):
 
 
 def remove_clip(project, clip_id):
+    """The clip and its places on the timeline go. Its render files stay, so older revisions still play."""
     find_clip(project, clip_id)
     project["clips"] = [c for c in project["clips"] if c["id"] != clip_id]
     project["timeline"] = [i for i in project.get("timeline", []) if i["clip"] != clip_id]
+
+
+def clean_bin_name(value, fallback):
+    if value is None:
+        return fallback
+    if not isinstance(value, str):
+        raise ValueError("a bin's name must be text")
+    return value.strip()[:80] or fallback
+
+
+def add_bin(project, fields=None):
+    """A folder in the Clips panel. A clip files itself in one with its bin field."""
+    fields = fields or {}
+    check_fields(fields, BIN_FIELDS)
+    taken = {b["name"] for b in project.setdefault("bins", [])}
+    number = len(taken) + 1
+    while "Bin %s" % number in taken:
+        number += 1
+    found = {"id": new_id("b"), "name": clean_bin_name(fields.get("name"), "Bin %s" % number)}
+    project["bins"].append(found)
+    return found
+
+
+def update_bin(project, bin_id, fields):
+    check_fields(fields, BIN_FIELDS)
+    found = find_bin(project, bin_id)
+    if "name" in fields:
+        found["name"] = clean_bin_name(fields["name"], found["name"])
+    return found
+
+
+def remove_bin(project, bin_id):
+    """The bin goes. Its clips stay, loose in the Clips panel."""
+    find_bin(project, bin_id)
+    project["bins"] = [b for b in project["bins"] if b["id"] != bin_id]
+    for clip in project.get("clips", []):
+        if clip.get("bin") == bin_id:
+            del clip["bin"]
 
 
 def previous_item(project, item):
@@ -875,6 +1092,8 @@ def add_linked(project, item_id, mode, seconds=None, action=""):
             "takes": [], "active": None, "link": link}
     if source.get("cast"):
         clip["cast"] = list(source["cast"])
+    if source.get("bin"):
+        clip["bin"] = source["bin"]
     track = continued_track(source, item, link["mode"], linked_length(link, seconds))
     if track:
         clip["track"] = track
@@ -935,6 +1154,8 @@ def set_project(project, fields):
             raise ValueError("%s must be text" % key)
         if key == "format" and value not in FORMATS:
             raise ValueError("format must be one of %s" % ", ".join(FORMATS))
+        if key == "profile" and value not in PROFILES:
+            raise ValueError("profile must be one of %s" % ", ".join(PROFILES))
         if key == "language" and not value.strip():
             raise ValueError("language names the language people speak, such as English or Portuguese")
         project[key] = value.strip() if key == "language" else value
@@ -974,11 +1195,16 @@ def update_cast(project, cast_id, fields):
     return person
 
 
-def add_footage(project, name, take, start=None, place=True):
-    """Real video or a picture, already made into a take. It edits like any clip but is never rendered."""
+def add_footage(project, name, take, start=None, place=True, bin_id=None):
+    """Real video or a picture, already made into a take. It edits like any clip but is never rendered.
+
+    A bin removed while the file was being converted is let go, so the import is never lost.
+    """
     clip = {"id": take.pop("clip", None) or new_id("c"), "kind": "footage", "name": str(name or "Footage"),
             "action": "", "camera": "", "speaker": "", "dialogue": "", "sound": "", "music": "",
             "seconds": round(take["frames"] / float(FPS), 3), "takes": [take], "active": take["id"]}
+    if bin_id and any(b["id"] == bin_id for b in project.get("bins", [])):
+        clip["bin"] = bin_id
     project.setdefault("clips", []).append(clip)
     item = place_clip(project, clip["id"], start) if place else None
     return clip, item
@@ -999,13 +1225,16 @@ def render_models(graph):
     used = {"unet": graph["1"]["inputs"]["unet_name"], "checkpoint": graph["10"]["inputs"]["checkpoint"]}
     if "81" in graph:
         used["upscaler"] = graph["81"]["inputs"]["model_name"]
+    if "94" in graph:
+        used["profile_lora"] = graph["94"]["inputs"]["lora_name"]
+        used["profile_lora_strength"] = graph["94"]["inputs"]["strength"]
     if "95" in graph:
         used["lora"] = graph["95"]["inputs"]["lora_name"]
         used["lora_strength"] = graph["95"]["inputs"]["strength"]
     return used
 
 
-def plan_render(project, folder, clip_id, quality, seed=None):
+def plan_render(project, folder, clip_id, quality, seed=None, available=None):
     """The graph for a new take, and the job that will turn its file into a take."""
     clip = find_clip(project, clip_id)
     if clip.get("kind") == "footage":
@@ -1018,10 +1247,10 @@ def plan_render(project, folder, clip_id, quality, seed=None):
     if seed in (None, ""):
         seed = random.randrange(2 ** 31)
     take = new_id("t")
-    graph = render_graph(project, folder, clip, take, quality, int(seed))
+    graph = render_graph(project, folder, clip, take, quality, int(seed), available)
     job = {"clip": clip_id, "take": take, "quality": quality, "seed": int(seed),
            "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
-           "models": render_models(graph)}
+           "models": dict(render_models(graph), profile=project_profile(project, available)[0])}
     if "91" in graph:
         job["size"] = [graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]]
     if clip.get("track"):
@@ -1105,6 +1334,10 @@ def _merge_lists(base, mine, theirs, keep_theirs=False):
     for element in mine:
         if element["id"] not in theirs_by and (unknown or element["id"] not in base_by):
             out.append(copy.deepcopy(element))
+    if not keep_theirs and _is_id_list(base) and [x["id"] for x in theirs] == [x["id"] for x in base]:
+        # Only mine changed what the list holds, so its order stands: an undone removal comes back in its place.
+        rank = {x["id"]: n for n, x in enumerate(mine)}
+        out.sort(key=lambda x: rank.get(x["id"], len(rank)))
     return out
 
 
@@ -1172,6 +1405,8 @@ def describe(project):
             entry["link"] = clip["link"]["mode"]
         if clip.get("kind") == "footage":
             entry["footage"] = True
+        if clip.get("bin"):
+            entry["bin"] = clip["bin"]
         if clip.get("track"):
             entry["track"] = {"file": clip["track"]["file"], "from": clip["track"]["from"]}
         if clip.get("error"):
@@ -1203,6 +1438,8 @@ def describe(project):
         "frames": scene_end(project), "length": timecode(scene_end(project)), "fps": FPS,
         "cast": [{"id": p["id"], "name": p["name"], "description": p.get("description", ""),
                   "picture": bool(p.get("file")), "voice": bool(p.get("voice"))} for p in project.get("cast", [])],
+        "bins": [{"id": b["id"], "name": b["name"], "clips": sum(1 for c in project.get("clips", []) if c.get("bin") == b["id"])}
+                 for b in project.get("bins", [])],
         "clips": clips, "timeline": timeline, "gaps": gaps,
         "rendering": [{"job": j.get("id"), "clip": j["clip"], "quality": j["quality"]} for j in project.get("pending", [])],
     }
@@ -1234,6 +1471,9 @@ def apply_op(project, op, names):
     if isinstance(fields, dict) and isinstance(fields.get("cast"), list):
         # A cast member added earlier in the batch can be named in a clip's cast list.
         op = dict(op, fields=dict(fields, cast=[_resolve(c, names, "cast") for c in fields["cast"]]))
+    if isinstance(fields, dict) and fields.get("bin") is not None:
+        op = dict(op, fields=dict(op["fields"], bin=_resolve(fields["bin"], names, "bin")))
+    bin_id = _resolve(op.get("bin"), names, "bin")
     if kind == "add_clip":
         clip, item = add_clip(project, op.get("fields") or {}, op.get("start"), op.get("place", True))
         result = {"clip": clip["id"], "item": item["id"] if item else None}
@@ -1274,6 +1514,14 @@ def apply_op(project, op, names):
     elif kind == "remove_cast":
         remove_cast(project, _resolve(op.get("cast"), names, "cast"))
         result = {}
+    elif kind == "add_bin":
+        result = {"bin": add_bin(project, op.get("fields") or {})["id"]}
+    elif kind == "update_bin":
+        update_bin(project, bin_id, op.get("fields") or {})
+        result = {"bin": bin_id}
+    elif kind == "remove_bin":
+        remove_bin(project, bin_id)
+        result = {"bin": bin_id}
     else:
         raise ValueError("unknown op %s" % kind)
     if op.get("as"):

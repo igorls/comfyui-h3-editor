@@ -26,6 +26,8 @@ import folder_paths
 from comfy_api.latest import io
 from server import PromptServer
 
+from . import media
+
 FPS = 24
 TAE_PREFIX = "taeh3"
 MAX_WIDTH = 640
@@ -153,7 +155,7 @@ def encode(frames, sound, path, seconds):
     args += ["-r", str(FPS), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p",
              "-movflags", "+faststart", path]
     try:
-        subprocess.run(args, input=np.ascontiguousarray(frames).tobytes(), check=True, capture_output=True)
+        subprocess.run(media.command(args), input=np.ascontiguousarray(frames).tobytes(), check=True, capture_output=True)
     finally:
         if temporary:
             os.remove(temporary)

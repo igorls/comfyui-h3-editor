@@ -109,6 +109,8 @@ def text_summary(s):
             has = [k for k in ("picture", "voice") if p.get(k)]
             lines.append("  %-10s %-18s %s%s" % (p["id"], p["name"], " and ".join(has) or "nothing",
                                                  (". " + p["description"]) if p.get("description") else ""))
+    if s.get("bins"):
+        lines.append("Bins: " + ", ".join("%s %s (%s clips)" % (b["id"], b["name"], b["clips"]) for b in s["bins"]))
     lines.append("Timeline:")
     if not s["timeline"]:
         lines.append("  empty")
