@@ -6,6 +6,7 @@ license = { file = "LICENSE" }
 dependencies = ["imageio-ffmpeg>=0.5", "gguf>=0.13.0"]
 
 [project.urls]
+Homepage = "https://igorls.github.io/comfyui-h3-editor/"
 Repository = "https://github.com/igorls/comfyui-h3-editor"
 
 [tool.comfy]
