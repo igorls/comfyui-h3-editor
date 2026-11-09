@@ -1,0 +1,22 @@
+# H3 Editor
+
+> A timeline video editor for MiniMax H3 that runs inside ComfyUI. Write shots, render them on your own GPU, and cut picture and sound together. Everything the editor does is an HTTP call, and an agent skill teaches the whole workflow. It needs no other custom node pack.
+
+H3 Editor is a ComfyUI custom node pack under the GNU GPL v3.0. To install it, run `git clone https://github.com/igorls/comfyui-h3-editor` in ComfyUI's `custom_nodes` folder, then `pip install -r comfyui-h3-editor/requirements.txt`, and restart ComfyUI. It needs a recent ComfyUI with its built-in MiniMax H3 support and about 52 GB of model files, which the pack does not download. The editor opens from ComfyUI's sidebar, at `/h3take/editor` on the ComfyUI server (by default `http://127.0.0.1:8188`). Renders run on that ComfyUI's GPU. So far it has been tested on one 96 GB GPU.
+
+## For agents
+
+- [Agent skill](https://raw.githubusercontent.com/igorls/comfyui-h3-editor/main/skills/h3-editor/SKILL.md): how to plan shots, render drafts, review them, join them, render finals and export through the editor's HTTP API
+- [API reference](https://raw.githubusercontent.com/igorls/comfyui-h3-editor/main/skills/h3-editor/references/api.md): the routes, the project model, every operation and its fields, replies and errors, the summary format, and lengths and timing
+- [h3.py](https://raw.githubusercontent.com/igorls/comfyui-h3-editor/main/skills/h3-editor/scripts/h3.py): the command-line client the skill uses, Python standard library only
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/igorls/comfyui-h3-editor/main/README.md): install, the exact model files with sizes and sources, a first video, using the editor, keys and troubleshooting
+- [Models and quality](https://igorls.github.io/comfyui-h3-editor/models.md): every checkpoint the editor can render with, how finals are refined, and how LoRAs land
+- [The nodes](https://igorls.github.io/comfyui-h3-editor/nodes.md): H3 Take and the pack's other nodes, for building your own ComfyUI workflows
+
+## Optional
+
+- [License](https://raw.githubusercontent.com/igorls/comfyui-h3-editor/main/LICENSE): GNU General Public License v3.0
+- [NOTICE](https://raw.githubusercontent.com/igorls/comfyui-h3-editor/main/NOTICE): code adapted from other projects, and their licenses
