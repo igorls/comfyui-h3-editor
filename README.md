@@ -6,7 +6,7 @@ render them on your own GPU, and cut them together, picture and sound.
 **[Project site](https://igorls.github.io/comfyui-h3-editor/)**: watch a cut
 made with it, shot by shot.
 
-![H3 Editor: the clips, the viewer, the selected shot's prompt, and a three-shot cut with its sound on the timeline](docs/images/editor.jpg)
+![H3 Editor: the clips, the viewer, the project's checkpoint and LoRA sliders, and a four-shot cut with its sound on the timeline](docs/images/editor.jpg)
 
 ## What you can do
 

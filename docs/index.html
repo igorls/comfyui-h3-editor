@@ -153,6 +153,11 @@
         <p class="ctls"><span class="ctl">Render draft</span><span class="ctl">Render final</span></p>
       </li>
       <li>
+        <h3>Bring your own models and LoRAs.</h3>
+        <p>Six H3 models are built in, and any other H3 checkpoint works with its own steps, sampler and scheduler, for the whole project or for one clip. Add LoRAs and set each one's strength with a slider.</p>
+        <p class="ctls"><span class="ctl">Model</span><span class="ctl">Your checkpoints</span><span class="ctl">LoRAs</span></p>
+      </li>
+      <li>
         <h3>Generate to a recorded voice.</h3>
         <p>Give a clip a recorded track, such as an approved narration, and its picture is generated to it. Extend forward carries on with the next part of the same track.</p>
         <p class="ctls"><span class="ctl">Track</span></p>
@@ -164,8 +169,8 @@
       </li>
     </ul>
     <figure class="shot">
-      <img src="images/editor.jpg" width="2880" height="1760" loading="lazy" alt="The editor with the café teaser open: clips and cast on the left, the viewer in the middle, the selected shot's fields on the right, and the three clips with their sound on the timeline below.">
-      <figcaption>The whole editor, on one screen: clips and cast, the viewer, the shot you are writing, and the timeline. It opens from ComfyUI's sidebar and needs no other custom node pack.</figcaption>
+      <img src="images/editor.jpg" width="2880" height="1760" loading="lazy" alt="The editor with a kitchen scene open: clips and cast on the left, the viewer in the middle, the project's own checkpoint and its LoRAs with strength sliders on the right, and four clips with their sound on the timeline below.">
+      <figcaption>The whole editor, on one screen: clips and cast, the viewer, the project's models and LoRAs, and the timeline. It opens from ComfyUI's sidebar and needs no other custom node pack.</figcaption>
     </figure>
   </section>
 
@@ -210,7 +215,7 @@
             <tr><td data-label="File"><code>taeh3.safetensors</code><span class="for">The moving live preview</span></td><td data-label="Folder"><code>models/<wbr>vae_approx</code></td><td data-label="Size" class="num">23 MB</td><td data-label="From"><a href="https://huggingface.co/OzzyGT/taeh3">OzzyGT/taeh3</a></td></tr>
           </tbody>
         </table>
-        <p class="small">Other H3 checkpoints work as well. <a href="https://github.com/igorls/comfyui-h3-editor/blob/main/docs/models.md">Models and quality</a> lists every one the editor can render with.</p>
+        <p class="small">Other H3 checkpoints work as well. Five more are built in, and you can add any H3 checkpoint file with its own steps, sampler and scheduler, and LoRAs trained on H3. <a href="https://github.com/igorls/comfyui-h3-editor/blob/main/docs/models.md">Models and quality</a> has the details.</p>
       </li>
 
       <li>

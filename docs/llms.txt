@@ -13,7 +13,7 @@ H3 Editor is a ComfyUI custom node pack under the GNU GPL v3.0. To install it, r
 ## Docs
 
 - [README](https://raw.githubusercontent.com/igorls/comfyui-h3-editor/main/README.md): install, the exact model files with sizes and sources, a first video, using the editor, keys and troubleshooting
-- [Models and quality](https://igorls.github.io/comfyui-h3-editor/models.md): every checkpoint the editor can render with, how finals are refined, and how LoRAs land
+- [Models and quality](https://igorls.github.io/comfyui-h3-editor/models.md): the built-in checkpoints, adding any other H3 checkpoint with its own steps, sampler and scheduler, picking a model per clip, a project's LoRAs and their strengths, how finals are refined, and how LoRAs land
 - [The nodes](https://igorls.github.io/comfyui-h3-editor/nodes.md): H3 Take and the pack's other nodes, for building your own ComfyUI workflows
 
 ## Optional

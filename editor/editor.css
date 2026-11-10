@@ -188,7 +188,7 @@ details.section > summary .filled { margin-left: auto; color: var(--muted); font
 .halves { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .choice select { width: 100%; min-width: 0; padding: 8px 10px; background: var(--room); border: 1px solid var(--line); border-radius: var(--radius); }
 .choice select:hover { border-color: #4b535d; }
-.loras { display: grid; gap: 14px; margin-bottom: 16px; }
+.loras { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-bottom: 16px; }
 .lora-head { display: flex; align-items: center; gap: 8px; min-height: 32px; }
 .lora-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-weight: 500; }
 .lora-name span, span.lora-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
