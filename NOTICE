@@ -14,12 +14,13 @@ ComfyUI-MiniMax-H3-Turbo
 
 ComfyUI-HyperFlow-Flash
   Author: Video Rebirth
-  Source: https://github.com/Video-Rebirth/ComfyUI-HyperFlow-Flash (commit 20a22ab)
+  Source: https://github.com/Video-Rebirth/ComfyUI-HyperFlow-Flash (version 1.1.0,
+  commit c807a89)
   License: GNU General Public License v3.0, in LICENSE
-  Used in: hyperflow.py, adapted from its gguf_io.py, model_patch.py and
-  loader_nodes.py (reading HyperFlow GGUF files, the factorized blocks, the
-  two-time embedder and the step schedules). hyperflow.py's header says what was
-  changed.
+  Used in: hyperflow.py, adapted from its gguf_io.py, safetensors_io.py,
+  model_patch.py and loader_nodes.py (reading HyperFlow GGUF and INT8 safetensors
+  files, the factorized blocks, the two-time embedder and the step schedules).
+  hyperflow.py's header says what was changed.
 
 ComfyUI-GGUF
   Author: City96

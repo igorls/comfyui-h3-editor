@@ -19,7 +19,7 @@ order, so a fresh install renders with whatever it has.
 
 | Profile | Files | Steps, draft and final |
 |---|---|---|
-| HyperFlow H3 Flash, the default | `minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf` (15.2 GB) and `minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf` (14.9 GB) from [VideoRebirthAI/hyperflow-h3-flash](https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash), in `models/diffusion_models/hyperflow` | 4 and 6, euler |
+| HyperFlow H3 Flash, the default | `minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors` (16.4 GB, in `ref2va_int8_convrot_comfyui/`) and `minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors` (16.0 GB, in `fl2va_int8_convrot_comfyui/`) from [VideoRebirthAI/hyperflow-h3-flash](https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash), in `models/diffusion_models/hyperflow` | 4 and 6, euler |
 | MiniMax H3 Turbo | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` and `minimax_h3_fl2va_pruned_int8_convrot.safetensors` (21 GB each) from Comfy-Org/MiniMax-H3, in `models/diffusion_models`, and the Turbo v4 LoRA `minimax_h3_turbo_v4_step600_ema.safetensors` from [larryvrh/MiniMax-H3-Turbo-Lora](https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora), in `models/loras` | 6 and 6, euler |
 | MiniMax H3 | the same two base files, without the LoRA | 10 and 20, res_multistep |
 | Singularity v2 | `Minimax-h3_Singularity_ref2va_v2_pruned_int8.safetensors` | 10 and 20, res_multistep |
@@ -30,10 +30,30 @@ H3 comes in two kinds. A family with an fl2va model renders prompt-only clips
 on it and everything else on its ref2va model. A family with only ref2va renders
 every clip on it.
 
-HyperFlow H3 Flash is published in other quantizations too, from Q3_K_M
-(7.2 GB) to Q8_0. Any of them works, anywhere in `models/diffusion_models`, in
-place of the Q8_0 files. The smaller ones need less memory and give up some
-detail.
+### HyperFlow's other files
+
+The default files are INT8 safetensors, which ComfyUI runs on its own INT8
+kernels and which load without the gguf package. HyperFlow's model page
+recommends them on RTX GPUs with 24 GB or more, and its GGUF files on smaller
+ones. Keep their file names: the editor tells a HyperFlow safetensors file from
+a plain H3 one by the `hyperflow` in its name.
+
+The GGUF files come in quantizations from Q3_K_M (7.2 GB) to Q8_0, in the same
+repository's `ref2va_gguf/` and `fl2va_gguf/` folders:
+
+| File | Size |
+|---|---|
+| `minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf` | 15.2 GB |
+| `minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf` | 14.9 GB |
+
+Any of them works, anywhere in `models/diffusion_models`, in place of the INT8
+files. The smaller ones need less memory and give up some detail. They need the
+gguf package, which the pack's requirements install.
+
+When several HyperFlow files are installed, the profile takes the INT8 file
+first, then the Q8_0 file in `models/diffusion_models/hyperflow`, then the first
+other file in name order. To render with another one, name it in the project, as
+[below](#a-projects-own-models).
 
 ## Drafts and finals
 
@@ -84,8 +104,10 @@ The H3 LoRA node applies a LoRA trained on MiniMax H3.
 ## A project's own models
 
 A project can still name its own files under `models` in its project file, which
-wins over its profile. A `.gguf` model loads as HyperFlow, and any other model
-loads with ComfyUI's plain loader and scheduler.
+wins over its profile: `unet` for the ref2va file and `unet_text` for the fl2va
+one. A project that names only `unet` renders every clip on it. A `.gguf` model,
+or a `.safetensors` one with `hyperflow` in its file name, loads as HyperFlow.
+Any other model loads with ComfyUI's plain loader and scheduler.
 
 ## Licenses
 

@@ -63,12 +63,12 @@ def refine_size(project):
     """Width and height a final comes out at in this project's format."""
     return FORMATS.get(project.get("format") or "16:9", FORMATS["16:9"])["refine"]
 # Renders use HyperFlow H3 Flash: its ref2va model when a clip has references, and its
-# fl2va model when a clip is only a prompt. A .gguf unet loads as HyperFlow. A final's
-# picture is enlarged by MiniMax's learned latent upscaler and refined at that size, with
-# the MMH3 Realism Slider LoRA on the model.
+# fl2va model when a clip is only a prompt. Its INT8 safetensors and GGUF files load as
+# HyperFlow (see is_hyperflow). A final's picture is enlarged by MiniMax's learned latent
+# upscaler and refined at that size, with the MMH3 Realism Slider LoRA on the model.
 MODELS = {
-    "unet": "hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf",
-    "unet_text": "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf",
+    "unet": "hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors",
+    "unet_text": "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors",
     "clip": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
     "vae": "minimax_h3_video_vae_fp16.safetensors",
     "audio_vae": "minimax_h3_audio_vae_fp32.safetensors",
@@ -81,17 +81,25 @@ REFINE_TAIL = "0.675, 0.385, 0.159, 0.0"
 # Checkpoint profiles, one per family of H3 checkpoints. A project picks one under "profile".
 # unet names the ref2va file and unet_text the fl2va file; each is a list of names the file
 # may have, and a name ending in * matches any file it starts. A family with no fl2va renders
-# prompt-only clips on its ref2va. A .gguf loads as HyperFlow, with its own sigmas; any other
-# file loads with ComfyUI's loader and the simple scheduler. lora is a LoRA the family always
-# samples with. A final's second pass starts at refine_from in its own sigmas, or runs
-# refine_sigmas.
+# prompt-only clips on its ref2va. A HyperFlow file (see is_hyperflow) loads with the pack's
+# loader and its own sigmas; any other file loads with ComfyUI's loader and the simple
+# scheduler. lora is a LoRA the family always samples with. A final's second pass starts at
+# refine_from in its own sigmas, or runs refine_sigmas.
 PROFILES = {
     "hyperflow": {
         "title": "HyperFlow H3 Flash",
         "hint": "The fastest. Distilled to 6 steps.",
-        # Q8_0 in a hyperflow folder first, then any other quantization of the same model, anywhere.
-        "unet": ["hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf", "minimax_h3_ref2va_hyperflow_flash_14b-*"],
-        "unet_text": ["hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf", "minimax_h3_fl2va_hyperflow_flash_14b-*"],
+        # The INT8 convrot safetensors first, in a hyperflow folder and then anywhere. Without
+        # it, the Q8_0 GGUF in a hyperflow folder, then any other quantization, anywhere, in
+        # name order. The first name is the one the editor asks for when nothing is installed.
+        "unet": ["hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors",
+                 "minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot*",
+                 "hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf",
+                 "minimax_h3_ref2va_hyperflow_flash_14b-*"],
+        "unet_text": ["hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors",
+                      "minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot*",
+                      "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf",
+                      "minimax_h3_fl2va_hyperflow_flash_14b-*"],
         "steps": {"draft": 4, "final": 6}, "sampler": "euler", "refine_from": 3,
     },
     "h3_turbo": {
@@ -174,21 +182,36 @@ def finals_status(available):
 def pick_file(names, available=None):
     """The first of a profile's file names that is installed, or the first name when nothing is known.
 
-    available is the set of model files ComfyUI lists, or None when it is not known.
+    available is the set of model files ComfyUI lists, or None when it is not known. The file
+    comes back as ComfyUI lists it, which is what its loaders take: on Windows a file in a
+    folder is listed with a backslash, where a profile writes a slash.
     """
     if not names:
         return None
     if available is None:
         return names[0]
+    listed = {f.replace("\\", "/"): f for f in available}
     for name in names:
         if name.endswith("*"):
             stem = name[:-1]
-            found = sorted(f for f in available if f.rsplit("/", 1)[-1].startswith(stem))
+            # In file name order, whatever folder each is in.
+            found = sorted((f for f in listed if f.rsplit("/", 1)[-1].startswith(stem)),
+                           key=lambda f: (f.rsplit("/", 1)[-1], f))
             if found:
-                return found[0]
-        elif name in available:
-            return name
+                return listed[found[0]]
+        elif name in listed:
+            return listed[name]
     return None
+
+
+def is_hyperflow(name):
+    """Whether a unet file is a HyperFlow H3 Flash checkpoint, by its name.
+
+    Every .gguf is one, and so is a .safetensors with hyperflow in its file name: the INT8
+    convrot files. The other INT8 safetensors are plain H3 checkpoints for ComfyUI's loader.
+    """
+    base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return base.endswith(".gguf") or (base.endswith(".safetensors") and "hyperflow" in base)
 
 
 def project_models(project, available=None):
@@ -370,7 +393,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
     references = has_references(project, clip)
     # A family's fl2va model takes a prompt alone. Anything with references goes to its ref2va model.
     unet = models["unet"] if references or not models.get("unet_text") else models["unet_text"]
-    hyperflow = unet.endswith(".gguf")
+    hyperflow = is_hyperflow(unet)
     link = clip.get("link")
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
     graph = {

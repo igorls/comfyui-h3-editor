@@ -381,7 +381,11 @@ async def comfy(method, path, body=None):
 async def queue_prompt(graph, client_id=None):
     from . import nodes
 
-    if nodes.HYPERFLOW_MISSING and any(n.get("class_type") == "H3HyperFlowLoader" for n in graph.values()):
+    # Only a .gguf needs the gguf package. The INT8 safetensors load without it.
+    if nodes.HYPERFLOW_MISSING and any(
+        n.get("class_type") == "H3HyperFlowLoader" and str(n.get("inputs", {}).get("unet_name", "")).endswith(".gguf")
+        for n in graph.values()
+    ):
         raise Refused(nodes.HYPERFLOW_MISSING)
     payload = {"prompt": graph}
     if client_id:

@@ -2,9 +2,9 @@ import unittest
 
 from policy import bridge_spans, legal_length, video_span
 from project import (MODELS, PROFILES, REFINE_TAIL, active_take, add_clip, clip_prompt, export_command, finals_status,
-                     frame_of, installed_profile, item_length, linked_length, new_project, pick_file, plan_render,
-                     profile_status, project_models, render_graph, render_models, set_project, slug, snap_frames,
-                     tempo_chain)
+                     frame_of, installed_profile, is_hyperflow, item_length, linked_length, new_project, pick_file,
+                     plan_render, profile_status, project_models, render_graph, render_models, set_project, slug,
+                     snap_frames, tempo_chain)
 
 HYPERFLOW = set(PROFILES["hyperflow"]["unet"] + PROFILES["hyperflow"]["unet_text"])
 BASE_TURBO = set(PROFILES["h3_turbo"]["unet"] + PROFILES["h3_turbo"]["unet_text"] + [PROFILES["h3_turbo"]["lora"][0]])
@@ -147,7 +147,7 @@ class ProjectTest(unittest.TestCase):
                     self.assertEqual(graph["10"]["inputs"]["checkpoint"], "ref2va")
                     self.assertEqual(graph["11"]["inputs"]["sampler_name"], profile["sampler"])
                     sigmas = graph["12"]
-                    if unet.endswith(".gguf"):
+                    if is_hyperflow(unet):
                         self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
                         self.assertEqual(sigmas["class_type"], "H3HyperFlowSigmas")
                     else:
@@ -207,12 +207,63 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(graph["18"]["inputs"]["images"], ["16", 0])
         self.assertEqual(graph["5"]["inputs"]["model"], ["1", 0])
 
-    def test_hyperflow_takes_any_quantization_when_its_q8_is_not_installed(self):
+    def test_hyperflow_takes_any_quantization_when_its_int8_and_q8_are_not_installed(self):
         q4 = {"minimax_h3_ref2va_hyperflow_flash_14b-Q4_K_M.gguf", "minimax_h3_fl2va_hyperflow_flash_14b-Q4_K_M.gguf"}
         self.assertTrue({row["id"]: row for row in profile_status(q4)}["hyperflow"]["available"])
         graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3, q4)
         self.assertEqual(graph["1"]["inputs"]["unet_name"], "minimax_h3_fl2va_hyperflow_flash_14b-Q4_K_M.gguf")
         self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
+
+    def test_hyperflow_renders_on_its_int8_files_when_no_gguf_is_installed(self):
+        int8 = {"minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors",
+                "minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors"}
+        self.assertTrue({row["id"]: row for row in profile_status(int8)}["hyperflow"]["available"])
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "final", 3, int8)
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], "minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors")
+        self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
+        self.assertEqual(graph["12"], {"class_type": "H3HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": 6}})
+        graph = render_graph(new_project("x"), "x", clip(first={"file": "f.png"}), "t1", "draft", 3, int8)
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], "minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors")
+
+    def test_hyperflow_takes_its_int8_file_before_any_gguf_whatever_folder_each_is_in(self):
+        names = PROFILES["hyperflow"]["unet"]
+        int8 = "minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors"
+        q8 = "hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf"
+        q4 = "minimax_h3_ref2va_hyperflow_flash_14b-Q4_K_M.gguf"
+        self.assertEqual(names[0], "hyperflow/" + int8)
+        self.assertEqual(pick_file(names, {int8, q4, q8}), int8)
+        self.assertEqual(pick_file(names, {"z/" + int8, "a/" + q4, q8}), "z/" + int8)
+        self.assertEqual(pick_file(names, {int8, "a/" + int8, names[0], q8}), names[0])
+        # The fl2va file is never taken for ref2va.
+        self.assertIsNone(pick_file(names, {"hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors"}))
+
+    def test_hyperflow_without_its_int8_file_takes_q8_in_its_folder_then_the_first_by_name(self):
+        names = PROFILES["hyperflow"]["unet"]
+        q8 = "minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf"
+        q4 = "minimax_h3_ref2va_hyperflow_flash_14b-Q4_K_M.gguf"
+        self.assertEqual(pick_file(names, {q4, "hyperflow/" + q8}), "hyperflow/" + q8)
+        self.assertEqual(pick_file(names, {q4, q8}), q4)
+        self.assertEqual(pick_file(names, {"z/" + q4, "a/" + q8}), "z/" + q4)
+
+    def test_a_file_in_a_folder_is_found_as_windows_lists_it(self):
+        names = PROFILES["hyperflow"]["unet"]
+        int8 = names[0].replace("/", "\\")
+        q8 = "hyperflow\\minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf"
+        self.assertEqual(pick_file(names, {int8, q8}), int8)
+        self.assertEqual(pick_file(names, {q8, "minimax_h3_ref2va_hyperflow_flash_14b-Q4_K_M.gguf"}), q8)
+        for name in (int8, q8):
+            self.assertTrue({row["id"]: row for row in profile_status({name})}["hyperflow"]["available"], name)
+            graph = render_graph(new_project("x"), "x", clip(first={"file": "f.png"}), "t1", "draft", 3, {name})
+            self.assertEqual((graph["1"]["class_type"], graph["1"]["inputs"]["unet_name"]), ("H3HyperFlowLoader", name))
+
+    def test_a_hyperflow_file_is_told_by_its_name(self):
+        for name in ("minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf", "hyperflow/any.gguf", "hyperflow\\Any.GGUF",
+                     "minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors",
+                     "hyperflow\\minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors"):
+            self.assertTrue(is_hyperflow(name), name)
+        # A folder named hyperflow does not make a plain H3 checkpoint one.
+        for name in ("minimax_h3_ref2va_pruned_int8_convrot.safetensors", "hyperflow/other_h3.safetensors", "", None):
+            self.assertFalse(is_hyperflow(name), name)
 
     def test_a_project_without_a_profile_renders_with_the_first_one_installed(self):
         self.assertEqual(installed_profile(BASE_TURBO), "h3_turbo")

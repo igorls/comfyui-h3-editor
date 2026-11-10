@@ -176,31 +176,31 @@
           <code>pip install -r comfyui-h3-editor/<wbr>requirements.txt</code>
           <button class="copy" type="button" data-copy="pip install -r comfyui-h3-editor/requirements.txt"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg><span>Copy</span></button>
         </div>
-        <p class="small">On the Windows portable build, run the second step as <code>..\python_embeded\python.exe <span class="nowrap">-m pip</span> install -r comfyui-h3-editor\<wbr>requirements.txt</code>. The requirements bring ffmpeg, for importing and exporting video, and the gguf reader for HyperFlow's models.</p>
+        <p class="small">On the Windows portable build, run the second step as <code>..\python_embeded\python.exe <span class="nowrap">-m pip</span> install -r comfyui-h3-editor\<wbr>requirements.txt</code>. The requirements bring ffmpeg, for importing and exporting video, and the gguf reader for HyperFlow's GGUF models.</p>
         <p>Restart ComfyUI. <strong>H3 Editor</strong> appears in the sidebar.</p>
       </li>
 
       <li id="models">
         <h3>Download the models</h3>
-        <p>The pack does not download models. These are the ones a first video needs, about 52&nbsp;GB:</p>
+        <p>The pack does not download models. These are the ones a first video needs, about 54&nbsp;GB:</p>
         <table class="models">
           <thead><tr><th scope="col">File</th><th scope="col">Folder</th><th scope="col" class="num">Size</th><th scope="col">Where to get it</th></tr></thead>
           <tbody>
-            <tr><td data-label="File"><code>qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors</code></td><td data-label="Folder"><code>models/text_encoders</code></td><td data-label="Size" class="num">15.7 GB</td><td data-label="From"><a href="https://huggingface.co/Comfy-Org/MiniMax-H3">Comfy-Org/MiniMax-H3</a>, <code>text_encoders/</code></td></tr>
-            <tr><td data-label="File"><code>minimax_h3_video_vae_fp16.safetensors</code></td><td data-label="Folder"><code>models/vae</code></td><td data-label="Size" class="num">5.2 GB</td><td data-label="From"><a href="https://huggingface.co/Comfy-Org/MiniMax-H3">Comfy-Org/MiniMax-H3</a>, <code>vae/</code></td></tr>
-            <tr><td data-label="File"><code>minimax_h3_audio_vae_fp32.safetensors</code></td><td data-label="Folder"><code>models/vae</code></td><td data-label="Size" class="num">0.6 GB</td><td data-label="From"><a href="https://huggingface.co/Comfy-Org/MiniMax-H3">Comfy-Org/MiniMax-H3</a>, <code>vae/</code></td></tr>
-            <tr><td data-label="File"><code>minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf</code></td><td data-label="Folder"><code>models/diffusion_models/hyperflow</code></td><td data-label="Size" class="num">15.2 GB</td><td data-label="From"><a href="https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash">VideoRebirthAI/hyperflow-h3-flash</a>, <code>ref2va_gguf/</code></td></tr>
-            <tr><td data-label="File"><code>minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf</code></td><td data-label="Folder"><code>models/diffusion_models/hyperflow</code></td><td data-label="Size" class="num">14.9 GB</td><td data-label="From"><a href="https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash">VideoRebirthAI/hyperflow-h3-flash</a>, <code>fl2va_gguf/</code></td></tr>
+            <tr><td data-label="File"><code>qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors</code></td><td data-label="Folder"><code>models/<wbr>text_encoders</code></td><td data-label="Size" class="num">15.7 GB</td><td data-label="From"><span><a href="https://huggingface.co/Comfy-Org/MiniMax-H3">Comfy-Org/MiniMax-H3</a>, <code>text_encoders/</code></span></td></tr>
+            <tr><td data-label="File"><code>minimax_h3_video_vae_fp16.safetensors</code></td><td data-label="Folder"><code>models/vae</code></td><td data-label="Size" class="num">5.2 GB</td><td data-label="From"><span><a href="https://huggingface.co/Comfy-Org/MiniMax-H3">Comfy-Org/MiniMax-H3</a>, <code>vae/</code></span></td></tr>
+            <tr><td data-label="File"><code>minimax_h3_audio_vae_fp32.safetensors</code></td><td data-label="Folder"><code>models/vae</code></td><td data-label="Size" class="num">0.6 GB</td><td data-label="From"><span><a href="https://huggingface.co/Comfy-Org/MiniMax-H3">Comfy-Org/MiniMax-H3</a>, <code>vae/</code></span></td></tr>
+            <tr><td data-label="File"><code>minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors</code></td><td data-label="Folder"><code>models/<wbr>diffusion_models/<wbr>hyperflow</code></td><td data-label="Size" class="num">16.4 GB</td><td data-label="From"><span><a href="https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash">VideoRebirthAI/hyperflow-h3-flash</a>, <code>ref2va_int8_convrot_comfyui/</code></span></td></tr>
+            <tr><td data-label="File"><code>minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors</code></td><td data-label="Folder"><code>models/<wbr>diffusion_models/<wbr>hyperflow</code></td><td data-label="Size" class="num">16.0 GB</td><td data-label="From"><span><a href="https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash">VideoRebirthAI/hyperflow-h3-flash</a>, <code>fl2va_int8_convrot_comfyui/</code></span></td></tr>
           </tbody>
         </table>
-        <p class="small">HyperFlow's smaller quantizations, from Q3_K_M at 7.2&nbsp;GB, work too, anywhere in <code>models/diffusion_models</code>.</p>
+        <p class="small">HyperFlow's model page recommends these INT8 files on RTX GPUs with 24&nbsp;GB or more. On a smaller GPU, take its GGUF files in their place, from Q8_0 at 15.2&nbsp;GB down to Q3_K_M at 7.2&nbsp;GB, anywhere in <code>models/diffusion_models</code>; see <a href="https://github.com/igorls/comfyui-h3-editor/blob/main/docs/models.md#hyperflows-other-files">models and quality</a>.</p>
         <p>These are optional, and worth having:</p>
         <table class="models">
           <thead><tr><th scope="col">File</th><th scope="col">Folder</th><th scope="col" class="num">Size</th><th scope="col">Where to get it</th></tr></thead>
           <tbody>
-            <tr><td data-label="File"><code>minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors</code><span class="for">Finals at up to 1920 pixels</span></td><td data-label="Folder"><code>models/latent_upscale_models</code></td><td data-label="Size" class="num">0.7 GB</td><td data-label="From"><a href="https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler">LBH-123-AI/Minimax_h3_latent_Upscaler</a></td></tr>
+            <tr><td data-label="File"><code>minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors</code><span class="for">Finals at up to 1920 pixels</span></td><td data-label="Folder"><code>models/<wbr>latent_upscale_models</code></td><td data-label="Size" class="num">0.7 GB</td><td data-label="From"><a href="https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler">LBH-123-AI/Minimax_h3_latent_Upscaler</a></td></tr>
             <tr><td data-label="File"><code>MMH3-RealismSlider-V1.safetensors</code><span class="for">Natural skin in finals</span></td><td data-label="Folder"><code>models/loras</code></td><td data-label="Size" class="num">3 MB</td><td data-label="From"><a href="https://civitai.com/models/3014078">Civitai model 3014078</a></td></tr>
-            <tr><td data-label="File"><code>taeh3.safetensors</code><span class="for">The moving live preview</span></td><td data-label="Folder"><code>models/vae_approx</code></td><td data-label="Size" class="num">23 MB</td><td data-label="From"><a href="https://huggingface.co/OzzyGT/taeh3">OzzyGT/taeh3</a></td></tr>
+            <tr><td data-label="File"><code>taeh3.safetensors</code><span class="for">The moving live preview</span></td><td data-label="Folder"><code>models/<wbr>vae_approx</code></td><td data-label="Size" class="num">23 MB</td><td data-label="From"><a href="https://huggingface.co/OzzyGT/taeh3">OzzyGT/taeh3</a></td></tr>
           </tbody>
         </table>
         <p class="small">Other H3 checkpoints work as well. <a href="https://github.com/igorls/comfyui-h3-editor/blob/main/docs/models.md">Models and quality</a> lists every one the editor can render with.</p>
@@ -244,7 +244,7 @@ h3take_projects/Cafe_teaser/exports/Cafe_teaser_001.mp4</span></code></pre>
 <footer class="foot wrap">
   <div>
     <p><strong>H3 Editor</strong> is free software under the <a href="https://github.com/igorls/comfyui-h3-editor/blob/main/LICENSE">GNU General Public License v3.0</a>. Parts are adapted from ComfyUI-HyperFlow-Flash, ComfyUI-GGUF and ComfyUI-MiniMax-H3-Turbo and keep their own licenses, listed in <a href="https://github.com/igorls/comfyui-h3-editor/blob/main/NOTICE">NOTICE</a>. Model files come under their own licenses.</p>
-    <p>So far the editor has been tested on one 96&nbsp;GB GPU. If ComfyUI runs out of memory, try a smaller HyperFlow quantization.</p>
+    <p>So far the editor has been tested on one 96&nbsp;GB GPU. If ComfyUI runs out of memory, try one of HyperFlow's GGUF files, which come in smaller sizes.</p>
   </div>
   <nav aria-label="Documentation">
     <a href="https://github.com/igorls/comfyui-h3-editor">GitHub</a>

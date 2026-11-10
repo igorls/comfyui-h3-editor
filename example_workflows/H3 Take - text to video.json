@@ -6,7 +6,7 @@
  "nodes": [
   {
    "id": 1,
-   "type": "UNETLoader",
+   "type": "H3HyperFlowLoader",
    "pos": [
     0,
     0
@@ -29,19 +29,20 @@
      "link": null
     },
     {
-     "localized_name": "weight_dtype",
-     "name": "weight_dtype",
+     "localized_name": "weights_in",
+     "name": "weights_in",
+     "shape": 7,
      "type": "COMBO",
      "widget": {
-      "name": "weight_dtype"
+      "name": "weights_in"
      },
      "link": null
     }
    ],
    "outputs": [
     {
-     "localized_name": "MODEL",
-     "name": "MODEL",
+     "localized_name": "model",
+     "name": "model",
      "type": "MODEL",
      "links": [
       1
@@ -49,15 +50,15 @@
     }
    ],
    "properties": {
-    "Node name for S&R": "UNETLoader"
+    "Node name for S&R": "H3HyperFlowLoader"
    },
    "widgets_values": [
-    "fasth3_omniref_qad_nvfp4_comfy.safetensors",
-    "default"
+    "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors",
+    "auto"
    ],
    "widgets_values_named": {
-    "unet_name": "fasth3_omniref_qad_nvfp4_comfy.safetensors",
-    "weight_dtype": "default"
+    "unet_name": "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors",
+    "weights_in": "auto"
    }
   },
   {
@@ -644,7 +645,7 @@
     1344,
     768,
     124,
-    "ref2va",
+    "fl2va",
     "none",
     "",
     "off",
@@ -662,7 +663,7 @@
     "width": 1344,
     "height": 768,
     "length": 124,
-    "checkpoint": "ref2va",
+    "checkpoint": "fl2va",
     "anchor": "none",
     "mid_frames": "",
     "video_mode": "off",
@@ -723,14 +724,14 @@
   },
   {
    "id": 12,
-   "type": "BasicScheduler",
+   "type": "H3HyperFlowSigmas",
    "pos": [
     980,
     110
    ],
    "size": [
     320,
-    106
+    58
    ],
    "flags": {},
    "order": 10,
@@ -743,37 +744,20 @@
      "link": 7
     },
     {
-     "localized_name": "scheduler",
-     "name": "scheduler",
-     "type": "COMBO",
-     "widget": {
-      "name": "scheduler"
-     },
-     "link": null
-    },
-    {
      "localized_name": "steps",
      "name": "steps",
+     "shape": 7,
      "type": "INT",
      "widget": {
       "name": "steps"
-     },
-     "link": null
-    },
-    {
-     "localized_name": "denoise",
-     "name": "denoise",
-     "type": "FLOAT",
-     "widget": {
-      "name": "denoise"
      },
      "link": null
     }
    ],
    "outputs": [
     {
-     "localized_name": "SIGMAS",
-     "name": "SIGMAS",
+     "localized_name": "sigmas",
+     "name": "sigmas",
      "type": "SIGMAS",
      "links": [
       13
@@ -781,17 +765,13 @@
     }
    ],
    "properties": {
-    "Node name for S&R": "BasicScheduler"
+    "Node name for S&R": "H3HyperFlowSigmas"
    },
    "widgets_values": [
-    "simple",
-    8,
-    1
+    6
    ],
    "widgets_values_named": {
-    "scheduler": "simple",
-    "steps": 8,
-    "denoise": 1
+    "steps": 6
    }
   },
   {
@@ -1241,10 +1221,10 @@
    "outputs": [],
    "properties": {},
    "widgets_values": [
-    "# H3 Take: text to video\n\nWrite the shot in **H3 Take**. The prompt follows MiniMax's format: `integrated_multimodal_description`, `overall_soundscape`, and `non_diegetic_music`. Press **Run**.\n\n- **H3 Live Preview** plays the whole clip with sound at every step. It needs `taeh3.safetensors` in `models/vae_approx`.\n- For a quick draft, set width 640, height 352, and 4 steps on **BasicScheduler**.\n- To start on a still, connect it to `start_image` and set `anchor` to start. To keep a person the same across shots, connect pictures to `ref_images`.\n- To edit, extend, and arrange many shots, open **H3 Editor** from the sidebar instead. It builds this graph for each clip."
+    "# H3 Take: text to video\n\nWrite the shot in **H3 Take**. The prompt follows MiniMax's format: `integrated_multimodal_description`, `overall_soundscape`, and `non_diegetic_music`. Press **Run**.\n\n- The model is HyperFlow H3 Flash INT8. **H3 HyperFlow Loader** names its fl2va file, which takes a prompt and pinned frames. Put it in `models/diffusion_models/hyperflow`.\n- **H3 Live Preview** plays the whole clip with sound at every step. It needs `taeh3.safetensors` in `models/vae_approx`.\n- For a quick draft, set width 640, height 352, and 4 steps on **H3 HyperFlow Sigmas**.\n- To start on a still, connect it to `start_image` and set `anchor` to start.\n- To keep a person the same across shots, connect pictures to `ref_images`, choose the ref2va file in **H3 HyperFlow Loader**, and set `checkpoint` to ref2va. The fl2va file has no reference inputs.\n- To edit, extend, and arrange many shots, open **H3 Editor** from the sidebar instead. It builds this graph for each clip."
    ],
    "widgets_values_named": {
-    "text": "# H3 Take: text to video\n\nWrite the shot in **H3 Take**. The prompt follows MiniMax's format: `integrated_multimodal_description`, `overall_soundscape`, and `non_diegetic_music`. Press **Run**.\n\n- **H3 Live Preview** plays the whole clip with sound at every step. It needs `taeh3.safetensors` in `models/vae_approx`.\n- For a quick draft, set width 640, height 352, and 4 steps on **BasicScheduler**.\n- To start on a still, connect it to `start_image` and set `anchor` to start. To keep a person the same across shots, connect pictures to `ref_images`.\n- To edit, extend, and arrange many shots, open **H3 Editor** from the sidebar instead. It builds this graph for each clip."
+    "text": "# H3 Take: text to video\n\nWrite the shot in **H3 Take**. The prompt follows MiniMax's format: `integrated_multimodal_description`, `overall_soundscape`, and `non_diegetic_music`. Press **Run**.\n\n- The model is HyperFlow H3 Flash INT8. **H3 HyperFlow Loader** names its fl2va file, which takes a prompt and pinned frames. Put it in `models/diffusion_models/hyperflow`.\n- **H3 Live Preview** plays the whole clip with sound at every step. It needs `taeh3.safetensors` in `models/vae_approx`.\n- For a quick draft, set width 640, height 352, and 4 steps on **H3 HyperFlow Sigmas**.\n- To start on a still, connect it to `start_image` and set `anchor` to start.\n- To keep a person the same across shots, connect pictures to `ref_images`, choose the ref2va file in **H3 HyperFlow Loader**, and set `checkpoint` to ref2va. The fl2va file has no reference inputs.\n- To edit, extend, and arrange many shots, open **H3 Editor** from the sidebar instead. It builds this graph for each clip."
    },
    "color": "#432",
    "bgcolor": "#653"

@@ -6,7 +6,7 @@
  "nodes": [
   {
    "id": 1,
-   "type": "UNETLoader",
+   "type": "H3HyperFlowLoader",
    "pos": [
     0,
     0
@@ -29,19 +29,20 @@
      "link": null
     },
     {
-     "localized_name": "weight_dtype",
-     "name": "weight_dtype",
+     "localized_name": "weights_in",
+     "name": "weights_in",
+     "shape": 7,
      "type": "COMBO",
      "widget": {
-      "name": "weight_dtype"
+      "name": "weights_in"
      },
      "link": null
     }
    ],
    "outputs": [
     {
-     "localized_name": "MODEL",
-     "name": "MODEL",
+     "localized_name": "model",
+     "name": "model",
      "type": "MODEL",
      "links": [
       1
@@ -49,15 +50,15 @@
     }
    ],
    "properties": {
-    "Node name for S&R": "UNETLoader"
+    "Node name for S&R": "H3HyperFlowLoader"
    },
    "widgets_values": [
-    "fasth3_omniref_qad_nvfp4_comfy.safetensors",
-    "default"
+    "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors",
+    "auto"
    ],
    "widgets_values_named": {
-    "unet_name": "fasth3_omniref_qad_nvfp4_comfy.safetensors",
-    "weight_dtype": "default"
+    "unet_name": "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors",
+    "weights_in": "auto"
    }
   },
   {
@@ -762,7 +763,7 @@
     1344,
     768,
     192,
-    "ref2va",
+    "fl2va",
     "none",
     "",
     "extend_after",
@@ -780,7 +781,7 @@
     "width": 1344,
     "height": 768,
     "length": 192,
-    "checkpoint": "ref2va",
+    "checkpoint": "fl2va",
     "anchor": "none",
     "mid_frames": "",
     "video_mode": "extend_after",
@@ -841,14 +842,14 @@
   },
   {
    "id": 12,
-   "type": "BasicScheduler",
+   "type": "H3HyperFlowSigmas",
    "pos": [
     980,
     110
    ],
    "size": [
     320,
-    106
+    58
    ],
    "flags": {},
    "order": 11,
@@ -861,37 +862,20 @@
      "link": 10
     },
     {
-     "localized_name": "scheduler",
-     "name": "scheduler",
-     "type": "COMBO",
-     "widget": {
-      "name": "scheduler"
-     },
-     "link": null
-    },
-    {
      "localized_name": "steps",
      "name": "steps",
+     "shape": 7,
      "type": "INT",
      "widget": {
       "name": "steps"
-     },
-     "link": null
-    },
-    {
-     "localized_name": "denoise",
-     "name": "denoise",
-     "type": "FLOAT",
-     "widget": {
-      "name": "denoise"
      },
      "link": null
     }
    ],
    "outputs": [
     {
-     "localized_name": "SIGMAS",
-     "name": "SIGMAS",
+     "localized_name": "sigmas",
+     "name": "sigmas",
      "type": "SIGMAS",
      "links": [
       16
@@ -899,17 +883,13 @@
     }
    ],
    "properties": {
-    "Node name for S&R": "BasicScheduler"
+    "Node name for S&R": "H3HyperFlowSigmas"
    },
    "widgets_values": [
-    "simple",
-    8,
-    1
+    6
    ],
    "widgets_values_named": {
-    "scheduler": "simple",
-    "steps": 8,
-    "denoise": 1
+    "steps": 6
    }
   },
   {
@@ -1359,10 +1339,10 @@
    "outputs": [],
    "properties": {},
    "widgets_values": [
-    "# H3 Take: extend a clip\n\nChoose your clip in **Load Video**, describe what happens next in **H3 Take**, and press **Run**. The take holds the last 39 frames of your clip and their sound, then generates the rest, so the join does not show.\n\n- `video_mode` extend_after continues the clip. extend_before generates what came before it. v2v changes the whole clip, with `strength` setting how far it may move.\n- `audio_hold` span keeps the clip's sound across the held frames.\n- The new video starts with the held frames. Trim them off, or use **H3 Editor**, which places extensions on its timeline for you.\n- Source clips must be 24 fps."
+    "# H3 Take: extend a clip\n\nChoose your clip in **Load Video**, describe what happens next in **H3 Take**, and press **Run**. The take holds the last 39 frames of your clip and their sound, then generates the rest, so the join does not show.\n\n- The model is HyperFlow H3 Flash INT8. **H3 HyperFlow Loader** names its fl2va file, which takes a prompt and pinned frames. Put it in `models/diffusion_models/hyperflow`.\n- `video_mode` extend_after continues the clip. extend_before generates what came before it. v2v changes the whole clip, with `strength` setting how far it may move.\n- `audio_hold` span keeps the clip's sound across the held frames.\n- The new video starts with the held frames. Trim them off, or use **H3 Editor**, which places extensions on its timeline for you.\n- Source clips must be 24 fps."
    ],
    "widgets_values_named": {
-    "text": "# H3 Take: extend a clip\n\nChoose your clip in **Load Video**, describe what happens next in **H3 Take**, and press **Run**. The take holds the last 39 frames of your clip and their sound, then generates the rest, so the join does not show.\n\n- `video_mode` extend_after continues the clip. extend_before generates what came before it. v2v changes the whole clip, with `strength` setting how far it may move.\n- `audio_hold` span keeps the clip's sound across the held frames.\n- The new video starts with the held frames. Trim them off, or use **H3 Editor**, which places extensions on its timeline for you.\n- Source clips must be 24 fps."
+    "text": "# H3 Take: extend a clip\n\nChoose your clip in **Load Video**, describe what happens next in **H3 Take**, and press **Run**. The take holds the last 39 frames of your clip and their sound, then generates the rest, so the join does not show.\n\n- The model is HyperFlow H3 Flash INT8. **H3 HyperFlow Loader** names its fl2va file, which takes a prompt and pinned frames. Put it in `models/diffusion_models/hyperflow`.\n- `video_mode` extend_after continues the clip. extend_before generates what came before it. v2v changes the whole clip, with `strength` setting how far it may move.\n- `audio_hold` span keeps the clip's sound across the held frames.\n- The new video starts with the held frames. Trim them off, or use **H3 Editor**, which places extensions on its timeline for you.\n- Source clips must be 24 fps."
    },
    "color": "#432",
    "bgcolor": "#653"

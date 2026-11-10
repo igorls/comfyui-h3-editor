@@ -34,8 +34,8 @@ It needs no other custom node pack.
 
 ### 1. Install
 
-You need a recent ComfyUI with its built-in MiniMax H3 support. In ComfyUI's
-`custom_nodes` folder:
+You need a recent ComfyUI with its built-in MiniMax H3 support: 0.43 or newer.
+The pack is tested on 0.44. In ComfyUI's `custom_nodes` folder:
 
 ```bash
 git clone https://github.com/igorls/comfyui-h3-editor
@@ -48,25 +48,27 @@ pip install -r comfyui-h3-editor/requirements.txt
 On the Windows portable build, run the second step as
 `..\python_embeded\python.exe -m pip install -r comfyui-h3-editor\requirements.txt`.
 The requirements bring ffmpeg, for importing and exporting video, and the gguf
-reader for HyperFlow's models.
+reader for HyperFlow's GGUF models.
 
 Restart ComfyUI. **H3 Editor** appears in the sidebar.
 
 ### 2. Download the models
 
 The pack does not download models. These are the ones a first video needs,
-about 52 GB:
+about 54 GB:
 
 | File | Folder | Size | Where to get it |
 |---|---|---|---|
 | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders` | 15.7 GB | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3), `text_encoders/` |
 | `minimax_h3_video_vae_fp16.safetensors` | `models/vae` | 5.2 GB | Comfy-Org/MiniMax-H3, `vae/` |
 | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae` | 0.6 GB | Comfy-Org/MiniMax-H3, `vae/` |
-| `minimax_h3_ref2va_hyperflow_flash_14b-Q8_0.gguf` | `models/diffusion_models/hyperflow` | 15.2 GB | [VideoRebirthAI/hyperflow-h3-flash](https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash), `ref2va_gguf/` |
-| `minimax_h3_fl2va_hyperflow_flash_14b-Q8_0.gguf` | `models/diffusion_models/hyperflow` | 14.9 GB | VideoRebirthAI/hyperflow-h3-flash, `fl2va_gguf/` |
+| `minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors` | `models/diffusion_models/hyperflow` | 16.4 GB | [VideoRebirthAI/hyperflow-h3-flash](https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash), `ref2va_int8_convrot_comfyui/` |
+| `minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors` | `models/diffusion_models/hyperflow` | 16.0 GB | VideoRebirthAI/hyperflow-h3-flash, `fl2va_int8_convrot_comfyui/` |
 
-HyperFlow's smaller quantizations, from Q3_K_M at 7.2 GB, work too, anywhere in
-`models/diffusion_models`.
+HyperFlow's model page recommends these INT8 files on RTX GPUs with 24 GB or
+more. On a smaller GPU, take its GGUF files in their place, from Q8_0 at 15.2 GB
+down to Q3_K_M at 7.2 GB, anywhere in `models/diffusion_models`; see
+[models and quality](docs/models.md#hyperflows-other-files).
 
 These are optional, and worth having:
 
@@ -162,16 +164,16 @@ Press ? in the editor for this list.
 |---|---|
 | A model in the Model menu says "not installed" | Its hint names the missing file. Put it in the folder from the tables above, then reload the editor |
 | "ffmpeg is missing" | Install the requirements, step 1 above, and restart ComfyUI |
-| "HyperFlow H3 Flash needs the gguf Python package" | The same |
+| "HyperFlow H3 Flash GGUF files need the gguf Python package" | The same |
 | Finals come out at 768x1344 or 1344x768 | Add the latent upscaler. The Model hint says so too |
 | The live preview is a still | Add `taeh3.safetensors` |
-| ComfyUI runs out of memory | Try a smaller HyperFlow quantization. So far the editor has been tested on one 96 GB GPU only |
+| ComfyUI runs out of memory | Try one of HyperFlow's GGUF files, which come in smaller sizes. So far the editor has been tested on one 96 GB GPU only |
 
 ## Develop
 
 `python -m unittest discover -s tests` runs from the repo root. The writer,
-LoRA and HyperFlow tests need torch, gguf and ComfyUI, with `PYTHONPATH` set to
-ComfyUI's folder, and skip without them.
+LoRA and HyperFlow tests need torch and ComfyUI, with `PYTHONPATH` set to
+ComfyUI's folder, and the GGUF tests need gguf too. They skip without them.
 
 `tools/deploy.sh` copies the repo into a running container, runs the tests
 there, and reloads the pack in place, so models stay loaded. Refresh the browser

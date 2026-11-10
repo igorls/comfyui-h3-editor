@@ -1,4 +1,4 @@
 # ComfyUI brings everything else. imageio-ffmpeg brings ffmpeg, which the editor runs to convert, trim and
-# join video. gguf reads HyperFlow H3 Flash checkpoints.
+# join video. gguf reads HyperFlow H3 Flash GGUF checkpoints.
 imageio-ffmpeg>=0.5
 gguf>=0.13.0

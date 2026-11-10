@@ -12,15 +12,13 @@ from PIL import Image, ImageOps
 
 from .latent_writer import carry_tail, encode_audio, encode_video, write_holds
 from . import h3lora
+from . import hyperflow
 from . import media
 
-try:
-    from . import hyperflow
-    HYPERFLOW_MISSING = None
-except ImportError as error:  # the gguf package, which this pack's requirements install
-    hyperflow = None
-    HYPERFLOW_MISSING = ("HyperFlow H3 Flash needs the gguf Python package (%s). Install this pack's requirements: "
-                         "pip install -r requirements.txt in its folder, then restart ComfyUI" % error)
+# Why a HyperFlow .gguf cannot load here (the gguf package, which this pack's requirements install),
+# or None. The INT8 safetensors files load either way.
+HYPERFLOW_MISSING = hyperflow.gguf_missing()
+if HYPERFLOW_MISSING:
     logging.warning("H3 Editor: %s", HYPERFLOW_MISSING)
 from .policy import (
     AUDIO_ALIGNS,
@@ -406,7 +404,7 @@ class H3Lora(io.ComfyNode):
 
 
 class H3HyperFlowLoader(io.ComfyNode):
-    """A HyperFlow H3 Flash checkpoint, read from its GGUF file."""
+    """A HyperFlow H3 Flash checkpoint, read from its GGUF or its INT8 safetensors file."""
 
     @classmethod
     def define_schema(cls):
@@ -415,25 +413,37 @@ class H3HyperFlowLoader(io.ComfyNode):
             display_name="H3 HyperFlow Loader",
             category="minimax/h3",
             description=(
-                "Load a HyperFlow H3 Flash GGUF checkpoint: MiniMax H3 distilled to 4, 6 or 8 steps, with some "
-                "blocks pruned. Sample it with H3 HyperFlow Sigmas, the euler sampler and no CFG."
+                "Load a HyperFlow H3 Flash checkpoint: MiniMax H3 distilled to 4, 6 or 8 steps, with some blocks "
+                "pruned. It reads a GGUF file in any quantization, or an INT8 convrot safetensors file, which runs "
+                "on ComfyUI's INT8 kernels. Sample it with H3 HyperFlow Sigmas, the euler sampler and no CFG."
             ),
             inputs=[
-                io.Combo.Input("unet_name", options=hyperflow.gguf_files() if hyperflow else []),
-                io.Combo.Input("weights_in", options=list(hyperflow.WEIGHTS_IN) if hyperflow else ["auto"], default="auto",
-                               optional=True,
-                               tooltip="disk keeps the weights that do not fit on the GPU in the file and streams them, "
-                                       "for machines with little RAM. ram copies them into RAM. auto picks disk with "
-                                       "--fast-disk or a fast NVMe drive."),
+                io.Combo.Input("unet_name", options=hyperflow.files()),
+                io.Combo.Input("weights_in", options=list(hyperflow.WEIGHTS_IN), default="auto", optional=True,
+                               tooltip="For a GGUF file only. disk keeps the weights that do not fit on the GPU in the "
+                                       "file and streams them, for machines with little RAM. ram copies them into RAM. "
+                                       "auto picks disk with --fast-disk or a fast NVMe drive."),
             ],
             outputs=[io.Model.Output(display_name="model")],
         )
 
     @classmethod
+    def validate_inputs(cls, unet_name) -> bool | str:
+        # Checked here instead of against the list, so a workflow made on another machine still
+        # runs: the file may sit in another folder, and Windows lists folders with a backslash.
+        if not isinstance(unet_name, str):
+            return True
+        try:
+            hyperflow.model_path(unet_name)
+        except FileNotFoundError:
+            base = unet_name.replace("\\", "/").rsplit("/", 1)[-1]
+            return (f"{base} is not installed. Put the file in models/diffusion_models/hyperflow, "
+                    "then refresh ComfyUI.")
+        return True
+
+    @classmethod
     def execute(cls, unet_name, weights_in="auto") -> io.NodeOutput:
-        if hyperflow is None:
-            raise RuntimeError(HYPERFLOW_MISSING)
-        return io.NodeOutput(hyperflow.load(hyperflow.gguf_path(unet_name), weights_in or "auto"))
+        return io.NodeOutput(hyperflow.load(hyperflow.model_path(unet_name), weights_in or "auto"))
 
 
 class H3HyperFlowSigmas(io.ComfyNode):
@@ -458,8 +468,6 @@ class H3HyperFlowSigmas(io.ComfyNode):
 
     @classmethod
     def execute(cls, model, steps=6) -> io.NodeOutput:
-        if hyperflow is None:
-            raise RuntimeError(HYPERFLOW_MISSING)
         return io.NodeOutput(hyperflow.sigmas(model, 6 if steps is None else steps))
 
 

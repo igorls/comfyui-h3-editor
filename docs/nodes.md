@@ -12,7 +12,7 @@ below. You can use them in your own workflows too.
 | H3 Load Sound | Reads a sound from the output folder, such as a cast voice |
 | H3 LoRA | Applies an H3 LoRA, wherever it can land on the model; see [models](models.md#loras) |
 | H3 Refine Latent | Prepares an upscaled H3 latent for a few more steps, keeping held frames and the sound |
-| H3 HyperFlow Loader | Loads a HyperFlow H3 Flash GGUF checkpoint, in any quantization |
+| H3 HyperFlow Loader | Loads a HyperFlow H3 Flash checkpoint: a GGUF file in any quantization, or an INT8 safetensors file |
 | H3 HyperFlow Sigmas | The 4, 6 or 8-step schedule a HyperFlow checkpoint samples, for euler without CFG |
 
 ## Templates
@@ -20,6 +20,12 @@ below. You can use them in your own workflows too.
 ComfyUI's template browser lists two ready workflows under this pack:
 *H3 Take - text to video* and *H3 Take - extend a clip*. Open one, write the
 shot in H3 Take, and press Run.
+
+Both render on HyperFlow H3 Flash INT8. H3 HyperFlow Loader names the fl2va
+file, which takes a prompt and pinned frames, and H3 HyperFlow Sigmas gives it
+6 steps. To use reference pictures, choose the ref2va file in the loader and
+set `checkpoint` to ref2va on H3 Take. [Models](models.md) lists the files and
+where they go.
 
 The template graph loads the model, the text encoder and the two H3 VAEs, sets
 `MiniMaxH3SigmaShift` to 12 and 3, passes the model through H3 Live Preview,

@@ -4,6 +4,11 @@ python tools/run_take.py --prefix h3take/base --prompt "..." --set length=124
 python tools/run_take.py --prefix h3take/ext --source base.mp4 --set video_mode=extend_after --set length=192
 
 --source names a file in ComfyUI's input folder and connects its frames and audio.
+
+The take renders on HyperFlow H3 Flash INT8, chosen as the editor chooses: the fl2va file for a
+prompt alone or a source to carry on from, the ref2va file once a picture is connected. --unet
+names another file. One that is not a HyperFlow checkpoint loads with ComfyUI's own loader and
+the simple scheduler.
 """
 
 import argparse
@@ -12,7 +17,8 @@ import time
 import urllib.request
 
 MODELS = {
-    "unet": "fasth3_omniref_qad_nvfp4_comfy.safetensors",
+    "unet": "hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors",
+    "unet_text": "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors",
     "clip": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
     "vae": "minimax_h3_video_vae_fp16.safetensors",
     "audio_vae": "minimax_h3_audio_vae_fp32.safetensors",
@@ -38,16 +44,32 @@ TAKE = {
 }
 
 
+def file_name(name):
+    return name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def is_hyperflow(name):
+    """Whether the pack's HyperFlow loader reads this file: any .gguf, or a file with hyperflow in its name."""
+    return file_name(name).endswith(".gguf") or "hyperflow" in file_name(name)
+
+
 def graph(args, take):
+    if is_hyperflow(args.unet):
+        loader = {"class_type": "H3HyperFlowLoader", "inputs": {"unet_name": args.unet, "weights_in": "auto"}}
+        sigmas = {"class_type": "H3HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": args.steps}}
+    else:
+        loader = {"class_type": "UNETLoader", "inputs": {"unet_name": args.unet, "weight_dtype": "default"}}
+        sigmas = {"class_type": "BasicScheduler", "inputs": {
+            "model": ["5", 0], "scheduler": "simple", "steps": args.steps, "denoise": 1.0}}
     g = {
-        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": args.unet, "weight_dtype": "default"}},
+        "1": loader,
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": MODELS["clip"], "type": "minimax", "device": "default"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": MODELS["vae"]}},
         "4": {"class_type": "VAELoader", "inputs": {"vae_name": MODELS["audio_vae"]}},
         "5": {"class_type": "MiniMaxH3SigmaShift", "inputs": {"model": ["1", 0], "shift_video": args.shift, "shift_audio": 3.0}},
         "10": {"class_type": "H3Take", "inputs": dict(take, clip=["2", 0], vae=["3", 0], audio_vae=["4", 0])},
         "11": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": args.sampler}},
-        "12": {"class_type": "BasicScheduler", "inputs": {"model": ["5", 0], "scheduler": "simple", "steps": args.steps, "denoise": 1.0}},
+        "12": sigmas,
         "13": {"class_type": "BasicGuider", "inputs": {"model": ["5", 0], "conditioning": ["10", 0]}},
         "14": {"class_type": "RandomNoise", "inputs": {"noise_seed": args.seed}},
         "15": {"class_type": "SamplerCustomAdvanced", "inputs": {
@@ -101,9 +123,9 @@ def main():
     parser.add_argument("--mid", action="append", default=[], help="input file for the next mid image")
     parser.add_argument("--ref", action="append", default=[], help="input file for the next reference image")
     parser.add_argument("--region", choices=["left", "right"], default="", help="regenerate this half of the held video")
-    parser.add_argument("--unet", default=MODELS["unet"])
+    parser.add_argument("--unet", default="", help="diffusion model file; the HyperFlow INT8 file that fits the take when empty")
     parser.add_argument("--sampler", default="euler")
-    parser.add_argument("--steps", type=int, default=8)
+    parser.add_argument("--steps", type=int, default=0, help="6 on HyperFlow (4, 6 or 8), 8 on other checkpoints when 0")
     parser.add_argument("--shift", type=float, default=12.0)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--timeout", type=int, default=1500)
@@ -114,6 +136,13 @@ def main():
     for item in args.set:
         name, value = item.split("=", 1)
         take[name] = type(TAKE[name])(value)
+    if not any(item.startswith("checkpoint=") for item in args.set):
+        if args.unet:
+            take["checkpoint"] = "fl2va" if "fl2va" in file_name(args.unet) else "ref2va"
+        else:
+            take["checkpoint"] = "ref2va" if args.start or args.mid or args.ref else "fl2va"
+    args.unet = args.unet or MODELS["unet" if take["checkpoint"] == "ref2va" else "unet_text"]
+    args.steps = args.steps or (6 if is_hyperflow(args.unet) else 8)
 
     started = time.time()
     prompt_id = call(args.url + "/prompt", {"prompt": graph(args, take)})["prompt_id"]
