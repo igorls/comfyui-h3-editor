@@ -54,7 +54,7 @@
     <div class="frame">
       <div class="stage">
         <div class="screen">
-          <video id="teaser" src="media/teaser.mp4" poster="media/teaser.jpg" muted loop playsinline preload="auto" aria-label="A café teaser made with H3 Editor: three shots and a narrator"></video>
+          <video id="cut" src="media/pass.mp4" poster="media/pass.jpg" muted loop playsinline preload="auto" aria-label="A kitchen scene made with H3 Editor: four shots with their own sound"></video>
         </div>
         <div class="transport">
           <button class="quiet tool flat" id="start" type="button" aria-label="Go to the start">
@@ -72,7 +72,7 @@
           <button class="quiet tool flat" id="sound" type="button" aria-pressed="false" aria-label="Sound">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path class="when-sound" d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/><path class="when-muted" d="M16 9.5l5 5M21 9.5l-5 5"/></svg>
           </button>
-          <p class="clock"><b id="clock">00:07:07</b> <span>of 00:09:20</span></p>
+          <p class="clock"><b id="clock">00:01:12</b> <span>of 00:15:00</span></p>
         </div>
       </div>
 
@@ -83,13 +83,14 @@
         </div>
         <div class="pane" id="pane-hand" role="tabpanel" aria-labelledby="tab-hand">
           <div class="shot-head">
-            <h2 id="shot-name">First sip</h2>
-            <p id="shot-meta">Final, 3.8 s</p>
+            <h2 id="shot-name">Wide</h2>
+            <p id="shot-meta">Final, 3 s</p>
           </div>
           <dl class="fields">
             <div><dt>What happens</dt><dd class="field tall" id="f-action"></dd></div>
             <div><dt>Camera</dt><dd class="field" id="f-camera"></dd></div>
-            <div class="pair">
+            <div><dt>Cast</dt><dd class="field cast"><span id="cast-who"><img src="media/chef.jpg" alt="" width="28" height="28">Chef</span><span id="cast-none" class="none" hidden>No one</span></dd></div>
+            <div class="pair" id="speech">
               <div><dt>Who speaks</dt><dd class="field" id="f-speaker"></dd></div>
               <div><dt>What they say</dt><dd class="field" id="f-dialogue"></dd></div>
             </div>
@@ -98,7 +99,7 @@
         </div>
         <div class="pane" id="pane-agent" role="tabpanel" aria-labelledby="tab-agent" hidden>
           <pre class="term" tabindex="0" aria-label="The commands an agent runs"><code id="term"></code></pre>
-          <p class="file-label"><code>shots.json</code>, the entry for <span id="file-name">First sip</span></p>
+          <p class="file-label"><code>shots.json</code>, the entry for <span id="file-name">Wide</span></p>
           <pre class="term" tabindex="0" aria-label="The shot as an operation"><code id="file"></code></pre>
           <p class="note">An agent writes the shot like this with the h3-editor skill. It shows up in your open editor the moment it lands.</p>
         </div>
@@ -106,7 +107,7 @@
 
       <div class="timeline">
         <div class="heads" aria-hidden="true"><span></span><span>Picture</span><span>Sound</span></div>
-        <div class="track" id="track" role="slider" tabindex="0" aria-label="Playhead" aria-valuemin="0" aria-valuemax="235" aria-valuenow="175" aria-valuetext="00:07:07, First sip">
+        <div class="track" id="track" role="slider" tabindex="0" aria-label="Playhead" aria-valuemin="0" aria-valuemax="359" aria-valuenow="36" aria-valuetext="00:01:12, Wide">
           <div class="ruler" id="ruler" aria-hidden="true"></div>
           <div class="lane picture" id="picture" aria-hidden="true"></div>
           <div class="lane sound" aria-hidden="true"><svg id="wave" preserveAspectRatio="none" viewBox="0 0 240 40"></svg></div>
@@ -114,7 +115,13 @@
         </div>
       </div>
     </div>
-    <p class="credit">This café teaser was planned and rendered by an agent through the editor's API, and opened in the editor: three shots of HyperFlow H3 Flash with a narrator's voice, about 10 seconds.</p>
+    <p class="credit">This kitchen scene was written and rendered by an agent through the editor's API, and exported from the editor as you see it: four shots of HyperFlow H3 Flash with their own sound, 15 seconds. The chef is one cast member, made from a single picture.</p>
+  </section>
+
+  <section class="section wrap film" id="film">
+    <h2>The launch film</h2>
+    <video src="media/launch.mp4" poster="media/launch.jpg" controls playsinline preload="none" aria-label="The H3 Editor launch film, 24 seconds: a node graph folds into a line that writes a shot, and the sentence becomes the shot"></video>
+    <p class="credit">The three shots in it are the ones above, rendered in the editor with their sound. The graphics around them are code, built by a coding agent with the open-source <a href="https://github.com/igorls/motion-graphics">motion-graphics skill</a>; the music was generated with YuE2.</p>
   </section>
 
   <section class="section wrap" id="features">
@@ -229,15 +236,15 @@
       <p class="more"><a href="https://github.com/igorls/comfyui-h3-editor/blob/main/skills/h3-editor/SKILL.md">Read the skill</a><a href="https://github.com/igorls/comfyui-h3-editor/blob/main/skills/h3-editor/references/api.md">The full API</a></p>
     </div>
     <pre class="term" tabindex="0" aria-label="An agent's session with scripts/h3.py"><code><span class="p">$</span> python h3.py check
-<span class="p">$</span> python h3.py create "Cafe teaser"
-<span class="o">Cafe_teaser</span>
-<span class="p">$</span> python h3.py ops Cafe_teaser shots.json
-<span class="p">$</span> python h3.py wait Cafe_teaser
-<span class="p">$</span> python h3.py look Cafe_teaser
-<span class="p">$</span> python h3.py render Cafe_teaser c68d69408 c06f7138e c7d209ad3 --final
-<span class="p">$</span> python h3.py export Cafe_teaser
+<span class="p">$</span> python h3.py create "The pass"
+<span class="o">The_pass</span>
+<span class="p">$</span> python h3.py ops The_pass shots.json
+<span class="p">$</span> python h3.py wait The_pass
+<span class="p">$</span> python h3.py look The_pass
+<span class="p">$</span> python h3.py render The_pass c822cf892 cc2eecf3a caa4b5e11 c23560c00 --final
+<span class="p">$</span> python h3.py export The_pass
 <span class="o">Exported to ComfyUI's output folder:
-h3take_projects/Cafe_teaser/exports/Cafe_teaser_001.mp4</span></code></pre>
+h3take_projects/The_pass/exports/The_pass_001.mp4</span></code></pre>
   </section>
 </main>
 

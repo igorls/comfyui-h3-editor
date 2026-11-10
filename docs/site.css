@@ -143,6 +143,12 @@ h1 { grid-column: 1 / -1; font-size: clamp(30px, 3.3vw, 46px); line-height: 1.1;
 .field { padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--room); font-size: 14px; line-height: 1.5; min-height: 40px; }
 .field.empty { color: var(--muted); }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pair[hidden] { display: none; }
+.field.cast span { display: inline-flex; align-items: center; gap: 8px; }
+.field.cast span[hidden] { display: none; }
+.field.cast img { width: 28px; height: 28px; border-radius: 4px; object-fit: cover; }
+.field.cast .none { color: var(--muted); }
+.film video { display: block; width: 100%; aspect-ratio: 16 / 9; border: 1px solid var(--line); border-radius: var(--radius); background: var(--screen); }
 
 .term {
   margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--room);

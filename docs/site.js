@@ -1,42 +1,50 @@
-// The teaser drives the timeline and the shot pane, the way the editor's playhead does.
+// The cut drives the timeline and the shot pane, the way the editor's playhead does.
 (() => {
   const FPS = 24;
-  const TOTAL = 236;
-  const PROJECT = "Cafe_teaser";
+  const TOTAL = 360;
+  const PROJECT = "The_pass";
 
-  // The café teaser's three clips, with the fields they were rendered from.
+  // The four shots of "The pass", with the fields they were rendered from. `cast` is who the shot keeps the same.
   const CLIPS = [
     {
-      id: "c68d69408", name: "Door", from: 0, to: 90, seconds: 3.75, strip: "media/door.jpg",
-      action: "Seen from the quiet street through the café's glass door. A single small green sign hangs on a cord from a hook on the inside of the glass, at chest height, showing its Closed side. A young barista with short dark hair, in a white T-shirt and a dark green apron, steps up to the door and turns the key in the lock, then takes the hanging sign in one hand and turns it around so its OPEN side faces the street, the word OPEN in large white capital letters, and smiles out at the morning. The narrator is heard early in the shot.",
-      camera: "Medium shot from the street at eye level, the barista's face clearly visible through the glass, slow push in",
-      speaker: "@Narrator, off-screen",
-      dialogue: "Every morning starts somewhere.",
-      sound: "Keys jingling, the lock clicking open, a quiet street, birds in the distance",
-    },
-    {
-      id: "c06f7138e", name: "Espresso", from: 90, to: 146, seconds: 2.33, strip: "media/espresso.jpg",
-      action: "Inside the café, steam rises in soft curls from a chrome espresso machine as a thin stream of dark espresso pours into a white ceramic cup, filling it with golden crema.",
-      camera: "Close-up, slight slow tilt down to the cup",
+      id: "c822cf892", name: "Wide", from: 0, to: 73, seconds: 3.04, strip: "media/wide.jpg", cast: "Chef",
+      action: "@Chef wipes the rim of a white plate at the pass. Behind her, a flame flares up and dies. The pass is long brushed steel under a row of glowing heat lamps; the flame rises tall and orange from a pan on the range, lights the whole kitchen for a moment, then is gone. Steam drifts through the lamp light.",
+      camera: "Wide shot at eye level from the dining side of the pass, slow push in",
       speaker: "",
       dialogue: "",
-      sound: "Hiss of steam and the gurgle of the espresso machine",
+      sound: "The whoosh and roar of a gas flame flaring up, a pan hissing, the low hum of extractor fans. No music, no voices.",
     },
     {
-      id: "c7d209ad3", name: "First sip", from: 146, to: 236, seconds: 3.75, strip: "media/sip.jpg",
-      action: "A woman in her thirties in a cream sweater sits at the café's window seat, morning sunlight on her face. She lifts a white espresso cup, takes the first sip, lowers it and smiles warmly. The narrator is heard at the very end of the shot, as she smiles.",
-      camera: "Medium close-up, side-on against the bright window, gentle handheld",
-      speaker: "@Narrator, off-screen",
-      dialogue: "Make it yours.",
-      sound: "Soft café murmur, a cup set down on a saucer",
+      id: "cc2eecf3a", name: "Detail", from: 73, to: 146, seconds: 3.04, strip: "media/detail.jpg", cast: "",
+      action: "Tweezers lower one green leaf onto a seared scallop. The scallop sits on a swipe of golden puree on a white plate under a warm heat lamp; a steady hand holds the steel tweezers, places the small herb leaf and lets go. Steam curls up through the light. The dark kitchen behind is empty and far out of focus.",
+      camera: "Macro close-up, locked off, very shallow depth of field",
+      speaker: "",
+      dialogue: "",
+      sound: "A soft metallic clink of tweezers touching porcelain, a pan sizzling quietly in the background, the low hum of extractor fans. No music, no voices.",
+    },
+    {
+      id: "caa4b5e11", name: "Face", from: 146, to: 236, seconds: 3.75, strip: "media/face.jpg", cast: "Chef",
+      action: "@Chef studies the plate. Then her eyes lift, and she nods. Only her face is in the frame, from forehead to chin, warm light falling on it from above, the dark kitchen a soft blur behind her. Her eyes are lowered, completely focused; then she raises her eyes to look straight ahead and gives one small, satisfied nod.",
+      camera: "Extreme close-up of her face, forehead to chin filling the whole frame, locked off, 85mm lens, very shallow depth of field",
+      speaker: "",
+      dialogue: "",
+      sound: "The low hum of extractor fans and a distant pan hissing. No music, no voices.",
+    },
+    {
+      id: "c23560c00", name: "Bell", from: 236, to: 360, seconds: 5.17, strip: "media/bell.jpg", cast: "Chef",
+      action: "@Chef slides the plate across the pass and rings the bell. A small dome-shaped brass call bell sits on the brushed steel in the foreground, in sharp focus. From the right, her hand pushes a white plate with a seared scallop on golden puree, topped with one green herb leaf, across the steel toward the camera until it stops beside the bell. After a beat her palm comes down and taps the button on top of the bell once.",
+      camera: "Low angle along the surface of the steel pass under the heat lamps, the bell and the plate sharp in the foreground, the kitchen dark and soft behind",
+      speaker: "",
+      dialogue: "",
+      sound: "Porcelain sliding across steel, a short silence, then one clear bright ding of a brass service bell that rings out over the low hum of extractor fans. No music, no voices.",
     },
   ];
 
-  // Loudest sample in each of 240 slices of the teaser's sound, 0 to 100.
-  const PEAKS = [1,2,2,2,2,2,2,2,1,2,2,1,2,2,2,2,2,2,2,2,2,6,4,3,2,1,2,1,1,2,2,2,1,3,2,2,1,1,1,1,2,1,2,2,95,97,71,72,100,97,88,91,98,97,96,97,88,86,99,92,20,7,3,97,96,91,88,4,2,3,4,90,97,62,38,35,46,37,33,18,6,10,1,1,1,1,1,1,1,1,2,2,0,0,0,1,0,1,1,2,1,1,2,2,2,2,2,2,2,2,2,1,2,3,2,1,2,2,3,1,2,2,2,1,1,2,1,3,2,1,2,2,2,2,1,1,1,1,1,1,2,1,1,1,1,1,1,2,1,0,1,1,0,1,1,0,1,1,0,0,1,0,1,0,1,1,1,1,0,1,1,1,1,0,1,0,0,0,1,1,1,1,1,1,2,2,1,2,2,4,5,13,5,3,6,2,1,1,0,1,1,0,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,42,91,98,98,13,95,98,9,24,71,92,85,60,28,9,5,14,3,2,2,0,0,1];
+  // Loudest sample in each of 240 slices of the cut's sound, 0 to 100.
+  const PEAKS = [17,14,10,13,14,13,12,11,10,9,21,46,66,91,90,48,52,38,29,24,18,18,23,64,19,15,14,16,11,13,13,15,9,11,12,10,13,13,16,19,12,12,11,14,13,10,11,12,12,4,5,5,5,5,7,5,7,9,4,7,7,7,5,6,6,10,5,5,5,6,7,7,6,7,7,7,6,9,6,6,8,5,5,6,8,6,5,7,7,7,6,6,8,6,7,5,6,13,11,12,9,10,12,12,12,13,14,17,12,13,12,12,10,13,13,14,14,16,16,14,14,12,15,17,17,16,14,16,17,20,14,14,15,14,19,18,18,14,17,18,15,12,15,14,13,15,12,16,13,15,17,14,14,11,11,17,22,2,3,3,3,4,2,3,3,3,2,2,3,5,7,6,5,6,6,6,6,6,5,7,6,7,8,8,6,6,5,7,7,9,7,6,7,8,7,7,6,5,6,5,7,6,6,6,7,7,6,7,7,6,6,10,12,6,4,4,3,3,3,3,3,3,3,3,3,3,3,3,63,100,72,56,36,33,38,22,22,21,19,20];
 
   const $ = (id) => document.getElementById(id);
-  const video = $("teaser");
+  const video = $("cut");
   const track = $("track");
   const playhead = $("playhead");
   const clock = $("clock");
@@ -87,7 +95,10 @@
   const empty = { speaker: "No one", dialogue: "Nothing", sound: "Nothing" };
 
   function opFor(clip) {
-    const fields = { name: clip.name, action: clip.action, camera: clip.camera };
+    const fields = { name: clip.name };
+    if (clip.cast) fields.cast = ["$" + clip.cast.toLowerCase()];
+    fields.action = clip.action;
+    fields.camera = clip.camera;
     if (clip.speaker) fields.speaker = clip.speaker;
     if (clip.dialogue) fields.dialogue = clip.dialogue;
     fields.sound = clip.sound;
@@ -120,7 +131,7 @@
     const fields = Object.entries(opFor(clip));
     fields.forEach(([key, value], i) => {
       const last = i === fields.length - 1;
-      const shown = typeof value === "number" ? [["n", String(value)]] : [["s", JSON.stringify(value)]];
+      const shown = typeof value === "number" ? [["n", String(value)]] : [["s", JSON.stringify(value).replace(/","/g, '", "')]];
       line(file, [["", "  "], ["k", JSON.stringify(key) + ": "], ...shown, ["", last ? "}}" : ","]]);
     });
     $("file-name").textContent = clip.name;
@@ -135,6 +146,11 @@
       cell.classList.toggle("empty", !clip[id]);
       if (id === "action") cell.scrollTop = 0;
     }
+    // Who the shot keeps the same: the cast member's picture and name, as in the editor.
+    $("cast-who").hidden = !clip.cast;
+    $("cast-none").hidden = !!clip.cast;
+    // A shot without a speaker shows no empty speech fields.
+    $("speech").hidden = !clip.speaker && !clip.dialogue;
   }
 
   let shown = -1;
@@ -242,9 +258,9 @@
     if (!video.muted && video.paused) video.play().catch(() => {});
   });
 
-  // The cut opens on First sip, the poster's frame, so poster, playhead and panes agree
+  // The cut opens on the flame at its tallest, the poster's frame, so poster, playhead and panes agree
   // before the video loads and whenever the browser refuses to play it on its own.
-  const START = 175;
+  const START = 36;
   function begin() {
     video.currentTime = (START + 0.5) / FPS;
     if (!reduceMotion) video.play().catch(() => showPlaying());
