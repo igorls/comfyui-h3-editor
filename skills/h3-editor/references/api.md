@@ -17,7 +17,7 @@ except the two uploads.
 
 | Method and path | Body | Reply |
 |---|---|---|
-| `GET /projects` | | `{"projects": [folder, ...], "profiles": [{"id", "title", "hint", "available", "missing"}, ...], "finals": [note, ...]}`. `finals` says what finals leave out because a file is missing |
+| `GET /projects` | | `{"projects": [folder, ...], "profiles": [{"id", "title", "hint", "available", "missing"}, ...], "finals": [note, ...], "loras": [file, ...], "realism": {"file", "strength", "installed", "range", "lora_range", "limit"}, "checkpoints": [file, ...], "samplers": [name, ...], "schedulers": [name, ...]}`. Each profile also carries its `steps`, `sampler` and `scheduler`. `finals` says what finals leave out because a file is missing, `loras` lists every file in `models/loras`, and `realism` describes the Realism Slider that finals run |
 | `POST /projects` | `{"name"}` | `{"folder", "project"}`. Opens it if it exists |
 | `GET /project/{name}` | | The whole project |
 | `GET /project/{name}/summary` | | The summary, below |
@@ -96,6 +96,7 @@ the end) and `place` (default true). Returns `{"clip", "item"}`.
 | `first`, `last` | Picture assets the shot starts or ends on exactly. `null` removes one |
 | `track` | A sound asset plus `from`, the second of it at the clip's first frame. The picture is generated to that slice, and the take keeps the exact sound. `null` removes it |
 | `bin` | The id of the bin the clip is filed in. `null` takes it out |
+| `profile` | The checkpoint family this clip renders on, one of the ids `set_project` takes. `null`, the default, is the project's. A take records the one that made it in `models.profile` |
 
 `update_clip`: `clip`, `fields`. Changing `seconds` on a clip with no render resizes its
 items, and later clips move with them. `remove_clip`: `clip`, together with all its
@@ -157,6 +158,56 @@ pick only an `available` one. A new project starts on the first installed profil
 project that names none renders on it. The format sets new renders and imports, and export fits
 every clip to it.
 
+`set_project` also takes `loras`, the LoRAs every new render of the project samples with,
+drafts and finals alike, and `realism`:
+
+```json
+{"op": "set_project", "fields": {
+  "loras": [{"file": "film_look.safetensors", "strength": 0.8},
+            {"file": "styles/grain.safetensors", "strength": -0.5, "on": false}],
+  "realism": 1.0}}
+```
+
+- `loras` replaces the whole list: up to 8, stacked in the order given. `file` is a name
+  from `loras` in `GET /projects`, `strength` runs from -2 to 2 (1 when left out), and
+  `"on": false` keeps a LoRA in the list without rendering with it. Send `[]` to clear it.
+  Use LoRAs trained on MiniMax H3: others have no layers to land on. A LoRA whose file is
+  not installed is left out of renders.
+- `realism` is how strong the Realism Slider is on finals, from 0 to 3. It is 1.5 unless
+  set, 0 turns it off, and `null` goes back to 1.5. Drafts never run it.
+
+Takes already rendered do not change: render a clip again to see a new strength.
+
+`set_project` also takes `checkpoints`, the project's own checkpoints: any MiniMax H3 file
+in `models/diffusion_models`, rendered on a built-in family's settings with whatever it
+changes.
+
+```json
+{"op": "set_project", "fields": {
+  "checkpoints": [{"id": "mine", "title": "My fine-tune", "unet": "my_h3_ref2va.safetensors",
+                   "base": "h3", "steps": {"draft": 8, "final": 16},
+                   "sampler": "euler", "scheduler": "beta"}],
+  "profile": "mine"}}
+```
+
+- `unet` is the ref2va file, a name from `checkpoints` in `GET /projects`. `unet_text` is
+  an fl2va file for clips that are only a prompt; without it they render on `unet`.
+- `base` is the built-in profile whose settings it starts from (`h3` when left out). It
+  keeps that profile's LoRA, such as the Turbo LoRA of `h3_turbo`, and the way its finals
+  are refined.
+- `steps`, `sampler` and `scheduler` are optional and replace the base's. `GET /projects`
+  lists the `samplers` and `schedulers` ComfyUI has. A HyperFlow file keeps its own
+  schedule, so its `scheduler` is ignored.
+- `id` is what `profile` names, on the project or on a clip. Give your own, or one is made.
+  The list replaces the whole list, up to 12; a clip or project that names a checkpoint
+  no longer listed renders on the project's model, or the first one installed.
+
+Checkpoints the user saved as presets are shared by every project. `GET /presets` returns
+`{"checkpoints": [...]}` in the same shape, and `GET /projects` carries them as `presets`.
+A project renders on its own copy, so to use a preset, send its row in `set_project`
+`checkpoints` with the same `id`. `PUT /presets` with `{"checkpoints": [...]}` replaces the
+shared list, up to 64; change it only when the user asks.
+
 `add_cast`: `fields`: `name`, `description`, and a picture asset (`file`, `subfolder`), a
 `voice` asset, or both. Returns `{"cast"}`. The picture's keys sit directly in `fields`,
 while the voice is its own object:
@@ -193,8 +244,9 @@ and DaSiWa Turbo 8 and 8. A final's picture is then enlarged and its last steps 
 the larger size, so its take is 1920x1088 for 16:9, 1088x1920 for 9:16 and 1440x1440 for 1:1.
 The sound is the first pass's. A take records its picture size in `size` and what made it in
 `models`: `profile`, `unet` and `checkpoint`, a turbo family's `profile_lora` and
-`profile_lora_strength`, and for a final `upscaler`, `lora` and `lora_strength`. Finals from
-before this record `upscale` instead of `size`.
+`profile_lora_strength`, for a final `upscaler`, `lora` and `lora_strength`, and the
+project's own LoRAs as `loras`: `[{"file", "strength"}, ...]`. Finals from before this record
+`upscale` instead of `size`.
 
 ## Replies and errors
 

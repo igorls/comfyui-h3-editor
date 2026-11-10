@@ -24,6 +24,7 @@ HYPERFLOW_DROPPED = {49: (9,), 47: (6, 21, 22)}
 # How H3 LoRA applies a LoRA: auto adds it at run time where that keeps it sharp, merge folds it in.
 LORA_MODES = ("auto", "merge")
 # A block number in a LoRA key, as blocks.12. or blocks_12_, after any prefix.
+LORA_UNET = "lora_unet_"
 LORA_BLOCK = re.compile(r"(?<![A-Za-z0-9])blocks([._])(\d+)(?=[._])")
 
 
@@ -409,6 +410,20 @@ def plan(anchor, start=None, end=None, soft=(), length=124, video=None, checkpoi
         "labels": labels,
         "length_note": note,
     }
+
+
+def dotted_lora_key(key, modules):
+    """A LoRA key in the trainer's lora_unet_ form as the model names its layer, or the key as it is.
+
+    Trainers that follow kohya write blocks.3.attn.qkv_proj as lora_unet_blocks_3_attn_qkv_proj,
+    and a layer's own name can hold an underscore, so the name is looked up among the model's
+    layers instead of being split. modules maps each layer's name with underscores to its name.
+    """
+    if not key.startswith(LORA_UNET):
+        return key
+    head, dot, tail = key.partition(".")
+    module = modules.get(head[len(LORA_UNET):])
+    return module + dot + tail if module else key
 
 
 def hyperflow_lora_key(key, dropped):

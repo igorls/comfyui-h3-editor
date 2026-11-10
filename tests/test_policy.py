@@ -6,6 +6,7 @@ from policy import (
     frame_to_step,
     hold_curve,
     HYPERFLOW_DROPPED,
+    dotted_lora_key,
     hyperflow_lora_key,
     latent_frames,
     legal_length,
@@ -228,6 +229,24 @@ class PolicyTest(unittest.TestCase):
 
 def block_of(key):
     return int(key.split("blocks.")[1].split(".")[0])
+
+
+class DottedLoraKeyTest(unittest.TestCase):
+    LAYERS = {name.replace(".", "_"): name for name in (
+        "blocks.3.attn.qkv_proj", "blocks.3.attn.out_proj", "blocks.3.mlp.fc1", "blocks.3.adaln_proj.linear",
+        "token_refiner.blocks.0.mlp.fc2")}
+
+    def test_a_trainers_key_takes_the_models_layer_name(self):
+        for key, named in (
+                ("lora_unet_blocks_3_attn_qkv_proj.lora_down.weight", "blocks.3.attn.qkv_proj.lora_down.weight"),
+                ("lora_unet_blocks_3_attn_out_proj.alpha", "blocks.3.attn.out_proj.alpha"),
+                ("lora_unet_blocks_3_adaln_proj_linear.lora_up.weight", "blocks.3.adaln_proj.linear.lora_up.weight"),
+                ("lora_unet_token_refiner_blocks_0_mlp_fc2.lora_up.weight", "token_refiner.blocks.0.mlp.fc2.lora_up.weight")):
+            self.assertEqual(dotted_lora_key(key, self.LAYERS), named)
+
+    def test_other_keys_stay(self):
+        for key in ("blocks.3.mlp.fc1.lora_A.weight", "lora_unet_blocks_99_mlp_fc1.alpha", "lora_te_text_model.alpha"):
+            self.assertEqual(dotted_lora_key(key, self.LAYERS), key)
 
 
 class HyperFlowLoraKeyTest(unittest.TestCase):

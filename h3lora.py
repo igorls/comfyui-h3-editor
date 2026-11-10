@@ -9,7 +9,8 @@ re-injection that adds B @ A @ silu(t_emb) from the bundled silu(t_emb) grid
 (data/h3_silu_temb_grid.safetensors, from the same project).
 
 Changed here: several LoRAs on one model share one bypass injection and one adaLN patch per
-module, so stacking them is safe; keys with or without a diffusion_model. prefix both load; H3
+module, so stacking them is safe; keys with or without a diffusion_model. prefix both load, and so do
+keys in the trainers' lora_unet_ form; H3
 blocks are renumbered for HyperFlow H3 Flash, whose weights take the merge path and whose
 adaLN is skipped; the silu(t_emb) grid is kept on each device once; the older unique-timestep
 path, the sampler and the debug output are left out.
@@ -27,9 +28,9 @@ import comfy.utils
 import comfy.weight_adapter
 
 try:
-    from .policy import H3_BLOCKS, HYPERFLOW_DROPPED, hyperflow_lora_key
+    from .policy import H3_BLOCKS, HYPERFLOW_DROPPED, dotted_lora_key, hyperflow_lora_key
 except ImportError:
-    from policy import H3_BLOCKS, HYPERFLOW_DROPPED, hyperflow_lora_key
+    from policy import H3_BLOCKS, HYPERFLOW_DROPPED, dotted_lora_key, hyperflow_lora_key
 
 GRID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "h3_silu_temb_grid.safetensors")
 PREFIXES = ("model.diffusion_model.", "diffusion_model.")
@@ -160,6 +161,13 @@ def apply(model, lora_path, lora_name, strength, mode="auto"):
     elif count != H3_BLOCKS:
         notes.append("no block map for %s blocks, so the keys load as they are" % count)
 
+    present = set(new.model.state_dict().keys())
+    # A LoRA in the trainer's lora_unet_ form takes the model's own layer names.
+    layers = {key[len("diffusion_model."):-len(".weight")] for key in present
+              if key.startswith("diffusion_model.") and key.endswith(".weight")}
+    layers = {name.replace(".", "_"): name for name in layers}
+    lora = {dotted_lora_key(key, layers): value for key, value in lora.items()}
+
     modules = module_names(lora)
     adaln = [m for m in modules if m.endswith("adaln_proj.linear")]
     pruned = bool(getattr(dm, "use_adaln_curves", False)) and not hyperflow
@@ -167,7 +175,6 @@ def apply(model, lora_path, lora_name, strength, mode="auto"):
     if hyperflow and adaln:
         notes.append("%s adaLN layers skipped: HyperFlow's adaLN takes its own two-time input" % len(adaln))
 
-    present = set(new.model.state_dict().keys())
     targets = {m: "diffusion_model.%s.weight" % m for m in backbone}
     missing = sorted(m for m, key in targets.items() if key not in present)
     targets = {m: key for m, key in targets.items() if key in present}

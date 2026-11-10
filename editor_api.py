@@ -237,11 +237,69 @@ def available_models():
     return names
 
 
+def lora_files():
+    """Every file in models/loras, as ComfyUI lists it."""
+    import folder_paths
+
+    return sorted(folder_paths.get_filename_list("loras"), key=str.lower)
+
+
+def presets_file():
+    return os.path.join(root(), "checkpoints.json")
+
+
+def read_presets():
+    """The checkpoints saved for every project to use. A file that cannot be read counts as none."""
+    try:
+        with open(presets_file(), encoding="utf-8") as f:
+            rows = json.load(f)["checkpoints"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    return [r for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str) and isinstance(r.get("unet"), str) and r["unet"]]
+
+
+async def presets(request):
+    return web.json_response({"checkpoints": read_presets()})
+
+
+async def save_presets(request):
+    """Replace the shared presets with the list sent."""
+    body = await request.json()
+    try:
+        rows = store.clean_checkpoints(body.get("checkpoints") if isinstance(body, dict) else None, store.PRESET_LIMIT)
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error))
+    async with lock("checkpoints.json"):
+        path = presets_file()
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"checkpoints": rows}, f, indent=1)
+        os.replace(path + ".tmp", path)
+    return web.json_response({"checkpoints": rows})
+
+
+def sampling_choices():
+    """The checkpoint files, samplers and schedulers ComfyUI offers, for a project's own checkpoints."""
+    import folder_paths
+
+    files = set()
+    for kind in ("diffusion_models", "unet_gguf"):
+        if kind in folder_paths.folder_names_and_paths:
+            files.update(folder_paths.get_filename_list(kind))
+    try:
+        import comfy.samplers
+
+        samplers, schedulers = list(comfy.samplers.KSampler.SAMPLERS), list(comfy.samplers.SCHEDULER_NAMES)
+    except Exception:
+        samplers, schedulers = ["euler", "res_multistep"], ["simple"]
+    return {"checkpoints": sorted(files, key=str.lower), "samplers": samplers, "schedulers": schedulers}
+
+
 async def projects(request):
     names = sorted(n for n in os.listdir(root()) if os.path.exists(os.path.join(root(), n, "project.json")))
     available = available_models()
     return web.json_response({"projects": names, "profiles": store.profile_status(available),
-                              "finals": store.finals_status(available)})
+                              "finals": store.finals_status(available),
+                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), **sampling_choices()})
 
 
 async def create(request):
@@ -902,6 +960,8 @@ ROUTES = (
     ("GET", "/h3take/editor", "page"),
     ("GET", "/h3take/api/projects", "projects"),
     ("POST", "/h3take/api/projects", "create"),
+    ("GET", "/h3take/api/presets", "presets"),
+    ("PUT", "/h3take/api/presets", "save_presets"),
     ("GET", "/h3take/api/project/{name}", "load"),
     ("PUT", "/h3take/api/project/{name}", "save"),
     ("GET", "/h3take/api/project/{name}/summary", "summary"),

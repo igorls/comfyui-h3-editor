@@ -17,6 +17,11 @@ stored in the project as `profile`. The menu marks the profiles whose files are
 not installed. A new project starts on the first installed profile in this
 order, so a fresh install renders with whatever it has.
 
+A clip can render with a different profile than its project: select the clip
+and pick one under **Model** in the panel on the right. Its next render uses it,
+and takes keep the profile that made them. ComfyUI loads the other profile's
+models when the queue reaches such a clip, which takes a while.
+
 | Profile | Files | Steps, draft and final |
 |---|---|---|
 | HyperFlow H3 Flash, the default | `minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors` (16.4 GB, in `ref2va_int8_convrot_comfyui/`) and `minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors` (16.0 GB, in `fl2va_int8_convrot_comfyui/`) from [VideoRebirthAI/hyperflow-h3-flash](https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash), in `models/diffusion_models/hyperflow` | 4 and 6, euler |
@@ -100,6 +105,36 @@ The H3 LoRA node applies a LoRA trained on MiniMax H3.
   attaches only where HyperFlow keeps a layer whole, and ComfyUI skips the rest
   with a warning: on fl2va, the Realism Slider's last `fc2` is one.
 - Several H3 LoRA nodes in a row stack.
+
+In the editor, a project has its own LoRAs. With no clip selected, the panel on
+the right has a LoRAs section: search `models/loras` to add one, drag its slider
+to set its strength from -2 to 2, untick it to render without it, or remove it.
+Every new render of the project samples with the ones that are ticked, in the
+order listed, on drafts and finals alike. The same section has the Realism
+Slider's strength on finals, from 0 to 3; it starts at 1.5.
+
+## Your own checkpoints
+
+Any other MiniMax H3 checkpoint, such as a community fine-tune, renders in the
+editor too. With no clip selected, the panel on the right has **Your
+checkpoints**: pick the file from `models/diffusion_models`, then set
+
+- the built-in model it is closest to. It starts from that model's settings and
+  keeps its LoRA, if it has one, and the way its finals are refined;
+- steps for drafts and for finals, the sampler and the scheduler, where its
+  author recommends others;
+- a second file for clips that are only a prompt, if the checkpoint comes with
+  an fl2va model. Without one, those clips render on the same file.
+
+**Save as a preset for every project** keeps a checkpoint for your other
+projects: it then shows under **Model** in each of them, and picking it there
+copies it into that project. A project renders on its own copy, so changing or
+deleting a preset leaves the projects that already use it as they are. Presets
+live in `checkpoints.json` in the `h3take_projects` folder of ComfyUI's output.
+
+The checkpoint then appears in the **Model** menu, for the project or for one
+clip. It is stored in the project as `checkpoints`. A file with hyperflow in its
+name, and any `.gguf`, loads as HyperFlow and samples on HyperFlow's schedule.
 
 ## A project's own models
 

@@ -23,6 +23,13 @@ made with it, shot by shot.
   pictures, and export one video.
 - **Try fast, finish large.** Drafts are small and quick. Finals are refined at
   up to 1920 pixels, with a realism LoRA for natural skin.
+- **Pick the model, per project or per clip.** HyperFlow H3 Flash, MiniMax H3,
+  its Turbo LoRA, Singularity and DaSiWa are built in, and a clip can render on
+  a different one than the rest of the project. Any other H3 checkpoint works
+  too: pick its file, set its steps, sampler and scheduler, and save it as a
+  preset for every project.
+- **Bring your LoRAs.** Add LoRAs trained on MiniMax H3 to a project and set each
+  one's strength with a slider. Every render of the project uses them.
 - **Generate to a recorded voice.** Give a clip a recorded track, such as an
   approved narration, and its picture is generated to it.
 - **Let an agent make the video.** Everything the editor does is an HTTP call,

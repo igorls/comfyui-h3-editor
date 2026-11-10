@@ -214,6 +214,15 @@ Renders queue on the user's GPU one at a time. Measured with the models loaded:
   reference lists them). In tests a 2 second 9:16 final took 1.5 to 2.5 minutes on
   HyperFlow, MiniMax H3 Turbo and the 20-step MiniMax H3 alike. Keep HyperFlow unless the
   user asks for another;
+- one clip can render on another family than the rest (`update_clip` `profile`). Changing
+  family between renders loads the new models first, so group such clips rather than
+  alternating;
+- any other MiniMax H3 checkpoint the user has can be used too (`set_project` `checkpoints`:
+  its file, the built-in family it is closest to, and its own steps, sampler and scheduler).
+  Ask the user for the settings its author recommends rather than guessing;
+- a project can carry LoRAs trained on MiniMax H3 (`set_project` `loras`, each a file and a
+  strength), which every new render samples with. Add one only when the user names it or
+  asks for its look, and render a draft to check its effect;
 - the first render after ComfyUI starts, or after a change of profile, also loads the
   models, about 20 GB each.
 

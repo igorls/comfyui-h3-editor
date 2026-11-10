@@ -32,6 +32,12 @@ const state = {
   quiet: false,
   profiles: [],
   finals: [],
+  loras: [],
+  realism: null,
+  checkpoints: [],
+  presets: [],
+  samplers: [],
+  schedulers: [],
   bin: null,
   folded: new Set(),
   source: null,
@@ -131,9 +137,14 @@ async function flush() {
 function adopt(project, { external = false } = {}) {
   const before = state.jobs;
   const same = JSON.stringify({ ...project, revision: 0 }) === JSON.stringify({ ...state.project, revision: 0 });
+  if (same) {
+    // Nothing changed but the revision. The panel's fields still write to the objects they
+    // were built on, so those stay in place: swapping them would lose what is typed next.
+    state.project.revision = project.revision;
+    return;
+  }
   state.project = project;
   syncJobs();
-  if (same) return;
   if (!clipOf(state.clip)) state.clip = null;
   if (!state.project.timeline.some((i) => i.id === state.item)) state.item = null;
   if (state.person && !(state.project.cast || []).some((p) => p.id === state.person)) state.person = null;
@@ -1207,6 +1218,446 @@ function disclosure(title, open, note, children) {
   return box;
 }
 
+const fileName = (file) => file.replaceAll("\\", "/").split("/").pop().replace(/\.(safetensors|gguf|ckpt|pt|pth)$/i, "");
+const isCheckpoint = (row) => row && typeof row.id === "string" && typeof row.unet === "string" && row.unet !== "";
+
+// A checkpoint of the user's own, shaped like the built-in profiles the server lists.
+function asProfile(row) {
+  const base = state.profiles.find((p) => p.id === (row.base || "h3"));
+  const missing = [row.unet, row.unet_text].filter((f) => f && !state.checkpoints.some((c) => sameFile(c, f)));
+  return {
+    id: row.id, title: row.title || fileName(row.unet), own: true, available: !missing.length, missing,
+    hint: "Your own checkpoint, on the settings of " + (base?.title || "MiniMax H3") + ".",
+  };
+}
+
+const ownProfiles = () => (state.project?.checkpoints || []).filter(isCheckpoint).map(asProfile);
+const allProfiles = () => [...state.profiles, ...ownProfiles()];
+// The presets this project has no copy of yet. They are offered wherever a model is picked.
+const sparePresets = () => state.presets.filter((row) => isCheckpoint(row) && !(state.project?.checkpoints || []).some((r) => r && r.id === row.id));
+const menuProfiles = () => [...allProfiles(), ...sparePresets().map(asProfile)];
+
+// A project renders on its own copy of a preset, so picking one brings the copy in.
+function adoptPreset(id) {
+  const preset = sparePresets().find((row) => row.id === id);
+  if (preset) state.project.checkpoints = [...(state.project.checkpoints || []), structuredClone(preset)];
+}
+
+// What a checkpoint says, in one order, to tell a project's copy from the preset it came from.
+const checkpointText = (row) => JSON.stringify([row.title || "", row.unet, row.unet_text || "", row.base || "h3",
+  row.steps?.draft ?? null, row.steps?.final ?? null, row.sampler || "", row.scheduler || ""]);
+
+async function savePresets(rows, done) {
+  try {
+    state.presets = (await postJson("/presets", { checkpoints: rows }, "PUT")).checkpoints;
+    toast(done);
+  } catch (error) {
+    toast(error.message, true);
+  }
+  renderInspector();
+}
+const profileOf = (id) => allProfiles().find((p) => p.id === id);
+// The model the project renders with: the one it names, or the first one installed, as the server does.
+const projectProfile = () => profileOf(state.project.profile) || state.profiles.find((p) => p.available) || state.profiles[0];
+
+function choice(label, options, value, onChange) {
+  const wrap = document.createElement("label");
+  wrap.className = "choice";
+  const title = document.createElement("span");
+  title.textContent = label;
+  const select = document.createElement("select");
+  select.dataset.key = label;
+  for (const [id, text] of options) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = text;
+    option.selected = id === value;
+    select.append(option);
+  }
+  select.addEventListener("change", () => {
+    checkpoint();
+    onChange(select.value);
+    save();
+    renderInspector();
+  });
+  wrap.append(title, select);
+  return wrap;
+}
+
+let openCheckpoint = null;
+
+// Any H3 checkpoint the user has: its file, the built-in model whose settings it starts from,
+// and the steps, sampler and scheduler it changes.
+function checkpointSections() {
+  const rows = (state.project.checkpoints || []).filter(isCheckpoint);
+  const live = (id) => (state.project.checkpoints || []).find((r) => r && r.id === id) || {};
+  const files = (current) => {
+    const list = state.checkpoints.map((f) => [f, f]);
+    if (current && !state.checkpoints.some((f) => sameFile(f, current))) list.unshift([current, current + " (not installed)"]);
+    return list;
+  };
+  const add = document.createElement("label");
+  add.className = "choice";
+  const addTitle = document.createElement("span");
+  addTitle.textContent = "Add a checkpoint";
+  const picker = document.createElement("select");
+  picker.dataset.key = "Add a checkpoint";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = state.checkpoints.length ? "Pick a file from models/diffusion_models" : "No files in models/diffusion_models";
+  picker.append(none);
+  for (const file of state.checkpoints) {
+    const option = document.createElement("option");
+    option.value = file;
+    option.textContent = file;
+    picker.append(option);
+  }
+  picker.addEventListener("change", () => {
+    if (!picker.value) return;
+    checkpoint();
+    const id = "m" + crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+    state.project.checkpoints = [...(state.project.checkpoints || []), { id, title: fileName(picker.value), unet: picker.value, base: "h3" }];
+    openCheckpoint = id;
+    save();
+    renderInspector();
+  });
+  add.append(addTitle, picker);
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Render with any MiniMax H3 checkpoint, such as a community fine-tune. Pick its file, then the built-in model it is closest to, and set the steps, sampler and scheduler its author recommends. It then appears under Model, for the project or for one clip.";
+  const shelf = document.createElement("div");
+  shelf.className = "presets";
+  for (const preset of state.presets.filter(isCheckpoint)) {
+    const line = document.createElement("div");
+    line.className = "preset";
+    const name = document.createElement("span");
+    name.className = "preset-name";
+    name.textContent = preset.title || fileName(preset.unet);
+    name.title = preset.unet;
+    const has = rows.some((r) => r.id === preset.id);
+    const take = document.createElement("button");
+    take.className = "quiet small";
+    take.textContent = has ? "Added" : "Add";
+    take.disabled = has;
+    take.title = has ? "This project has it" : "Add it to this project";
+    take.addEventListener("click", () => {
+      checkpoint();
+      adoptPreset(preset.id);
+      openCheckpoint = preset.id;
+      save();
+      renderInspector();
+    });
+    line.append(name, take, trashButton("Delete the preset " + name.textContent, () => savePresets(
+      state.presets.filter((r) => r.id !== preset.id), "Deleted the preset. Projects that use it keep their copy.")));
+    shelf.append(line);
+  }
+  const shelfTitle = document.createElement("p");
+  shelfTitle.className = "shelf-title";
+  shelfTitle.textContent = "Presets, for every project";
+  const out = [section("Your checkpoints", [add, ...(shelf.children.length ? [shelfTitle, shelf] : []), hint])];
+
+  for (const row of rows) {
+    const base = state.profiles.find((p) => p.id === (row.base || "h3")) || state.profiles[0] || { title: "MiniMax H3", steps: {} };
+    const shown = ownProfiles().find((p) => p.id === row.id);
+    const inUse = state.project.profile === row.id;
+    const text = (label, value, onInput, options) => {
+      const made = field(label, value, onInput, options);
+      // The name and the numbers show elsewhere in the panel, so it is drawn again once the field is left.
+      made.querySelector("input").addEventListener("change", () => renderInspector());
+      return made;
+    };
+    const steps = (quality, label) => text(label, row.steps?.[quality] ?? "", (v) => {
+      const target = live(row.id);
+      const count = Number(v);
+      const kept = { ...(target.steps || {}) };
+      if (v.trim() !== "" && Number.isInteger(count) && count >= 1 && count <= 100) kept[quality] = count;
+      else delete kept[quality];
+      if (Object.keys(kept).length) target.steps = kept;
+      else delete target.steps;
+    }, { type: "number", placeholder: String(base.steps?.[quality] ?? "") });
+    const pair = document.createElement("div");
+    pair.className = "halves";
+    pair.append(steps("draft", "Draft steps"), steps("final", "Final steps"));
+    const set = (key) => (value) => {
+      if (value) live(row.id)[key] = value;
+      else delete live(row.id)[key];
+    };
+    const children = [
+      text("Name", row.title || "", (v) => (live(row.id).title = v), { placeholder: fileName(row.unet) }),
+      choice("Model file", files(row.unet), row.unet, set("unet")),
+      choice("Model file for clips that are only a prompt", [["", "The same file"], ...files(row.unet_text)], row.unet_text || "", set("unet_text")),
+      choice("Settings from", state.profiles.map((p) => [p.id, p.title]), row.base || "h3", set("base")),
+      pair,
+      choice("Sampler", [["", "As " + base.title + ": " + (base.sampler || "")], ...state.samplers.map((n) => [n, n])], row.sampler || "", set("sampler")),
+    ];
+    if (/hyperflow/i.test(fileName(row.unet)) || /\.gguf$/i.test(row.unet)) {
+      const own = document.createElement("p");
+      own.className = "hint";
+      own.textContent = "A HyperFlow file samples on its own schedule, so there is no scheduler to pick.";
+      children.push(own);
+    } else {
+      children.push(choice("Scheduler", [["", "As " + base.title + ": " + (base.scheduler || "simple")], ...state.schedulers.map((n) => [n, n])], row.scheduler || "", set("scheduler")));
+    }
+    const about = document.createElement("p");
+    about.className = "hint";
+    about.textContent = shown && !shown.available
+      ? "Not installed. Needs " + shown.missing.join(" and ") + " in models/diffusion_models."
+      : "Empty steps follow " + base.title + ". It keeps that model's LoRA, if it has one, and the way its finals are refined.";
+    children.push(about);
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    const use = document.createElement("button");
+    use.className = "quiet";
+    use.textContent = inUse ? "The project renders with it" : "Render the project with it";
+    use.disabled = inUse || (shown && !shown.available);
+    use.addEventListener("click", () => {
+      checkpoint();
+      state.project.profile = row.id;
+      save();
+      renderInspector();
+    });
+    actions.append(use, trashButton("Remove " + (row.title || fileName(row.unet)), () => {
+      checkpoint();
+      state.project.checkpoints = state.project.checkpoints.filter((r) => !r || r.id !== row.id);
+      // What rendered on it goes back to the first model installed, as the server would pick.
+      if (inUse) state.project.profile = (state.profiles.find((p) => p.available) || state.profiles[0])?.id;
+      save();
+      renderInspector();
+    }));
+    children.push(actions);
+    const preset = state.presets.find((r) => r.id === row.id);
+    const keep = document.createElement("button");
+    keep.className = "quiet wide";
+    keep.textContent = !preset ? "Save as a preset for every project" : checkpointText(preset) === checkpointText(row) ? "Saved as a preset" : "Update the preset";
+    keep.disabled = Boolean(preset) && checkpointText(preset) === checkpointText(row);
+    keep.addEventListener("click", async () => {
+      await flush();
+      const mine = structuredClone(live(row.id));
+      savePresets(preset ? state.presets.map((r) => (r.id === mine.id ? mine : r)) : [...state.presets, mine],
+        preset ? "Updated the preset." : "Saved. Every project now offers it under Model.");
+    });
+    children.push(keep);
+    const box = disclosure(row.title || fileName(row.unet), openCheckpoint === row.id, inUse ? "In use" : base.title, children);
+    box.addEventListener("toggle", () => {
+      if (box.open) openCheckpoint = row.id;
+      else if (openCheckpoint === row.id) openCheckpoint = null;
+    });
+    out.push(box);
+  }
+  return out;
+}
+
+// A clip renders on the project's model unless it picks its own here.
+function clipModel(clip) {
+  const wrap = document.createElement("label");
+  wrap.className = "choice";
+  const title = document.createElement("span");
+  title.textContent = "This clip renders with";
+  const select = document.createElement("select");
+  select.dataset.key = "Clip model";
+  const own = profileOf(clip.profile);
+  const usual = document.createElement("option");
+  usual.value = "";
+  usual.textContent = "The project's model" + (projectProfile() ? ": " + projectProfile().title : "");
+  usual.selected = !own;
+  select.append(usual);
+  for (const profile of menuProfiles()) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = profile.available ? profile.title : profile.title + " (not installed)";
+    option.disabled = !profile.available && profile.id !== own?.id;
+    option.selected = profile.id === own?.id;
+    select.append(option);
+  }
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  const describe = () => {
+    const picked = profileOf(select.value);
+    if (!picked) hint.textContent = "Pick another model to render only this clip with it. Takes keep the model that made them.";
+    else if (!picked.available) hint.textContent = "Not installed. Needs " + picked.missing.join(" and ") + ".";
+    else hint.textContent = picked.hint + " The next render of this clip uses it. Switching between models loads the new one first, which takes a while.";
+  };
+  describe();
+  select.addEventListener("change", () => {
+    checkpoint();
+    const live = clipOf(clip.id);
+    adoptPreset(select.value);
+    if (select.value) live.profile = select.value;
+    else delete live.profile;
+    save();
+    renderInspector();
+  });
+  wrap.append(title, select);
+  return [wrap, hint];
+}
+
+// A strength slider with its number beside it. The fill runs from zero to the thumb, so a
+// negative strength reads as one. Dragging saves without a re-render, so the thumb is never lost.
+function strengthSlider(key, label, value, [min, max], usual, onChange) {
+  const wrap = document.createElement("div");
+  wrap.className = "strength";
+  const range = document.createElement("input");
+  range.type = "range";
+  range.dataset.key = key;
+  range.setAttribute("aria-label", label);
+  range.title = "Double-click for " + usual.toFixed(2);
+  const amount = document.createElement("input");
+  amount.type = "number";
+  amount.className = "amount";
+  amount.dataset.key = key + " amount";
+  amount.setAttribute("aria-label", label + ", as a number");
+  for (const input of [range, amount]) {
+    input.min = min;
+    input.max = max;
+    input.addEventListener("focus", () => checkpoint(), { once: true });
+  }
+  range.step = 0.05;
+  amount.step = 0.05;
+  const show = (v, from) => {
+    if (from !== range) range.value = v;
+    if (from !== amount) amount.value = v.toFixed(2);
+    const at = (x) => (Math.min(max, Math.max(min, x)) - min) / (max - min);
+    range.style.setProperty("--from", Math.min(at(0), at(v)));
+    range.style.setProperty("--to", Math.max(at(0), at(v)));
+  };
+  const set = (raw, from) => {
+    const v = Math.round(Math.min(max, Math.max(min, Number(raw) || 0)) * 100) / 100;
+    show(v, from);
+    onChange(v);
+    save();
+  };
+  show(value, null);
+  range.addEventListener("input", () => set(range.value, range));
+  range.addEventListener("dblclick", () => set(usual, null));
+  amount.addEventListener("input", () => { if (amount.value !== "" && amount.validity.valid) set(amount.value, amount); });
+  amount.addEventListener("change", () => set(amount.value, null));
+  wrap.append(range, amount);
+  return wrap;
+}
+
+const loraName = (file) => file.replaceAll("\\", "/").split("/").pop().replace(/\.(safetensors|ckpt|pt|pth)$/i, "");
+const sameFile = (a, b) => a.replaceAll("\\", "/") === b.replaceAll("\\", "/");
+
+// The project's LoRAs: every render samples with them, each at its own strength.
+function loraSection() {
+  const rows = (state.project.loras || []).filter((row) => row && typeof row.file === "string");
+  const limits = state.realism || { lora_range: [-2, 2], range: [0, 3], limit: 8 };
+  const change = (edit) => {
+    checkpoint();
+    edit();
+    save();
+    renderInspector();
+  };
+  const children = [];
+  const list = document.createElement("div");
+  list.className = "loras";
+  if (state.realism?.installed) {
+    const usual = state.realism.strength;
+    const row = document.createElement("div");
+    row.className = "lora";
+    const head = document.createElement("div");
+    head.className = "lora-head";
+    const name = document.createElement("span");
+    name.className = "lora-name";
+    name.textContent = "Realism Slider";
+    name.title = state.realism.file;
+    const note = document.createElement("span");
+    note.className = "lora-note";
+    note.textContent = "Finals only";
+    const reset = document.createElement("button");
+    reset.className = "quiet small";
+    reset.textContent = "Reset";
+    reset.title = "Back to " + usual.toFixed(2);
+    reset.hidden = typeof state.project.realism !== "number" || state.project.realism === usual;
+    reset.addEventListener("click", () => change(() => delete state.project.realism));
+    head.append(name, note, reset);
+    row.append(head, strengthSlider("Realism", "Realism Slider strength on finals", state.project.realism ?? usual, limits.range, usual, (v) => {
+      if (v === usual) delete state.project.realism;
+      else state.project.realism = v;
+      reset.hidden = v === usual;
+    }));
+    list.append(row);
+  }
+  for (const entry of rows) {
+    // A save swaps the project for the server's copy, so a control finds its row again when it changes it.
+    const live = () => (state.project.loras || []).find((r) => r && r.id === entry.id) || {};
+    const row = document.createElement("div");
+    const on = entry.on !== false;
+    const found = state.loras.some((f) => sameFile(f, entry.file));
+    row.className = "lora" + (on ? "" : " off");
+    const head = document.createElement("div");
+    head.className = "lora-head";
+    const toggle = document.createElement("label");
+    toggle.className = "lora-name";
+    toggle.title = entry.file;
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = on;
+    box.dataset.key = "LoRA " + entry.id + " on";
+    box.addEventListener("change", () => change(() => (live().on = box.checked)));
+    const name = document.createElement("span");
+    name.textContent = loraName(entry.file);
+    toggle.append(box, name);
+    head.append(toggle);
+    if (!found) {
+      const note = document.createElement("span");
+      note.className = "lora-note missing";
+      note.textContent = "Not installed";
+      note.title = "Renders leave it out until " + entry.file + " is in models/loras.";
+      head.append(note);
+    }
+    head.append(trashButton("Remove " + loraName(entry.file), () => change(() => {
+      state.project.loras = state.project.loras.filter((r) => r !== live());
+    })));
+    const strength = typeof entry.strength === "number" ? entry.strength : 1;
+    row.append(head, strengthSlider("LoRA " + entry.id, loraName(entry.file) + " strength", strength, limits.lora_range, 1, (v) => (live().strength = v)));
+    list.append(row);
+  }
+  if (list.children.length) children.push(list);
+  const free = state.loras.filter((f) => !rows.some((r) => sameFile(r.file, f)) && !(state.realism && sameFile(state.realism.file, f)));
+  if (rows.length >= limits.limit) {
+    const full = document.createElement("p");
+    full.className = "hint";
+    full.textContent = "A project takes up to " + limits.limit + " LoRAs. Remove one to add another.";
+    children.push(full);
+  } else if (free.length) {
+    const add = document.createElement("label");
+    add.className = "field";
+    const title = document.createElement("span");
+    title.textContent = "Add a LoRA";
+    const input = document.createElement("input");
+    input.type = "search";
+    input.placeholder = "Search " + free.length + " in models/loras";
+    input.dataset.key = "Add a LoRA";
+    input.setAttribute("list", "lora-files");
+    const options = document.createElement("datalist");
+    options.id = "lora-files";
+    for (const file of free) {
+      const option = document.createElement("option");
+      option.value = file;
+      options.append(option);
+    }
+    const pick = () => {
+      const file = free.find((f) => f === input.value);
+      if (!file) return;
+      change(() => {
+        state.project.loras = [...(state.project.loras || []), { id: "l" + crypto.randomUUID().replaceAll("-", "").slice(0, 8), file, strength: 1, on: true }];
+      });
+    };
+    input.addEventListener("input", pick);
+    input.addEventListener("change", pick);
+    add.append(title, input, options);
+    children.push(add);
+  }
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = state.loras.length
+    ? "Every new render samples with these, drafts and finals alike. They only work if they were trained on MiniMax H3."
+    : "Put LoRAs trained on MiniMax H3 in models/loras, then reload this page to add them here.";
+  children.push(hint);
+  return section("LoRAs", children);
+}
+
 function renderScene(panel) {
   const head = document.createElement("div");
   head.className = "inspector-head";
@@ -1260,8 +1711,8 @@ function renderScene(panel) {
   const models = document.createElement("select");
   models.dataset.key = "Model";
   // A project that names no model renders with the first one installed, as the server does.
-  const current = state.project.profile || state.profiles.find((p) => p.available)?.id || "hyperflow";
-  for (const profile of state.profiles) {
+  const current = projectProfile()?.id || "hyperflow";
+  for (const profile of menuProfiles()) {
     const option = document.createElement("option");
     option.value = profile.id;
     option.textContent = profile.available ? profile.title : profile.title + " (not installed)";
@@ -1272,7 +1723,7 @@ function renderScene(panel) {
   const modelHint = document.createElement("p");
   modelHint.className = "hint";
   const describeModel = () => {
-    const profile = state.profiles.find((p) => p.id === models.value);
+    const profile = profileOf(models.value);
     if (!profile) modelHint.textContent = "";
     else if (profile.available) modelHint.textContent = [profile.hint + " New renders use it.", ...state.finals].join(" ");
     else modelHint.textContent = "Not installed. Needs " + profile.missing.join(" and ") + ".";
@@ -1280,9 +1731,12 @@ function renderScene(panel) {
   describeModel();
   models.addEventListener("change", () => {
     checkpoint();
+    adoptPreset(models.value);
     state.project.profile = models.value;
     describeModel();
     save();
+    // The panel also lists the project's checkpoints and which one is in use.
+    renderInspector();
   });
   model.append(modelTitle, models);
   panel.replaceChildren(
@@ -1297,6 +1751,8 @@ function renderScene(panel) {
         else delete state.project.language;
       }, { placeholder: "English" }),
     ]),
+    ...checkpointSections(),
+    loraSection(),
     section("Overview", [facts]),
   );
 }
@@ -1437,6 +1893,8 @@ function renderInspector() {
 
   parts.push(disclosure("Picture to a track", Boolean(clip.track), clip.track ? "Set" : "", trackSection(clip)));
 
+  parts.push(disclosure("Model", Boolean(profileOf(clip.profile)), profileOf(clip.profile)?.title || "", clipModel(clip)));
+
   const seed = field("Seed. Leave empty for a new one each render", clip.seed ?? "", (v) => {
     clip.seed = v.trim() === "" ? null : Number(v);
   }, { type: "number" });
@@ -1515,6 +1973,8 @@ function versions(clip) {
     img.src = viewUrl(take.poster, take.subfolder);
     const label = document.createElement("span");
     label.textContent = "Take " + (index + 1) + ", " + take.quality;
+    const madeWith = take.models?.profile_title || profileOf(take.models?.profile)?.title;
+    if (madeWith) label.title = "Made with " + madeWith + (take.models?.steps ? ", " + take.models.steps + " steps, " + take.models.sampler : "");
     const seed = document.createElement("small");
     seed.textContent = "Seed " + take.seed;
     button.append(img, label, seed);
@@ -2507,9 +2967,15 @@ async function openProject(folder) {
 }
 
 async function refreshProjects(selected) {
-  const { projects, profiles, finals } = await api("/projects");
+  const { projects, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets } = await api("/projects");
+  state.presets = presets || [];
+  state.checkpoints = checkpoints || [];
+  state.samplers = samplers || [];
+  state.schedulers = schedulers || [];
   state.profiles = profiles || [];
   state.finals = finals || [];
+  state.loras = loras || [];
+  state.realism = realism || null;
   $("project").replaceChildren(...projects.map((name) => {
     const option = document.createElement("option");
     option.value = name;

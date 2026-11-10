@@ -78,7 +78,8 @@ MODELS = {
 # The last steps a final redraws at the refine size, for families whose own schedule has no
 # good place to start them: HyperFlow's 6-step tail from its fourth step.
 REFINE_TAIL = "0.675, 0.385, 0.159, 0.0"
-# Checkpoint profiles, one per family of H3 checkpoints. A project picks one under "profile".
+# Checkpoint profiles, one per family of H3 checkpoints. A project picks one under "profile",
+# and a clip can pick its own the same way.
 # unet names the ref2va file and unet_text the fl2va file; each is a list of names the file
 # may have, and a name ending in * matches any file it starts. A family with no fl2va renders
 # prompt-only clips on its ref2va. A HyperFlow file (see is_hyperflow) loads with the pack's
@@ -137,20 +138,67 @@ PROFILES = {
     },
 }
 DEFAULT_PROFILE = "hyperflow"
+# A project's own checkpoints: how many, the family one starts from, and the steps it may take.
+CHECKPOINT_LIMIT = 12
+# Checkpoints saved as presets are shared by every project. A project keeps its own copy of the ones it uses.
+PRESET_LIMIT = 64
+CHECKPOINT_BASE = "h3"
+STEP_RANGE = (1, 100)
+CHECKPOINT_FIELDS = ("id", "title", "base", "unet", "unet_text", "steps", "sampler", "scheduler")
 # Models that older projects name but the editor no longer renders with.
 RETIRED = {"fasth3_omniref_qad_nvfp4_comfy.safetensors"}
 
 
-def project_profile(project, available=None):
-    """The checkpoint profile a project renders with, and its id.
+def custom_profile(row):
+    """A project's own checkpoint as a profile: the family it is based on, with its own file and sampling.
+
+    It keeps the family's LoRA and the way its finals are refined, and takes its own steps,
+    sampler and scheduler where it names them.
+    """
+    base = PROFILES.get(row.get("base")) or PROFILES[CHECKPOINT_BASE]
+    profile = dict(base, title=str(row.get("title") or row["unet"]), unet=[row["unet"]], custom=True,
+                   hint="Your own checkpoint, on the settings of %s." % base["title"])
+    profile.pop("unet_text", None)
+    if isinstance(row.get("unet_text"), str) and row["unet_text"]:
+        profile["unet_text"] = [row["unet_text"]]
+    steps = dict(base["steps"])
+    for quality in steps:
+        value = row["steps"].get(quality) if isinstance(row.get("steps"), dict) else None
+        if isinstance(value, int) and not isinstance(value, bool) and STEP_RANGE[0] <= value <= STEP_RANGE[1]:
+            steps[quality] = value
+    profile["steps"] = steps
+    for key in ("sampler", "scheduler"):
+        if isinstance(row.get(key), str) and row[key]:
+            profile[key] = row[key]
+    if "refine_from" in base:
+        # A final redraws as many steps at the larger size as the family it is based on.
+        profile["refine_from"] = max(1, steps["final"] - (base["steps"]["final"] - base["refine_from"]))
+    return profile
+
+
+def project_profiles(project):
+    """Every profile a project can render with, by id: the built-in ones, then its own checkpoints."""
+    profiles = dict(PROFILES)
+    for row in project.get("checkpoints") or []:
+        if (isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"] not in PROFILES
+                and isinstance(row.get("unet"), str) and row["unet"]):
+            profiles[row["id"]] = custom_profile(row)
+    return profiles
+
+
+def project_profile(project, available=None, clip=None):
+    """The checkpoint profile a project renders with, or the one a clip of it picks, and its id.
 
     A project that names no profile takes the first one whose files are installed, so a fresh
     install renders with whatever it has. available as in pick_file.
     """
-    name = project.get("profile")
-    if name not in PROFILES:
+    profiles = project_profiles(project)
+    name = (clip or {}).get("profile")
+    if not isinstance(name, str) or name not in profiles:
+        name = project.get("profile")
+    if not isinstance(name, str) or name not in profiles:
         name = installed_profile(available)
-    return name, PROFILES[name]
+    return name, profiles[name]
 
 
 def installed_profile(available=None):
@@ -177,6 +225,40 @@ def finals_status(available):
         notes.append("Finals render without the Realism Slider, because %s is not installed in models/loras."
                      % MODELS["lora"])
     return notes
+
+
+def realism_strength(project, size):
+    """How strong the Realism Slider is on a render of this size: the project's own setting, or the size's."""
+    value = project.get("realism")
+    if not size.get("lora") or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return size.get("lora") or 0
+    return max(REALISM_RANGE[0], min(REALISM_RANGE[1], float(value)))
+
+
+def project_loras(project, available=None):
+    """The LoRAs every render of a project samples with, in order: (file, strength).
+
+    Only the ones that are switched on, installed and not at zero. A project file can be
+    written by hand, so anything that is not a LoRA row is passed over.
+    """
+    rows = []
+    for row in project.get("loras") or []:
+        if not isinstance(row, dict) or row.get("on") is False or not isinstance(row.get("file"), str):
+            continue
+        strength = row.get("strength", 1.0)
+        if isinstance(strength, bool) or not isinstance(strength, (int, float)):
+            continue
+        strength = max(LORA_RANGE[0], min(LORA_RANGE[1], float(strength)))
+        file = row["file"] if available is None else pick_file([row["file"].replace("\\", "/")], available)
+        if file and strength:
+            rows.append((file, strength))
+    return rows[:LORA_LIMIT]
+
+
+def lora_status(available):
+    """What the editor needs to offer LoRAs: the Realism Slider's file, its usual strength, and whether it is installed."""
+    return {"file": MODELS["lora"], "strength": QUALITIES["final"]["lora"], "installed": installed(MODELS["lora"], available),
+            "range": list(REALISM_RANGE), "lora_range": list(LORA_RANGE), "limit": LORA_LIMIT}
 
 
 def pick_file(names, available=None):
@@ -214,9 +296,9 @@ def is_hyperflow(name):
     return base.endswith(".gguf") or (base.endswith(".safetensors") and "hyperflow" in base)
 
 
-def project_models(project, available=None):
+def project_models(project, available=None, clip=None):
     """The models a render uses: the profile's, with any the project names, except retired ones."""
-    _, profile = project_profile(project, available)
+    _, profile = project_profile(project, available, clip)
     models = dict(MODELS)
     models["unet"] = pick_file(profile["unet"], available) or profile["unet"][0]
     models["unet_text"] = pick_file(profile.get("unet_text"), available)
@@ -240,7 +322,8 @@ def profile_status(available):
         if profile.get("lora") and pick_file([profile["lora"][0]], available) is None:
             missing.append(profile["lora"][0])
         rows.append({"id": name, "title": profile["title"], "hint": profile["hint"],
-                     "available": not missing, "missing": missing})
+                     "available": not missing, "missing": missing, "steps": profile["steps"],
+                     "sampler": profile["sampler"], "scheduler": profile.get("scheduler") or "simple"})
     return rows
 
 
@@ -387,9 +470,9 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
     if quality not in QUALITIES:
         raise ValueError("quality must be one of %s" % (tuple(QUALITIES),))
     width, height = frame_size(project, quality)
-    _, profile = project_profile(project, available)
+    _, profile = project_profile(project, available, clip)
     size = dict(QUALITIES[quality], width=width, height=height, steps=profile["steps"][quality])
-    models = project_models(project, available)
+    models = project_models(project, available, clip)
     references = has_references(project, clip)
     # A family's fl2va model takes a prompt alone. Anything with references goes to its ref2va model.
     unet = models["unet"] if references or not models.get("unet_text") else models["unet_text"]
@@ -411,7 +494,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
         "9": {"class_type": "H3LivePreview", "inputs": {
             "model": ["5", 0], "audio_vae": ["4", 0], "folder": "%s/%s/preview" % (ROOT, folder)}},
         "11": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": profile["sampler"]}},
-        "12": {"class_type": "BasicScheduler", "inputs": {"model": ["5", 0], "scheduler": "simple", "steps": size["steps"], "denoise": 1.0}},
+        "12": {"class_type": "BasicScheduler", "inputs": {"model": ["5", 0], "scheduler": profile.get("scheduler") or "simple", "steps": size["steps"], "denoise": 1.0}},
         "13": {"class_type": "BasicGuider", "inputs": {"model": ["9", 0], "conditioning": ["10", 0]}},
         "14": {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)}},
         "15": {"class_type": "SamplerCustomAdvanced", "inputs": {
@@ -435,10 +518,16 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
         graph["94"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": models["profile_lora"],
                                                           "strength": profile["lora"][1]}}
         model = ["94", 0]
-    if size.get("lora") and models.get("lora") and installed(models["lora"], available):
+    realism = realism_strength(project, size)
+    if realism and models.get("lora") and installed(models["lora"], available):
         # The Realism Slider, on the model both passes sample with. Without it a final still renders.
-        graph["95"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": models["lora"], "strength": size["lora"]}}
+        graph["95"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": models["lora"], "strength": realism}}
         model = ["95", 0]
+    for n, (file, strength) in enumerate(project_loras(project, available)):
+        # The project's own LoRAs, stacked in the order the project lists them, on drafts and finals alike.
+        node = str(LORA_NODE + n)
+        graph[node] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": file, "strength": strength}}
+        model = [node, 0]
     graph["5"]["inputs"]["model"] = model
     take_inputs = graph["10"]["inputs"]
     first, last = frame_of(clip, "first"), frame_of(clip, "last")
@@ -641,9 +730,14 @@ def export_command(project, paths, out_path, width=None, height=None):
 HOLD = 39
 MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
-               "first", "last", "language", "track", "bin")
+               "first", "last", "language", "track", "bin", "profile")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
-PROJECT_FIELDS = ("style", "format", "language", "profile")
+PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "realism", "checkpoints")
+# A project's own LoRAs: how many, how strong, and where their nodes start in a render graph.
+LORA_LIMIT = 8
+LORA_RANGE = (-2.0, 2.0)
+REALISM_RANGE = (0.0, 3.0)
+LORA_NODE = 100
 CAST_FIELDS = ("name", "description", "voice")
 BIN_FIELDS = ("name",)
 LINK_MODES = ("extend_after", "extend_before", "bridge", "merge")
@@ -776,9 +870,18 @@ def clean_clip_fields(fields):
             out[side] = clean_asset(out[side], "a %s frame" % side)
     if "track" in out:
         out["track"] = clean_track(out["track"])
+    if out.get("profile") is not None and not isinstance(out["profile"], str):
+        raise ValueError("profile is a profile id, or null for the project's")
     if "bin" in out and out["bin"] is not None and not isinstance(out["bin"], str):
         raise ValueError("bin is a bin id, or null for none")
     return out
+
+
+def check_profile(project, fields):
+    """A clip can only pick a profile the project can render with."""
+    profiles = project_profiles(project)
+    if fields.get("profile") is not None and fields["profile"] not in profiles:
+        raise ValueError("profile must be one of %s, or null for the project's" % ", ".join(profiles))
 
 
 def check_bin(project, fields):
@@ -829,6 +932,7 @@ def place_clip(project, clip_id, start=None):
 def add_clip(project, fields, start=None, place=True):
     fields = clean_clip_fields(fields or {})
     check_bin(project, fields)
+    check_profile(project, fields)
     number = len(project.get("clips", [])) + 1
     clip = {"id": new_id("c"), "name": "Clip %s" % number, "action": "", "camera": "", "speaker": "",
             "dialogue": "", "sound": "", "music": "", "seconds": 5, "takes": [], "active": None}
@@ -842,9 +946,10 @@ def update_clip(project, clip_id, fields):
     clip = find_clip(project, clip_id)
     fields = clean_clip_fields(fields)
     check_bin(project, fields)
+    check_profile(project, fields)
     before = planned_frames(clip)
     for key, value in fields.items():
-        if value is None and key in ("first", "last", "track", "bin"):
+        if value is None and key in ("first", "last", "track", "bin", "profile"):
             clip.pop(key, None)
         else:
             clip[key] = value
@@ -1171,15 +1276,100 @@ def accept_take(project, clip_id, take):
     return clip
 
 
+def clean_strength(value, limits, what):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not limits[0] <= value <= limits[1]:
+        raise ValueError("%s must be a number from %g to %g" % (what, limits[0], limits[1]))
+    return round(float(value), 2)
+
+
+def clean_loras(value):
+    """A project's LoRAs as an agent or the editor writes them: a file from models/loras, a strength, and whether it is on."""
+    if not isinstance(value, list):
+        raise ValueError("loras must be a list of {file, strength}")
+    if len(value) > LORA_LIMIT:
+        raise ValueError("a project takes up to %s LoRAs" % LORA_LIMIT)
+    rows = []
+    for row in value:
+        if not isinstance(row, dict) or not isinstance(row.get("file"), str) or not row["file"].strip():
+            raise ValueError("each LoRA needs a file, as models/loras lists it")
+        if any(r["file"] == row["file"] for r in rows):
+            raise ValueError("%s is listed twice" % row["file"])
+        unknown = sorted(set(row) - {"id", "file", "strength", "on"})
+        if unknown:
+            raise ValueError("unknown LoRA fields: %s. Allowed: file, strength, on" % ", ".join(unknown))
+        rows.append({"id": str(row.get("id") or new_id("l")), "file": row["file"],
+                     "strength": clean_strength(row.get("strength", 1.0), LORA_RANGE, "a LoRA's strength"),
+                     "on": row.get("on") is not False})
+    return rows
+
+
+def clean_checkpoints(value, limit=CHECKPOINT_LIMIT):
+    """A project's own checkpoints as an agent or the editor writes them.
+
+    Each is a ref2va file from models/diffusion_models, the built-in family whose settings it
+    starts from, and whatever it changes: steps for drafts and finals, sampler, scheduler, and
+    an fl2va file for clips that are only a prompt.
+    """
+    if not isinstance(value, list):
+        raise ValueError("checkpoints must be a list of {title, unet, base}")
+    if len(value) > limit:
+        raise ValueError("there is room for %s checkpoints here" % limit)
+    rows = []
+    for row in value:
+        if not isinstance(row, dict) or not isinstance(row.get("unet"), str) or not row["unet"].strip():
+            raise ValueError("each checkpoint needs unet, a file as models/diffusion_models lists it")
+        check_fields(row, CHECKPOINT_FIELDS)
+        base = row.get("base") or CHECKPOINT_BASE
+        if base not in PROFILES:
+            raise ValueError("base must be one of %s" % ", ".join(PROFILES))
+        made = {"id": row.get("id") or new_id("m"), "unet": row["unet"], "base": base,
+                "title": str(row.get("title") or "").strip() or row["unet"].replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0]}
+        if not isinstance(made["id"], str) or made["id"] in PROFILES or any(r["id"] == made["id"] for r in rows):
+            raise ValueError("a checkpoint's id must be its own, and not the id of a built-in profile")
+        if row.get("unet_text"):
+            if not isinstance(row["unet_text"], str):
+                raise ValueError("unet_text is a file as models/diffusion_models lists it")
+            made["unet_text"] = row["unet_text"]
+        if row.get("steps") is not None:
+            steps = row["steps"]
+            if not isinstance(steps, dict) or set(steps) - set(QUALITIES):
+                raise ValueError("steps is {draft, final}")
+            for quality, count in steps.items():
+                if isinstance(count, bool) or not isinstance(count, int) or not STEP_RANGE[0] <= count <= STEP_RANGE[1]:
+                    raise ValueError("steps must be whole numbers from %s to %s" % STEP_RANGE)
+            made["steps"] = dict(steps)
+        for key in ("sampler", "scheduler"):
+            if row.get(key):
+                if not isinstance(row[key], str):
+                    raise ValueError("%s must be a name ComfyUI knows, such as %s" % (key, "euler" if key == "sampler" else "simple"))
+                made[key] = row[key]
+        rows.append(made)
+    return rows
+
+
 def set_project(project, fields):
     check_fields(fields, PROJECT_FIELDS)
-    for key, value in fields.items():
+    # The project's own checkpoints first, so the same call can pick one as its profile.
+    for key, value in sorted(fields.items(), key=lambda pair: pair[0] != "checkpoints"):
+        if key == "checkpoints":
+            project["checkpoints"] = clean_checkpoints(value)
+            continue
+        if key == "loras":
+            project["loras"] = clean_loras(value)
+            continue
+        if key == "realism":
+            # None goes back to the usual strength.
+            if value is None:
+                project.pop("realism", None)
+            else:
+                project["realism"] = clean_strength(value, REALISM_RANGE, "realism")
+            continue
         if not isinstance(value, str):
             raise ValueError("%s must be text" % key)
         if key == "format" and value not in FORMATS:
             raise ValueError("format must be one of %s" % ", ".join(FORMATS))
-        if key == "profile" and value not in PROFILES:
-            raise ValueError("profile must be one of %s" % ", ".join(PROFILES))
+        if key == "profile" and value not in project_profiles(project):
+            raise ValueError("profile must be one of %s" % ", ".join(project_profiles(project)))
         if key == "language" and not value.strip():
             raise ValueError("language names the language people speak, such as English or Portuguese")
         project[key] = value.strip() if key == "language" else value
@@ -1255,6 +1445,10 @@ def render_models(graph):
     if "95" in graph:
         used["lora"] = graph["95"]["inputs"]["lora_name"]
         used["lora_strength"] = graph["95"]["inputs"]["strength"]
+    extra = [graph[n]["inputs"] for n in sorted((n for n in graph if n.isdigit() and int(n) >= LORA_NODE), key=int)
+             if graph[n]["class_type"] == "H3Lora"]
+    if extra:
+        used["loras"] = [{"file": i["lora_name"], "strength": i["strength"]} for i in extra]
     return used
 
 
@@ -1274,7 +1468,9 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None):
     graph = render_graph(project, folder, clip, take, quality, int(seed), available)
     job = {"clip": clip_id, "take": take, "quality": quality, "seed": int(seed),
            "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
-           "models": dict(render_models(graph), profile=project_profile(project, available)[0])}
+           "models": dict(render_models(graph), profile=project_profile(project, available, clip)[0],
+                          profile_title=project_profile(project, available, clip)[1]["title"],
+                          steps=graph["12"]["inputs"]["steps"], sampler=graph["11"]["inputs"]["sampler_name"])}
     if "91" in graph:
         job["size"] = [graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]]
     if clip.get("track"):
@@ -1416,6 +1612,7 @@ def clip_state(project, clip):
 
 
 def describe(project):
+    profiles = project_profiles(project)
     clips = []
     for clip in project.get("clips", []):
         take = active_take(clip)
@@ -1431,6 +1628,8 @@ def describe(project):
             entry["footage"] = True
         if clip.get("bin"):
             entry["bin"] = clip["bin"]
+        if clip.get("profile") in profiles:
+            entry["profile"] = clip["profile"]
         if clip.get("track"):
             entry["track"] = {"file": clip["track"]["file"], "from": clip["track"]["from"]}
         if clip.get("error"):
@@ -1459,6 +1658,12 @@ def describe(project):
     return {
         "name": project.get("name"), "revision": project.get("revision", 0), "style": project.get("style", ""),
         "format": project.get("format") or "16:9", "language": project.get("language") or LANGUAGE,
+        "profile": project_profile(project)[0],
+        "checkpoints": [{"id": name, "title": profile["title"], "unet": profile["unet"][0], "steps": profile["steps"],
+                         "sampler": profile["sampler"], "scheduler": profile.get("scheduler") or "simple"}
+                        for name, profile in profiles.items() if profile.get("custom")],
+        "loras": [{"file": r["file"], "strength": r.get("strength", 1.0), "on": r.get("on") is not False}
+                  for r in project.get("loras") or [] if isinstance(r, dict) and r.get("file")],
         "frames": scene_end(project), "length": timecode(scene_end(project)), "fps": FPS,
         "cast": [{"id": p["id"], "name": p["name"], "description": p.get("description", ""),
                   "picture": bool(p.get("file")), "voice": bool(p.get("voice"))} for p in project.get("cast", [])],
