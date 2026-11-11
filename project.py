@@ -492,6 +492,44 @@ def clip_refmods(project, clip, available=None):
     return rows[:REFMOD_SLOTS]
 
 
+# How the RefMod pack stores a reference: pooled down, its default, or the whole encode.
+REFMOD_EXTRACT = "MiniMaxH3RefModExtract"
+REFMOD_MODES = {
+    "compressed": {"extraction_preset": "manual", "mode": "Compressed Reference", "max_tokens": 5120},
+    "whole": {"extraction_preset": "identity_encode", "mode": "Full Reference", "max_tokens": 8192},
+}
+
+
+def refmod_graph(project, cast_id, name=None, mode="compressed", available=None):
+    """The name a RefMod of a cast member is saved under, and the graph that makes it from the member's pictures.
+
+    It runs the RefMod pack's own extract node, so it needs that pack. Compressed is quick to
+    render with; whole keeps more of the pictures and makes drafts several times slower.
+    """
+    person = find_cast(project, cast_id)
+    pictures = member_pictures(person)
+    if not pictures:
+        raise ValueError("%s has no picture to make a RefMod from" % person["name"])
+    if mode not in REFMOD_MODES:
+        raise ValueError("mode must be one of %s" % ", ".join(REFMOD_MODES))
+    name = re.sub(r"[^A-Za-z0-9_-]", "", str(name or person["name"]).strip().replace(" ", "_")).lower()[:48]
+    if not name:
+        raise ValueError("a RefMod needs a name with letters or numbers")
+    settings = REFMOD_MODES[mode]
+    graph = {"1": {"class_type": "VAELoader", "inputs": {"vae_name": project_models(project, available)["vae"]}}}
+    extract = {"name": name, "mode": settings["mode"], "concept_type": "identity", "background_retention": 0.0,
+               "ref_resolution": 1024, "pool_h": 16, "pool_w": 16, "latent_frames": 16, "identity": 500, "merge": False,
+               "motion_only": False, "multiplier": 1, "max_tokens": settings["max_tokens"],
+               "description": str(person.get("description") or ""), "save": True, "vae": ["1", 0],
+               "extraction_preset": settings["extraction_preset"], "budget_policy": "truncate"}
+    for index, asset in enumerate(pictures):
+        node = str(10 + index)
+        graph[node] = still_node(asset)
+        extract["refs_image.ref_image_%s" % index] = [node, 0]
+    graph["2"] = {"class_type": REFMOD_EXTRACT, "inputs": extract}
+    return name, graph
+
+
 def name_unpictured(text, members):
     """Write out cast members who have no picture: @Name becomes their name and, the first time, what they look like.
 

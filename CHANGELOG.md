@@ -35,6 +35,13 @@ Each release is a tag on GitHub, `v` followed by the version.
 
 ### Added
 
+- **Drag a cast member into the text.** Drop a cast card on What happens, or
+  on any other field of a clip, and its @Name lands there. A member with a
+  picture or a RefMod also joins that clip's cast.
+- **Make a RefMod from a cast member.** With the ComfyUI-MiniMaxH3Mod pack
+  installed, a cast member's RefMod section has **Make a RefMod from these
+  pictures**. It saves one from all the member's pictures and the member
+  carries it from then on. For agents: the `make_refmod` operation.
 - **LoRAs per clip.** A clip's Shot tab has **LoRAs for this clip**: LoRAs only
   that clip samples with, after the project's. Adding one the project also has
   changes its strength for that clip, or leaves it out. For agents: `loras` in

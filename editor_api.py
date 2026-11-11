@@ -610,6 +610,17 @@ async def operations(request):
                 elif kind == "cancel":
                     later.append((index, op, store._resolve(op.get("clip"), names, "clip"), None))
                     results.append(None)
+                elif kind == "make_refmod":
+                    taken = refmod_files()
+                    if taken is None or store.REFMOD_EXTRACT not in __import__("nodes").NODE_CLASS_MAPPINGS:
+                        raise ValueError("making a RefMod needs the ComfyUI-MiniMaxH3Mod pack, which is not installed")
+                    cast_id = store._resolve(op.get("cast"), names, "cast")
+                    name, graph = store.refmod_graph(work, cast_id, op.get("name"), op.get("mode") or "compressed",
+                                                     available_models())
+                    if name in taken and (store.find_cast(work, cast_id).get("refmod") or {}).get("file") != name and not op.get("replace"):
+                        raise ValueError("a RefMod named %s already exists. Send another name, or replace: true" % name)
+                    later.append((index, op, (cast_id, name, graph), None))
+                    results.append(None)
                 else:
                     results.append(store.apply_op(work, op, names))
             except (ValueError, KeyError, TypeError) as error:
@@ -629,6 +640,13 @@ async def operations(request):
                 if op["op"] == "render":
                     job = await start_render(work, folder, clip_id, op.get("quality"), op.get("seed"), op.get("client_id"))
                     results[index] = {"clip": clip_id, "job": job["id"], "take": job["take"]}
+                elif op["op"] == "make_refmod":
+                    cast_id, name, graph = clip_id
+                    prompt = await queue_prompt(graph, op.get("client_id"))
+                    # The member carries it from now on. Renders leave it out until the file is there.
+                    person = store.find_cast(work, cast_id)
+                    person["refmod"] = {"file": name, "strength": (person.get("refmod") or {}).get("strength", 1.0)}
+                    results[index] = {"cast": cast_id, "refmod": name, "job": prompt}
                 else:
                     job = find_job(work, {"clip": clip_id, "job": op.get("job")})
                     await stop_render(work, job)

@@ -770,6 +770,13 @@ function renderCast() {
     const name = document.createElement("span");
     name.textContent = person.name;
     button.append(image, name);
+    button.draggable = true;
+    button.addEventListener("dragstart", (event) => {
+      // Dropped on a text field, the browser types this where it lands.
+      event.dataTransfer.setData("text/plain", "@" + person.name + " ");
+      event.dataTransfer.setData("application/x-h3-cast", person.id);
+      event.dataTransfer.effectAllowed = "copy";
+    });
     button.addEventListener("click", () => {
       setSource(null);
       state.person = person.id;
@@ -811,7 +818,59 @@ function refmodSection(person) {
   else if (person.refmod && !person.file) hint.textContent = "With no picture, shots render on the prompt-only model, so describe them above. A whole RefMod can make drafts several times slower.";
   else hint.textContent = "A reference saved with the ComfyUI-MiniMaxH3Mod pack, added to every shot with " + person.name + ". A whole RefMod can make drafts several times slower.";
   parts.push(hint);
+  if (state.refmods.installed && person.file) {
+    const making = current && !known;
+    const make = document.createElement("button");
+    make.className = "quiet wide";
+    make.dataset.key = "Make a RefMod";
+    make.textContent = making ? "Making the RefMod" : person.refmod ? "Make it again from these pictures" : "Make a RefMod from these pictures";
+    make.disabled = making;
+    make.addEventListener("click", () => makeRefmod(person));
+    parts.push(make);
+  }
   return parts;
+}
+
+// A cast member dropped into a clip's text is in the shot, so the clip takes its pictures too.
+$("inspector").addEventListener("drop", (event) => {
+  const id = event.dataTransfer?.getData("application/x-h3-cast");
+  const clip = clipOf(state.clip);
+  if (!id || !clip || !event.target.matches?.("textarea, input[type=text], input:not([type])")) return;
+  const person = (state.project.cast || []).find((c) => c.id === id);
+  if (!person || !(person.file || person.refmod) || (clip.cast || []).includes(id)) return;
+  // After the browser has typed the name and the field has saved it.
+  setTimeout(() => {
+    const live = clipOf(clip.id);
+    if (!live || (live.cast || []).includes(id)) return;
+    live.cast = [...(live.cast || []), id];
+    save();
+    renderInspector();
+    toast(person.name + " is now in the cast of " + live.name + ".");
+  }, 0);
+});
+
+// Makes a RefMod from a cast member's pictures with the RefMod pack, then waits for its file to appear.
+async function makeRefmod(person) {
+  try {
+    await flush();
+    const reply = await postJson("/project/" + state.folder + "/ops", { ops: [{ op: "make_refmod", cast: person.id, client_id: clientId }] });
+    const name = reply.results[0].refmod;
+    adopt(await api("/project/" + state.folder));
+    renderAll();
+    toast("Making a RefMod from the pictures of " + person.name + ". It takes a minute or so.");
+    for (let tries = 0; tries < 90; tries++) {
+      await new Promise((done) => setTimeout(done, 4000));
+      const { refmods } = await api("/projects");
+      if (!refmods?.files?.includes(name)) continue;
+      state.refmods = refmods;
+      renderInspector();
+      toast("The RefMod of " + person.name + " is ready. New renders with " + person.name + " use it.");
+      return;
+    }
+    toast("The RefMod of " + person.name + " has not appeared yet. Look at the ComfyUI log if it does not.", true);
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 function addRefmodMember() {

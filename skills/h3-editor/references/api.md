@@ -251,8 +251,16 @@ custom node pack: `"refmod": {"file": "hero_v1", "strength": 1.0}` in `add_cast`
 them: a member that is only a RefMod renders on the prompt-only model, with `@Name` written
 out as the name and description. `GET /projects` gives `refmods` as
 `{"installed", "files"}`; when the pack is not installed, or the file is missing, renders
-leave the RefMod out. The editor does not make RefMods. A take records the ones it used in
-`models.refmods`.
+leave the RefMod out. A take records the ones it used in `models.refmods`.
+
+`make_refmod`: `cast`, optional `name` (the default is the member's name, in lower case with
+underscores), optional `mode`: `compressed`, the default, which renders about as fast as no
+reference, or `whole`, which keeps more of the pictures and makes drafts several times
+slower. It queues the pack's own extract node on all of the member's pictures and sets the
+member's `refmod` to the new file. Returns `{"cast", "refmod", "job"}`. The file takes a
+few seconds to a minute to appear in `refmods.files`; renders leave it out until then. It is
+refused when the pack is not installed, when the member has no picture, and when a RefMod of
+that name already exists and is not this member's, unless `"replace": true` is sent.
 
 `update_cast`: `cast`, `fields`: `name`,
 `description`, `voice` (`null` removes it, unless it is all they have). `remove_cast`:

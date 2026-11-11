@@ -5,7 +5,7 @@ from policy import bridge_spans, legal_length, video_span
 from project import (MODELS, PRESET_LIMIT, PROFILES, REALISM_LORAS, REFINE_TAIL, active_take, add_cast, add_clip, apply_op, cast_pictures, clean_checkpoints,
                      clip_prompt, describe, encoder_status, update_cast, export_command, export_plan, finals_status,
                      frame_of, installed_profile, is_hyperflow, item_length, linked_length, lora_status, new_project, pick_file,
-                     plan_render, profile_status, project_models, render_graph, render_models, set_project, slug, update_clip,
+                     plan_render, profile_status, project_models, refmod_graph, render_graph, render_models, set_project, slug, update_clip,
                      snap_frames, tempo_chain)
 
 HYPERFLOW = set(PROFILES["hyperflow"]["unet"] + PROFILES["hyperflow"]["unet_text"])
@@ -730,6 +730,46 @@ class CastTest(unittest.TestCase):
         self.assertEqual(frame_of({"last": self.asset, "link": {"mode": "extend_after"}}, "last"), self.asset)
         self.assertIsNone(frame_of({"last": self.asset, "link": {"mode": "extend_before"}}, "last"))
         self.assertIsNone(frame_of({"first": self.asset, "link": {"mode": "bridge"}}, "first"))
+
+
+class RefmodGraphTest(unittest.TestCase):
+    def member(self, **extra):
+        project = new_project("x")
+        person = add_cast(project, dict({"name": "Old Tom", "description": "a keeper with a white beard",
+                                         "file": "tom.png", "subfolder": "h3take_projects/x/assets"}, **extra))
+        return project, person
+
+    def test_it_makes_a_refmod_from_every_picture_of_the_member(self):
+        project, person = self.member(pictures=[{"file": "side.png", "subfolder": "h3take_projects/x/assets"}])
+        name, graph = refmod_graph(project, person["id"])
+        self.assertEqual(name, "old_tom")
+        extract = graph["2"]["inputs"]
+        self.assertEqual(graph["2"]["class_type"], "MiniMaxH3RefModExtract")
+        self.assertEqual((extract["name"], extract["mode"], extract["description"], extract["save"]),
+                         ("old_tom", "Compressed Reference", "a keeper with a white beard", True))
+        self.assertEqual(graph["10"]["inputs"]["file"], "h3take_projects/x/assets/tom.png")
+        self.assertEqual(graph["11"]["inputs"]["file"], "h3take_projects/x/assets/side.png")
+        self.assertEqual((extract["refs_image.ref_image_0"], extract["refs_image.ref_image_1"]), (["10", 0], ["11", 0]))
+        self.assertEqual(extract["vae"], ["1", 0])
+        self.assertEqual(graph["1"]["inputs"]["vae_name"], project_models(project)["vae"])
+
+    def test_it_can_keep_the_whole_reference_and_take_a_name(self):
+        project, person = self.member()
+        name, graph = refmod_graph(project, person["id"], "Tom, at 60!", "whole")
+        self.assertEqual(name, "tom_at_60")
+        self.assertEqual((graph["2"]["inputs"]["mode"], graph["2"]["inputs"]["extraction_preset"]), ("Full Reference", "identity_encode"))
+
+    def test_it_needs_a_picture_a_name_and_a_known_mode(self):
+        project, person = self.member()
+        voice = add_cast(project, {"name": "Narrator", "voice": {"file": "v.wav", "subfolder": "a"}})
+        with self.assertRaises(ValueError):
+            refmod_graph(project, voice["id"])
+        with self.assertRaises(ValueError):
+            refmod_graph(project, person["id"], "!!!")
+        with self.assertRaises(ValueError):
+            refmod_graph(project, person["id"], None, "huge")
+        with self.assertRaises(KeyError):
+            refmod_graph(project, "nobody")
 
 
 class LinkTest(unittest.TestCase):
