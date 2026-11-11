@@ -120,6 +120,18 @@ Every new render of the project samples with the ones that are ticked, in the
 order listed, on drafts and finals alike. The same section has the Realism
 Slider's strength on finals, from 0 to 3; it starts at 1.2.
 
+Each LoRA has a timing button, **All steps** by default. It opens a **Start**
+slider: at 1 the LoRA runs on every step, and lower values leave the first
+steps alone, so the framing and pose stay as they would be without it.
+
+A clip can have LoRAs of its own, under **LoRAs for this clip** in its Shot
+tab. Only that clip samples with them, after the project's. Adding one the
+project also has gives it another strength in that clip, and unticking it
+there leaves it out of that clip.
+
+The list you pick a LoRA from has a star beside each file. Starred files list
+first, in every project on this browser.
+
 ## Your own checkpoints
 
 Any other MiniMax H3 checkpoint, such as a community fine-tune, renders in the

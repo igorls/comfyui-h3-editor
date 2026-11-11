@@ -35,6 +35,15 @@ Each release is a tag on GitHub, `v` followed by the version.
 
 ### Added
 
+- **LoRAs per clip.** A clip's Shot tab has **LoRAs for this clip**: LoRAs only
+  that clip samples with, after the project's. Adding one the project also has
+  changes its strength for that clip, or leaves it out. For agents: `loras` in
+  a clip's `fields`.
+- **When a LoRA joins.** Each LoRA has a **Start** slider: at 1 it runs on
+  every step, lower leaves the first steps alone so framing and pose stay
+  put. For agents: `start_sigma` on a LoRA.
+- **Favorite LoRAs.** Star a file in the LoRA list and it lists first from then
+  on.
 - **Batches of renders are grouped by model.** Render all drafts, and a batch
   of renders sent by an agent, queue the clips that load the same model file
   one after another, so a project that mixes models, or prompt-only clips with

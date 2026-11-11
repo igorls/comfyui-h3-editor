@@ -1822,7 +1822,12 @@ function strengthSlider(key, label, value, [min, max], usual, onChange) {
 }
 
 // A searchable list in a dialog, for folders that hold hundreds of files. Resolves to the file picked, or null.
-function pickFile2(title, files, hint) {
+// Files the user starred in a picker, kept on this browser under the picker's own key.
+function starred(key) {
+  try { return new Set(JSON.parse(localStorage.getItem(key) || "[]")); } catch (_) { return new Set(); }
+}
+
+function pickFile2(title, files, hint, favoritesKey = null) {
   const dialog = $("picker");
   const search = $("pickerSearch");
   const list = $("pickerList");
@@ -1848,6 +1853,9 @@ function pickFile2(title, files, hint) {
       // Every word typed must be somewhere in the name, in any order.
       const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
       shown = files.filter((f) => words.every((w) => f.toLowerCase().includes(w)));
+      const stars = favoritesKey ? starred(favoritesKey) : null;
+      // Favourites come first, each group in the order the folder lists them.
+      if (stars) shown = [...shown.filter((f) => stars.has(f)), ...shown.filter((f) => !stars.has(f))];
       active = Math.min(active, Math.max(0, shown.length - 1));
       $("pickerCount").textContent = words.length ? shown.length + " of " + files.length : "";
       if (!shown.length) {
@@ -1873,7 +1881,23 @@ function pickFile2(title, files, hint) {
           item.append(where);
         }
         item.addEventListener("click", () => finish(file));
-        return item;
+        if (!stars) return item;
+        const row = document.createElement("div");
+        row.className = "picker-row";
+        const star = document.createElement("button");
+        star.className = "picker-star";
+        star.setAttribute("aria-pressed", String(stars.has(file)));
+        star.setAttribute("aria-label", (stars.has(file) ? "Remove " : "Add ") + loraName(file) + (stars.has(file) ? " from" : " to") + " favorites");
+        star.title = stars.has(file) ? "A favorite. Click to remove it" : "Make it a favorite, so it lists first";
+        star.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5l2.3 4.7 5.2.8-3.8 3.6.9 5.2-4.6-2.5-4.6 2.5.9-5.2-3.8-3.6 5.2-.8z"/></svg>';
+        star.addEventListener("click", () => {
+          if (stars.has(file)) stars.delete(file);
+          else stars.add(file);
+          try { localStorage.setItem(favoritesKey, JSON.stringify([...stars])); } catch (_) {}
+          draw();
+        });
+        row.append(item, star);
+        return row;
       }));
       list.children[active]?.scrollIntoView({ block: "nearest" });
     }
@@ -1900,9 +1924,14 @@ function pickFile2(title, files, hint) {
 const loraName = (file) => file.replaceAll("\\", "/").split("/").pop().replace(/\.(safetensors|ckpt|pt|pth)$/i, "");
 const sameFile = (a, b) => a.replaceAll("\\", "/") === b.replaceAll("\\", "/");
 
-// The project's LoRAs: every render samples with them, each at its own strength.
-function loraSection() {
-  const rows = (state.project.loras || []).filter((row) => row && typeof row.file === "string");
+// Rows whose timing control is open, so it stays open while the panel is drawn again.
+const loraTiming = new Set();
+
+// The project's LoRAs, which every render samples with, or one clip's own, each at its own strength.
+function loraSection(clip = null) {
+  // A save swaps the project for the server's copy, so the list is found again each time it is changed.
+  const owner = () => (clip ? clipOf(clip.id) : state.project) || {};
+  const rows = (owner().loras || []).filter((row) => row && typeof row.file === "string");
   const limits = state.realism || { lora_range: [-2, 2], range: [0, 3], limit: 8 };
   const change = (edit) => {
     checkpoint();
@@ -1913,7 +1942,7 @@ function loraSection() {
   const children = [];
   const list = document.createElement("div");
   list.className = "loras";
-  if (state.realism?.installed) {
+  if (!clip && state.realism?.installed) {
     const usual = state.realism.strength;
     // It can be switched off like any other LoRA: off is a strength of zero, and finals render without it.
     const on = state.project.realism !== 0;
@@ -1958,7 +1987,7 @@ function loraSection() {
   }
   for (const entry of rows) {
     // A save swaps the project for the server's copy, so a control finds its row again when it changes it.
-    const live = () => (state.project.loras || []).find((r) => r && r.id === entry.id) || {};
+    const live = () => (owner().loras || []).find((r) => r && r.id === entry.id) || {};
     const row = document.createElement("div");
     const on = entry.on !== false;
     const found = state.loras.some((f) => sameFile(f, entry.file));
@@ -1984,11 +2013,42 @@ function loraSection() {
       note.title = "Renders leave it out until " + entry.file + " is in models/loras.";
       head.append(note);
     }
+    // When it joins: on every step, or only after the first ones have set the composition.
+    const start = typeof entry.start_sigma === "number" ? entry.start_sigma : 1;
+    const timed = start < 1 || loraTiming.has(entry.id);
+    const when = document.createElement("button");
+    when.className = "quiet small";
+    when.dataset.key = "LoRA " + entry.id + " timing";
+    when.textContent = start < 1 ? "From " + start.toFixed(2) : "All steps";
+    when.title = "When the LoRA joins the render. Click to " + (timed ? "hide" : "set") + " it";
+    when.setAttribute("aria-expanded", String(timed));
+    when.disabled = start < 1;
+    when.addEventListener("click", () => {
+      if (loraTiming.has(entry.id)) loraTiming.delete(entry.id);
+      else loraTiming.add(entry.id);
+      renderInspector();
+    });
+    head.append(when);
     head.append(trashButton("Remove " + loraName(entry.file), () => change(() => {
-      state.project.loras = state.project.loras.filter((r) => r !== live());
+      owner().loras = owner().loras.filter((r) => r !== live());
+      if (clip && !owner().loras.length) delete owner().loras;
     })));
     const strength = typeof entry.strength === "number" ? entry.strength : 1;
     row.append(head, strengthSlider("LoRA " + entry.id, loraName(entry.file) + " strength", strength, limits.lora_range, 1, (v) => (live().strength = v)));
+    if (timed) {
+      const timing = document.createElement("div");
+      timing.className = "lora-start";
+      const label = document.createElement("span");
+      label.textContent = "Start";
+      label.title = "1 runs it on every step. Lower leaves the first steps alone, so the framing and pose stay as they would be without it. Try 0.75.";
+      timing.append(label, strengthSlider("LoRA " + entry.id + " start", loraName(entry.file) + " start, from 1 for every step down to 0", start, [0, 1], 1, (v) => {
+        if (v < 1) live().start_sigma = v;
+        else delete live().start_sigma;
+        when.textContent = v < 1 ? "From " + v.toFixed(2) : "All steps";
+        when.disabled = v < 1;
+      }));
+      row.append(timing);
+    }
     list.append(row);
   }
   if (list.children.length) children.push(list);
@@ -1996,29 +2056,31 @@ function loraSection() {
   if (rows.length >= limits.limit) {
     const full = document.createElement("p");
     full.className = "hint";
-    full.textContent = "A project takes up to " + limits.limit + " LoRAs. Remove one to add another.";
+    full.textContent = (clip ? "A clip" : "A project") + " takes up to " + limits.limit + " LoRAs. Remove one to add another.";
     children.push(full);
   } else if (free.length) {
     const add = document.createElement("button");
     add.className = "quiet wide";
     add.textContent = "Add a LoRA";
-    add.dataset.key = "Add a LoRA";
+    add.dataset.key = clip ? "Add a LoRA to this clip" : "Add a LoRA";
     add.addEventListener("click", async () => {
-      const file = await pickFile2("Add a LoRA", free, "From models/loras. Only LoRAs trained on MiniMax H3 have an effect.");
+      const file = await pickFile2(clip ? "Add a LoRA to " + clip.name : "Add a LoRA", free,
+        "From models/loras. Only LoRAs trained on MiniMax H3 have an effect. Star the ones you use, and they list first.", "h3take.loraFavorites");
       if (!file) return;
       change(() => {
-        state.project.loras = [...(state.project.loras || []), { id: "l" + crypto.randomUUID().replaceAll("-", "").slice(0, 8), file, strength: 1, on: true }];
+        owner().loras = [...(owner().loras || []), { id: "l" + crypto.randomUUID().replaceAll("-", "").slice(0, 8), file, strength: 1, on: true }];
       });
     });
     children.push(add);
   }
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = state.loras.length
+  if (clip) hint.textContent = "Only this clip samples with these, after the project's. Add one the project also has to give it another strength here, or untick it to leave it out of this clip.";
+  else hint.textContent = state.loras.length
     ? "Every new render samples with these, drafts and finals alike. They only work if they were trained on MiniMax H3."
     : "Put LoRAs trained on MiniMax H3 in models/loras, then reload this page to add them here.";
   children.push(hint);
-  return section("LoRAs", children);
+  return clip ? children : section("LoRAs", children);
 }
 
 function renderScene(panel, selected = false) {
@@ -2314,6 +2376,8 @@ function renderInspector() {
   if (state.tab === "shot") {
     parts.push(disclosure("Picture to a track", Boolean(clip.track), clip.track ? "Set" : "", trackSection(clip)));
     parts.push(disclosure("Model", Boolean(profileOf(clip.profile)), profileOf(clip.profile)?.title || "", clipModel(clip)));
+    const own = (clip.loras || []).length;
+    if (state.loras.length || own) parts.push(disclosure("LoRAs for this clip", own > 0, own ? own + " set" : "", loraSection(clip)));
   }
 
   const seed = field("Seed. Leave empty for a new one each render", clip.seed ?? "", (v) => {

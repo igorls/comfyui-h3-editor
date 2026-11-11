@@ -233,6 +233,8 @@ label.lora-name { cursor: pointer; }
 .lora-note.missing { color: var(--danger); }
 .lora .small { flex: none; padding: 4px 10px; font-size: 12px; }
 .lora.off .lora-name span, .lora.off .strength { opacity: 0.45; }
+.lora-start { display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; gap: 8px; margin-top: 4px; }
+.lora-start > span { color: var(--muted); font-size: 12px; }
 .strength { display: grid; grid-template-columns: minmax(0, 1fr) 68px; gap: 12px; align-items: center; }
 .strength input[type="range"] {
   --a: calc(8px + (100% - 16px) * var(--from, 0));
@@ -386,6 +388,13 @@ a.button[hidden] { display: none; }
 .picker-list { flex: 1; min-height: 120px; overflow-y: auto; padding: 6px 8px; }
 .picker-item { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 8px 12px; text-align: left; background: transparent; border-radius: var(--radius); }
 .picker-item:hover, .picker-item.on { background: var(--raised); }
+.picker-row { display: flex; align-items: center; gap: 2px; }
+.picker-row .picker-item { flex: 1; min-width: 0; }
+.picker-star { flex: none; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; background: transparent; color: var(--line-hi); }
+.picker-star:hover { background: var(--raised); color: var(--muted); }
+.picker-star svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; }
+.picker-star[aria-pressed="true"] { color: var(--tungsten); }
+.picker-star[aria-pressed="true"] svg { fill: currentColor; }
 .picker-item b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .picker-item span { flex: none; margin-left: auto; color: var(--muted); font-size: 12px; }
 .picker-list .empty { margin: 0; padding: 18px 12px; color: var(--muted); }

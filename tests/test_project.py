@@ -5,7 +5,7 @@ from policy import bridge_spans, legal_length, video_span
 from project import (MODELS, PRESET_LIMIT, PROFILES, REALISM_LORAS, REFINE_TAIL, active_take, add_cast, add_clip, apply_op, cast_pictures, clean_checkpoints,
                      clip_prompt, describe, encoder_status, update_cast, export_command, export_plan, finals_status,
                      frame_of, installed_profile, is_hyperflow, item_length, linked_length, lora_status, new_project, pick_file,
-                     plan_render, profile_status, project_models, render_graph, render_models, set_project, slug,
+                     plan_render, profile_status, project_models, render_graph, render_models, set_project, slug, update_clip,
                      snap_frames, tempo_chain)
 
 HYPERFLOW = set(PROFILES["hyperflow"]["unet"] + PROFILES["hyperflow"]["unet_text"])
@@ -374,6 +374,51 @@ class LoraTest(unittest.TestCase):
         self.assertEqual(project["loras"][0]["id"], row["id"])
         set_project(project, {"loras": []})
         self.assertEqual(project["loras"], [])
+
+    def test_a_clip_adds_its_own_loras_after_the_projects(self):
+        project = new_project("x")
+        set_project(project, {"loras": [{"file": "film.safetensors", "strength": 0.8}]})
+        graph = render_graph(project, "x", clip(loras=[{"file": "hero.safetensors", "strength": 1.1}]), "t1", "draft", 3)
+        self.assertEqual(graph["100"]["inputs"]["lora_name"], "film.safetensors")
+        self.assertEqual(graph["101"]["inputs"], {"model": ["100", 0], "lora_name": "hero.safetensors", "strength": 1.1})
+        self.assertEqual(graph["5"]["inputs"]["model"], ["101", 0])
+        # Another clip of the same project renders without it.
+        self.assertNotIn("101", render_graph(project, "x", clip(), "t1", "draft", 3))
+
+    def test_a_clip_can_change_or_drop_a_project_lora(self):
+        project = new_project("x")
+        set_project(project, {"loras": [{"file": "film.safetensors", "strength": 0.8}, {"file": "grain.safetensors"}]})
+        softer = render_graph(project, "x", clip(loras=[{"file": "film.safetensors", "strength": 0.3}]), "t1", "draft", 3)
+        # It keeps the project's place in the order.
+        self.assertEqual((softer["100"]["inputs"]["lora_name"], softer["100"]["inputs"]["strength"]), ("film.safetensors", 0.3))
+        self.assertEqual(softer["101"]["inputs"]["lora_name"], "grain.safetensors")
+        without = render_graph(project, "x", clip(loras=[{"file": "film.safetensors", "on": False}]), "t1", "draft", 3)
+        self.assertEqual(without["100"]["inputs"]["lora_name"], "grain.safetensors")
+        self.assertNotIn("101", without)
+
+    def test_a_lora_can_join_after_the_first_steps(self):
+        project = new_project("x")
+        set_project(project, {"loras": [{"file": "skin.safetensors", "start_sigma": 0.7}, {"file": "film.safetensors", "start_sigma": 1}]})
+        self.assertEqual(project["loras"][0]["start_sigma"], 0.7)
+        # From the first step is the default, so it is not written down.
+        self.assertNotIn("start_sigma", project["loras"][1])
+        graph = render_graph(project, "x", clip(), "t1", "draft", 3)
+        self.assertEqual(graph["100"]["inputs"]["start_sigma"], 0.7)
+        self.assertNotIn("start_sigma", graph["101"]["inputs"])
+        self.assertEqual(render_models(graph)["loras"], [{"file": "skin.safetensors", "strength": 1.0, "start_sigma": 0.7},
+                                                         {"file": "film.safetensors", "strength": 1.0}])
+        for bad in (1.5, -0.1, "late", True):
+            with self.assertRaises(ValueError):
+                set_project(project, {"loras": [{"file": "a.safetensors", "start_sigma": bad}]})
+
+    def test_a_clips_loras_are_checked_and_can_be_cleared(self):
+        project = new_project("x")
+        made, _ = add_clip(project, {"action": "A keeper walks.", "loras": [{"file": "hero.safetensors", "strength": 0.9}]})
+        self.assertEqual((made["loras"][0]["file"], made["loras"][0]["strength"], made["loras"][0]["on"]), ("hero.safetensors", 0.9, True))
+        with self.assertRaises(ValueError):
+            update_clip(project, made["id"], {"loras": [{"file": "a", "strength": 9}]})
+        update_clip(project, made["id"], {"loras": None})
+        self.assertNotIn("loras", made)
 
     def test_a_project_sets_how_strong_the_realism_slider_is_on_finals(self):
         project = new_project("x")

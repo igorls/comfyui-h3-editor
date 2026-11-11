@@ -258,23 +258,32 @@ def realism_strength(project, size):
     return max(REALISM_RANGE[0], min(REALISM_RANGE[1], float(value)))
 
 
-def project_loras(project, available=None):
-    """The LoRAs every render of a project samples with, in order: (file, strength).
+def project_loras(project, available=None, clip=None):
+    """The LoRAs a render samples with, in order: (file, strength, start_sigma).
 
+    The project's, then the clip's own. A clip's row for a file the project also lists takes
+    that row's place, so one clip can run a project LoRA at another strength or without it.
     Only the ones that are switched on, installed and not at zero. A project file can be
     written by hand, so anything that is not a LoRA row is passed over.
     """
-    rows = []
-    for row in project.get("loras") or []:
-        if not isinstance(row, dict) or row.get("on") is False or not isinstance(row.get("file"), str):
+    listed = []
+    for row in list(project.get("loras") or []) + list((clip or {}).get("loras") or []):
+        if not isinstance(row, dict) or not isinstance(row.get("file"), str):
             continue
-        strength = row.get("strength", 1.0)
-        if isinstance(strength, bool) or not isinstance(strength, (int, float)):
+        same = [n for n, other in enumerate(listed) if other["file"].replace("\\", "/") == row["file"].replace("\\", "/")]
+        if same:
+            listed[same[0]] = row
+        else:
+            listed.append(row)
+    rows = []
+    for row in listed:
+        strength, start = row.get("strength", 1.0), row.get("start_sigma", 1.0)
+        if row.get("on") is False or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (strength, start)):
             continue
         strength = max(LORA_RANGE[0], min(LORA_RANGE[1], float(strength)))
         file = row["file"] if available is None else pick_file([row["file"].replace("\\", "/")], available)
         if file and strength:
-            rows.append((file, strength))
+            rows.append((file, strength, max(0.0, min(1.0, float(start)))))
     return rows[:LORA_LIMIT]
 
 
@@ -653,10 +662,13 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
             lora_inputs["start_sigma"] = size["lora_start_sigma"]
         graph["95"] = {"class_type": "H3Lora", "inputs": lora_inputs}
         model = ["95", 0]
-    for n, (file, strength) in enumerate(project_loras(project, available)):
-        # The project's own LoRAs, stacked in the order the project lists them, on drafts and finals alike.
+    for n, (file, strength, start) in enumerate(project_loras(project, available, clip)):
+        # The project's own LoRAs and then the clip's, stacked in the order listed, on drafts and finals alike.
         node = str(LORA_NODE + n)
         graph[node] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": file, "strength": strength}}
+        if start < 1.0:
+            # The LoRA sits out the first steps, which set the composition, and joins for the detail.
+            graph[node]["inputs"]["start_sigma"] = start
         model = [node, 0]
     graph["5"]["inputs"]["model"] = model
     take_inputs = graph["10"]["inputs"]
@@ -924,7 +936,7 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
 HOLD = 39
 MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
-               "first", "last", "language", "track", "bin", "profile")
+               "first", "last", "language", "track", "bin", "profile", "loras")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
 PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "realism", "checkpoints", "text_encoder", "vae", "audio_vae")
 # A project's own LoRAs: how many, how strong, and where their nodes start in a render graph.
@@ -1075,6 +1087,8 @@ def clean_clip_fields(fields):
         raise ValueError("profile is a profile id, or null for the project's")
     if "bin" in out and out["bin"] is not None and not isinstance(out["bin"], str):
         raise ValueError("bin is a bin id, or null for none")
+    if out.get("loras") is not None:
+        out["loras"] = clean_loras(out["loras"], "a clip")
     return out
 
 
@@ -1150,7 +1164,7 @@ def update_clip(project, clip_id, fields):
     check_profile(project, fields)
     before = planned_frames(clip)
     for key, value in fields.items():
-        if value is None and key in ("first", "last", "track", "bin", "profile"):
+        if value is None and key in ("first", "last", "track", "bin", "profile", "loras"):
             clip.pop(key, None)
         else:
             clip[key] = value
@@ -1483,24 +1497,32 @@ def clean_strength(value, limits, what):
     return round(float(value), 2)
 
 
-def clean_loras(value):
-    """A project's LoRAs as an agent or the editor writes them: a file from models/loras, a strength, and whether it is on."""
+def clean_loras(value, owner="a project"):
+    """LoRAs as an agent or the editor writes them, for a project or for one clip.
+
+    Each is a file from models/loras, a strength, whether it is on, and optionally start_sigma:
+    where in the schedule it joins, from 1 (the first step, the default) down to 0.
+    """
     if not isinstance(value, list):
         raise ValueError("loras must be a list of {file, strength}")
     if len(value) > LORA_LIMIT:
-        raise ValueError("a project takes up to %s LoRAs" % LORA_LIMIT)
+        raise ValueError("%s takes up to %s LoRAs" % (owner, LORA_LIMIT))
     rows = []
     for row in value:
         if not isinstance(row, dict) or not isinstance(row.get("file"), str) or not row["file"].strip():
             raise ValueError("each LoRA needs a file, as models/loras lists it")
         if any(r["file"] == row["file"] for r in rows):
             raise ValueError("%s is listed twice" % row["file"])
-        unknown = sorted(set(row) - {"id", "file", "strength", "on"})
+        unknown = sorted(set(row) - {"id", "file", "strength", "on", "start_sigma"})
         if unknown:
-            raise ValueError("unknown LoRA fields: %s. Allowed: file, strength, on" % ", ".join(unknown))
-        rows.append({"id": str(row.get("id") or new_id("l")), "file": row["file"],
-                     "strength": clean_strength(row.get("strength", 1.0), LORA_RANGE, "a LoRA's strength"),
-                     "on": row.get("on") is not False})
+            raise ValueError("unknown LoRA fields: %s. Allowed: file, strength, on, start_sigma" % ", ".join(unknown))
+        clean = {"id": str(row.get("id") or new_id("l")), "file": row["file"],
+                 "strength": clean_strength(row.get("strength", 1.0), LORA_RANGE, "a LoRA's strength"),
+                 "on": row.get("on") is not False}
+        start = clean_strength(row.get("start_sigma", 1.0), (0.0, 1.0), "a LoRA's start_sigma")
+        if start < 1.0:
+            clean["start_sigma"] = start
+        rows.append(clean)
     return rows
 
 
@@ -1710,7 +1732,8 @@ def render_models(graph):
     extra = [graph[n]["inputs"] for n in sorted((n for n in graph if n.isdigit() and int(n) >= LORA_NODE), key=int)
              if graph[n]["class_type"] == "H3Lora"]
     if extra:
-        used["loras"] = [{"file": i["lora_name"], "strength": i["strength"]} for i in extra]
+        used["loras"] = [dict({"file": i["lora_name"], "strength": i["strength"]},
+                              **({"start_sigma": i["start_sigma"]} if "start_sigma" in i else {})) for i in extra]
     return used
 
 

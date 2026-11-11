@@ -96,6 +96,7 @@ the end) and `place` (default true). Returns `{"clip", "item"}`.
 | `first`, `last` | Picture assets the shot starts or ends on exactly. `null` removes one |
 | `track` | A sound asset plus `from`, the second of it at the clip's first frame. The picture is generated to that slice, and the take keeps the exact sound. `null` removes it |
 | `bin` | The id of the bin the clip is filed in. `null` takes it out |
+| `loras` | LoRAs only this clip samples with, as `set_project` `loras` describes. `null` clears them |
 | `profile` | The checkpoint family this clip renders on, one of the ids `set_project` takes. `null`, the default, is the project's. A take records the one that made it in `models.profile` |
 
 `update_clip`: `clip`, `fields`. Changing `seconds` on a clip with no render resizes its
@@ -173,6 +174,13 @@ drafts and finals alike, and `realism`:
   `"on": false` keeps a LoRA in the list without rendering with it. Send `[]` to clear it.
   Use LoRAs trained on MiniMax H3: others have no layers to land on. A LoRA whose file is
   not installed is left out of renders.
+- `start_sigma` on a LoRA, from 1 down to 0, is where in the schedule it joins. 1, the
+  default, runs it on every step. A lower value leaves the first steps alone, so framing
+  and pose stay as they would be without it; 0.75 is a good start for a look or skin LoRA.
+- A clip takes `loras` too, in `add_clip` and `update_clip` `fields`, in the same shape: the
+  LoRAs only that clip samples with, after the project's. A row for a file the project also
+  lists takes that row's place for this clip, so `{"file": ..., "strength": 0.4}` changes its
+  strength there and `{"file": ..., "on": false}` leaves it out. `null` clears the clip's list.
 - `realism` is how strong the Realism Slider is on finals, from 0 to 3. It is 1.2 unless
   set, 0 turns it off, and `null` goes back to 1.2. Drafts never run it.
 
