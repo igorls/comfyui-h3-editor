@@ -880,6 +880,8 @@ def tempo_chain(speed):
     return ",".join(steps)
 
 
+SOUND_FORMAT = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
+
 # How hard an export is compressed: x264's quality number, where lower keeps more.
 EXPORT_QUALITY = {"best": 12, "high": 16, "small": 23}
 EXPORT_SCALES = (1.0, 0.75, 0.5)
@@ -919,11 +921,13 @@ def scaled(side, scale):
     return max(2, 2 * int(round(side * scale / 2.0)))
 
 
-def export_command(project, paths, out_path, width=None, height=None, scale=1.0, quality="high"):
+def export_command(project, paths, out_path, width=None, height=None, scale=1.0, quality="high", sound_paths=None):
     """ffmpeg arguments that join the timeline's rendered clips. Gaps become black and silence.
 
     paths maps a clip id to the file of its active take. Clips with no render
     are skipped. Speed and transitions live on the timeline and are applied here.
+    sound_paths maps the id of an extra sound to its file; those are mixed under the cut,
+    each from its place on the timeline and at its own gain, and stop where the cut ends.
     """
     clips = {c["id"]: c for c in project.get("clips", [])}
     items = sorted(
@@ -949,7 +953,7 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
     chains = []
     finish = "fps=%s,scale=%s:%s:force_original_aspect_ratio=increase,crop=%s:%s,setsar=1,format=yuv420p,settb=1/%s" % (
         FPS, width, height, width, height, FPS)
-    sound = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    sound = SOUND_FORMAT
 
     def gap_segment(label, frames):
         seconds = frames / float(FPS)
@@ -995,10 +999,106 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
             join("v%s" % index, "a%s" % index)
         cursor = item["start"] + item_length(item)
 
+    extra = []
+    for row in project.get("sounds") or []:
+        if row.get("id") not in (sound_paths or {}) or row.get("start", 0) >= cursor or not row.get("gain", 1.0):
+            continue
+        number = len(items) + len(extra)
+        args += ["-i", sound_paths[row["id"]]]
+        offset = float(row.get("offset") or 0.0)
+        chains.append("[%s:a]atrim=start=%.5f:end=%.5f,asetpts=PTS-STARTPTS,volume=%.3f,%s,adelay=%d:all=1[s%s]" % (
+            number, offset, offset + row["frames"] / float(FPS), float(row.get("gain", 1.0)), SOUND_FORMAT,
+            int(round(row.get("start", 0) * 1000.0 / FPS)), number))
+        extra.append("s%s" % number)
+    if extra:
+        # The cut sets the length: a sound that runs past its end is cut there.
+        chains.append("[%s]%samix=inputs=%s:duration=first:dropout_transition=0:normalize=0[mix]" % (
+            audio, "".join("[%s]" % label for label in extra), len(extra) + 1))
+        audio = "mix"
+
     args += ["-filter_complex", ";".join(chains), "-map", "[%s]" % video, "-map", "[%s]" % audio,
              "-c:v", "libx264", "-crf", str(EXPORT_QUALITY[quality]), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
              "-movflags", "+faststart", out_path]
     return args
+
+
+# Extra sound. Music, narration or effects laid under the cut on lanes of their own, mixed in at export.
+
+SOUND_LANES = 4
+SOUND_FIELDS = ("name", "start", "offset", "frames", "gain", "lane")
+SOUND_GAIN = (0.0, 2.0)
+
+
+def find_sound(project, sound_id):
+    for sound in project.get("sounds") or []:
+        if sound["id"] == sound_id:
+            return sound
+    raise KeyError("no sound %s" % sound_id)
+
+
+def clean_sound_fields(fields, seconds):
+    """Where a sound sits and how it plays. seconds is the length of its file, which bounds what can be heard."""
+    check_fields(fields, SOUND_FIELDS)
+    out = {}
+    if "name" in fields:
+        if not isinstance(fields["name"], str) or not fields["name"].strip():
+            raise ValueError("a sound's name must be text")
+        out["name"] = fields["name"].strip()[:80]
+    for key, what in (("start", "start is a timeline frame, 0 or later"), ("lane", "lane is a whole number from 0 to %s" % (SOUND_LANES - 1))):
+        if key in fields:
+            value = fields[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value) or value < 0 \
+                    or (key == "lane" and value >= SOUND_LANES):
+                raise ValueError(what)
+            out[key] = int(value)
+    if "gain" in fields:
+        out["gain"] = clean_strength(fields["gain"], SOUND_GAIN, "gain")
+    if "offset" in fields:
+        offset = fields["offset"]
+        if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not 0 <= offset < seconds:
+            raise ValueError("offset is the second of the file the sound starts from, from 0 to its length")
+        out["offset"] = round(float(offset), 4)
+    if "frames" in fields:
+        frames = fields["frames"]
+        if isinstance(frames, bool) or not isinstance(frames, (int, float)) or frames != int(frames) or frames < 1:
+            raise ValueError("frames is how long the sound plays, in timeline frames")
+        out["frames"] = int(frames)
+    return out
+
+
+def fit_sound(sound):
+    """A sound never plays past the end of its file."""
+    room = max(1, int(round((sound["seconds"] - sound.get("offset", 0.0)) * FPS)))
+    sound["frames"] = max(1, min(int(sound.get("frames") or room), room))
+    return sound
+
+
+def add_sound(project, asset, seconds, fields=None):
+    """Lay a sound file under the cut. asset is an uploaded sound, seconds its length."""
+    asset = clean_asset(asset, "a sound")
+    if asset is None:
+        raise ValueError("a sound needs a file, and a subfolder if it has one")
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not seconds > 0:
+        raise ValueError("seconds is the length of the sound file")
+    fields = clean_sound_fields(fields or {}, float(seconds))
+    sound = {"id": new_id("s"), "name": "Sound %s" % (len(project.get("sounds") or []) + 1), "file": asset["file"],
+             "seconds": round(float(seconds), 4), "start": 0, "offset": 0.0, "gain": 1.0, "lane": 0}
+    if asset.get("subfolder"):
+        sound["subfolder"] = asset["subfolder"]
+    sound.update(fields)
+    project.setdefault("sounds", []).append(fit_sound(sound))
+    return sound
+
+
+def update_sound(project, sound_id, fields):
+    sound = find_sound(project, sound_id)
+    sound.update(clean_sound_fields(fields, sound["seconds"]))
+    return fit_sound(sound)
+
+
+def remove_sound(project, sound_id):
+    find_sound(project, sound_id)
+    project["sounds"] = [s for s in project["sounds"] if s["id"] != sound_id]
 
 
 # Editing operations. The editor, the HTTP API and agents share these, so the rules live in one place.
@@ -2010,7 +2110,12 @@ def describe(project):
         if item["start"] > end:
             gaps.append({"start": end, "end": item["start"]})
         end = max(end, item_end(item))
+    sounds = [{"sound": s["id"], "name": s.get("name", ""), "lane": s.get("lane", 0), "start": s.get("start", 0),
+               "end": s.get("start", 0) + s.get("frames", 0), "at": timecode(s.get("start", 0)),
+               "offset": s.get("offset", 0.0), "gain": s.get("gain", 1.0)}
+              for s in sorted(project.get("sounds") or [], key=lambda s: (s.get("lane", 0), s.get("start", 0)))]
     return {
+        "sounds": sounds,
         "name": project.get("name"), "revision": project.get("revision", 0), "style": project.get("style", ""),
         "format": project.get("format") or "16:9", "language": project.get("language") or LANGUAGE,
         "profile": project_profile(project)[0],
@@ -2108,6 +2213,16 @@ def apply_op(project, op, names):
     elif kind == "remove_bin":
         remove_bin(project, bin_id)
         result = {"bin": bin_id}
+    elif kind == "add_sound":
+        result = {"sound": add_sound(project, op.get("asset"), op.get("seconds"), op.get("fields") or {})["id"]}
+    elif kind == "update_sound":
+        sound_id = _resolve(op.get("sound"), names, "sound")
+        update_sound(project, sound_id, op.get("fields") or {})
+        result = {"sound": sound_id}
+    elif kind == "remove_sound":
+        sound_id = _resolve(op.get("sound"), names, "sound")
+        remove_sound(project, sound_id)
+        result = {"sound": sound_id}
     else:
         raise ValueError("unknown op %s" % kind)
     if op.get("as"):

@@ -41,6 +41,7 @@ const state = {
   samplers: [],
   schedulers: [],
   bin: null,
+  sound: null,
   tab: "shot",
   folded: new Set(),
   source: null,
@@ -369,7 +370,7 @@ function updateTools() {
   $("extendForward").disabled = !holdable;
   $("bridge").disabled = !bridgeable(item, next);
   $("merge").disabled = !(item && next && activeTake(clipOf(next.clip)) && next.start === itemEnd(item));
-  $("remove").disabled = !(state.item || state.gap);
+  $("remove").disabled = !(state.item || state.gap || state.sound);
   $("ripple").disabled = !state.item;
   $("closeGap").disabled = !state.gap;
 }
@@ -1125,6 +1126,7 @@ function selectClip(clipId, itemId = null) {
   state.gap = null;
   state.person = null;
   state.bin = null;
+  state.sound = null;
   renderCast();
   renderBin();
   renderInspector();
@@ -2321,15 +2323,17 @@ function renderInspector() {
   const person = (state.project.cast || []).find((c) => c.id === state.person);
   const clip = person ? null : clipOf(state.clip);
   const bin = !clip && !person ? selectedBin() : null;
+  const sound = !clip && !person && !bin ? soundOf(state.sound) : null;
   const placed = clip ? state.project.timeline.find((i) => i.id === state.item) : null;
   const tabs = [];
   if (person) tabs.push(["shot", "Cast member"]);
   else if (bin) tabs.push(["shot", "Bin"]);
+  else if (sound) tabs.push(["shot", "Sound"]);
   else if (clip && clip.kind === "footage") tabs.push(["shot", "Footage"]);
   else if (clip) tabs.push(["shot", "Shot"], ["takes", "Takes", clip.takes.length]);
   if (placed) tabs.push(["timeline", "Timeline"]);
   tabs.push(["project", "Project"]);
-  const key = person ? "p" + person.id : clip ? "c" + clip.id : bin ? "b" + bin.id : "";
+  const key = person ? "p" + person.id : clip ? "c" + clip.id : bin ? "b" + bin.id : sound ? "s" + sound.id : "";
   if (key !== inspected) {
     if (key && state.tab === "project") state.tab = "shot";
     inspected = key;
@@ -2347,6 +2351,10 @@ function renderInspector() {
   }
   if (bin) {
     renderBinPanel(panel, bin);
+    return;
+  }
+  if (sound) {
+    renderSoundPanel(panel, sound);
     return;
   }
   const job = jobFor(clip.id);
@@ -2757,6 +2765,263 @@ function drawWave(canvas, item, take, height, selected) {
   });
 }
 
+/* Extra sound: music, narration or effects on lanes of their own, under the clips' own sound. */
+
+const SOUND_LANES = 4;
+const soundOf = (id) => (state.project?.sounds || []).find((s) => s.id === id) || null;
+const soundPlayers = new Map();
+
+// The lanes follow the sounds: as many as the highest lane in use, and none in a project without extra sound.
+function layoutSoundLanes(count) {
+  const heads = document.querySelector(".tl-heads");
+  const content = $("tlContent");
+  if (Number(content.dataset.lanes || 0) !== count) {
+    content.dataset.lanes = count;
+    for (const old of document.querySelectorAll(".tl-head.extra, .lane.extra")) old.remove();
+    for (let n = 0; n < count; n++) {
+      const head = document.createElement("div");
+      head.className = "tl-head extra";
+      head.textContent = "Sound " + (n + 2);
+      heads.append(head);
+      const lane = document.createElement("div");
+      lane.className = "lane a extra";
+      lane.dataset.lane = n;
+      content.insertBefore(lane, $("playhead"));
+    }
+    const rows = count ? "28px minmax(56px, 2fr) minmax(36px, 1fr)" + " 42px".repeat(count) : "";
+    heads.style.gridTemplateRows = rows;
+    content.style.gridTemplateRows = rows;
+    // The timeline grows by its extra lanes, so the picture lane keeps its height.
+    document.documentElement.style.setProperty("--tl-extra", count * 42 + "px");
+  }
+  // The lanes scroll sideways and their names do not, so the names leave room for the scrollbar under the lanes.
+  heads.style.paddingBottom = $("tlScroll").offsetHeight - $("tlScroll").clientHeight + "px";
+  return [...content.querySelectorAll(".lane.extra")];
+}
+
+function renderSounds() {
+  const sounds = (state.project.sounds || []).filter((s) => s && typeof s.file === "string");
+  const lanes = layoutSoundLanes(sounds.length ? Math.min(SOUND_LANES, Math.max(...sounds.map((s) => s.lane || 0)) + 1) : 0);
+  const focused = document.activeElement?.dataset?.sound || null;
+  const made = lanes.map(() => []);
+  for (const sound of sounds) {
+    const block = document.createElement("div");
+    const selected = sound.id === state.sound;
+    block.className = "wave sound" + (selected ? " on" : "");
+    block.dataset.sound = sound.id;
+    block.style.left = px(sound.start) + "px";
+    block.style.width = Math.max(10, px(sound.frames)) + "px";
+    block.tabIndex = 0;
+    block.setAttribute("role", "button");
+    block.setAttribute("aria-pressed", String(selected));
+    block.setAttribute("aria-label", sound.name + ", extra sound on lane " + ((sound.lane || 0) + 2) + ", at " + timecode(sound.start) + " on the timeline");
+    const canvas = document.createElement("canvas");
+    // The waveform reads the same loudness file a clip's does, made when the sound was added.
+    const from = (sound.offset || 0) * FPS;
+    drawWave(canvas, { in: from, out: from + sound.frames }, { file: sound.file, subfolder: sound.subfolder,
+      strip: { peaks: sound.file.replace(/\.[^.]+$/, "") + ".peaks.json" } }, 30, selected);
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = sound.name;
+    block.append(canvas, name);
+    for (const side of ["l", "r"]) {
+      const edge = document.createElement("div");
+      edge.className = "edge " + side;
+      block.append(edge);
+    }
+    bindSound(block, sound.id);
+    (made[Math.min(lanes.length - 1, sound.lane || 0)] || made[0]).push(block);
+  }
+  lanes.forEach((lane, n) => lane.replaceChildren(...made[n]));
+  if (focused) document.querySelector('.wave.sound[data-sound="' + CSS.escape(focused) + '"]')?.focus();
+}
+
+function selectSound(id) {
+  setSource(null);
+  state.sound = id;
+  state.clip = null;
+  state.item = null;
+  state.gap = null;
+  state.person = null;
+  state.bin = null;
+  renderAll();
+}
+
+function removeSound(id) {
+  const sound = soundOf(id);
+  if (!sound) return;
+  checkpoint();
+  state.project.sounds = state.project.sounds.filter((s) => s.id !== id);
+  state.sound = null;
+  save();
+  renderAll();
+  toast("Removed " + sound.name + " from the timeline.", false, undoAction);
+}
+
+function bindSound(block, id) {
+  block.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectSound(id);
+  });
+  block.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    const edge = event.target.classList.contains("l") ? "l" : event.target.classList.contains("r") ? "r" : null;
+    selectSound(id);
+    const first = soundOf(id);
+    if (!first) return;
+    const origin = { x: event.clientX, start: first.start, offset: first.offset || 0, frames: first.frames };
+    const points = snapPoints(null);
+    let changed = false;
+    const move = (ev) => {
+      // A save can swap the project for the server's copy, so the sound is found again on every move.
+      const sound = soundOf(id);
+      const live = document.querySelector('.wave.sound[data-sound="' + CSS.escape(id) + '"]');
+      if (!sound || !live) return;
+      const delta = Math.round((ev.clientX - origin.x) / state.zoom);
+      if (delta !== 0 && !changed) {
+        checkpoint();
+        changed = true;
+      }
+      if (edge === "l") {
+        // The left end trims the start of the sound: it cannot go before the file begins, or before frame 0.
+        const shift = Math.max(-Math.round(origin.offset * FPS), -origin.start, Math.min(delta, origin.frames - 6));
+        sound.start = origin.start + shift;
+        sound.offset = Math.max(0, origin.offset + shift / FPS);
+        sound.frames = origin.frames - shift;
+      } else if (edge === "r") {
+        const room = Math.max(6, Math.round((sound.seconds - sound.offset) * FPS));
+        sound.frames = Math.min(room, Math.max(6, origin.frames + delta));
+      } else {
+        const wanted = Math.max(0, origin.start + delta);
+        const startSnap = snap(wanted, points);
+        const endSnap = snap(wanted + sound.frames, points) - sound.frames;
+        sound.start = Math.max(0, startSnap !== wanted ? startSnap : endSnap);
+        // Dragged up or down onto another lane, it moves there.
+        const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest?.(".lane.extra");
+        if (over && Number(over.dataset.lane) !== (sound.lane || 0)) {
+          sound.lane = Number(over.dataset.lane);
+          over.append(live);
+        }
+      }
+      live.style.left = px(sound.start) + "px";
+      live.style.width = Math.max(10, px(sound.frames)) + "px";
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (changed) save();
+      renderTimeline();
+      renderInspector();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+}
+
+// Lays a sound file under the cut at the playhead, on the first lane where nothing is in its way.
+async function addSound() {
+  const file = await pickFile($("soundFile"));
+  if (!file) return;
+  toast("Adding " + file.name + ".");
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    const asset = await api("/project/" + state.folder + "/asset?sound=1", { method: "POST", body: form });
+    const start = Math.max(0, Math.round(state.playhead));
+    const frames = Math.max(1, Math.round(asset.seconds * FPS));
+    const sounds = state.project.sounds || [];
+    const clear = (lane) => !sounds.some((s) => (s.lane || 0) === lane && s.start < start + frames && start < s.start + s.frames);
+    const lane = [...Array(SOUND_LANES).keys()].find(clear) ?? 0;
+    checkpoint();
+    const sound = { id: uid("s"), name: file.name.replace(/\.[^.]+$/, "").slice(0, 80) || "Sound", file: asset.file, subfolder: asset.subfolder,
+      seconds: asset.seconds, start, offset: 0, frames, gain: 1, lane };
+    state.project.sounds = [...sounds, sound];
+    save();
+    selectSound(sound.id);
+    toast(sound.name + " is on the timeline, on Sound " + (lane + 2) + ". Drag it to move it, and its ends to trim it.");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function renderSoundPanel(panel, sound) {
+  const live = () => soundOf(sound.id) || {};
+  const head = document.createElement("div");
+  head.className = "inspector-head";
+  const name = document.createElement("input");
+  name.className = "name-input";
+  name.value = sound.name;
+  name.setAttribute("aria-label", "Sound name");
+  name.dataset.key = "name";
+  name.addEventListener("focus", () => checkpoint(), { once: true });
+  name.addEventListener("input", () => {
+    live().name = name.value;
+    save();
+    renderTimeline();
+  });
+  const row = document.createElement("div");
+  row.className = "head-row";
+  row.append(name, trashButton("Remove this sound from the timeline", () => removeSound(sound.id)));
+  const line = document.createElement("p");
+  line.className = "status";
+  line.textContent = "Extra sound, " + (sound.frames / FPS).toFixed(1) + " s of " + sound.seconds.toFixed(1) + " s, from " + timecode(sound.start);
+  head.append(row, line);
+  const volume = document.createElement("label");
+  volume.className = "field";
+  const volumeTitle = document.createElement("span");
+  volumeTitle.textContent = "Volume";
+  volume.append(volumeTitle);
+  const lanes = [...Array(SOUND_LANES).keys()].map((n) => [String(n), "Sound " + (n + 2)]);
+  const lane = choice("Lane", lanes, String(sound.lane || 0), (value) => {
+    live().lane = Number(value);
+    renderTimeline();
+  });
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Drag it on the timeline to move it, up or down to change its lane, and drag its ends to trim it. The export mixes it under the clips' own sound and stops it where the cut ends. Above 1 it is louder in the export; the preview tops out at 1.";
+  panel.replaceChildren(head, section("Sound", [
+    volume,
+    strengthSlider("Sound volume", sound.name + " volume", typeof sound.gain === "number" ? sound.gain : 1, [0, 2], 1, (v) => (live().gain = v)),
+    lane,
+    hint,
+  ]));
+}
+
+// Keeps each extra sound in step with the playhead while the cut plays, and silent otherwise.
+function syncSounds() {
+  const sounds = state.project?.sounds || [];
+  const known = new Set(sounds.map((s) => s.id));
+  for (const [id, player] of soundPlayers) {
+    if (known.has(id)) continue;
+    player.pause();
+    soundPlayers.delete(id);
+  }
+  const running = state.playing && !viewing();
+  for (const sound of sounds) {
+    let player = soundPlayers.get(sound.id);
+    if (!player) {
+      player = new Audio(viewUrl(sound.file, sound.subfolder));
+      player.preload = "auto";
+      soundPlayers.set(sound.id, player);
+    }
+    const at = (state.playhead - sound.start) / FPS;
+    if (!running || at < 0 || at >= sound.frames / FPS || !(sound.gain > 0)) {
+      if (!player.paused) player.pause();
+      continue;
+    }
+    player.volume = Math.min(1, sound.gain);
+    const wanted = (sound.offset || 0) + at;
+    if (player.paused) {
+      player.currentTime = wanted;
+      player.play().catch(() => {});
+    } else if (Math.abs(player.currentTime - wanted) > 0.2) {
+      player.currentTime = wanted;
+    }
+  }
+}
+
 /* Timeline height */
 
 function setTimelineHeight(value, keep = false) {
@@ -3020,6 +3285,7 @@ function renderTimeline() {
   const focused = $("laneV").contains(document.activeElement) ? document.activeElement.dataset.item : null;
   $("laneV").replaceChildren(...blocks);
   $("laneA").replaceChildren(...waves);
+  renderSounds();
   if (focused) $("laneV").querySelector('[data-item="' + CSS.escape(focused) + '"]')?.focus();
   placePlayhead();
   updateTools();
@@ -3129,6 +3395,10 @@ function splitAtPlayhead() {
 function removeSelected() {
   if (state.gap) {
     closeGap();
+    return;
+  }
+  if (state.sound && !state.item) {
+    removeSound(state.sound);
     return;
   }
   if (!state.item) {
@@ -3344,6 +3614,7 @@ function setPlaying(on) {
   if (!on) {
     front.pause();
     back.pause();
+    syncSounds();
     showFrame();
     return;
   }
@@ -3378,6 +3649,7 @@ function tick(now) {
     state.playhead += ((now - lastTick) / 1000) * FPS;
   }
   lastTick = now;
+  syncSounds();
 
   const coming = incoming(state.playhead);
   if (coming && coming !== item && sourceOf(coming)) {
@@ -4021,6 +4293,11 @@ $("merge").addEventListener("click", mergeWithNext);
 $("ripple").addEventListener("click", rippleDelete);
 $("closeGap").addEventListener("click", closeGap);
 $("fit").addEventListener("click", fitTimeline);
+$("addSound").addEventListener("click", addSound);
+// A click on an empty part of a sound lane selects nothing.
+$("tlContent").addEventListener("pointerdown", (event) => {
+  if (event.target.classList.contains("extra") && event.target.classList.contains("lane")) selectClip(null);
+});
 // A menu opens under its button, or over it when the window is short, and closes once something is chosen.
 for (const [button, id] of [["generate", "generateMenu"], ["castAdd", "castMenu"], ["projectMore", "projectMenu"]]) {
   const menu = $(id);
@@ -4096,7 +4373,7 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (event.key === "Escape") {
-    if (state.clip || state.item || state.person || state.bin || state.gap) selectClip(null);
+    if (state.clip || state.item || state.person || state.bin || state.gap || state.sound) selectClip(null);
   } else if (event.code === "Space") {
     event.preventDefault();
     setPlaying(!state.playing);

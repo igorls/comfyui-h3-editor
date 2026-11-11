@@ -2,7 +2,7 @@ import re
 import unittest
 
 from policy import bridge_spans, legal_length, video_span
-from project import (MODELS, PRESET_LIMIT, PROFILES, REALISM_LORAS, REFINE_TAIL, active_take, add_cast, add_clip, apply_op, cast_pictures, clean_checkpoints,
+from project import (add_sound, remove_sound, update_sound, MODELS, PRESET_LIMIT, PROFILES, REALISM_LORAS, REFINE_TAIL, active_take, add_cast, add_clip, apply_op, cast_pictures, clean_checkpoints,
                      clip_prompt, describe, encoder_status, update_cast, export_command, export_plan, finals_status,
                      frame_of, installed_profile, is_hyperflow, item_length, linked_length, lora_status, new_project, pick_file,
                      plan_render, profile_status, project_models, refmod_graph, render_graph, render_models, set_project, slug, update_clip,
@@ -772,6 +772,46 @@ class RefmodGraphTest(unittest.TestCase):
             refmod_graph(project, "nobody")
 
 
+class SoundTest(unittest.TestCase):
+    def test_a_sound_sits_on_a_lane_and_never_plays_past_its_file(self):
+        project = new_project("x")
+        sound = add_sound(project, {"file": "music.mp3", "subfolder": "h3take_projects/x/assets"}, 10.0, {"name": "Theme", "start": 48, "lane": 1})
+        self.assertEqual((sound["name"], sound["start"], sound["lane"], sound["offset"], sound["gain"]), ("Theme", 48, 1, 0.0, 1.0))
+        # Its whole length, in timeline frames.
+        self.assertEqual(sound["frames"], 240)
+        update_sound(project, sound["id"], {"offset": 4.0, "frames": 999})
+        self.assertEqual(sound["frames"], 144)
+        update_sound(project, sound["id"], {"frames": 24, "gain": 1.5})
+        self.assertEqual((sound["frames"], sound["gain"]), (24, 1.5))
+        self.assertEqual(describe(project)["sounds"], [{"sound": sound["id"], "name": "Theme", "lane": 1, "start": 48, "end": 72,
+                                                        "at": "00:02:00", "offset": 4.0, "gain": 1.5}])
+        remove_sound(project, sound["id"])
+        self.assertEqual(project["sounds"], [])
+
+    def test_a_sounds_fields_are_checked(self):
+        project = new_project("x")
+        with self.assertRaises(ValueError):
+            add_sound(project, {"file": "a.wav"}, 0)
+        with self.assertRaises(ValueError):
+            add_sound(project, None, 3.0)
+        sound = add_sound(project, {"file": "a.wav"}, 3.0)
+        for bad in ({"lane": 4}, {"lane": -1}, {"start": -5}, {"start": 1.5}, {"gain": 3}, {"offset": 3.0}, {"offset": -1},
+                    {"frames": 0}, {"name": ""}, {"volume": 1}):
+            with self.assertRaises(ValueError):
+                update_sound(project, sound["id"], bad)
+        with self.assertRaises(KeyError):
+            update_sound(project, "nope", {"gain": 1})
+
+    def test_agents_add_and_move_a_sound_in_one_batch(self):
+        project = new_project("x")
+        names = {}
+        made = apply_op(project, {"op": "add_sound", "as": "music", "asset": {"file": "m.mp3"}, "seconds": 8.0}, names)
+        apply_op(project, {"op": "update_sound", "sound": "$music", "fields": {"start": 12}}, names)
+        self.assertEqual(project["sounds"][0]["start"], 12)
+        apply_op(project, {"op": "remove_sound", "sound": made["sound"]}, names)
+        self.assertEqual(project["sounds"], [])
+
+
 class LinkTest(unittest.TestCase):
     side = {"file": "a.mp4", "subfolder": "p/clips", "first": 0, "last": 73}
 
@@ -843,6 +883,25 @@ class ExportTest(unittest.TestCase):
         self.assertIn("trim=start_frame=10:end_frame=110", self.filter_of(args))
         self.assertIn("concat=n=2:v=1:a=1", self.filter_of(args))
         self.assertEqual(args[args.index("-map") + 1], "[k0v]")
+
+    def test_extra_sounds_are_mixed_under_the_cut(self):
+        self.project["timeline"] = [{"clip": "a", "start": 0, "in": 0, "out": 96}]
+        music = add_sound(self.project, {"file": "m.mp3", "subfolder": "h3take_projects/x/assets"}, 30.0,
+                          {"start": 24, "offset": 2.0, "frames": 48, "gain": 0.5})
+        late = add_sound(self.project, {"file": "late.wav"}, 5.0, {"start": 200})
+        muted = add_sound(self.project, {"file": "muted.wav"}, 5.0, {"gain": 0})
+        args = export_command(self.project, {"a": "a.mp4"}, "o.mp4",
+                              sound_paths={music["id"]: "m.mp3", late["id"]: "late.wav", muted["id"]: "muted.wav"})
+        text = self.filter_of(args)
+        # The second input, from two seconds into the file for two seconds, half as loud, one second into the cut.
+        self.assertIn("[1:a]atrim=start=2.00000:end=4.00000,asetpts=PTS-STARTPTS,volume=0.500,", text)
+        self.assertIn("adelay=1000:all=1[s1]", text)
+        self.assertIn("[a0][s1]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]", text)
+        self.assertEqual([args[i + 1] for i, a in enumerate(args) if a == "-map"], ["[v0]", "[mix]"])
+        # One that starts after the cut ends, or is silenced, is left out. So is one with no file.
+        self.assertNotIn("late.wav", args)
+        self.assertNotIn("muted.wav", args)
+        self.assertNotIn("amix", self.filter_of(export_command(self.project, {"a": "a.mp4"}, "o.mp4")))
 
     def test_a_gap_becomes_black_and_silence(self):
         self.project["timeline"] = [{"clip": "a", "start": 24, "in": 0, "out": 24}]

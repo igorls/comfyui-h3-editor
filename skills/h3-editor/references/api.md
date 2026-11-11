@@ -29,7 +29,7 @@ except the two uploads.
 | `POST /project/{name}/render` | `{"clip", "quality", "seed"?}` | `{"job", "revision", "project"}` |
 | `POST /project/{name}/cancel` | `{"job"}` or `{"clip"}` | `{"cancelled", ...}` |
 | `POST /project/{name}/import` | multipart `file` with fields, or JSON `{"source": {"folder": "input" or "output", "subfolder"?, "file"}, ...}` | `{"clip", "item", "frames", "revision", "project"}` |
-| `POST /project/{name}/asset` | multipart `file`: PNG, JPEG or WebP, or WAV, MP3, FLAC, M4A, OGG, OPUS, AAC | `{"file", "subfolder"}`, an asset |
+| `POST /project/{name}/asset` | multipart `file`: PNG, JPEG or WebP, or WAV, MP3, FLAC, M4A, OGG, OPUS, AAC | `{"file", "subfolder"}`, an asset. With `?sound=1` on a sound, also `seconds`, its length, and `peaks`, as `add_sound` needs |
 | `POST /project/{name}/grab` | `{"file", "subfolder", "frame"}`, a take's file and a frame of it | A picture asset |
 | `POST /project/{name}/grab_sound` | `{"file", "subfolder", "first", "last"}` in take frames | A WAV asset, 30 s at most |
 | `POST /project/{name}/export` | `{}`, or any of `scale` (1, 0.75 or 0.5 of the rendered size), `quality` (`best`, `high`, the default, or `small`) and `name` (the file's name instead of the project's) | `{"filename", "subfolder", "bytes", "plan"}` in ComfyUI's output folder. With `"plan": true` nothing is made: `{"plan": {"width", "height", "frames", "seconds", "clips", "drafts", "missing", "gaps"}}` says what an export would hold |
@@ -107,6 +107,23 @@ items, and later clips move with them. `remove_clip`: `clip`, together with all 
 timeline items. Its render files stay on disk, so older revisions still play. A render still
 running for it is thrown away when it finishes, so cancel it first. `place_clip`: `clip`,
 optional `start`. Returns a new `item`.
+
+### Extra sound
+
+Music, narration or effects under the cut, on up to 4 lanes of their own beside the clips' own
+sound. Upload the file with `POST /project/{name}/asset?sound=1`, which also returns its
+`seconds`.
+
+| op | Takes | Notes |
+|---|---|---|
+| `add_sound` | `asset`: `{"file", "subfolder"}`, `seconds`, optional `fields` | Returns `{"sound"}`. It starts at frame 0 on lane 0 and plays its whole length unless `fields` say otherwise |
+| `update_sound` | `sound`, `fields` | |
+| `remove_sound` | `sound` | The file stays in the project's assets |
+
+`fields`: `name`; `start`, the timeline frame it begins at; `offset`, the second of the file it
+starts from; `frames`, how long it plays in timeline frames, never past the end of the file;
+`gain`, from 0 to 2, where 1 leaves it as it is; `lane`, 0 to 3. The summary lists them as
+`sounds`. An export mixes each one in at its place and gain, and stops it where the cut ends.
 
 ### Bins
 

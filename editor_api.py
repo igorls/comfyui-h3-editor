@@ -146,6 +146,30 @@ STRIP_HEIGHT = 90
 STRIP_TILES = 48
 
 
+async def make_peaks(path, peaks):
+    """How loud a file is at each frame of the timeline, 0 to 100, written once beside it. Returns the values."""
+    if os.path.exists(peaks):
+        with open(peaks, encoding="utf-8") as f:
+            return json.load(f)
+    values = []
+    try:
+        import numpy as np
+
+        rate = 4800
+        pcm = await run_bytes(["ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"])
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        per = rate // store.FPS
+        usable = (len(samples) // per) * per
+        if usable:
+            loud = np.abs(samples[:usable].reshape(-1, per)).max(axis=1)
+            values = [int(round(v)) for v in np.sqrt(np.clip(loud, 0, 1)) * 100]
+    except web.HTTPException:
+        values = []
+    with open(peaks, "w", encoding="utf-8") as f:
+        json.dump(values, f)
+    return values
+
+
 async def make_strip(path, frames):
     """A row of frames from across a clip and its loudness per frame, made once and kept beside it."""
     base = os.path.splitext(path)[0]
@@ -159,23 +183,7 @@ async def make_strip(path, frames):
         await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf",
                    "select=not(mod(n\\,%d)),scale=%d:%d,tile=%dx1" % (step, tile_w, STRIP_HEIGHT, count),
                    "-frames:v", "1", "-q:v", "4", sprite])
-    if not os.path.exists(peaks):
-        values = []
-        try:
-            import numpy as np
-
-            rate = 4800
-            pcm = await run_bytes(["ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"])
-            samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-            per = rate // store.FPS
-            usable = (len(samples) // per) * per
-            if usable:
-                loud = np.abs(samples[:usable].reshape(-1, per)).max(axis=1)
-                values = [int(round(v)) for v in np.sqrt(np.clip(loud, 0, 1)) * 100]
-        except web.HTTPException:
-            values = []
-        with open(peaks, "w", encoding="utf-8") as f:
-            json.dump(values, f)
+    await make_peaks(path, peaks)
     return {"sprite": os.path.basename(sprite), "peaks": os.path.basename(peaks), "w": tile_w, "h": STRIP_HEIGHT,
             "count": count, "step": step}
 
@@ -924,6 +932,14 @@ async def upload(request):
     target, asset = asset_target(request.match_info["name"], extension)
     with open(target, "wb") as f:
         f.write(part.file.read())
+    if extension in SOUNDS and request.query.get("sound"):
+        # A sound for the timeline also needs its length and its loudness, to place it and to draw it.
+        values = await make_peaks(target, os.path.splitext(target)[0] + ".peaks.json")
+        if not values:
+            os.remove(target)
+            return refused("that file has no sound the editor can read")
+        asset = dict(asset, seconds=round(len(values) / float(store.FPS), 4),
+                     peaks=os.path.basename(os.path.splitext(target)[0] + ".peaks.json"))
     return web.json_response(asset)
 
 
@@ -1134,8 +1150,16 @@ async def export(request):
     while os.path.exists(os.path.join(folder, "%s_%03d.mp4" % (stem, number))):
         number += 1
     target = os.path.join(folder, "%s_%03d.mp4" % (stem, number))
+    sound_paths = {}
+    for sound in data.get("sounds") or []:
+        try:
+            found = output_path(sound.get("subfolder"), sound["file"])
+        except web.HTTPException:
+            continue
+        if os.path.exists(found):
+            sound_paths[sound["id"]] = found
     try:
-        args = store.export_command(data, paths, target, scale=scale, quality=quality)
+        args = store.export_command(data, paths, target, scale=scale, quality=quality, sound_paths=sound_paths)
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error))
     await run(args)

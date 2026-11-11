@@ -140,6 +140,11 @@ track, so a long talking performance can be built from short shots.
 **Your own footage.** **Import** brings in a video or a picture, fitted to the
 project's format. You can trim it, and extend or bridge from it like a render.
 
+**Music and narration.** **Add sound** on the timeline lays a sound file under
+the cut at the playhead, on a lane of its own. Drag it to move it, up or down to
+change its lane, and drag its ends to trim it; its volume is in the panel on
+the right. The export mixes it under the clips' own sound.
+
 **The Clips panel.** Click a clip to play it on its own, whether or not it is on
 the timeline; click the timeline to go back to the cut. File clips in bins with
 the folder button and drag clips onto them. Delete a clip with the trash button

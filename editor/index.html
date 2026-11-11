@@ -41,6 +41,7 @@
       <input id="frameFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
       <input id="importFile" type="file" accept="video/*,image/png,image/jpeg,image/webp" hidden>
       <input id="voiceFile" type="file" accept="audio/*" hidden>
+      <input id="soundFile" type="file" accept="audio/*" hidden>
     </aside>
 
     <div class="splitter-v" id="splitBin" role="separator" aria-orientation="vertical" aria-label="Resize the clips panel" title="Drag to resize. Double-click to reset." tabindex="0"></div>
@@ -96,6 +97,7 @@
         <button id="bridge" role="menuitem"><b>Bridge to next</b><span>Generate what connects the selected clip to the next one</span></button>
         <button id="merge" role="menuitem"><b>Merge with next</b><span>Replace the join with a generated crossing, keeping the scene's length</span></button>
       </div>
+      <button id="addSound" class="quiet" title="Lay music, narration or another sound under the cut, on a lane of its own">Add sound</button>
       <div class="spacer"></div>
       <button id="fit" class="quiet" title="Show the whole scene (\)">Fit</button>
       <label class="zoom">Zoom <input id="zoom" type="range" min="0.1" max="12" step="0.1" value="3"></label>

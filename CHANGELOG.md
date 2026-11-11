@@ -35,6 +35,11 @@ Each release is a tag on GitHub, `v` followed by the version.
 
 ### Added
 
+- **Extra sound lanes.** **Add sound** lays music, narration or any other sound
+  file under the cut, on up to four lanes below the clips' own sound. Move it,
+  trim it, change its lane and set its volume; it plays in step with the cut
+  and the export mixes it in. For agents: the `add_sound`, `update_sound` and
+  `remove_sound` operations.
 - **Rename, duplicate and delete a project.** A menu beside the project list
   renames the open project, copies it with its clips, takes and pictures into
   a folder of its own, or deletes it. A deleted project is moved to a `.trash`
