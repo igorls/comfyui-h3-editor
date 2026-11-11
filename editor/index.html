@@ -9,21 +9,27 @@
 <body>
 <div class="app" id="app">
   <header class="bar">
+    <h1 class="sr">H3 Editor</h1>
     <select id="project" aria-label="Project"></select>
     <button id="newProject" class="quiet">New project</button>
     <div class="spacer"></div>
     <div id="queue" class="queue" aria-live="polite"></div>
-    <button id="shortcuts" class="quiet" title="Keyboard shortcuts (?)">Shortcuts</button>
     <button id="renderAll" class="quiet">Render all drafts</button>
     <button id="export" class="primary">Export</button>
-    <button id="close" class="quiet" title="Back to the graph">Close</button>
+    <button id="shortcuts" class="tool tip-end" aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts (?)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6.5" width="18" height="11" rx="2"/><path d="M7 10.5h.01M10.3 10.5h.01M13.7 10.5h.01M17 10.5h.01M8.5 14h7"/></svg></button>
+    <button id="close" class="tool tip-end" aria-label="Back to the graph" data-tip="Back to the graph"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button>
   </header>
 
   <main class="work">
     <aside class="bin" aria-label="Clips and cast">
-      <div class="panel-head"><h2>Clips <span id="clipCount" class="count"></span></h2><div class="head-tools"><button id="newBin" class="quiet icon-button" aria-label="New bin" title="New bin, a folder for clips"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.2a1.7 1.7 0 0 1 1.7-1.7h3.9l2 2.1h7.7a1.7 1.7 0 0 1 1.7 1.7v7.5a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z"/><path d="M12 10.6v5M9.5 13.1h5"/></svg></button><button id="importClip" class="quiet" title="Bring in a video or a picture">Import</button><button id="newClip" class="quiet">New clip</button></div></div>
+      <div class="panel-head"><h2>Clips <span id="clipCount" class="count"></span></h2><div class="head-tools"><button id="newBin" class="tool" aria-label="New bin" data-tip="New bin, a folder for clips"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.2a1.7 1.7 0 0 1 1.7-1.7h3.9l2 2.1h7.7a1.7 1.7 0 0 1 1.7 1.7v7.5a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z"/><path d="M12 10.6v5M9.5 13.1h5"/></svg></button><button id="importClip" class="tool tip-end" aria-label="Import" data-tip="Import a video or a picture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10.5M8 11l4 4 4-4"/><path d="M4.5 15.5v2.3a1.7 1.7 0 0 0 1.7 1.7h11.6a1.7 1.7 0 0 0 1.7-1.7v-2.3"/></svg></button><button id="newClip" class="quiet new-clip" aria-label="New clip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg><span>New clip</span></button></div></div>
       <div id="clips" class="clips"></div>
-      <div class="panel-head cast-head"><h2>Cast</h2><div class="head-tools"><button id="addVoice" class="quiet" title="A voice with no picture, such as a narrator">Add voice</button><button id="addCast" class="quiet">Add reference</button><button id="addRefmod" class="quiet" title="A cast member from a RefMod, a reference saved with the ComfyUI-MiniMaxH3Mod pack" hidden>Add RefMod</button></div></div>
+      <div class="panel-head cast-head"><h2>Cast</h2><div class="head-tools"><button id="castAdd" class="quiet menu-button" aria-haspopup="menu" popovertarget="castMenu">Add<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button></div></div>
+      <div id="castMenu" class="menu" popover role="menu" aria-label="Add to the cast">
+        <button id="addCast" role="menuitem"><b>Add reference</b><span>A picture of a person, a product or a place to keep the same in every clip</span></button>
+        <button id="addVoice" role="menuitem"><b>Add voice</b><span>A voice with no picture, such as a narrator</span></button>
+        <button id="addRefmod" role="menuitem" hidden><b>Add RefMod</b><span>A cast member from a RefMod, a reference saved with the ComfyUI-MiniMaxH3Mod pack</span></button>
+      </div>
       <div id="cast" class="cast"></div>
       <input id="castFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
       <input id="frameFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -61,7 +67,10 @@
     </section>
 
     <div class="splitter-v" id="splitInspector" role="separator" aria-orientation="vertical" aria-label="Resize the inspector" title="Drag to resize. Double-click to reset." tabindex="0"></div>
-    <aside class="inspector" id="inspector" aria-label="Inspector"></aside>
+    <aside class="inspector" id="inspector" aria-label="Inspector">
+      <div class="insp-tabs" id="inspTabs" role="tablist" aria-label="Inspector sections"></div>
+      <div class="insp-body" id="inspBody" role="tabpanel"></div>
+    </aside>
   </main>
 
   <div class="splitter" id="splitter" role="separator" aria-orientation="horizontal" aria-label="Resize the timeline" tabindex="0"></div>
@@ -69,16 +78,17 @@
   <section class="timeline" id="timeline" aria-label="Timeline">
     <div class="tl-tools">
       <div class="group" role="group" aria-label="Edit">
-        <button id="split" title="Split at the playhead (S)">Split</button>
-        <button id="remove" title="Remove from the timeline (Delete)">Remove</button>
-        <button id="ripple" title="Remove and close the space (Shift+Delete)">Ripple delete</button>
-        <button id="closeGap" title="Close the selected gap (Delete)">Close gap</button>
+        <button id="split" class="tool" aria-label="Split" data-tip="Split at the playhead (S)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v17"/><rect x="3.5" y="7.5" width="5" height="9" rx="1.5"/><rect x="15.5" y="7.5" width="5" height="9" rx="1.5"/></svg></button>
+        <button id="remove" class="tool" aria-label="Remove" data-tip="Remove from the timeline (Delete)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6.5" width="16" height="11" rx="1.5"/><path d="M10 10l4 4M14 10l-4 4"/></svg></button>
+        <button id="ripple" class="tool" aria-label="Ripple delete" data-tip="Remove and close the space (Shift+Delete)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="6.5" width="9.5" height="11" rx="1.5"/><path d="M6.6 10.3l3.4 3.4M10 10.3l-3.4 3.4"/><path d="M21 12h-5M18.2 9.6L15.8 12l2.4 2.4"/></svg></button>
+        <button id="closeGap" class="tool" aria-label="Close gap" data-tip="Close the selected gap (Delete)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5v11M20 6.5v11"/><path d="M6.5 12H11M9 9.8l2.2 2.2L9 14.2"/><path d="M17.5 12H13M15 9.8L12.8 12l2.2 2.2"/></svg></button>
       </div>
-      <div class="group" role="group" aria-label="Generate">
-        <button id="extendBack" title="Generate what happens before the selected clip">Extend back</button>
-        <button id="extendForward" title="Generate what happens after the selected clip">Extend forward</button>
-        <button id="bridge" title="Generate what connects the selected clip to the next one">Bridge to next</button>
-        <button id="merge" title="Replace the join with a generated crossing, keeping the scene's length">Merge with next</button>
+      <button id="generate" class="quiet menu-button" aria-haspopup="menu" popovertarget="generateMenu">Generate<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+      <div id="generateMenu" class="menu" popover role="menu" aria-label="Generate from the selected clip">
+        <button id="extendBack" role="menuitem"><b>Extend back</b><span>Generate what happens before the selected clip</span></button>
+        <button id="extendForward" role="menuitem"><b>Extend forward</b><span>Generate what happens after the selected clip</span></button>
+        <button id="bridge" role="menuitem"><b>Bridge to next</b><span>Generate what connects the selected clip to the next one</span></button>
+        <button id="merge" role="menuitem"><b>Merge with next</b><span>Replace the join with a generated crossing, keeping the scene's length</span></button>
       </div>
       <div class="spacer"></div>
       <button id="fit" class="quiet" title="Show the whole scene (\)">Fit</button>
@@ -98,6 +108,11 @@
   </section>
 </div>
 
+<dialog id="models" class="keys models" aria-labelledby="modelsTitle">
+  <div class="keys-head"><h2 id="modelsTitle">Models</h2><button id="modelsClose" class="quiet">Close</button></div>
+  <div id="modelsBody" class="models-body"></div>
+  <div id="modelsFoot" class="exporter-foot"></div>
+</dialog>
 <dialog id="creator" class="keys exporter" aria-labelledby="creatorTitle">
   <form id="creatorForm" method="dialog">
     <div class="keys-head"><h2 id="creatorTitle">New project</h2><button id="creatorClose" class="quiet" type="button">Close</button></div>
@@ -147,6 +162,7 @@
     <dt>Up, Down</dt><dd>Previous or next edit</dd>
     <dt>Home, End</dt><dd>Start or end of the scene</dd>
     <dt>S</dt><dd>Split at the playhead</dd>
+    <dt>Esc</dt><dd>Select nothing</dd>
     <dt>Delete</dt><dd>On the timeline, remove a clip from it, or close a selected gap. In the Clips panel, delete the clip or bin</dd>
     <dt>Shift+Delete</dt><dd>Remove a clip from the timeline and close the space</dd>
     <dt>[ and ]</dt><dd>Flip between takes of the selected clip</dd>
@@ -156,7 +172,7 @@
     <dt>?</dt><dd>Show this list</dd>
   </dl>
 </dialog>
-<div id="toast" class="toast" role="status" hidden></div>
+<div id="toast" class="toasts"></div>
 <script type="module" src="/h3take/editor-files/editor.js?v=__VERSION__"></script>
 </body>
 </html>

@@ -30,6 +30,8 @@ models when the queue reaches such a clip, which takes a while.
 | Singularity v2 | `Minimax-h3_Singularity_ref2va_v2_pruned_int8.safetensors` | 10 and 20, res_multistep |
 | DaSiWa Hybrid v4 | its int8 ref2va file from Civitai model 2877206 | 10 and 20, res_multistep |
 | DaSiWa Hybrid v4 Turbo | its turbo int8 ref2va file from the same model | 8 and 8, euler |
+| DaSiWa GXS v5 Turbo | `dasiwa_minimax_h3_ref2va_v5xs_pruned_graviton_turbo_int8_row-wise_convrot_runtime_mixed.safetensors`, or another file of the same release | 6 and 8, euler |
+| 10Eros Max beta 7 | `10Eros_Max_h3_8stepTURBO_beta7_fix1-native_int8_protected_edges_HQ.safetensors` from [TenStrip/10Eros-Max](https://huggingface.co/TenStrip/10Eros-Max), or another beta 7 file | 6 and 8, euler |
 
 H3 comes in two kinds. A family with an fl2va model renders prompt-only clips
 on it and everything else on its ref2va model. A family with only ref2va renders
@@ -81,7 +83,7 @@ steps. Both extras are optional:
 | `minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors` | `models/latent_upscale_models` | 0.7 GB | [LBH-123-AI/Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler), `minimax_h3_latent_upscaler_3d_conv_v1/` | Finals stay at H3's own size |
 | `MMH3-Realism-V2.safetensors` | `models/loras` | 71 MB | [Civitai model 3041489](https://civitai.com/models/3041489) (falls back to `MMH3-RealismSlider-V1.safetensors` if only V1 is installed) | Finals render without it |
 
-The editor says which ones are missing, under **Model** in the Scene panel.
+The editor says which ones are missing, under **Model** in the Project tab.
 
 Export joins the cut at the size of its largest picture.
 
@@ -109,8 +111,8 @@ The H3 LoRA node applies a LoRA trained on MiniMax H3.
   untouched and apply the LoRA on detail steps.
 - Several H3 LoRA nodes in a row stack.
 
-In the editor, a project has its own LoRAs. With no clip selected, the panel on
-the right has a LoRAs section: search `models/loras` to add one, drag its slider
+In the editor, a project has its own LoRAs. The Project tab of the panel on the
+right has a LoRAs section: search `models/loras` to add one, drag its slider
 to set its strength from -2 to 2, untick it to render without it, or remove it.
 Every new render of the project samples with the ones that are ticked, in the
 order listed, on drafts and finals alike. The same section has the Realism
@@ -119,19 +121,23 @@ Slider's strength on finals, from 0 to 3; it starts at 1.2.
 ## Your own checkpoints
 
 Any other MiniMax H3 checkpoint, such as a community fine-tune, renders in the
-editor too. With no clip selected, the panel on the right has **Your
-checkpoints**: pick the file from `models/diffusion_models`, then set
+editor too. **Models and their settings** in the Project tab of the panel on the
+right opens the Models dialog, which lists the built-in models, the
+project's own checkpoints and your presets. **Add a checkpoint** there picks a
+file from `models/diffusion_models`; then set
 
 - the built-in model it is closest to. It starts from that model's settings and
-  keeps its LoRA, if it has one, and the way its finals are refined;
+  the way its finals are refined;
+- whether to add that model's LoRA, when it has one. Untick it for a checkpoint
+  that already has the turbo merged in, so the Turbo LoRA is not applied twice;
 - steps for drafts and for finals, the sampler and the scheduler, where its
   author recommends others;
 - a second file for clips that are only a prompt, if the checkpoint comes with
   an fl2va model. Without one, those clips render on the same file.
 
-**Save as a preset for every project** keeps a checkpoint for your other
-projects: it then shows under **Model** in each of them, and picking it there
-copies it into that project. A project renders on its own copy, so changing or
+**Save as a preset** keeps a checkpoint for your other projects: it then shows
+in the Models dialog of each of them, and **Add to project** there copies it
+into that project. A project renders on its own copy, so changing or
 deleting a preset leaves the projects that already use it as they are. Presets
 live in `checkpoints.json` in the `h3take_projects` folder of ComfyUI's output.
 

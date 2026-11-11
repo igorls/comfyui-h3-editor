@@ -102,12 +102,12 @@ Other H3 checkpoints work as well; see [models and quality](docs/models.md).
 ### 3. Make your first video
 
 1. Open **H3 Editor** from the ComfyUI sidebar. It starts you on a first project.
-2. In the **Scene** panel, choose the format: 16:9, 9:16 or 1:1.
+2. In the **Project** tab on the right, choose the format: 16:9, 9:16 or 1:1.
 3. Press **New clip**, write what happens in **What happens**, and press
    **Render draft**. The viewer shows the clip taking shape.
 4. When the draft lands, press Space to play it. Not right? Change the text and
    render again: each render becomes another take.
-5. Press **Extend forward** to carry the shot on, or add another clip.
+5. Press **Generate**, then **Extend forward**, to carry the shot on, or add another clip.
 6. Press **Render final** for the takes you keep, then **Export**. The video is
    saved in ComfyUI's output folder, under
    `h3take_projects/<project>/exports`.
@@ -123,7 +123,7 @@ disk: moving, trimming or splitting them never renders anything again.
 Write @Name in **What happens** to place them, and in **Who speaks** to use
 their voice. A voice can be uploaded, or taken from a clip on the timeline.
 
-**Joining shots.** Select a clip on the timeline and press **Extend forward** or
+**Joining shots.** Select a clip on the timeline, open **Generate** and choose **Extend forward** or
 **Extend back** to generate what happens next or before. **Bridge to next**
 generates what connects it to the following clip, and **Merge with next**
 replaces the join between two clips with a generated crossing. These clips hold

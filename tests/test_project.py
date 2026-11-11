@@ -485,31 +485,31 @@ class ClipModelTest(unittest.TestCase):
 class CheckpointTest(unittest.TestCase):
     def own(self, **extra):
         project = new_project("x")
-        set_project(project, {"checkpoints": [dict({"id": "eros", "title": "Eros", "unet": "eros_ref2va.safetensors"}, **extra)],
-                              "profile": "eros"})
+        set_project(project, {"checkpoints": [dict({"id": "tuned", "title": "Tuned", "unet": "tuned_ref2va.safetensors"}, **extra)],
+                              "profile": "tuned"})
         return project
 
     def test_a_projects_own_checkpoint_renders_on_its_familys_settings(self):
         project = self.own()
         job, graph = plan_render(project, "x", add_clip(project, {"action": "A keeper climbs."})[0]["id"], "final", 3)
         # No fl2va of its own, so a prompt-only clip renders on its ref2va.
-        self.assertEqual(graph["1"], {"class_type": "UNETLoader", "inputs": {"unet_name": "eros_ref2va.safetensors", "weight_dtype": "default"}})
+        self.assertEqual(graph["1"], {"class_type": "UNETLoader", "inputs": {"unet_name": "tuned_ref2va.safetensors", "weight_dtype": "default"}})
         self.assertEqual(graph["10"]["inputs"]["checkpoint"], "ref2va")
         self.assertEqual(graph["12"]["inputs"], {"model": ["5", 0], "scheduler": "simple", "steps": 20, "denoise": 1.0})
         self.assertEqual(graph["11"]["inputs"]["sampler_name"], "res_multistep")
         self.assertEqual(graph["87"]["inputs"]["step"], 17)
-        self.assertEqual((job["models"]["profile"], job["models"]["profile_title"]), ("eros", "Eros"))
+        self.assertEqual((job["models"]["profile"], job["models"]["profile_title"]), ("tuned", "Tuned"))
         self.assertEqual((job["models"]["steps"], job["models"]["sampler"]), (20, "res_multistep"))
 
     def test_it_takes_its_own_steps_sampler_scheduler_and_text_model(self):
-        project = self.own(steps={"draft": 6, "final": 12}, sampler="euler", scheduler="beta", unet_text="eros_fl2va.safetensors")
+        project = self.own(steps={"draft": 6, "final": 12}, sampler="euler", scheduler="beta", unet_text="tuned_fl2va.safetensors")
         draft = render_graph(project, "x", clip(), "t1", "draft", 3)
-        self.assertEqual(draft["1"]["inputs"]["unet_name"], "eros_fl2va.safetensors")
+        self.assertEqual(draft["1"]["inputs"]["unet_name"], "tuned_fl2va.safetensors")
         self.assertEqual(draft["10"]["inputs"]["checkpoint"], "fl2va")
         self.assertEqual((draft["12"]["inputs"]["steps"], draft["12"]["inputs"]["scheduler"]), (6, "beta"))
         self.assertEqual(draft["11"]["inputs"]["sampler_name"], "euler")
         final = render_graph(project, "x", clip(first={"file": "f.png"}), "t1", "final", 3)
-        self.assertEqual(final["1"]["inputs"]["unet_name"], "eros_ref2va.safetensors")
+        self.assertEqual(final["1"]["inputs"]["unet_name"], "tuned_ref2va.safetensors")
         # The last three steps are redrawn, as on the family it is based on.
         self.assertEqual((final["12"]["inputs"]["steps"], final["87"]["inputs"]["step"]), (12, 9))
 
@@ -523,36 +523,63 @@ class CheckpointTest(unittest.TestCase):
         self.assertEqual(flash["1"]["class_type"], "H3HyperFlowLoader")
         self.assertEqual(flash["12"]["class_type"], "H3HyperFlowSigmas")
 
+    def test_it_can_leave_its_familys_lora_out(self):
+        # A checkpoint with its turbo built in: the Turbo family's steps and sampler, without the Turbo LoRA.
+        graph = render_graph(self.own(base="h3_turbo", lora=False), "x", clip(), "t1", "draft", 3)
+        self.assertNotIn("94", graph)
+        self.assertEqual((graph["12"]["inputs"]["steps"], graph["11"]["inputs"]["sampler_name"]), (6, "euler"))
+        self.assertIn("94", render_graph(self.own(base="h3_turbo", lora=True), "x", clip(), "t1", "draft", 3))
+        with self.assertRaises(ValueError):
+            self.own(lora="no")
+
+    def test_the_merged_community_checkpoints_are_built_in(self):
+        for name, steps in (("eros", (6, 8)), ("dasiwa_v5", (6, 8))):
+            project = new_project("x")
+            set_project(project, {"profile": name})
+            draft = render_graph(project, "x", clip(), "t1", "draft", 3)
+            final = render_graph(project, "x", clip(), "t1", "final", 3)
+            self.assertEqual(draft["1"], {"class_type": "UNETLoader", "inputs": {"unet_name": PROFILES[name]["unet"][0], "weight_dtype": "default"}})
+            self.assertEqual((draft["12"]["inputs"]["steps"], final["12"]["inputs"]["steps"]), steps)
+            # Their turbo is in the weights, so no family LoRA, and a prompt-only clip renders on the one file.
+            self.assertNotIn("94", draft)
+            self.assertEqual(draft["10"]["inputs"]["checkpoint"], "ref2va")
+            self.assertEqual(final["87"]["class_type"], "ManualSigmas")
+        found = {"dasiwa_minimax_h3_ref2va_v5xs_pruned_graviton_turbo_w4a8.safetensors"}
+        self.assertEqual(render_graph(dict(new_project("x"), profile="dasiwa_v5"), "x", clip(), "t1", "draft", 3, found)["1"]["inputs"]["unet_name"],
+                         "dasiwa_minimax_h3_ref2va_v5xs_pruned_graviton_turbo_w4a8.safetensors")
+        rows = {row["id"]: row for row in profile_status(set())}
+        self.assertEqual((rows["h3_turbo"]["lora"], rows["eros"]["lora"]), (PROFILES["h3_turbo"]["lora"][0], None))
+
     def test_one_clip_can_render_on_it(self):
         project = self.own()
         set_project(project, {"profile": "hyperflow"})
-        made, _ = add_clip(project, {"action": "A keeper climbs.", "profile": "eros"})
+        made, _ = add_clip(project, {"action": "A keeper climbs.", "profile": "tuned"})
         job, graph = plan_render(project, "x", made["id"], "draft", 3)
-        self.assertEqual(graph["1"]["inputs"]["unet_name"], "eros_ref2va.safetensors")
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], "tuned_ref2va.safetensors")
         # Once the checkpoint is gone, the clip renders on the project's model again.
         set_project(project, {"checkpoints": []})
         _, graph = plan_render(project, "x", made["id"], "draft", 3)
         self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
         with self.assertRaises(ValueError):
-            add_clip(project, {"action": "x", "profile": "eros"})
+            add_clip(project, {"action": "x", "profile": "tuned"})
 
     def test_checkpoints_are_checked_when_they_are_set(self):
         project = new_project("x")
-        for bad in ("eros.safetensors", [{"title": "Eros"}], [{"unet": "a", "base": "nope"}], [{"unet": "a", "id": "h3"}],
+        for bad in ("tuned.safetensors", [{"title": "Tuned"}], [{"unet": "a", "base": "nope"}], [{"unet": "a", "id": "h3"}],
                     [{"unet": "a", "id": "m"}, {"unet": "b", "id": "m"}], [{"unet": "a", "steps": {"draft": 0}}],
                     [{"unet": "a", "steps": {"quick": 4}}], [{"unet": "a", "cfg": 3}], [{"unet": str(n)} for n in range(13)]):
             with self.assertRaises(ValueError):
                 set_project(project, {"checkpoints": bad})
         with self.assertRaises(ValueError):
-            set_project(project, {"profile": "eros"})
+            set_project(project, {"profile": "tuned"})
         # The presets every project shares are checked the same way, with more room.
         self.assertEqual(len(clean_checkpoints([{"unet": str(n)} for n in range(13)], PRESET_LIMIT)), 13)
-        set_project(project, {"checkpoints": [{"unet": "mixes/eros_v2.safetensors"}]})
+        set_project(project, {"checkpoints": [{"unet": "mixes/tuned_v2.safetensors"}]})
         row = project["checkpoints"][0]
-        self.assertEqual((row["title"], row["base"]), ("eros_v2", "h3"))
+        self.assertEqual((row["title"], row["base"]), ("tuned_v2", "h3"))
         self.assertTrue(row["id"])
         # A project file written by hand cannot break a render.
-        project["checkpoints"] = ["eros", {"id": "h3", "unet": "x"}, {"id": "mine", "unet": "mine.safetensors", "steps": {"draft": "few"}, "sampler": 3}]
+        project["checkpoints"] = ["tuned", {"id": "h3", "unet": "x"}, {"id": "mine", "unet": "mine.safetensors", "steps": {"draft": "few"}, "sampler": 3}]
         project["profile"] = "mine"
         graph = render_graph(project, "x", clip(), "t1", "draft", 3)
         self.assertEqual((graph["1"]["inputs"]["unet_name"], graph["12"]["inputs"]["steps"]), ("mine.safetensors", 10))

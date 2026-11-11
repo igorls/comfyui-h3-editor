@@ -5,6 +5,49 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## Unreleased
+
+### Changed
+
+- **The panel on the right has tabs.** A clip's settings are split into Shot,
+  Takes and Timeline, with the render buttons under each, and the project's
+  settings (look, format, model, LoRAs) are always one click away in a Project
+  tab instead of showing only when nothing is selected. Esc selects nothing.
+- **A tighter, quieter interface.** Controls are about 30 pixels tall and text
+  is 13 pixels, so more of the cut and of a clip's settings fit on screen.
+  The timeline's edit tools are icons with a tip that names them and their
+  key, and Extend back, Extend forward, Bridge to next and Merge with next
+  are in one **Generate** menu that says what each does. Menus, sliders and
+  dialogs are drawn in the editor's own style.
+- **The Clips and Cast headers stay on one line in a narrow panel.** New bin
+  and Import are icons, and Add voice, Add reference and Add RefMod are in one
+  **Add** menu.
+- **The sound follows its picture while you drag or trim a clip**, instead of
+  jumping there when you let go.
+- **A project opens showing its whole cut**, and the panels give way when the
+  window gets narrower, so the viewer keeps its room.
+- **Messages stack and can be closed.** Deleting a clip or a bin shows an Undo
+  button in its message.
+
+### Added
+
+- **A bridge button in an empty space.** A gap between two rendered clips on
+  the timeline shows a plus: press it to generate the clip that connects them.
+- **Timeline clips work from the keyboard.** Tab reaches each clip and Enter
+  selects it, and a screen reader hears its name, state and place.
+- **Two more built-in models.** DaSiWa GXS v5 Turbo and 10Eros Max beta 7, both
+  at 6 steps for drafts and 8 for finals. Each shows under **Model** once its
+  file is in `models/diffusion_models`.
+- **A Models dialog.** **Models and their settings** in the Project tab lists
+  the built-in models, the project's own checkpoints and your presets in one
+  place: pick the one the project renders with, add a checkpoint file, and edit
+  its steps, sampler and scheduler there. It replaces the **Your checkpoints**
+  section.
+- **A checkpoint can leave its family's LoRA out.** A checkpoint set up on
+  MiniMax H3 Turbo's settings has a tick box for the Turbo LoRA, for files that
+  already have the turbo merged in. For agents: `"lora": false` on a row of
+  `checkpoints`.
+
 ## 0.3.0, 2026-11-11
 
 ### Added

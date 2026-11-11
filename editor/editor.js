@@ -41,6 +41,7 @@ const state = {
   samplers: [],
   schedulers: [],
   bin: null,
+  tab: "shot",
   folded: new Set(),
   source: null,
   sourceFrame: 0,
@@ -82,14 +83,50 @@ function timecode(frames) {
   return two(Math.floor(f / FPS / 60)) + ":" + two(Math.floor(f / FPS) % 60) + ":" + two(f % FPS);
 }
 
-function toast(message, bad = false) {
-  const el = $("toast");
-  el.textContent = message;
-  el.classList.toggle("bad", bad);
-  el.hidden = false;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (el.hidden = true), bad ? 7000 : 3500);
+// Messages stack, newest at the bottom, and each one can be closed. `action` adds a button, such as Undo.
+function toast(message, bad = false, action = null) {
+  const stack = $("toast");
+  const el = document.createElement("div");
+  el.className = "toast" + (bad ? " bad" : "");
+  el.setAttribute("role", bad ? "alert" : "status");
+  const text = document.createElement("span");
+  text.textContent = message;
+  el.append(text);
+  let timer = 0;
+  const close = () => {
+    clearTimeout(timer);
+    el.remove();
+  };
+  if (action) {
+    const act = document.createElement("button");
+    act.className = "toast-action";
+    act.textContent = action.label;
+    act.addEventListener("click", () => {
+      close();
+      action.run();
+    });
+    el.append(act);
+  }
+  const dismiss = document.createElement("button");
+  dismiss.className = "toast-close";
+  dismiss.setAttribute("aria-label", "Dismiss");
+  dismiss.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg>';
+  dismiss.addEventListener("click", close);
+  el.append(dismiss);
+  // A message stays while the pointer is on it, so it can be read and acted on.
+  const wait = () => (timer = setTimeout(close, bad ? 8000 : action ? 6000 : 4000));
+  el.addEventListener("pointerenter", () => clearTimeout(timer));
+  el.addEventListener("pointerleave", wait);
+  // The same message again takes the place of the one already showing.
+  for (const shown of [...stack.children]) {
+    if (shown.firstElementChild.textContent === message) shown.remove();
+  }
+  while (stack.children.length >= 4) stack.firstElementChild.remove();
+  stack.append(el);
+  wait();
 }
+
+const undoAction = { label: "Undo", run: () => restore(undo, redo) };
 
 async function api(path, options) {
   const response = await fetch("/h3take/api" + path, options);
@@ -219,6 +256,7 @@ function addClip() {
   state.clip = clip.id;
   state.person = null;
   state.item = state.project.timeline.at(-1).id;
+  state.tab = "shot";
   save();
   renderAll();
   document.querySelector("#inspector textarea.big")?.focus();
@@ -319,14 +357,19 @@ function selectedRendered() {
   return item && activeTake(clipOf(item.clip)) ? item : null;
 }
 
+function bridgeable(item, next) {
+  return Boolean(item && next && activeTake(clipOf(item.clip)) && activeTake(clipOf(next.clip)) && itemLength(item) >= HOLD && itemLength(next) >= HOLD);
+}
+
 function updateTools() {
   const item = selectedRendered();
   const next = item && followingItem(item);
   const holdable = item && itemLength(item) >= HOLD;
   $("extendBack").disabled = !holdable;
   $("extendForward").disabled = !holdable;
-  $("bridge").disabled = !(holdable && next && activeTake(clipOf(next.clip)) && itemLength(next) >= HOLD);
+  $("bridge").disabled = !bridgeable(item, next);
   $("merge").disabled = !(item && next && activeTake(clipOf(next.clip)) && next.start === itemEnd(item));
+  $("remove").disabled = !(state.item || state.gap);
   $("ripple").disabled = !state.item;
   $("closeGap").disabled = !state.gap;
 }
@@ -391,6 +434,7 @@ function addLinked(mode) {
   state.clip = clip.id;
   state.person = null;
   state.item = placed.id;
+  state.tab = "shot";
   save();
   renderAll();
   document.querySelector("#inspector textarea.big")?.focus();
@@ -1146,7 +1190,7 @@ function deleteBin(bin) {
   save();
   renderAll();
   const kept = freed.length === 1 ? " Its clip stays in the list." : freed.length ? " Its " + freed.length + " clips stay in the list." : "";
-  toast("Deleted " + bin.name + "." + kept + " Ctrl+Z brings the bin back.");
+  toast("Deleted " + bin.name + "." + kept, false, undoAction);
 }
 
 function fileClip(clip, binId) {
@@ -1174,7 +1218,7 @@ function deleteClip(clip) {
   if (!state.project.timeline.some((i) => i.id === state.item)) state.item = null;
   save();
   renderAll();
-  toast("Deleted " + clip.name + (placed ? " and took it off the timeline" : "") + ". Ctrl+Z brings it back.");
+  toast("Deleted " + clip.name + (placed ? " and took it off the timeline" : "") + ".", false, undoAction);
 }
 
 function trashButton(label, onClick) {
@@ -1252,6 +1296,7 @@ function clipRow(clip) {
   const status = clipStatus(clip);
   const button = document.createElement("button");
   button.className = "clip" + (clip.id === state.clip ? " on" : "");
+  button.setAttribute("aria-pressed", String(clip.id === state.clip));
   button.dataset.clip = clip.id;
   button.draggable = true;
   button.addEventListener("click", () => {
@@ -1372,7 +1417,7 @@ function adoptPreset(id) {
 
 // What a checkpoint says, in one order, to tell a project's copy from the preset it came from.
 const checkpointText = (row) => JSON.stringify([row.title || "", row.unet, row.unet_text || "", row.base || "h3",
-  row.steps?.draft ?? null, row.steps?.final ?? null, row.sampler || "", row.scheduler || ""]);
+  row.steps?.draft ?? null, row.steps?.final ?? null, row.sampler || "", row.scheduler || "", row.lora !== false]);
 
 async function savePresets(rows, done) {
   try {
@@ -1406,6 +1451,7 @@ function choice(label, options, value, onChange) {
     onChange(select.value);
     save();
     renderInspector();
+    if ($("models").open) renderModels();
   });
   wrap.append(title, select);
   return wrap;
@@ -1440,86 +1486,71 @@ function encoderChoices() {
   return out;
 }
 
-let openCheckpoint = null;
+// The checkpoint being edited in the Models dialog, or null while it shows the list.
+let modelsEditing = null;
 
-// Any H3 checkpoint the user has: its file, the built-in model whose settings it starts from,
-// and the steps, sampler and scheduler it changes.
-function checkpointSections() {
+// What a model renders with, in one line: its file, steps, sampler, scheduler and any LoRA it brings.
+function modelSummary(row) {
+  const custom = isCheckpoint(row);
+  const base = custom ? state.profiles.find((p) => p.id === (row.base || "h3")) || {} : row;
+  const steps = (quality) => (custom && row.steps?.[quality]) || base.steps?.[quality] || "?";
+  const lora = custom && row.lora === false ? null : base.lora;
+  const parts = [
+    fileName(row.unet || ""),
+    steps("draft") + " and " + steps("final") + " steps",
+    ((custom && row.sampler) || base.sampler || "") + " / " + ((custom && row.scheduler) || base.scheduler || "simple"),
+  ];
+  if (lora) parts.push("adds " + fileName(lora));
+  return parts.filter(Boolean).join(", ");
+}
+
+function openModels(editing = null) {
+  modelsEditing = editing;
+  renderModels();
+  if (!$("models").open) $("models").showModal();
+}
+
+// Every model the project can render with, in one place: the built-in ones, the presets kept
+// for every project, and this project's own. A checkpoint of the user's is edited here too.
+function renderModels() {
+  const body = $("modelsBody");
+  const foot = $("modelsFoot");
   const rows = (state.project.checkpoints || []).filter(isCheckpoint);
   const live = (id) => (state.project.checkpoints || []).find((r) => r && r.id === id) || {};
-  const files = (current) => {
-    const list = state.checkpoints.map((f) => [f, f]);
-    if (current && !state.checkpoints.some((f) => sameFile(f, current))) list.unshift([current, current + " (not installed)"]);
-    return list;
-  };
-  const add = document.createElement("label");
-  add.className = "choice";
-  const addTitle = document.createElement("span");
-  addTitle.textContent = "Add a checkpoint";
-  const picker = document.createElement("select");
-  picker.dataset.key = "Add a checkpoint";
-  const none = document.createElement("option");
-  none.value = "";
-  none.textContent = state.checkpoints.length ? "Pick a file from models/diffusion_models" : "No files in models/diffusion_models";
-  picker.append(none);
-  for (const file of state.checkpoints) {
-    const option = document.createElement("option");
-    option.value = file;
-    option.textContent = file;
-    picker.append(option);
-  }
-  picker.addEventListener("change", () => {
-    if (!picker.value) return;
-    checkpoint();
-    const id = "m" + crypto.randomUUID().replaceAll("-", "").slice(0, 8);
-    state.project.checkpoints = [...(state.project.checkpoints || []), { id, title: fileName(picker.value), unet: picker.value, base: "h3" }];
-    openCheckpoint = id;
-    save();
+  const redraw = () => {
     renderInspector();
-  });
-  add.append(addTitle, picker);
-  const hint = document.createElement("p");
-  hint.className = "hint";
-  hint.textContent = "Render with any MiniMax H3 checkpoint, such as a community fine-tune. Pick its file, then the built-in model it is closest to, and set the steps, sampler and scheduler its author recommends. It then appears under Model, for the project or for one clip.";
-  const shelf = document.createElement("div");
-  shelf.className = "presets";
-  for (const preset of state.presets.filter(isCheckpoint)) {
-    const line = document.createElement("div");
-    line.className = "preset";
-    const name = document.createElement("span");
-    name.className = "preset-name";
-    name.textContent = preset.title || fileName(preset.unet);
-    name.title = preset.unet;
-    const has = rows.some((r) => r.id === preset.id);
-    const take = document.createElement("button");
-    take.className = "quiet small";
-    take.textContent = has ? "Added" : "Add";
-    take.disabled = has;
-    take.title = has ? "This project has it" : "Add it to this project";
-    take.addEventListener("click", () => {
-      checkpoint();
-      adoptPreset(preset.id);
-      openCheckpoint = preset.id;
-      save();
-      renderInspector();
-    });
-    line.append(name, take, trashButton("Delete the preset " + name.textContent, () => savePresets(
-      state.presets.filter((r) => r.id !== preset.id), "Deleted the preset. Projects that use it keep their copy.")));
-    shelf.append(line);
-  }
-  const shelfTitle = document.createElement("p");
-  shelfTitle.className = "shelf-title";
-  shelfTitle.textContent = "Presets, for every project";
-  const out = [section("Your checkpoints", [add, ...(shelf.children.length ? [shelfTitle, shelf] : []), hint])];
+    renderModels();
+  };
+  const button = (text, run, kind = "quiet small") => {
+    const made = document.createElement("button");
+    made.className = kind;
+    made.textContent = text;
+    made.addEventListener("click", run);
+    return made;
+  };
+  const use = (id) => {
+    checkpoint();
+    adoptPreset(id);
+    state.project.profile = id;
+    save();
+    redraw();
+  };
+  const editing = rows.find((r) => r.id === modelsEditing);
+  if (!editing) modelsEditing = null;
 
-  for (const row of rows) {
+  if (editing) {
+    const row = editing;
     const base = state.profiles.find((p) => p.id === (row.base || "h3")) || state.profiles[0] || { title: "MiniMax H3", steps: {} };
     const shown = ownProfiles().find((p) => p.id === row.id);
-    const inUse = state.project.profile === row.id;
+    const files = (current) => {
+      const list = state.checkpoints.map((f) => [f, f]);
+      if (current && !state.checkpoints.some((f) => sameFile(f, current))) list.unshift([current, current + " (not installed)"]);
+      return list;
+    };
     const text = (label, value, onInput, options) => {
       const made = field(label, value, onInput, options);
-      // The name and the numbers show elsewhere in the panel, so it is drawn again once the field is left.
-      made.querySelector("input").addEventListener("change", () => renderInspector());
+      // The name and the numbers show in the list and the panel, so both are drawn again once the field is left.
+      made.querySelector("input").addEventListener("change", redraw);
       return made;
     };
     const steps = (quality, label) => text(label, row.steps?.[quality] ?? "", (v) => {
@@ -1538,14 +1569,41 @@ function checkpointSections() {
       if (value) live(row.id)[key] = value;
       else delete live(row.id)[key];
     };
+    const back = button("All models", () => openModels(null), "quiet small");
+    const title = document.createElement("h3");
+    title.className = "model-editing";
+    title.textContent = row.title || fileName(row.unet);
     const children = [
+      back, title,
       text("Name", row.title || "", (v) => (live(row.id).title = v), { placeholder: fileName(row.unet) }),
       choice("Model file", files(row.unet), row.unet, set("unet")),
       choice("Model file for clips that are only a prompt", [["", "The same file"], ...files(row.unet_text)], row.unet_text || "", set("unet_text")),
-      choice("Settings from", state.profiles.map((p) => [p.id, p.title]), row.base || "h3", set("base")),
-      pair,
-      choice("Sampler", [["", "As " + base.title + ": " + (base.sampler || "")], ...state.samplers.map((n) => [n, n])], row.sampler || "", set("sampler")),
+      choice("Settings from", state.profiles.map((p) => [p.id, p.title + ": " + modelSummary(p).split(", ").slice(1).join(", ")]), row.base || "h3", set("base")),
     ];
+    if (base.lora) {
+      // A family such as MiniMax H3 Turbo samples with a LoRA. A checkpoint with that built in must not get it twice.
+      const keep = document.createElement("label");
+      keep.className = "check";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = row.lora !== false;
+      box.dataset.key = "Family LoRA";
+      box.addEventListener("change", () => {
+        checkpoint();
+        if (box.checked) delete live(row.id).lora;
+        else live(row.id).lora = false;
+        save();
+        redraw();
+      });
+      const label = document.createElement("span");
+      label.textContent = "Add " + base.title + "'s LoRA, " + fileName(base.lora);
+      keep.append(box, label);
+      const why = document.createElement("p");
+      why.className = "hint";
+      why.textContent = "Untick it for a checkpoint that already has its turbo built in.";
+      children.push(keep, why);
+    }
+    children.push(pair, choice("Sampler", [["", "As " + base.title + ": " + (base.sampler || "")], ...state.samplers.map((n) => [n, n])], row.sampler || "", set("sampler")));
     if (/hyperflow/i.test(fileName(row.unet)) || /\.gguf$/i.test(row.unet)) {
       const own = document.createElement("p");
       own.className = "hint";
@@ -1555,52 +1613,122 @@ function checkpointSections() {
       children.push(choice("Scheduler", [["", "As " + base.title + ": " + (base.scheduler || "simple")], ...state.schedulers.map((n) => [n, n])], row.scheduler || "", set("scheduler")));
     }
     const about = document.createElement("p");
-    about.className = "hint";
+    about.className = "hint" + (shown && !shown.available ? " bad" : "");
     about.textContent = shown && !shown.available
       ? "Not installed. Needs " + shown.missing.join(" and ") + " in models/diffusion_models."
-      : "Empty steps follow " + base.title + ". It keeps that model's LoRA, if it has one, and the way its finals are refined.";
+      : "Renders with: " + modelSummary(row) + ". Empty steps follow " + base.title + ", and so does the way finals are refined.";
     children.push(about);
-    const actions = document.createElement("div");
-    actions.className = "actions";
-    const use = document.createElement("button");
-    use.className = "quiet";
-    use.textContent = inUse ? "The project renders with it" : "Render the project with it";
-    use.disabled = inUse || (shown && !shown.available);
-    use.addEventListener("click", () => {
-      checkpoint();
-      state.project.profile = row.id;
-      save();
-      renderInspector();
-    });
-    actions.append(use, trashButton("Remove " + (row.title || fileName(row.unet)), () => {
+    body.replaceChildren(...children);
+
+    const inUse = state.project.profile === row.id;
+    const preset = state.presets.find((r) => r.id === row.id);
+    const same = preset && checkpointText(preset) === checkpointText(row);
+    const keep = button(!preset ? "Save as a preset" : same ? "Saved as a preset" : "Update the preset", async () => {
+      await flush();
+      const mine = structuredClone(live(row.id));
+      await savePresets(preset ? state.presets.map((r) => (r.id === mine.id ? mine : r)) : [...state.presets, mine],
+        preset ? "Updated the preset." : "Saved. Every project now offers it.");
+      renderModels();
+    }, "quiet");
+    keep.disabled = Boolean(same);
+    keep.title = "A preset is offered in every project";
+    const go = button(inUse ? "The project renders with it" : "Render the project with it", () => use(row.id), "primary");
+    go.disabled = inUse || (shown && !shown.available);
+    const spacer = document.createElement("span");
+    spacer.className = "spacer";
+    foot.replaceChildren(trashButton("Remove " + (row.title || fileName(row.unet)) + " from this project", () => {
       checkpoint();
       state.project.checkpoints = state.project.checkpoints.filter((r) => !r || r.id !== row.id);
       // What rendered on it goes back to the first model installed, as the server would pick.
       if (inUse) state.project.profile = (state.profiles.find((p) => p.available) || state.profiles[0])?.id;
+      modelsEditing = null;
       save();
-      renderInspector();
-    }));
-    children.push(actions);
-    const preset = state.presets.find((r) => r.id === row.id);
-    const keep = document.createElement("button");
-    keep.className = "quiet wide";
-    keep.textContent = !preset ? "Save as a preset for every project" : checkpointText(preset) === checkpointText(row) ? "Saved as a preset" : "Update the preset";
-    keep.disabled = Boolean(preset) && checkpointText(preset) === checkpointText(row);
-    keep.addEventListener("click", async () => {
-      await flush();
-      const mine = structuredClone(live(row.id));
-      savePresets(preset ? state.presets.map((r) => (r.id === mine.id ? mine : r)) : [...state.presets, mine],
-        preset ? "Updated the preset." : "Saved. Every project now offers it under Model.");
-    });
-    children.push(keep);
-    const box = disclosure(row.title || fileName(row.unet), openCheckpoint === row.id, inUse ? "In use" : base.title, children);
-    box.addEventListener("toggle", () => {
-      if (box.open) openCheckpoint = row.id;
-      else if (openCheckpoint === row.id) openCheckpoint = null;
-    });
-    out.push(box);
+      redraw();
+    }), keep, spacer, go);
+    return;
   }
-  return out;
+
+  const current = projectProfile()?.id;
+  const line = (row, status, actions) => {
+    const item = document.createElement("div");
+    item.className = "model-row" + (row.id === current ? " on" : "");
+    const main = document.createElement("div");
+    main.className = "model-main";
+    const name = document.createElement("b");
+    name.textContent = row.title || fileName(row.unet);
+    const sub = document.createElement("p");
+    sub.className = "model-sub" + (status.bad ? " bad" : "");
+    sub.textContent = status.text;
+    main.append(name, sub);
+    const side = document.createElement("div");
+    side.className = "model-actions";
+    if (row.id === current) {
+      const badge = document.createElement("span");
+      badge.className = "model-badge";
+      badge.textContent = "In use";
+      side.append(badge);
+    }
+    side.append(...actions);
+    item.append(main, side);
+    return item;
+  };
+  const group = (title, items, note) => {
+    const box = document.createElement("div");
+    box.className = "model-group";
+    const head = document.createElement("h3");
+    head.textContent = title;
+    box.append(head);
+    if (note) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = note;
+      box.append(hint);
+    }
+    box.append(...items);
+    return box;
+  };
+  const builtIn = state.profiles.map((p) => line(p,
+    p.available ? { text: modelSummary(p) } : { bad: true, text: "Not installed. Needs " + p.missing.join(" and ") + "." },
+    p.available && p.id !== current ? [button("Use", () => use(p.id))] : []));
+  const mine = rows.map((row) => {
+    const shown = ownProfiles().find((p) => p.id === row.id);
+    const ok = !shown || shown.available;
+    return line(row, ok ? { text: modelSummary(row) } : { bad: true, text: "Not installed. Needs " + shown.missing.join(" and ") + "." }, [
+      ...(ok && row.id !== current ? [button("Use", () => use(row.id))] : []),
+      button("Edit", () => openModels(row.id)),
+    ]);
+  });
+  const spare = sparePresets().map((row) => line(row, { text: modelSummary(row) }, [
+    button("Add to project", () => {
+      checkpoint();
+      adoptPreset(row.id);
+      save();
+      redraw();
+    }),
+    trashButton("Delete the preset " + (row.title || fileName(row.unet)), async () => {
+      await savePresets(state.presets.filter((r) => r.id !== row.id), "Deleted the preset. Projects that use it keep their copy.");
+      renderModels();
+    }),
+  ]));
+  const groups = [group("Built in", builtIn)];
+  if (mine.length) groups.push(group("In this project", mine));
+  if (spare.length) groups.push(group("Your presets", spare, "Kept for every project. Adding one copies it into this project."));
+  body.replaceChildren(...groups);
+
+  const add = button("Add a checkpoint", async () => {
+    const file = await pickFile2("Add a checkpoint", state.checkpoints, "From models/diffusion_models. Pick a MiniMax H3 checkpoint, such as a community fine-tune.");
+    if (!file) return;
+    checkpoint();
+    const id = "m" + crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+    state.project.checkpoints = [...(state.project.checkpoints || []), { id, title: fileName(file), unet: file, base: "h3" }];
+    save();
+    renderInspector();
+    openModels(id);
+  }, "quiet");
+  const note = document.createElement("span");
+  note.className = "model-note";
+  note.textContent = "Any MiniMax H3 checkpoint works: add its file, then set what it renders with.";
+  foot.replaceChildren(add, note);
 }
 
 // A clip renders on the project's model unless it picks its own here.
@@ -1891,14 +2019,14 @@ function loraSection() {
   return section("LoRAs", children);
 }
 
-function renderScene(panel) {
+function renderScene(panel, selected = false) {
   const head = document.createElement("div");
   head.className = "inspector-head";
   const title = document.createElement("h2");
-  title.textContent = "Scene";
+  title.textContent = "Project";
   const line = document.createElement("p");
   line.className = "status";
-  line.textContent = "Select a clip to edit it. Press ? for shortcuts.";
+  line.textContent = selected ? "Settings for every clip in this project." : "Select a clip to edit it. Press ? for shortcuts.";
   head.append(title, line);
   const rendered = state.project.clips.filter((c) => c.takes.length).length;
   const facts = document.createElement("dl");
@@ -1972,20 +2100,25 @@ function renderScene(panel) {
     renderInspector();
   });
   model.append(modelTitle, models);
+  // Every model, with its settings, and the user's own checkpoints, live in one dialog.
+  const manageModels = document.createElement("button");
+  manageModels.className = "quiet wide";
+  manageModels.textContent = "Models and their settings";
+  manageModels.dataset.key = "Models";
+  manageModels.addEventListener("click", () => openModels(null));
   panel.replaceChildren(
     head,
     section("Look", [field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true })]),
-    section("Project", [
+    section("Format and model", [
       shape,
       formatHint,
-      ...(state.profiles.length ? [model, modelHint] : []),
+      ...(state.profiles.length ? [model, modelHint, manageModels] : []),
       ...encoderChoices(),
       field("Language people speak", state.project.language || "", (v) => {
         if (v.trim()) state.project.language = v.trim();
         else delete state.project.language;
       }, { placeholder: "English" }),
     ]),
-    ...checkpointSections(),
     loraSection(),
     section("Overview", [facts]),
   );
@@ -2026,20 +2159,71 @@ function renderBinPanel(panel, bin) {
   panel.replaceChildren(head, section("Bin", [about, keep]));
 }
 
+// What the inspector last showed, so a new selection starts at the top and on its own tab.
+let inspected = "";
+
+// The inspector's tabs: the parts of whatever is selected, then the project, which is always there.
+function renderTabs(tabs) {
+  const bar = $("inspTabs");
+  const focused = bar.contains(document.activeElement);
+  bar.replaceChildren(...tabs.map(([id, label, count]) => {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "insp-tab";
+    tab.dataset.tab = id;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", String(state.tab === id));
+    tab.tabIndex = state.tab === id ? 0 : -1;
+    tab.textContent = label;
+    if (count) {
+      const number = document.createElement("span");
+      number.className = "insp-count";
+      number.textContent = count;
+      tab.append(number);
+    }
+    tab.addEventListener("click", () => showTab(id));
+    return tab;
+  }));
+  if (focused) bar.querySelector('[aria-selected="true"]')?.focus();
+}
+
+function showTab(id) {
+  state.tab = id;
+  renderInspector();
+  $("inspector").scrollTop = 0;
+}
+
 function renderInspector() {
-  const panel = $("inspector");
-  const clip = clipOf(state.clip);
+  const panel = $("inspBody");
   const person = (state.project.cast || []).find((c) => c.id === state.person);
+  const clip = person ? null : clipOf(state.clip);
+  const bin = !clip && !person ? selectedBin() : null;
+  const placed = clip ? state.project.timeline.find((i) => i.id === state.item) : null;
+  const tabs = [];
+  if (person) tabs.push(["shot", "Cast member"]);
+  else if (bin) tabs.push(["shot", "Bin"]);
+  else if (clip && clip.kind === "footage") tabs.push(["shot", "Footage"]);
+  else if (clip) tabs.push(["shot", "Shot"], ["takes", "Takes", clip.takes.length]);
+  if (placed) tabs.push(["timeline", "Timeline"]);
+  tabs.push(["project", "Project"]);
+  const key = person ? "p" + person.id : clip ? "c" + clip.id : bin ? "b" + bin.id : "";
+  if (key !== inspected) {
+    if (key && state.tab === "project") state.tab = "shot";
+    inspected = key;
+    $("inspector").scrollTop = 0;
+  }
+  if (!tabs.some(([id]) => id === state.tab)) state.tab = tabs[0][0];
+  renderTabs(tabs);
+  if (state.tab === "project") {
+    renderScene(panel, Boolean(key));
+    return;
+  }
   if (person) {
     renderPerson(panel, person);
     return;
   }
-  if (!clip && selectedBin()) {
-    renderBinPanel(panel, selectedBin());
-    return;
-  }
-  if (!clip) {
-    renderScene(panel);
+  if (bin) {
+    renderBinPanel(panel, bin);
     return;
   }
   const job = jobFor(clip.id);
@@ -2087,12 +2271,12 @@ function renderInspector() {
     const about = document.createElement("p");
     about.className = "hint";
     about.textContent = "Imported from " + (take?.source || "a file") + ". Footage plays as it is. Select it on the timeline and use Extend or Bridge to generate new shots from it.";
-    parts.push(section("Footage", [about]));
-    const placed = state.project.timeline.find((i) => i.id === state.item);
-    if (placed) parts.push(section("On the timeline", timelineControls(placed)));
+    if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)));
+    else parts.push(section("Footage", [about]));
     panel.replaceChildren(...parts);
     return;
   }
+  if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)));
 
   const timing = document.createElement("div");
   timing.className = "two";
@@ -2104,7 +2288,7 @@ function renderInspector() {
       resizePlanned(clip);
     }, { type: "number" }),
   );
-  parts.push(section("Shot", [
+  if (state.tab === "shot") parts.push(section("Shot", [
     field("What happens", clip.action, (v) => (clip.action = v), { big: true, placeholder: "Describe what we see and hear, in the order it happens." }),
     timing,
     ...framesFor(clip),
@@ -2112,7 +2296,7 @@ function renderInspector() {
   ]));
 
   const voiced = ["speaker", "dialogue", "sound", "music"].filter((k) => String(clip[k] || "").trim()).length;
-  parts.push(disclosure("Dialogue and sound", voiced > 0, voiced ? voiced + " set" : "", [
+  if (state.tab === "shot") parts.push(disclosure("Dialogue and sound", voiced > 0, voiced ? voiced + " set" : "", [
     field("Who speaks", clip.speaker, (v) => (clip.speaker = v), {
       placeholder: (state.project.cast || []).some((p) => p.voice) ? "@" + state.project.cast.find((p) => p.voice).name + " uses their voice" : "The old keeper, low and gravelly",
     }),
@@ -2125,14 +2309,17 @@ function renderInspector() {
     field("Music", clip.music, (v) => (clip.music = v), { placeholder: "None" }),
   ]));
 
-  parts.push(disclosure("Picture to a track", Boolean(clip.track), clip.track ? "Set" : "", trackSection(clip)));
-
-  parts.push(disclosure("Model", Boolean(profileOf(clip.profile)), profileOf(clip.profile)?.title || "", clipModel(clip)));
+  if (state.tab === "shot") {
+    parts.push(disclosure("Picture to a track", Boolean(clip.track), clip.track ? "Set" : "", trackSection(clip)));
+    parts.push(disclosure("Model", Boolean(profileOf(clip.profile)), profileOf(clip.profile)?.title || "", clipModel(clip)));
+  }
 
   const seed = field("Seed. Leave empty for a new one each render", clip.seed ?? "", (v) => {
     clip.seed = v.trim() === "" ? null : Number(v);
   }, { type: "number" });
-  if (clip.takes.length) {
+  if (state.tab !== "takes") {
+    // Only the Takes tab lists them.
+  } else if (clip.takes.length) {
     parts.push(section("Takes", [...versions(clip), seed]));
   } else {
     const none = document.createElement("p");
@@ -2140,9 +2327,6 @@ function renderInspector() {
     none.textContent = "No takes yet. Render a draft to make the first one.";
     parts.push(section("Takes", [none, seed]));
   }
-
-  const item = state.project.timeline.find((i) => i.id === state.item);
-  if (item) parts.push(section("On the timeline", timelineControls(item)));
 
   const foot = document.createElement("div");
   foot.className = "inspector-foot";
@@ -2586,6 +2770,16 @@ function renderTimeline() {
     block.style.left = px(item.start) + "px";
     block.style.width = Math.max(14, px(itemLength(item))) + "px";
     block.dataset.item = item.id;
+    block.tabIndex = 0;
+    block.setAttribute("role", "button");
+    block.setAttribute("aria-pressed", String(item.id === state.item));
+    block.setAttribute("aria-label", clip.name + ", " + clipStatus(clip).text + ", at " + timecode(item.start) + " on the timeline");
+    block.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectClip(clip.id, item.id);
+    });
     const film = document.createElement("div");
     film.className = "film";
     if (job && state.running === job && job.motion) {
@@ -2646,6 +2840,7 @@ function renderTimeline() {
 
     const wave = document.createElement("div");
     wave.className = "wave" + (take ? "" : " todo") + (item.id === state.item ? " on" : "");
+    wave.dataset.item = item.id;
     wave.style.left = block.style.left;
     wave.style.width = block.style.width;
     if (take) {
@@ -2655,6 +2850,37 @@ function renderTimeline() {
     }
     waves.push(wave);
   }
+  const order = sorted();
+  for (let i = 0; i + 1 < order.length; i++) {
+    const before = order[i];
+    const after = order[i + 1];
+    const space = px(after.start - itemEnd(before));
+    if (space < 40 || !bridgeable(before, after)) continue;
+    const hint = document.createElement("div");
+    hint.className = "gap-hint";
+    hint.style.left = px(itemEnd(before)) + "px";
+    hint.style.width = space + "px";
+    const go = document.createElement("button");
+    go.className = "gap-bridge";
+    const what = "Generate a bridge: a clip that connects " + clipOf(before.clip).name + " to " + clipOf(after.clip).name;
+    go.setAttribute("aria-label", what);
+    go.title = what;
+    go.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
+    if (space >= 170) {
+      const label = document.createElement("span");
+      label.textContent = "Generate a bridge";
+      go.append(label);
+    }
+    go.addEventListener("pointerdown", (event) => event.stopPropagation());
+    go.addEventListener("click", () => {
+      state.clip = before.clip;
+      state.item = before.id;
+      state.gap = null;
+      addLinked("bridge");
+    });
+    hint.append(go);
+    blocks.push(hint);
+  }
   if (state.gap) {
     const mark = document.createElement("div");
     mark.className = "gapmark";
@@ -2662,8 +2888,11 @@ function renderTimeline() {
     mark.style.width = px(state.gap.end - state.gap.start) + "px";
     blocks.push(mark);
   }
+  // Drawing the lane again must not take the focus away from the clip that had it.
+  const focused = $("laneV").contains(document.activeElement) ? document.activeElement.dataset.item : null;
   $("laneV").replaceChildren(...blocks);
   $("laneA").replaceChildren(...waves);
+  if (focused) $("laneV").querySelector('[data-item="' + CSS.escape(focused) + '"]')?.focus();
   placePlayhead();
   updateTools();
 }
@@ -2704,6 +2933,7 @@ function bindBlock(block, item, clip) {
     event.preventDefault();
     selectClip(clip.id, item.id);
     const live = document.querySelector('.block[data-item="' + item.id + '"]');
+    const sound = document.querySelector('.wave[data-item="' + item.id + '"]');
     const edge = event.target.classList.contains("l") ? "l" : event.target.classList.contains("r") ? "r" : null;
     const origin = { x: event.clientX, start: item.start, in: item.in, out: item.out };
     const limit = activeTake(clip)?.frames ?? Infinity;
@@ -2730,6 +2960,10 @@ function bindBlock(block, item, clip) {
       }
       live.style.left = px(item.start) + "px";
       live.style.width = Math.max(14, px(itemLength(item))) + "px";
+      if (sound) {
+        sound.style.left = live.style.left;
+        sound.style.width = live.style.width;
+      }
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -3295,6 +3529,7 @@ async function openProject(folder) {
   state.running = null;
   syncJobs();
   renderAll();
+  fitTimeline();
   ensureStrips();
 }
 
@@ -3497,6 +3732,7 @@ async function runExport() {
 $("export").addEventListener("click", openExporter);
 $("exporterGo").addEventListener("click", runExport);
 $("exporterClose").addEventListener("click", () => $("exporter").close());
+$("modelsClose").addEventListener("click", () => $("models").close());
 $("play").addEventListener("click", () => setPlaying(!state.playing));
 $("shortcuts").addEventListener("click", () => $("keys").showModal());
 $("keysClose").addEventListener("click", () => $("keys").close());
@@ -3517,6 +3753,20 @@ $("merge").addEventListener("click", mergeWithNext);
 $("ripple").addEventListener("click", rippleDelete);
 $("closeGap").addEventListener("click", closeGap);
 $("fit").addEventListener("click", fitTimeline);
+// A menu opens under its button, or over it when the window is short, and closes once something is chosen.
+for (const [button, id] of [["generate", "generateMenu"], ["castAdd", "castMenu"]]) {
+  const menu = $(id);
+  menu.addEventListener("toggle", (event) => {
+    if (event.newState !== "open") return;
+    const at = $(button).getBoundingClientRect();
+    const below = at.bottom + 6 + menu.offsetHeight <= window.innerHeight;
+    menu.style.left = Math.max(8, Math.min(at.left, window.innerWidth - menu.offsetWidth - 8)) + "px";
+    menu.style.top = (below ? at.bottom + 6 : at.top - 6 - menu.offsetHeight) + "px";
+  });
+  menu.addEventListener("click", (event) => {
+    if (event.target.closest("button")) menu.hidePopover();
+  });
+}
 $("remove").addEventListener("click", removeSelected);
 $("zoom").addEventListener("input", (event) => setZoom(Number(event.target.value)));
 $("tlScroll").addEventListener("wheel", (event) => {
@@ -3568,8 +3818,18 @@ $("laneV").addEventListener("pointerdown", (event) => {
 
 window.addEventListener("keydown", (event) => {
   if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
-  if ($("keys").open) return;
-  if (event.code === "Space") {
+  if (document.querySelector("dialog[open], [popover]:popover-open")) return;
+  const tab = event.target.closest?.("#inspTabs .insp-tab");
+  if (tab && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+    // In the inspector's tabs the arrows move between tabs, as tabs do everywhere.
+    event.preventDefault();
+    const next = event.key === "ArrowLeft" ? tab.previousElementSibling : tab.nextElementSibling;
+    if (next) showTab(next.dataset.tab);
+    return;
+  }
+  if (event.key === "Escape") {
+    if (state.clip || state.item || state.person || state.bin || state.gap) selectClip(null);
+  } else if (event.code === "Space") {
     event.preventDefault();
     setPlaying(!state.playing);
   } else if (event.key === "?") $("keys").showModal();
@@ -3606,6 +3866,13 @@ window.addEventListener("keydown", (event) => {
     else restore(undo, redo);
   }
 });
-window.addEventListener("resize", () => state.project && renderTimeline());
+window.addEventListener("resize", () => {
+  for (const side of Object.values(SIDES)) {
+    let saved = 0;
+    try { saved = Number(localStorage.getItem(side.key)); } catch (_) {}
+    if (saved) setSideWidth(side, saved);
+  }
+  if (state.project) renderTimeline();
+});
 
 start().catch((error) => toast(error.message, true));

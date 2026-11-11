@@ -138,6 +138,19 @@ PROFILES = {
         "unet": ["dasiwa_minimax_h3_ref2va_v4_pruned_turbo_int8.safetensors", "DasiwaMinimaxH3_dasiwaHybridV4Turbo*"],
         "steps": {"draft": 8, "final": 8}, "sampler": "euler", "refine_sigmas": REFINE_TAIL,
     },
+    "dasiwa_v5": {
+        "title": "DaSiWa GXS v5 Turbo",
+        "hint": "A merged community H3 checkpoint with its turbo built in, ref2va only. 6 steps for drafts, 8 for finals.",
+        "unet": ["dasiwa_minimax_h3_ref2va_v5xs_pruned_graviton_turbo_int8_row-wise_convrot_runtime_mixed.safetensors",
+                 "dasiwa_minimax_h3_ref2va_v5xs_pruned_graviton_turbo*"],
+        "steps": {"draft": 6, "final": 8}, "sampler": "euler", "refine_sigmas": REFINE_TAIL,
+    },
+    "eros": {
+        "title": "10Eros Max beta 7",
+        "hint": "A community H3 merge with an 8-step turbo built in, one file for every clip. 6 steps for drafts, 8 for finals.",
+        "unet": ["10Eros_Max_h3_8stepTURBO_beta7_fix1-native_int8_protected_edges_HQ.safetensors", "10Eros_Max_h3_8stepTURBO_beta7*"],
+        "steps": {"draft": 6, "final": 8}, "sampler": "euler", "refine_sigmas": REFINE_TAIL,
+    },
 }
 DEFAULT_PROFILE = "hyperflow"
 # A project's own checkpoints: how many, the family one starts from, and the steps it may take.
@@ -146,7 +159,7 @@ CHECKPOINT_LIMIT = 12
 PRESET_LIMIT = 64
 CHECKPOINT_BASE = "h3"
 STEP_RANGE = (1, 100)
-CHECKPOINT_FIELDS = ("id", "title", "base", "unet", "unet_text", "steps", "sampler", "scheduler")
+CHECKPOINT_FIELDS = ("id", "title", "base", "unet", "unet_text", "steps", "sampler", "scheduler", "lora")
 # Models that older projects name but the editor no longer renders with.
 RETIRED = {"fasth3_omniref_qad_nvfp4_comfy.safetensors"}
 
@@ -172,6 +185,9 @@ def custom_profile(row):
     for key in ("sampler", "scheduler"):
         if isinstance(row.get(key), str) and row[key]:
             profile[key] = row[key]
+    if row.get("lora") is False:
+        # A checkpoint with its turbo built in takes the family's settings without the family's LoRA.
+        profile.pop("lora", None)
     if "refine_from" in base:
         # A final redraws as many steps at the larger size as the family it is based on.
         profile["refine_from"] = max(1, steps["final"] - (base["steps"]["final"] - base["refine_from"]))
@@ -361,7 +377,10 @@ def profile_status(available):
             missing.append(profile["lora"][0])
         rows.append({"id": name, "title": profile["title"], "hint": profile["hint"],
                      "available": not missing, "missing": missing, "steps": profile["steps"],
-                     "sampler": profile["sampler"], "scheduler": profile.get("scheduler") or "simple"})
+                     "sampler": profile["sampler"], "scheduler": profile.get("scheduler") or "simple",
+                     "unet": pick_file(profile["unet"], available) or profile["unet"][0],
+                     "unet_text": pick_file(profile.get("unet_text"), available),
+                     "lora": profile["lora"][0] if profile.get("lora") else None})
     return rows
 
 
@@ -1520,6 +1539,11 @@ def clean_checkpoints(value, limit=CHECKPOINT_LIMIT):
                 if isinstance(count, bool) or not isinstance(count, int) or not STEP_RANGE[0] <= count <= STEP_RANGE[1]:
                     raise ValueError("steps must be whole numbers from %s to %s" % STEP_RANGE)
             made["steps"] = dict(steps)
+        if row.get("lora") is not None:
+            if not isinstance(row["lora"], bool):
+                raise ValueError("lora is true to keep the base's LoRA, or false to render without it")
+            if row["lora"] is False:
+                made["lora"] = False
         for key in ("sampler", "scheduler"):
             if row.get(key):
                 if not isinstance(row[key], str):

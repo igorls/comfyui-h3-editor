@@ -153,7 +153,7 @@ needs a render.
 `set_project`: `fields`: `style` (applies to every clip), `format` (`16:9`, `9:16` or
 `1:1`), `language` (for example `English` or `Portuguese`), and `profile`, the checkpoint
 family new renders use (`hyperflow`, the default, `h3_turbo`, `h3`, `singularity`, `dasiwa`
-or `dasiwa_turbo`). `GET /projects` lists the profiles with whether each is installed;
+`dasiwa_turbo`, `dasiwa_v5` or `eros`). `GET /projects` lists the profiles with whether each is installed;
 pick only an `available` one. A new project starts on the first installed profile, and a
 project that names none renders on it. The format sets new renders and imports, and export fits
 every clip to it.
@@ -194,7 +194,8 @@ changes.
   an fl2va file for clips that are only a prompt; without it they render on `unet`.
 - `base` is the built-in profile whose settings it starts from (`h3` when left out). It
   keeps that profile's LoRA, such as the Turbo LoRA of `h3_turbo`, and the way its finals
-  are refined.
+  are refined. `"lora": false` leaves that LoRA out, for a checkpoint with the turbo
+  already merged in.
 - `steps`, `sampler` and `scheduler` are optional and replace the base's. `GET /projects`
   lists the `samplers` and `schedulers` ComfyUI has. A HyperFlow file keeps its own
   schedule, so its `scheduler` is ignored.

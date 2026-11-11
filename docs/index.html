@@ -154,8 +154,8 @@
       </li>
       <li>
         <h3>Bring your own models and LoRAs.</h3>
-        <p>Six H3 models are built in, and any other H3 checkpoint works with its own steps, sampler and scheduler, for the whole project or for one clip. Add LoRAs and set each one's strength with a slider.</p>
-        <p class="ctls"><span class="ctl">Model</span><span class="ctl">Your checkpoints</span><span class="ctl">LoRAs</span></p>
+        <p>Eight H3 models are built in, and any other H3 checkpoint works with its own steps, sampler and scheduler, for the whole project or for one clip. Add LoRAs and set each one's strength with a slider.</p>
+        <p class="ctls"><span class="ctl">Model</span><span class="ctl">Models and their settings</span><span class="ctl">LoRAs</span></p>
       </li>
       <li>
         <h3>Generate to a recorded voice.</h3>
@@ -215,17 +215,17 @@
             <tr><td data-label="File"><code>taeh3.safetensors</code><span class="for">The moving live preview</span></td><td data-label="Folder"><code>models/<wbr>vae_approx</code></td><td data-label="Size" class="num">23 MB</td><td data-label="From"><a href="https://huggingface.co/OzzyGT/taeh3">OzzyGT/taeh3</a></td></tr>
           </tbody>
         </table>
-        <p class="small">Other H3 checkpoints work as well. Five more are built in, and you can add any H3 checkpoint file with its own steps, sampler and scheduler, and LoRAs trained on H3. <a href="https://github.com/igorls/comfyui-h3-editor/blob/main/docs/models.md">Models and quality</a> has the details.</p>
+        <p class="small">Other H3 checkpoints work as well. Seven more are built in, and you can add any H3 checkpoint file with its own steps, sampler and scheduler, and LoRAs trained on H3. <a href="https://github.com/igorls/comfyui-h3-editor/blob/main/docs/models.md">Models and quality</a> has the details.</p>
       </li>
 
       <li>
         <h3>Make your first video</h3>
         <ol class="howto">
           <li>Open <strong>H3 Editor</strong> from the ComfyUI sidebar. It starts you on a first project.</li>
-          <li>In the <strong>Scene</strong> panel, choose the format: 16:9, 9:16 or 1:1.</li>
+          <li>In the <strong>Project</strong> tab on the right, choose the format: 16:9, 9:16 or 1:1.</li>
           <li>Press <strong>New clip</strong>, write what happens in <strong>What happens</strong>, and press <strong>Render draft</strong>. The viewer shows the clip taking shape.</li>
           <li>When the draft lands, press Space to play it. Not right? Change the text and render again: each render becomes another take.</li>
-          <li>Press <strong>Extend forward</strong> to carry the shot on, or add another clip.</li>
+          <li>Press <strong>Generate</strong>, then <strong>Extend forward</strong>, to carry the shot on, or add another clip.</li>
           <li>Press <strong>Render final</strong> for the takes you keep, then <strong>Export</strong>. The video is saved in ComfyUI's output folder, under <code>h3take_projects/&lt;project&gt;/exports</code>.</li>
         </ol>
       </li>
