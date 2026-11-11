@@ -11,7 +11,8 @@ Changed here: several LoRAs on one model share one bypass injection and one adaL
 module, so stacking them is safe; INT8 fused MLP fc2 layers keep ComfyUI's fused SwiGLU INT8
 kernel for the base output while adding the LoRA update in float on swiglu(fc1(x)); HyperFlow's
 factorized LowRankLinear / SplitQKV layers attach at run time instead of dropping; each LoRA
-can restrict itself to a sigma window [end_sigma, start_sigma]; keys with or without a
+can restrict itself to a sigma window [end_sigma, start_sigma]; adaLN parts trained on a pruned
+base load as ordinary layers, and layers sized for another model are left out; keys with or without a
 diffusion_model. prefix both load, and so do keys in the trainers' lora_unet_ form; H3 blocks
 are renumbered for HyperFlow H3 Flash, whose GGUF dense weights take the merge path and whose
 adaLN is skipped; the silu(t_emb) grid is kept on each device once; the older unique-timestep
@@ -92,6 +93,35 @@ def module_names(lora):
         if match:
             names.add(key[:match.start()])
     return sorted(names)
+
+
+def plain_parts(lora, module):
+    """A plain LoRA's (down, up) tensors for one layer; None for a part it does not have."""
+    return (lora.get(module + ".lora_A.weight", lora.get(module + ".lora_down.weight")),
+            lora.get(module + ".lora_B.weight", lora.get(module + ".lora_up.weight")))
+
+
+def layer_shapes(state_dict, dense):
+    """The (out, in) of each Linear layer with one dense weight."""
+    shapes = {}
+    for module in dense:
+        weight = state_dict.get("diffusion_model.%s.weight" % module)
+        shape = tuple(getattr(weight, "tensor_shape", None) or getattr(weight, "shape", ()))
+        if len(shape) == 2:
+            shapes[module] = shape
+    return shapes
+
+
+def fits(lora, module, shapes):
+    """True when a plain LoRA's parts match the layer's size, False when they do not, None when unknown.
+
+    A quantized weight may be stored transposed, so either orientation of the layer's shape counts.
+    """
+    down, up = plain_parts(lora, module)
+    shape = shapes.get(module)
+    if down is None or up is None or shape is None or down.ndim != 2 or up.ndim != 2:
+        return None
+    return (up.shape[0], down.shape[1]) in (shape, shape[::-1])
 
 
 def is_gguf(dm):
@@ -300,9 +330,19 @@ def apply(model, lora_path, lora_name, strength, mode="auto", start_sigma=1.0, e
     modules = module_names(lora)
     adaln = [m for m in modules if m.endswith("adaln_proj.linear")]
     pruned = bool(getattr(dm, "use_adaln_curves", False)) and not hyperflow
-    backbone = [m for m in modules if m not in adaln or not (pruned or hyperflow)]
+    shapes = layer_shapes(new.model.state_dict(), dense)
+    # A LoRA trained on a pruned base already has adaLN parts as wide as that base's time curve,
+    # so they load like any other layer. Only parts trained on a full H3 come from the grid.
+    regrid = [m for m in adaln if pruned and fits(lora, m, shapes) is not True]
+    backbone = [m for m in modules if m not in adaln or not (hyperflow or m in regrid)]
     if hyperflow and adaln:
         notes.append("%s adaLN layers skipped: HyperFlow's adaLN takes its own two-time input" % len(adaln))
+    misfit = [m for m in backbone if fits(lora, m, shapes) is False]
+    if misfit:
+        backbone = [m for m in backbone if m not in misfit]
+        notes.append("%s %s skipped, sized for another model: %s" % (
+            len(misfit), "layer" if len(misfit) == 1 else "layers",
+            ", ".join(misfit[:4]) + (" ..." if len(misfit) > 4 else "")))
 
     missing = sorted(m for m in backbone if m not in known)
     targets = {m: "diffusion_model.%s.weight" % m for m in backbone if m in known}
@@ -329,11 +369,14 @@ def apply(model, lora_path, lora_name, strength, mode="auto", start_sigma=1.0, e
 
     pairs = {}
     if pruned:
-        for module in adaln:
-            down = lora.get(module + ".lora_A.weight", lora.get(module + ".lora_down.weight"))
-            up = lora.get(module + ".lora_B.weight", lora.get(module + ".lora_up.weight"))
+        width = silu_grid("cpu").shape[1] if regrid else 0
+        for module in regrid:
+            down, up = plain_parts(lora, module)
             if down is None or up is None:
                 notes.append("%s is not a plain LoRA, so its adaLN part is skipped" % module)
+                continue
+            if down.ndim != 2 or down.shape[1] != width or up.shape[0] not in shapes.get(module, up.shape):
+                notes.append("%s is sized for another model, so its adaLN part is skipped" % module)
                 continue
             alpha = lora.get(module + ".alpha")
             scale = (float(alpha) / down.shape[0] if alpha is not None else 1.0) * strength

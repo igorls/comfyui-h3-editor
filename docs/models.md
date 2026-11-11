@@ -103,7 +103,9 @@ The H3 LoRA node applies a LoRA trained on MiniMax H3.
 - On int8 and fp8 weights it adds the LoRA at run time, so small updates are not
   rounded away.
 - On the pruned base files it adds the LoRA's time-conditioning part at run time
-  too, from a small bundled grid.
+  too, from a small bundled grid. A LoRA trained on a pruned base file already
+  fits it, and loads as it is.
+- A layer sized for another model is left out, and ComfyUI's log says how many.
 - HyperFlow H3 Flash prunes some of H3's blocks: its ref2va model dropped block 9
   and its fl2va model blocks 6, 21 and 22. The node moves a LoRA's later blocks
   down to match, so they land on the layers they were trained for, and attaches

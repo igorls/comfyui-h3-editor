@@ -261,5 +261,76 @@ class FactorizedHyperFlowAttachmentTest(unittest.TestCase):
         self.assertTrue(torch.allclose(out_fc2, exp_fc2, atol=2e-2))
 
 
+@unittest.skipIf(torch is None, "needs torch and ComfyUI")
+class PrunedBaseAdalnTest(unittest.TestCase):
+    """adaLN parts on a pruned base, whose projections take an 8-wide point of the time curve."""
+
+    LAYER = "blocks.0.adaln_proj.linear"
+    KEY = "diffusion_model.blocks.0.adaln_proj.linear.weight"
+
+    def setUp(self):
+        import test_hyperflow
+
+        torch.manual_seed(5)
+        grid = h3lora.silu_grid("cpu")
+        dims = dict(test_hyperflow.DIMS, time_embed_dim=8)
+        dm = minimax_model.MiniMaxH3Model(**dims, adaln_curve_grid=grid.shape[0], dtype=torch.float32,
+                                          operations=comfy.ops.manual_cast)
+        with torch.no_grad():
+            for parameter in dm.parameters():
+                parameter.normal_(std=0.05)
+            dm.adaln_t_table.normal_()
+        self.dm, self.grid = dm, grid
+        self.rows = dm.blocks[0].adaln_proj.linear.out_features
+        cpu = torch.device("cpu")
+        self.patcher = comfy.model_patcher.ModelPatcher(_DummyBase(dm), cpu, cpu)
+
+    def applied(self, tensors, strength=1.0):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "lora.safetensors")
+            save_file(tensors, path)
+            return h3lora.apply(self.patcher, path, "lora", strength)
+
+    def test_a_lora_trained_on_a_pruned_base_loads_its_adaln_like_any_layer(self):
+        down, up = torch.randn(4, 8) * 0.1, torch.randn(self.rows, 4) * 0.1
+        patched = self.applied({self.LAYER + ".lora_A.weight": down, self.LAYER + ".lora_B.weight": up}, 1.5)
+        entry = patched.get_attachment(h3lora.STACK)[0]
+        self.assertEqual(entry["adaln"], {})
+        self.assertEqual(list(entry["bypass"]), [self.KEY])
+
+        proj = self.dm.blocks[0].adaln_proj
+        point = self.dm.adaln_t_table[torch.tensor([10, 700])]
+        plain = torch.cat(proj(point), dim=-1).clone()
+        _inject(patched)
+        try:
+            out = torch.cat(proj(point), dim=-1).clone()
+        finally:
+            _eject(patched)
+        expected = plain + (1.5 * (up @ (down @ point.T)).T).reshape(plain.shape)
+        self.assertTrue(torch.allclose(out, expected, atol=1e-4))
+        self.assertTrue(torch.equal(torch.cat(proj(point), dim=-1), plain))
+
+    def test_a_lora_trained_on_a_full_h3_takes_its_adaln_from_the_grid(self):
+        down, up = torch.randn(4, self.grid.shape[1]) * 0.1, torch.randn(self.rows, 4) * 0.1
+        patched = self.applied({self.LAYER + ".lora_A.weight": down, self.LAYER + ".lora_B.weight": up})
+        entry = patched.get_attachment(h3lora.STACK)[0]
+        self.assertEqual(list(entry["adaln"]), [self.LAYER])
+        self.assertEqual(entry["bypass"], {})
+
+    def test_layers_sized_for_another_model_are_left_out_instead_of_failing_the_render(self):
+        hidden = self.dm.hidden_size
+        patched = self.applied({
+            self.LAYER + ".lora_A.weight": torch.randn(4, 5), self.LAYER + ".lora_B.weight": torch.randn(self.rows, 4),
+            "blocks.1.attn.qkv_proj.lora_A.weight": torch.randn(2, hidden + 1),
+            "blocks.1.attn.qkv_proj.lora_B.weight": torch.randn(hidden * 3, 2),
+            "blocks.2.attn.qkv_proj.lora_A.weight": torch.randn(2, hidden),
+            "blocks.2.attn.qkv_proj.lora_B.weight": torch.randn(hidden * 3, 2),
+        })
+        entry = patched.get_attachment(h3lora.STACK)[0]
+        self.assertEqual(entry["adaln"], {})
+        self.assertEqual(list(entry["bypass"]), ["diffusion_model.blocks.2.attn.qkv_proj.weight"])
+        self.assertEqual(len(patched.patches), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

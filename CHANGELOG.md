@@ -5,6 +5,22 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## 0.4.1, 2026-11-11
+
+### Fixed
+
+- A LoRA trained on one of the pruned H3 base files failed every render on a
+  model built on them, such as MiniMax H3 or MiniMax H3 Turbo, with "mat1 and
+  mat2 shapes cannot be multiplied (32x8 and 2688x1)". The H3 LoRA node took
+  its time-conditioning layers for ones trained on a full H3. They now load
+  like the LoRA's other layers.
+- A LoRA layer sized for another model is left out, and the log says how many,
+  instead of failing the render.
+
+### Upgrading
+
+Restart ComfyUI after updating. Projects made with 0.4.0 open as they are.
+
 ## 0.4.0, 2026-11-11
 
 ### Changed
