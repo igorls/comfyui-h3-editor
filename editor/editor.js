@@ -3322,6 +3322,30 @@ function renderTimeline() {
     hint.append(go);
     blocks.push(hint);
   }
+  for (const cut of touchingCuts()) {
+    const found = cutScores.get(cut.key);
+    if (!found || found.score === null || found.score >= CUT_FINE) continue;
+    const mark = document.createElement("button");
+    mark.className = "cut-score" + (found.score < CUT_BAD ? " bad" : "");
+    mark.style.left = px(cut.after.start) + "px";
+    mark.textContent = found.score;
+    const names = clipOf(cut.before.clip).name + " to " + clipOf(cut.after.clip).name;
+    const why = found.kind === "jump"
+      ? "Jump cut: " + (found.notes.join(", ") || "the same shot, not continuous") + ". Extend the first clip so the second continues from its last frame, or change the framing."
+      : found.notes.join(", ") || found.kind;
+    mark.title = "Cut score " + found.score + " of 100, " + names + ". " + why;
+    mark.setAttribute("aria-label", mark.title);
+    mark.addEventListener("pointerdown", (event) => event.stopPropagation());
+    mark.addEventListener("click", () => {
+      state.clip = cut.before.clip;
+      state.item = cut.before.id;
+      state.gap = null;
+      seek(cut.after.start - 1);
+      renderAll();
+    });
+    blocks.push(mark);
+  }
+  refreshCutScores();
   if (state.gap) {
     const mark = document.createElement("div");
     mark.className = "gapmark";
@@ -3337,6 +3361,52 @@ function renderTimeline() {
   if (focused) $("laneV").querySelector('[data-item="' + CSS.escape(focused) + '"]')?.focus();
   placePlayhead();
   updateTools();
+}
+
+// Cut scores: the server measures each cut between two rendered clips that touch, from their pictures alone.
+// Only cuts that need a look are marked: under CUT_FINE in amber, under CUT_BAD in red.
+const CUT_FINE = 70;
+const CUT_BAD = 40;
+const cutScores = new Map();
+let cutsAsked = "";
+let cutsTimer = null;
+
+function touchingCuts() {
+  const order = sorted();
+  const found = [];
+  for (let i = 0; i + 1 < order.length; i++) {
+    const before = order[i];
+    const after = order[i + 1];
+    const takes = [activeTake(clipOf(before.clip)), activeTake(clipOf(after.clip))];
+    if (itemEnd(before) !== after.start || !takes[0] || !takes[1]) continue;
+    found.push({ before, after, key: [before.id, takes[0].id, before.out, after.id, takes[1].id, after.in].join("|") });
+  }
+  return found;
+}
+
+function refreshCutScores() {
+  const wanted = touchingCuts();
+  const signature = state.folder + "/" + wanted.map((c) => c.key).join(",");
+  if (signature === cutsAsked || !wanted.some((c) => !cutScores.has(c.key))) return;
+  clearTimeout(cutsTimer);
+  // Wait until the project is saved and still: the server scores what it has on disk.
+  cutsTimer = setTimeout(async () => {
+    if (unsaved()) return refreshCutScores();
+    cutsAsked = signature;
+    const folder = state.folder;
+    try {
+      const reply = await api("/project/" + encodeURIComponent(folder) + "/cuts");
+      if (folder !== state.folder) return;
+      const now = new Map(touchingCuts().map((c) => [c.before.id + ">" + c.after.id, c.key]));
+      for (const cut of reply.cuts) {
+        const key = now.get(cut.before + ">" + cut.after);
+        if (key) cutScores.set(key, cut);
+      }
+      renderTimeline();
+    } catch (_) {
+      // An older server has no cut scores; the timeline works without them.
+    }
+  }, 900);
 }
 
 function placePlayhead() {
@@ -3611,8 +3681,30 @@ function showSource(clip) {
   updateClock();
 }
 
+// The cut has one shape, as the export does: that of its largest picture. Every clip fills it, so a draft and a
+// final of slightly different proportions do not change the picture's height from one clip to the next.
+function takeShape(take) {
+  if (Array.isArray(take.size) && take.size[0] > 0 && take.size[1] > 0) return take.size;
+  const rows = state.sizes?.[state.project.format || "16:9"]?.[take.quality === "draft" ? "draft" : "final"];
+  return rows?.[0]?.out || [16, 9];
+}
+
+function cutShape() {
+  let best = null;
+  for (const item of state.project.timeline) {
+    const take = activeTake(clipOf(item.clip));
+    if (!take) continue;
+    const shape = takeShape(take);
+    if (!best || shape[0] > best[0]) best = shape;
+  }
+  return best;
+}
+
 function showFrame() {
   const clip = viewing();
+  const shape = clip ? null : cutShape();
+  $("screen").classList.toggle("cut", Boolean(shape));
+  if (shape) $("screen").style.setProperty("--frame", String(shape[0] / shape[1]));
   $("sourceTag").hidden = !clip;
   $("timeline").classList.toggle("source", Boolean(clip));
   if (clip) {

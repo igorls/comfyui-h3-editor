@@ -99,6 +99,8 @@ class H3Take(io.ComfyNode):
                 io.Image.Input("source_video", optional=True, tooltip="24 fps frames to hold."),
                 io.Image.Input("end_video", optional=True, tooltip="With video_mode bridge, the clip the take must arrive at."),
                 io.Audio.Input("end_audio", optional=True, tooltip="Soundtrack of end_video."),
+                io.Latent.Input("source_hold", optional=True, tooltip="The held frames of source_video as the latent they were sampled in, from H3 Load Clip. Used in place of encoding the frames again, so a chain of extensions does not lose detail or brightness at each join."),
+                io.Latent.Input("end_hold", optional=True, tooltip="The same for end_video."),
                 io.Latent.Input("carry", optional=True, tooltip="A finished H3 latent. Its last hold_frames open this take, with no re-encode. Leave video_mode off."),
                 io.Int.Input("hold_frames", default=39, min=5, max=3600, step=1),
                 io.Combo.Input("strength", options=list(STRENGTHS) + ["custom"], default="hold", tooltip="How much the held video may change. light tints it, medium and heavy keep the shot but follow the prompt, regenerate keeps nothing."),
@@ -138,7 +140,7 @@ class H3Take(io.ComfyNode):
                 hold_frames, strength, keep, align, video_feather, audio_hold, audio_feather, ref_image_size,
                 audio_vae=None, start_image=None, end_image=None, mid_images=None, source_video=None, end_video=None,
                 end_audio=None, carry=None, region=None, source_audio=None, ref_images=None, ref_videos=None, ref_video_audios=None,
-                ref_audios=None, audio_align="video") -> io.NodeOutput:
+                ref_audios=None, audio_align="video", source_hold=None, end_hold=None) -> io.NodeOutput:
         keep = resolve_keep(strength, keep)
         second = None
         if video_mode == "bridge":
@@ -150,15 +152,19 @@ class H3Take(io.ComfyNode):
             )
             window = audio_window(audio_hold, span, length, audio_seconds(source_audio), audio_align)
             end_window = audio_window(audio_hold, end_span, length, audio_seconds(end_audio), audio_align)
-            second = (end_span, end_video, end_audio, end_window)
+            second = (end_span, end_video, end_audio, end_window, end_hold)
         elif carry is not None:
             if source_video is not None or video_mode != "off":
                 raise ValueError("carry replaces the source video. Disconnect it and leave video_mode off.")
-            if audio_hold == "full":
-                raise ValueError("carry holds its own tail, so audio_hold must be off or span")
             frames = latent_frames(carry["samples"].unbind()[0].shape[2])
             span = video_span("extend_after", frames, length, hold_frames=hold_frames, align=align, keep=keep)
-            window = audio_window(audio_hold, span, length, frames / float(FPS))
+            if audio_hold == "full":
+                # The picture carries on from the latent, and the sound is a recorded track laid along the whole take.
+                if source_audio is None:
+                    raise ValueError("carry with audio_hold full needs source_audio, the track to lay along the take")
+                window = audio_window(audio_hold, span, length, audio_seconds(source_audio), audio_align)
+            else:
+                window = audio_window(audio_hold, span, length, frames / float(FPS))
         else:
             source_frames = frame_count(source_video, "source video") if source_video is not None else 0
             span = video_span(video_mode, source_frames, length, hold_frames=hold_frames, align=align, keep=keep)
@@ -183,7 +189,7 @@ class H3Take(io.ComfyNode):
             ref_audios=len(audios),
             audio=window,
         )
-        if (audios or any(has_track) or (window is not None and carry is None)) and audio_vae is None:
+        if (audios or any(has_track) or (window is not None and (carry is None or audio_hold == "full"))) and audio_vae is None:
             raise ValueError("audio inputs need the H3 audio VAE")
         if region is not None and span is None:
             raise ValueError("region needs a held source video")
@@ -225,7 +231,9 @@ class H3Take(io.ComfyNode):
             positive = MiniMaxH3AddGuide.execute(positive, latent, frame, vae=vae, image=images[role])[0]
 
         if span is not None or window is not None:
-            pieces = [(span, source_video, source_audio, window)]
+            # A carried take brings its own sound for the held span. A track given with it replaces that.
+            track = source_audio if carry is None or audio_hold == "full" else None
+            pieces = [(span, source_video, track, window, source_hold)]
             if second is not None:
                 pieces.append(second)
             latent = cls.hold(latent, vae, audio_vae, pieces, length, width, height,
@@ -242,7 +250,7 @@ class H3Take(io.ComfyNode):
         video_curve = None
         audio_curve = None
         writes = []
-        for span, frames, audio, window in pieces:
+        for span, frames, audio, window, held in pieces:
             video_latent = None
             video_first = 0
             audio_latent = None
@@ -256,14 +264,16 @@ class H3Take(io.ComfyNode):
                     if tuple(video_latent.shape[3:]) != (height // 16, width // 16):
                         raise ValueError("carry is a different size from this take")
                 else:
-                    start = span["source_start"]
-                    video_latent = encode_video(vae, frames[start:start + span["hold"]], width, height, steps)
+                    video_latent = held_latent(held, steps, height, width)
+                    if video_latent is None:
+                        start = span["source_start"]
+                        video_latent = encode_video(vae, frames[start:start + span["hold"]], width, height, steps)
                 video_curve = merge_curves(
                     video_curve, hold_curve(total_steps, video_first, steps, base=span["keep"], feather=video_feather)
                 )
             if window is not None:
                 audio_first = window["first"]
-                if carry is not None:
+                if carry is not None and audio is None:
                     audio_latent = audio_tail
                 else:
                     audio_latent = encode_audio(audio_vae, audio, window["source_second"], window["ticks"])
@@ -276,6 +286,44 @@ class H3Take(io.ComfyNode):
             latent = write_holds(latent, video_latent, video_first, audio_latent, audio_first,
                                  video_curve, audio_curve, region)
         return latent
+
+
+def held_latent(held, steps, height, width):
+    """The picture latent of a hold, if one was saved for exactly these frames at this size. None means encode the frames."""
+    if not isinstance(held, dict) or held.get("samples") is None:
+        return None
+    video = held["samples"]
+    if getattr(video, "is_nested", False):
+        video = video.tensors[0]
+    if video.dim() != 5 or video.shape[2] != steps or tuple(video.shape[3:]) != (height // 16, width // 16):
+        return None
+    return video.float()
+
+
+def hold_file(file):
+    """Where a take keeps its hold latents: beside its video, named after the same take."""
+    stem = os.path.splitext(file)[0]
+    head, _, counter = stem.rstrip("_").rpartition("_")
+    return (head if counter.isdigit() and head else stem) + ".hold.safetensors"
+
+
+def saved_hold(path, first, stop, total):
+    """The saved latent for frames first..stop of a take, or None when there is none for exactly that part."""
+    count = stop - first
+    if not os.path.exists(path) or count < 5 or (count - 5) % 17:
+        return None
+    try:
+        import safetensors.torch
+
+        saved = safetensors.torch.load_file(path)
+    except Exception:  # an unreadable file: the frames are encoded as before
+        return None
+    steps = video_steps(count)
+    if stop == total and "tail" in saved and saved["tail"].shape[2] >= steps:
+        return {"samples": saved["tail"][:, :, -steps:].float()}
+    if first == 0 and "head" in saved and saved["head"].shape[2] >= steps:
+        return {"samples": saved["head"][:, :, :steps].float()}
+    return None
 
 
 def output_file(file):
@@ -355,12 +403,14 @@ class H3LoadClip(io.ComfyNode):
                 io.Int.Input("first", default=0, min=0, max=100000),
                 io.Int.Input("last", default=0, min=0, max=100000, tooltip="Stops before this frame. 0 reads to the end."),
             ],
-            outputs=[io.Image.Output(display_name="frames"), io.Audio.Output(display_name="audio")],
+            outputs=[io.Image.Output(display_name="frames"), io.Audio.Output(display_name="audio"),
+                     io.Latent.Output(display_name="hold", tooltip="These frames as the latent they were sampled in, when the clip saved one and they are its first or last frames. Connect it to H3 Take's source_hold or end_hold.")],
         )
 
     @classmethod
     def execute(cls, file, first, last) -> io.NodeOutput:
-        video = InputImpl.VideoFromFile(output_file(file)).get_components()
+        path = output_file(file)
+        video = InputImpl.VideoFromFile(path).get_components()
         frames = video.images
         stop = last or frames.shape[0]
         audio = video.audio
@@ -369,7 +419,46 @@ class H3LoadClip(io.ComfyNode):
             rate_first = int(first / float(FPS) * rate)
             rate_stop = int(stop / float(FPS) * rate)
             audio = {"waveform": audio["waveform"][..., rate_first:rate_stop], "sample_rate": rate}
-        return io.NodeOutput(frames[first:stop], audio)
+        return io.NodeOutput(frames[first:stop], audio, saved_hold(hold_file(path), first, stop, frames.shape[0]))
+
+
+HOLD_STEPS = 12   # 39 frames, the hold the editor's extensions and bridges use
+
+
+class H3SaveHold(io.ComfyNode):
+    """Keeps the first and last frames of a sampled take as latents, for the clips that will extend it."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3SaveHold",
+            display_name="H3 Save Hold",
+            category="minimax/h3",
+            description="Save the first and last 39 frames of a sampled H3 take as latents, beside its video. A later take that extends or bridges this one holds them as they are, with no decode and encode in between.",
+            inputs=[
+                io.Latent.Input("latent", tooltip="The sampled take, before it is decoded."),
+                io.String.Input("file", tooltip="Path inside the output folder. Name it after the take's video."),
+            ],
+            outputs=[],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(cls, latent, file) -> io.NodeOutput:
+        import safetensors.torch
+
+        base = os.path.realpath(folder_paths.get_output_directory())
+        path = os.path.realpath(os.path.join(base, file))
+        if not path.startswith(base + os.sep) or not path.endswith(".safetensors"):
+            raise ValueError("%s is not a .safetensors path inside the output folder" % file)
+        video = latent["samples"]
+        if getattr(video, "is_nested", False):
+            video = video.tensors[0]
+        steps = min(HOLD_STEPS, video.shape[2])
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        safetensors.torch.save_file({"head": video[:, :, :steps].detach().cpu().half().contiguous(),
+                                     "tail": video[:, :, -steps:].detach().cpu().half().contiguous()}, path)
+        return io.NodeOutput()
 
 
 class H3Lora(io.ComfyNode):
@@ -523,10 +612,10 @@ class H3RefineLatent(io.ComfyNode):
         return io.NodeOutput(out)
 
 
-NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
+NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3SaveHold": H3SaveHold, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
                        "H3Lora": H3Lora, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
                        "H3HyperFlowSigmas": H3HyperFlowSigmas}
-NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3LoadStill": "H3 Load Still",
+NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3RefineLatent": "H3 Refine Latent",
                               "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas"}
 # The editor's graphs name each node's twin, an id no other pack registers (see twins.py).

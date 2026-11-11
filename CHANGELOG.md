@@ -5,6 +5,37 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## Unreleased
+
+### Added
+
+- **Cut scores.** Where two rendered clips touch on the timeline, the editor
+  measures the cut from the pictures on both sides and gives it a score from 0
+  to 100. A cut that carries on smoothly or changes to a new shot scores high.
+  A jump cut, the same shot with the subject popped to another pose, scores
+  low and gets a mark on the timeline with the reason. The same takes and trims
+  always give the same score. For agents: `GET /project/{name}/cuts`.
+
+### Fixed
+
+- **Extensions and bridges no longer lose quality at each join.** A linked
+  clip used to read the frames it holds from its source's video file and
+  encode them again. Each time, the picture came back 1.5 to 3% darker and
+  softer, so a chain of extensions stepped darker at every join and the face
+  drifted within half a minute. A take now also saves its first and last 39
+  frames as the latents it was sampled in, in a `.hold.safetensors` file of
+  about 1 MB beside its video, and a clip that extends or bridges it holds
+  those as they are. Measured on one shot extended ten times to 64 seconds:
+  the brightness step at the joins is gone, and the face keeps 75% or more of
+  its detail where it used to fall to 33%. Takes rendered before this have no
+  such file and are held from their video as before, so render a source again
+  to get the benefit. A source trimmed at the held end is also held from its
+  video.
+- The viewer changed the picture's height between a draft and a final, because
+  the two sizes have slightly different proportions (640x352 and 1920x1088).
+  The viewer now shows the cut in one shape, the one the export uses, and
+  every clip fills it.
+
 ## 0.4.1, 2026-11-11
 
 ### Added

@@ -755,6 +755,9 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
         "19": {"class_type": "SaveVideo", "inputs": {
             "video": ["18", 0], "filename_prefix": "%s/%s/clips/%s_%s" % (ROOT, folder, clip["id"], take),
             "format": "auto", "codec": "auto"}},
+        # The take's first and last frames as sampled, for the clips that will extend or bridge it.
+        "20": {"class_type": "H3SaveHold", "inputs": {
+            "latent": ["15", 0], "file": "%s/%s/clips/%s_%s.hold.safetensors" % (ROOT, folder, clip["id"], take)}},
     }
     if unet == models.get("unet_text"):
         graph["10"]["inputs"]["checkpoint"] = "fl2va"
@@ -813,14 +816,14 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
         graph["6"] = load_node(link["a"], hold, link["mode"] != "extend_before")
         take_inputs.update({
             "video_mode": link["mode"], "hold_frames": hold, "audio_hold": "span",
-            "source_video": ["6", 0], "source_audio": ["6", 1],
+            "source_video": ["6", 0], "source_audio": ["6", 1], "source_hold": ["6", 2],
         })
         if link["mode"] == "bridge":
             graph["7"] = load_node(link["b"], hold, False)
             # A hold alone does not make the take arrive. The guide tells H3 what it must land on.
             graph["8"] = {"class_type": "ImageFromBatch", "inputs": {"image": ["7", 0], "batch_index": 0, "length": 1}}
             take_inputs.update({
-                "end_video": ["7", 0], "end_audio": ["7", 1],
+                "end_video": ["7", 0], "end_audio": ["7", 1], "end_hold": ["7", 2],
                 "mid_frames": str(length - hold), "mid_images.mid_image_0": ["8", 0],
             })
     track = clip.get("track")

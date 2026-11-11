@@ -7,7 +7,8 @@ below. You can use them in your own workflows too.
 |---|---|
 | H3 Take | One shot: the prompt, pinned frames, references, held video or sound |
 | H3 Live Preview | Shows the whole clip moving, with sound, at every sampling step |
-| H3 Load Clip | Reads frames and sound from a clip in the output folder |
+| H3 Load Clip | Reads frames and sound from a clip in the output folder, and the saved latent of those frames when there is one |
+| H3 Save Hold | Saves the first and last 39 frames of a sampled take as latents beside its video, for clips that extend it |
 | H3 Load Still | Reads a picture from the output folder |
 | H3 Load Sound | Reads a sound from the output folder, such as a cast voice |
 | H3 LoRA | Applies an H3 LoRA, wherever it can land on the model; see [models](models.md#loras) |

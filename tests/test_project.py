@@ -922,6 +922,23 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(graph["7"]["inputs"], {"file": "p/clips/b.mp4", "first": 0, "last": 39})
         self.assertEqual(graph["10"]["inputs"]["end_video"], ["7", 0])
 
+    def test_a_take_saves_its_first_and_last_frames_as_latents(self):
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3)
+        self.assertEqual(graph["20"]["class_type"], "H3SaveHold")
+        self.assertEqual(graph["20"]["inputs"], {"latent": ["15", 0], "file": "h3take_projects/x/clips/c1_t1.hold.safetensors"})
+
+    def test_a_final_saves_the_latent_it_sampled_before_enlarging(self):
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "final", 3)
+        self.assertEqual(graph["20"]["inputs"]["latent"], ["15", 0])
+
+    def test_linked_clips_hold_the_saved_latents_of_their_sources(self):
+        link = {"mode": "extend_after", "hold": 39, "a": self.side}
+        graph = render_graph(new_project("x"), "x", clip(link=link, seconds=2), "t1", "draft", 3)
+        self.assertEqual(graph["10"]["inputs"]["source_hold"], ["6", 2])
+        link = {"mode": "bridge", "hold": 39, "a": self.side, "b": dict(self.side, file="b.mp4")}
+        graph = render_graph(new_project("x"), "x", clip(link=link, seconds=3), "t1", "draft", 3)
+        self.assertEqual((graph["10"]["inputs"]["source_hold"], graph["10"]["inputs"]["end_hold"]), (["6", 2], ["7", 2]))
+
     def test_a_bridge_is_guided_onto_its_arrival_frame(self):
         link = {"mode": "bridge", "hold": 39, "a": self.side, "b": dict(self.side, file="b.mp4")}
         graph = render_graph(new_project("x"), "x", clip(link=link, seconds=3), "t1", "draft", 3)

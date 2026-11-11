@@ -24,6 +24,7 @@ except the two uploads.
 | `POST /projects` | `{"name"}` | `{"folder", "project"}`. Opens it if it exists |
 | `GET /project/{name}` | | The whole project |
 | `GET /project/{name}/summary` | | The summary, below |
+| `GET /project/{name}/cuts` | | `{"cuts": [{"before", "after", "at", "kind", "score", "notes", ...}], "worst"}`: a score from 0 to 100 for each place where two rendered clips touch. `kind` is `continuous`, `new shot` or `jump`; a `jump` (the same shot, the subject pops) scores under 60 and wants an extension from the first clip's last frame or a different framing. Measured from the pictures, so it never changes for the same takes and trims |
 | `POST /project/{name}/ops` | `{"ops": [...], "revision"?}` | `{"results", "revision", "summary"}` |
 | `GET /project/{name}/wait?timeout=600` | | The summary, plus `timed_out`, once nothing renders. `after=N` waits for a revision past N instead. Timeout is at most 1800 |
 | `POST /project/{name}/render` | `{"clip", "quality", "seed"?}` | `{"job", "revision", "project"}` |

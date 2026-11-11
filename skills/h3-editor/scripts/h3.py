@@ -182,6 +182,9 @@ def main():
     p.add_argument("clips", nargs="+")
     p.add_argument("--final", action="store_true")
     p.add_argument("--seed", type=int)
+    p = sub.add_parser("cuts", help="A score from 0 to 100 for every cut between two rendered clips, worst first.")
+    p.add_argument("project")
+    p.add_argument("--json", action="store_true", help="The raw scores as JSON.")
     p = sub.add_parser("wait", help="Wait until nothing is rendering, then print the summary.")
     p.add_argument("project")
     p.add_argument("--timeout", type=float, default=1800, help="Seconds. Default 1800.")
@@ -235,6 +238,15 @@ def main():
     elif c == "create":
         made = api("POST", "/projects", {"name": args.name})
         print(made["folder"])
+    elif c == "cuts":
+        found = api("GET", project_path(args.project) + "/cuts")
+        if args.json:
+            print(json.dumps(found, indent=1, ensure_ascii=False))
+        else:
+            for cut in sorted(found["cuts"], key=lambda x: 101 if x["score"] is None else x["score"]):
+                print("%4s  %-12s at frame %-6d %s > %s  %s" % ("-" if cut["score"] is None else cut["score"], cut["kind"], cut["at"],
+                                                              cut["before"], cut["after"], "; ".join(cut["notes"])))
+            print("worst: %s" % found["worst"])
     elif c == "summary":
         s = api("GET", project_path(args.project) + "/summary")
         print(json.dumps(s, indent=1, ensure_ascii=False) if args.json else text_summary(s))

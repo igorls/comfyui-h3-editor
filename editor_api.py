@@ -16,6 +16,7 @@ from aiohttp import web
 
 import folder_paths
 
+from . import cuts as cutscore
 from . import media
 from . import project as store
 from .policy import editor_id, group_by_model
@@ -477,6 +478,41 @@ async def save(request):
 
 async def summary(request):
     return web.json_response(store.describe(read_project(request.match_info["name"])))
+
+
+CUT_SCORES = {}
+
+
+async def cuts(request):
+    """A score for every cut of the timeline: each place where one rendered clip ends on the frame the next begins.
+
+    The numbers come from the pictures alone (see cuts.py), so the same takes and the same trims give the same scores.
+    """
+    data = read_project(request.match_info["name"])
+    order = store.ordered(data)
+    gate = asyncio.Semaphore(4)
+
+    async def one(before, after):
+        entry = {"before": before["id"], "after": after["id"], "at": after["start"]}
+        takes = [store.active_take(store.find_clip(data, item["clip"]) or {}) for item in (before, after)]
+        if not all(takes):
+            return dict(entry, kind="not rendered", score=None, notes=[])
+        try:
+            paths = [output_path(take.get("subfolder"), take["file"]) for take in takes]
+            key = (paths[0], os.path.getmtime(paths[0]), before["out"], paths[1], os.path.getmtime(paths[1]), after["in"])
+            if key not in CUT_SCORES:
+                async with gate:
+                    CUT_SCORES[key] = await asyncio.to_thread(cutscore.score_cut, paths[0], before["out"], paths[1], after["in"], media.command)
+                while len(CUT_SCORES) > 2000:
+                    CUT_SCORES.pop(next(iter(CUT_SCORES)))
+            return dict(entry, **CUT_SCORES[key])
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, web.HTTPException) as error:
+            return dict(entry, kind="unreadable", score=None, notes=[str(getattr(error, "text", None) or error)[:200]])
+
+    pairs = [(a, b) for a, b in zip(order[:-1], order[1:]) if store.item_end(a) == b["start"]]
+    found = await asyncio.gather(*[one(a, b) for a, b in pairs])
+    scored = [c["score"] for c in found if c["score"] is not None]
+    return web.json_response({"cuts": found, "worst": min(scored) if scored else None, "revision": data.get("revision", 0)})
 
 
 async def history(request):
@@ -1182,6 +1218,7 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/rename", "rename"),
     ("POST", "/h3take/api/project/{name}/duplicate", "duplicate"),
     ("GET", "/h3take/api/project/{name}/summary", "summary"),
+    ("GET", "/h3take/api/project/{name}/cuts", "cuts"),
     ("GET", "/h3take/api/project/{name}/history", "history"),
     ("POST", "/h3take/api/project/{name}/restore", "restore"),
     ("POST", "/h3take/api/project/{name}/ops", "operations"),

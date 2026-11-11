@@ -192,6 +192,14 @@ frames and their sound, so the join does not show. The source item must be rende
 | `bridge` | Two rendered shots should connect through new footage. It is placed between them and pushes the later one along |
 | `merge` | Two side-by-side shots should become one continuous move. It replaces their join and keeps the length of the scene |
 
+A take keeps its first and last 39 frames as sampled, so a linked clip holds them with no
+loss. That only works when the source item is not trimmed at the side being held, and when
+the source was rendered at the same quality as the linked clip. Otherwise the frames are
+read from the video, which darkens and softens the join slightly: avoid trimming the end of
+a clip you are about to extend. Even so, a long single shot drifts. Past about 30 seconds
+the room starts to change, and the model sometimes cuts to another framing on the first new
+frame. Check every join with `cuts`, and render a low-scoring extension again with another seed.
+
 Give each one an `action` describing the new part, plus `seconds` for extend and bridge.
 Linked clips render like any other. When a source changes later, the summary marks the
 linked clip `source changed`, and it needs another render.
@@ -264,6 +272,10 @@ ids, and each clip's state. Before you export, check:
 - no gaps, because a gap exports as black and silence. `close_gap` without a frame
   closes all of them;
 - nothing is `source changed`;
+- no cut scores low. `python scripts/h3.py cuts PROJECT` scores each place where two
+  rendered clips touch, 0 to 100, from the pictures. A `jump` (the same shot, the
+  subject pops) under 60 needs fixing: extend the first clip and let the second
+  continue from its last frame, or give the second a different framing;
 - the total length matches the brief.
 
 ## Reporting
