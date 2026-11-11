@@ -2511,9 +2511,10 @@ function versions(clip) {
   clip.takes.forEach((take, index) => {
     const button = document.createElement("button");
     button.className = "take" + (take === current ? " on" : "");
-    const img = document.createElement("img");
-    img.alt = "";
-    img.src = viewUrl(take.poster, take.subfolder);
+    // Its picture scrubs through the take as the pointer crosses it, like a clip in the Clips panel.
+    const img = document.createElement("div");
+    img.className = "take-thumb";
+    skim(img, take);
     const label = document.createElement("span");
     label.textContent = "Take " + (index + 1) + ", " + take.quality;
     const madeWith = take.models?.profile_title || profileOf(take.models?.profile)?.title;
@@ -3691,7 +3692,7 @@ async function openProject(folder) {
 }
 
 async function refreshProjects(selected) {
-  const { projects, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets, refmods, encoders } = await api("/projects");
+  const { projects, titles, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets, refmods, encoders } = await api("/projects");
   state.encoders = encoders || { text_encoders: [], vaes: [], auto: {}, missing: [] };
   state.presets = presets || [];
   state.refmods = refmods || { installed: false, files: [] };
@@ -3707,7 +3708,7 @@ async function refreshProjects(selected) {
   $("project").replaceChildren(...projects.map((name) => {
     const option = document.createElement("option");
     option.value = name;
-    option.textContent = name.replaceAll("_", " ");
+    option.textContent = titles?.[name] || name.replaceAll("_", " ");
     option.selected = name === selected;
     return option;
   }));
@@ -3770,6 +3771,97 @@ $("creatorForm").addEventListener("submit", async (event) => {
   }
   $("creatorGo").disabled = false;
 });
+// A small dialog that asks for a name, or only for a yes. Resolves to the name, to true, or to null when it is closed.
+function ask({ title, value = null, note = "", confirm, danger = false }) {
+  const dialog = $("asker");
+  const input = $("askerInput");
+  $("askerTitle").textContent = title;
+  $("askerField").hidden = value === null;
+  input.value = value ?? "";
+  $("askerNote").textContent = note;
+  $("askerNote").classList.remove("bad");
+  $("askerGo").textContent = confirm;
+  $("askerGo").classList.toggle("danger", danger);
+  return new Promise((resolve) => {
+    const finish = (answer) => {
+      $("askerForm").removeEventListener("submit", submit);
+      $("askerClose").removeEventListener("click", cancel);
+      dialog.removeEventListener("close", cancel);
+      if (dialog.open) dialog.close();
+      resolve(answer);
+    };
+    const cancel = () => finish(null);
+    function submit(event) {
+      event.preventDefault();
+      if (value === null) return finish(true);
+      const name = input.value.trim();
+      if (/[A-Za-z0-9]/.test(name)) return finish(name);
+      $("askerNote").textContent = "Give it a name with letters or numbers.";
+      $("askerNote").classList.add("bad");
+      input.focus();
+    }
+    $("askerForm").addEventListener("submit", submit);
+    $("askerClose").addEventListener("click", cancel);
+    dialog.addEventListener("close", cancel);
+    dialog.showModal();
+    if (value === null) $("askerGo").focus();
+    else {
+      input.focus();
+      input.select();
+    }
+  });
+}
+
+const projectTitle = () => state.project?.name || (state.folder || "").replaceAll("_", " ");
+
+$("projectRename").addEventListener("click", async () => {
+  const name = await ask({ title: "Rename the project", value: projectTitle(), confirm: "Rename",
+    note: "Only its name changes. Its folder in ComfyUI's output keeps the name it was made with." });
+  if (!name || name === projectTitle()) return;
+  try {
+    await flush();
+    const reply = await postJson("/project/" + state.folder + "/rename", { name, client_id: clientId });
+    adopt(reply.project);
+    await refreshProjects(state.folder);
+    toast("The project is now called " + name + ".");
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+
+$("projectDuplicate").addEventListener("click", async () => {
+  const name = await ask({ title: "Duplicate the project", value: projectTitle() + " copy", confirm: "Duplicate",
+    note: "The copy gets its own folder, with the clips, takes and pictures. A project with many finals takes a while to copy." });
+  if (!name) return;
+  try {
+    await flush();
+    toast("Copying " + projectTitle() + ".");
+    const { folder } = await postJson("/project/" + state.folder + "/duplicate", { name, client_id: clientId });
+    await refreshProjects(folder);
+    await openProject(folder);
+    toast("This is " + name + ", a copy. The original is untouched.");
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+
+$("projectDelete").addEventListener("click", async () => {
+  const title = projectTitle();
+  const sure = await ask({ title: "Delete " + title + "?", confirm: "Delete project", danger: true,
+    note: "It moves to the .trash folder inside h3take_projects in ComfyUI's output, with all its renders. Nothing is erased: move the folder back by hand to have it again." });
+  if (!sure) return;
+  try {
+    await flush();
+    const { trash } = await api("/project/" + state.folder, { method: "DELETE" });
+    const left = await refreshProjects(null);
+    if (left.length) await openProject(left[0]);
+    else await createProject("First scene");
+    toast(title + " is in " + trash + ".");
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+
 $("newClip").addEventListener("click", addClip);
 $("addCast").addEventListener("click", addCastMember);
 $("addVoice").addEventListener("click", addVoiceMember);
@@ -3930,7 +4022,7 @@ $("ripple").addEventListener("click", rippleDelete);
 $("closeGap").addEventListener("click", closeGap);
 $("fit").addEventListener("click", fitTimeline);
 // A menu opens under its button, or over it when the window is short, and closes once something is chosen.
-for (const [button, id] of [["generate", "generateMenu"], ["castAdd", "castMenu"]]) {
+for (const [button, id] of [["generate", "generateMenu"], ["castAdd", "castMenu"], ["projectMore", "projectMenu"]]) {
   const menu = $(id);
   menu.addEventListener("toggle", (event) => {
     if (event.newState !== "open") return;

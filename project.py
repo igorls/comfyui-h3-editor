@@ -401,6 +401,38 @@ def slug(name):
     return cleaned[:64]
 
 
+def clean_title(name):
+    """A project's name as it is shown. It has to hold letters or numbers, like the folder made from it."""
+    title = str(name or "").strip()[:64]
+    slug(title)
+    return title
+
+
+def copy_name(title, taken):
+    """A name for a duplicate that no project has yet: Title copy, Title copy 2 and so on. taken holds folder names."""
+    used = {str(name).lower() for name in taken}
+    number = 1
+    while True:
+        name = "%s copy" % title if number == 1 else "%s copy %s" % (title, number)
+        if slug(name).lower() not in used:
+            return name
+        number += 1
+
+
+def retarget(value, old, new):
+    """A project's data with every path inside one project folder pointed at another, for a duplicate."""
+    before, after = "%s/%s" % (ROOT, old), "%s/%s" % (ROOT, new)
+    if isinstance(value, dict):
+        return {key: retarget(inner, old, new) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [retarget(inner, old, new) for inner in value]
+    if isinstance(value, str):
+        path = value.replace("\\", "/")
+        if path == before or path.startswith(before + "/"):
+            return after + path[len(before):]
+    return value
+
+
 def new_project(name):
     return {
         "name": str(name),

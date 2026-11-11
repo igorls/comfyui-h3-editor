@@ -2,6 +2,7 @@ import copy
 import unittest
 
 import project as store
+from project import clean_title, copy_name, retarget
 from project import (UNKNOWN, accept_take, add_clip, add_linked, apply_op, close_gap, describe, fail_render, finish_render,
                      item_end, merge, new_project, plan_render, add_pending, set_speed, set_transition, split_item, update_clip,
                      update_item)
@@ -10,6 +11,32 @@ from project import (UNKNOWN, accept_take, add_clip, add_linked, apply_op, close
 def take(take_id, frames):
     return {"id": take_id, "file": take_id + ".mp4", "subfolder": "h3take_projects/p/clips", "poster": take_id + ".jpg",
             "frames": frames, "quality": "draft", "seed": 1}
+
+
+class ProjectFolderTest(unittest.TestCase):
+    def test_a_duplicate_points_at_its_own_folder(self):
+        data = {"clips": [{"takes": [take("t1", 90)], "first": {"file": "a.png", "subfolder": "h3take_projects/p/assets"}}],
+                "cast": [{"file": "b.png", "subfolder": "h3take_projects\\p\\assets"}],
+                "other": {"subfolder": "h3take_projects/pp/clips"}, "name": "h3take_projects/p is only a name here"}
+        moved = retarget(data, "p", "p_copy")
+        self.assertEqual(moved["clips"][0]["takes"][0]["subfolder"], "h3take_projects/p_copy/clips")
+        self.assertEqual(moved["clips"][0]["first"]["subfolder"], "h3take_projects/p_copy/assets")
+        self.assertEqual(moved["cast"][0]["subfolder"], "h3take_projects/p_copy/assets")
+        # Another project whose name only starts the same is left alone, and so is plain text.
+        self.assertEqual(moved["other"]["subfolder"], "h3take_projects/pp/clips")
+        self.assertEqual(moved["name"], data["name"])
+        # The original is not touched.
+        self.assertEqual(data["clips"][0]["takes"][0]["subfolder"], "h3take_projects/p/clips")
+
+    def test_a_duplicate_gets_a_name_no_project_has(self):
+        self.assertEqual(copy_name("Bag demo", ["Bag_demo"]), "Bag demo copy")
+        self.assertEqual(copy_name("Bag demo", ["Bag_demo", "bag_demo_copy", "Bag_demo_copy_2"]), "Bag demo copy 3")
+
+    def test_a_projects_name_needs_letters_or_numbers(self):
+        self.assertEqual(clean_title("  Morning teaser "), "Morning teaser")
+        for bad in ("", "   ", "!!!", None):
+            with self.assertRaises(ValueError):
+                clean_title(bad)
 
 
 def scene(*lengths):

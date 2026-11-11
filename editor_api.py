@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -340,10 +341,89 @@ def sampling_choices():
     return {"checkpoints": sorted(files, key=str.lower), "samplers": samplers, "schedulers": schedulers}
 
 
+# Deleted projects are moved here, inside the projects folder, and never erased by the editor.
+TRASH = ".trash"
+
+
+def project_folders():
+    return sorted(n for n in os.listdir(root()) if os.path.exists(os.path.join(root(), n, "project.json")))
+
+
+def project_titles(names):
+    """The name each project shows, which a rename changes while its folder stays."""
+    titles = {}
+    for name in names:
+        try:
+            with open(os.path.join(root(), name, "project.json"), encoding="utf-8") as f:
+                titles[name] = str(json.load(f).get("name") or name.replace("_", " "))
+        except (OSError, ValueError):
+            titles[name] = name.replace("_", " ")
+    return titles
+
+
+async def rename(request):
+    """Give a project another name. Its folder, and so every path to its files, stays as it is."""
+    folder = store.slug(request.match_info["name"])
+    body = await request.json()
+    try:
+        title = store.clean_title(body.get("name"))
+    except ValueError as error:
+        return refused(plain(error))
+    async with lock(folder):
+        data = read_project(folder)
+        if data.get("name") != title:
+            data["name"] = title
+            commit(folder, data, "rename", body.get("client_id"))
+    return web.json_response({"folder": folder, "project": data})
+
+
+async def duplicate(request):
+    """A copy of a project with its clips, takes and pictures, in a folder of its own."""
+    folder = store.slug(request.match_info["name"])
+    body = await request.json() if request.can_read_body else {}
+    data = read_project(folder)
+    names = project_folders()
+    try:
+        title = store.clean_title(body["name"]) if body.get("name") else store.copy_name(data.get("name") or folder, names)
+        made = store.slug(title)
+    except ValueError as error:
+        return refused(plain(error))
+    if made.lower() in {n.lower() for n in names} or os.path.exists(os.path.join(root(), made)):
+        return refused("there is already a project called %s" % title, 409)
+    async with lock(folder):
+        data = read_project(folder)
+        source, target = os.path.join(root(), folder), os.path.join(root(), made)
+        # Renders can be large, so the copy runs off the server's loop. Its history starts afresh.
+        await asyncio.get_running_loop().run_in_executor(
+            None, lambda: shutil.copytree(source, target, ignore=shutil.ignore_patterns("history", "*.tmp", "project.json")))
+    copied = store.retarget(data, folder, made)
+    copied["name"] = title
+    copied["pending"] = []
+    copied.pop("revision", None)
+    async with lock(made):
+        commit(made, copied, "duplicate", body.get("client_id"))
+    return web.json_response({"folder": made, "project": read_project(made)})
+
+
+async def remove(request):
+    """Take a project out of the editor. Its folder moves to the trash folder beside the projects."""
+    folder = store.slug(request.match_info["name"])
+    async with lock(folder):
+        data = read_project(folder)
+        if data.get("pending"):
+            return refused("%s is rendering. Cancel its renders, then delete it" % (data.get("name") or folder), 409)
+        kept = "%s_%s" % (folder, time.strftime("%Y%m%d_%H%M%S"))
+        os.makedirs(os.path.join(root(), TRASH), exist_ok=True)
+        os.replace(os.path.join(root(), folder), os.path.join(root(), TRASH, kept))
+    LOCKS.pop(folder, None)
+    broadcast("h3take_project", {"folder": folder, "deleted": True})
+    return web.json_response({"deleted": folder, "trash": "%s/%s/%s" % (store.ROOT, TRASH, kept)})
+
+
 async def projects(request):
-    names = sorted(n for n in os.listdir(root()) if os.path.exists(os.path.join(root(), n, "project.json")))
+    names = project_folders()
     available = available_models()
-    return web.json_response({"projects": names, "profiles": store.profile_status(available),
+    return web.json_response({"projects": names, "titles": project_titles(names), "profiles": store.profile_status(available),
                               "finals": store.finals_status(available),
                               "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), "refmods": refmods_status(), "encoders": encoder_choices(available), **sampling_choices()})
 
@@ -1074,6 +1154,9 @@ ROUTES = (
     ("PUT", "/h3take/api/presets", "save_presets"),
     ("GET", "/h3take/api/project/{name}", "load"),
     ("PUT", "/h3take/api/project/{name}", "save"),
+    ("DELETE", "/h3take/api/project/{name}", "remove"),
+    ("POST", "/h3take/api/project/{name}/rename", "rename"),
+    ("POST", "/h3take/api/project/{name}/duplicate", "duplicate"),
     ("GET", "/h3take/api/project/{name}/summary", "summary"),
     ("GET", "/h3take/api/project/{name}/history", "history"),
     ("POST", "/h3take/api/project/{name}/restore", "restore"),

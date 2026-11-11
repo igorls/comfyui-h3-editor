@@ -39,6 +39,8 @@ button:disabled { opacity: 0.42; cursor: default; }
 .quiet:hover:not(:disabled) { background: var(--hover); }
 .primary { background: var(--tungsten); color: var(--tungsten-ink); font-weight: 600; }
 .primary:hover:not(:disabled) { background: var(--tungsten-hi); }
+.primary.danger { background: var(--danger); color: var(--room); }
+.primary.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 86%, var(--text)); }
 .spacer { flex: 1; }
 .sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .count { margin-left: 4px; color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -68,7 +70,7 @@ button:disabled { opacity: 0.42; cursor: default; }
 .thumb { position: relative; display: block; width: 96px; aspect-ratio: 16 / 9; border-radius: 4px; background: var(--room) center / cover no-repeat; overflow: hidden; }
 .thumb.none { display: grid; place-items: center; border: 1px dashed var(--line); }
 .thumb.none::after { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--line); }
-.thumb .skim { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--tungsten); pointer-events: none; }
+.thumb .skim, .take-thumb .skim { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--tungsten); pointer-events: none; }
 .clip .text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .clip .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .clip .meta { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -269,8 +271,8 @@ label.lora-name { cursor: pointer; }
 .take { padding: 0; background: var(--raised); border: 1px solid transparent; overflow: hidden; text-align: left; }
 .take:hover { background: var(--hover); }
 .take.on { border-color: var(--tungsten); }
-.take img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
-.take span { display: block; padding: 5px 8px 0; font-size: 12px; color: var(--text); }
+.take-thumb { position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; background: var(--room) center / cover no-repeat; overflow: hidden; }
+.take > span { display: block; padding: 5px 8px 0; font-size: 12px; color: var(--text); }
 .take small { display: block; padding: 0 8px 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .take-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
 .take-tools button { padding: 6px 10px; font-size: 13px; }

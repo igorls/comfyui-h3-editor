@@ -35,6 +35,14 @@ Each release is a tag on GitHub, `v` followed by the version.
 
 ### Added
 
+- **Rename, duplicate and delete a project.** A menu beside the project list
+  renames the open project, copies it with its clips, takes and pictures into
+  a folder of its own, or deletes it. A deleted project is moved to a `.trash`
+  folder inside `h3take_projects` and never erased. For agents: `POST
+  /project/{name}/rename`, `POST /project/{name}/duplicate` and `DELETE
+  /project/{name}`.
+- **Scrub a take before choosing it.** Run the pointer across a take's picture
+  in the Takes tab to look through it, as in the Clips panel.
 - **Drag a cast member into the text.** Drop a cast card on What happens, or
   on any other field of a clip, and its @Name lands there. A member with a
   picture or a RefMod also joins that clip's cast.

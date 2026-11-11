@@ -11,6 +11,12 @@
   <header class="bar">
     <h1 class="sr">H3 Editor</h1>
     <select id="project" aria-label="Project"></select>
+    <button id="projectMore" class="tool" aria-label="Rename, duplicate or delete this project" title="Rename, duplicate or delete this project" aria-haspopup="menu" popovertarget="projectMenu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/></svg></button>
+    <div id="projectMenu" class="menu" popover role="menu" aria-label="This project">
+      <button id="projectRename" role="menuitem"><b>Rename</b><span>Give this project another name</span></button>
+      <button id="projectDuplicate" role="menuitem"><b>Duplicate</b><span>A copy with its clips, takes and pictures, to try another cut</span></button>
+      <button id="projectDelete" role="menuitem"><b>Delete</b><span>Move this project to the trash folder</span></button>
+    </div>
     <button id="newProject" class="quiet">New project</button>
     <div class="spacer"></div>
     <div id="queue" class="queue"></div>
@@ -126,6 +132,16 @@
       <p id="creatorHint" class="hint" aria-live="polite"></p>
     </div>
     <div class="exporter-foot"><span class="spacer"></span><button id="creatorGo" class="primary" type="submit">Create project</button></div>
+  </form>
+</dialog>
+<dialog id="asker" class="keys exporter" aria-labelledby="askerTitle">
+  <form id="askerForm" method="dialog">
+    <div class="keys-head"><h2 id="askerTitle"></h2><button id="askerClose" class="quiet" type="button">Cancel</button></div>
+    <div class="exporter-body">
+      <label class="field" id="askerField"><span id="askerLabel">Name</span><input id="askerInput" type="text" autocomplete="off" spellcheck="false" maxlength="64"></label>
+      <p id="askerNote" class="hint"></p>
+    </div>
+    <div class="exporter-foot"><span class="spacer"></span><button id="askerGo" class="primary" type="submit"></button></div>
   </form>
 </dialog>
 <dialog id="exporter" class="keys exporter" aria-labelledby="exporterTitle">
