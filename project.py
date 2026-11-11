@@ -959,8 +959,12 @@ def export_plan(project, scale=1.0):
             gaps += 1
         cursor = max(cursor, item_end(item))
         end = cursor
+    effects = [e for e in project.get("effects") or [] if e["start"] < end]
     return {"width": scaled(width, scale), "height": scaled(height, scale), "frames": end, "seconds": round(end / float(FPS), 2),
-            "clips": len(project.get("timeline", [])) - missing, "drafts": drafts, "missing": missing, "gaps": gaps}
+            "clips": len(project.get("timeline", [])) - missing, "drafts": drafts, "missing": missing, "gaps": gaps,
+            "effects": sum(1 for e in effects if active_take(e)),
+            "effects_missing": sum(1 for e in effects if not active_take(e)),
+            "effects_stale": sum(1 for e in effects if effect_stale(project, e))}
 
 
 def scaled(side, scale):
@@ -968,7 +972,8 @@ def scaled(side, scale):
     return max(2, 2 * int(round(side * scale / 2.0)))
 
 
-def export_command(project, paths, out_path, width=None, height=None, scale=1.0, quality="high", sound_paths=None):
+def export_command(project, paths, out_path, width=None, height=None, scale=1.0, quality="high", sound_paths=None,
+                   effect_paths=None):
     """ffmpeg arguments that join the timeline's rendered clips. Gaps become black and silence.
 
     paths maps a clip id to the file of its active take. Clips with no render
@@ -1063,6 +1068,22 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
             audio, "".join("[%s]" % label for label in extra), len(extra) + 1))
         audio = "mix"
 
+    laid = 0
+    for effect in sorted(project.get("effects") or [], key=lambda e: e["start"]):
+        take = active_take(effect)
+        if effect.get("id") not in (effect_paths or {}) or not take or effect["start"] >= cursor:
+            continue
+        # A VFX take is the finished picture for its span: it covers the cut there, and the sound below plays on.
+        number = len(items) + len(extra) + laid
+        args += ["-i", effect_paths[effect["id"]]]
+        first = effect["start"] / float(FPS)
+        last = min(cursor, effect["start"] + min(effect["frames"], int(take.get("frames") or effect["frames"]))) / float(FPS)
+        chains.append("[%s:v]%s,setpts=PTS-STARTPTS+%.5f/TB[e%s]" % (number, finish, first, number))
+        chains.append("[%s][e%s]overlay=eof_action=pass:enable='between(t,%.5f,%.5f)',settb=1/%s[o%s]" % (
+            video, number, first, last - 0.5 / FPS, FPS, number))
+        video = "o%s" % number
+        laid += 1
+
     args += ["-filter_complex", ";".join(chains), "-map", "[%s]" % video, "-map", "[%s]" % audio,
              "-c:v", "libx264", "-crf", str(EXPORT_QUALITY[quality]), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
              "-movflags", "+faststart", out_path]
@@ -1146,6 +1167,183 @@ def update_sound(project, sound_id, fields):
 def remove_sound(project, sound_id):
     find_sound(project, sound_id)
     project["sounds"] = [s for s in project["sounds"] if s["id"] != sound_id]
+
+
+# VFX. A clip drawn by code, on a lane of its own above the picture. Each one holds a small JavaScript module that
+# draws every frame and can use the picture below it. The editor runs the module in the browser; a render bakes the
+# finished picture for the clip's span into a take, which the export lays over the cut.
+
+EFFECT_FIELDS = ("name", "start", "frames", "source", "params", "inputs")
+EFFECT_INPUTS = 8
+EFFECT_SOURCE_LIMIT = 200000
+EFFECT_STARTER = """// A VFX clip is a module that draws each frame. frame(env, k) must depend only on k.
+// env: canvas, width, height, fps, frames, params, THREE, below (the picture under this frame, or null)
+export const meta = {
+  controls: {
+    text: { type: 'text', default: 'Title' },
+    size: { type: 'number', min: 0.03, max: 0.3, step: 0.005, default: 0.09, label: 'Size' },
+    color: { type: 'color', default: '#ece8df' },
+  },
+};
+
+export function frame(env, k) {
+  const c = env.canvas.getContext('2d');
+  const { width: w, height: h } = env;
+  c.clearRect(0, 0, w, h);
+  if (env.below) c.drawImage(env.below, 0, 0, w, h);
+  else { c.fillStyle = '#1b1e23'; c.fillRect(0, 0, w, h); }
+  const t = Math.min(1, k / 12);                       // half a second in
+  const ease = 1 - Math.pow(1 - t, 3);
+  c.font = '700 ' + Math.round(h * env.params.size) + 'px "Segoe UI", system-ui, sans-serif';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.globalAlpha = ease;
+  c.shadowColor = 'rgba(0,0,0,0.6)';
+  c.shadowBlur = h * 0.02;
+  c.fillStyle = env.params.color;
+  c.fillText(env.params.text, w / 2, h * 0.5 + (1 - ease) * h * 0.04);
+  c.globalAlpha = 1;
+  c.shadowBlur = 0;
+}
+"""
+
+
+def find_effect(project, effect_id):
+    for effect in project.get("effects") or []:
+        if effect["id"] == effect_id:
+            return effect
+    raise KeyError("no VFX clip %s" % effect_id)
+
+
+def clean_effect_fields(fields):
+    check_fields(fields, EFFECT_FIELDS)
+    out = {}
+    if "name" in fields:
+        if not isinstance(fields["name"], str) or not fields["name"].strip():
+            raise ValueError("a VFX clip's name must be text")
+        out["name"] = fields["name"].strip()[:80]
+    for key, least, what in (("start", 0, "start is a timeline frame, 0 or later"), ("frames", 1, "frames is how long the clip lasts, 1 or more")):
+        if key in fields:
+            value = fields[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value) or value < least:
+                raise ValueError(what)
+            out[key] = int(value)
+    if "source" in fields:
+        if not isinstance(fields["source"], str) or len(fields["source"]) > EFFECT_SOURCE_LIMIT:
+            raise ValueError("source is the module's text, up to %s characters" % EFFECT_SOURCE_LIMIT)
+        out["source"] = fields["source"]
+    if "params" in fields:
+        if not isinstance(fields["params"], dict):
+            raise ValueError("params is an object of control values")
+        out["params"] = copy.deepcopy(fields["params"])
+    if "inputs" in fields:
+        # Pictures the code may draw: a name it asks for by, and an uploaded file. The code cannot fetch anything itself.
+        given = fields["inputs"]
+        if not isinstance(given, dict) or len(given) > EFFECT_INPUTS:
+            raise ValueError("inputs is an object of up to %s named pictures" % EFFECT_INPUTS)
+        inputs = {}
+        for name, asset in given.items():
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,31}", name):
+                raise ValueError("an input's name is a word: letters, numbers and _")
+            asset = clean_asset(asset, "the input %s" % name)
+            if asset is None:
+                raise ValueError("the input %s needs a file, and a subfolder if it has one" % name)
+            inputs[name] = asset
+        out["inputs"] = inputs
+    return out
+
+
+def check_effect_room(project, effect):
+    """VFX clips share one lane, so two never cover the same frame."""
+    first, last = effect["start"], effect["start"] + effect["frames"]
+    for other in project.get("effects") or []:
+        if other["id"] != effect["id"] and other["start"] < last and first < other["start"] + other["frames"]:
+            raise ValueError("%s is already on the VFX lane from %s to %s" % (
+                other.get("name") or "another clip", timecode(other["start"]), timecode(other["start"] + other["frames"])))
+
+
+def add_effect(project, fields=None):
+    """A new VFX clip. With no source it starts as a title drawn over the picture below."""
+    fields = clean_effect_fields(fields or {})
+    effect = {"id": new_id("x"), "name": "VFX %s" % (len(project.get("effects") or []) + 1), "start": 0, "frames": 3 * FPS,
+              "source": EFFECT_STARTER, "params": {}, "rev": 1, "takes": [], "active": None}
+    effect.update(fields)
+    check_effect_room(project, effect)
+    project.setdefault("effects", []).append(effect)
+    return effect
+
+
+def update_effect(project, effect_id, fields):
+    effect = find_effect(project, effect_id)
+    fields = clean_effect_fields(fields)
+    before = {key: effect.get(key) for key in ("frames", "source", "params", "inputs")}
+    check_effect_room(project, dict(effect, **fields))   # the lane, with the new place and length
+    effect.update(fields)
+    if any(effect.get(key) != value for key, value in before.items()):
+        effect["rev"] = int(effect.get("rev") or 0) + 1    # what it draws changed, so its take is out of date
+    return effect
+
+
+def remove_effect(project, effect_id):
+    find_effect(project, effect_id)
+    project["effects"] = [e for e in project["effects"] if e["id"] != effect_id]
+
+
+def request_effect_render(project, effect_id):
+    """Ask for a VFX clip to be rendered. The code runs in a browser, so an open editor picks the request up and does it."""
+    effect = find_effect(project, effect_id)
+    effect["queued"] = True
+    effect.pop("error", None)
+    return effect
+
+
+def claim_effect_render(project, effect_id, job):
+    """One editor takes a waiting request, so two open editors never render the same clip. True if this one got it."""
+    effect = find_effect(project, effect_id)
+    if effect.get("queued") is not True:
+        return False
+    effect["queued"] = {"job": str(job)}
+    return True
+
+
+def effect_below(project, effect):
+    """What lies under a VFX clip on the picture lane, as far as its take depends on it."""
+    first, last = effect["start"], effect["start"] + effect["frames"]
+    clips = {c["id"]: c for c in project.get("clips", [])}
+    rows = []
+    for item in ordered(project):
+        if item["start"] < last and first < item_end(item):
+            take = active_take(clips.get(item.get("clip")) or {})
+            transition = item.get("transition") or {}
+            rows.append([item["clip"], take["id"] if take else None, item["start"], item["in"], item["out"],
+                         clean_speed(item.get("speed")), transition.get("type"), transition.get("frames")])
+    return rows
+
+
+def effect_stamp(project, effect):
+    """What a take of a VFX clip was made from. A take whose stamp no longer matches is out of date."""
+    return {"rev": int(effect.get("rev") or 0), "start": effect["start"], "below": effect_below(project, effect)}
+
+
+def effect_stale(project, effect):
+    take = active_take(effect)
+    return bool(take) and take.get("stamp") != effect_stamp(project, effect)
+
+
+def accept_effect_take(project, effect_id, take):
+    """A finished render becomes the VFX clip's active take, stamped with what it was made from."""
+    effect = find_effect(project, effect_id)
+    take = dict(take, stamp=effect_stamp(project, effect))
+    effect.setdefault("takes", []).append(take)
+    effect["active"] = take["id"]
+    effect.pop("error", None)
+    effect.pop("queued", None)
+    return effect
+
+
+def effects_waiting(project):
+    """VFX clips with a render asked for and not yet done."""
+    return [e for e in project.get("effects") or [] if e.get("queued")]
 
 
 # Editing operations. The editor, the HTTP API and agents share these, so the rules live in one place.
@@ -2189,6 +2387,12 @@ def describe(project):
               for s in sorted(project.get("sounds") or [], key=lambda s: (s.get("lane", 0), s.get("start", 0)))]
     return {
         "sounds": sounds,
+        "effects": [{"effect": e["id"], "name": e.get("name", ""), "start": e["start"], "frames": e["frames"],
+                     "at": timecode(e["start"]), "state": "waiting for an open editor to render it" if e.get("queued") is True else
+                     "rendering" if e.get("queued") else "not rendered" if not active_take(e) else
+                     "out of date" if effect_stale(project, e) else "rendered",
+                     **({"error": e["error"]} if e.get("error") else {})}
+                    for e in sorted(project.get("effects") or [], key=lambda e: e["start"])],
         "name": project.get("name"), "revision": project.get("revision", 0), "style": project.get("style", ""),
         "format": project.get("format") or "16:9", "language": project.get("language") or LANGUAGE,
         "profile": project_profile(project)[0],
@@ -2300,6 +2504,20 @@ def apply_op(project, op, names):
         sound_id = _resolve(op.get("sound"), names, "sound")
         remove_sound(project, sound_id)
         result = {"sound": sound_id}
+    elif kind == "add_effect":
+        result = {"effect": add_effect(project, op.get("fields") or {})["id"]}
+    elif kind == "update_effect":
+        effect_id = _resolve(op.get("effect"), names, "effect")
+        update_effect(project, effect_id, op.get("fields") or {})
+        result = {"effect": effect_id}
+    elif kind == "render_effect":
+        effect_id = _resolve(op.get("effect"), names, "effect")
+        request_effect_render(project, effect_id)
+        result = {"effect": effect_id}
+    elif kind == "remove_effect":
+        effect_id = _resolve(op.get("effect"), names, "effect")
+        remove_effect(project, effect_id)
+        result = {"effect": effect_id}
     else:
         raise ValueError("unknown op %s" % kind)
     if op.get("as"):

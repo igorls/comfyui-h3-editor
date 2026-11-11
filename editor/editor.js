@@ -14,6 +14,8 @@ const clientId = (() => {
 })();
 const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the picture", 17: "Decoding the sound", 18: "Assembling", 19: "Saving" };
 
+import { VfxRuntime } from "./vfx-runtime.js";
+
 const state = {
   folder: null,
   project: null,
@@ -43,6 +45,7 @@ const state = {
   schedulers: [],
   bin: null,
   sound: null,
+  effect: null,
   tab: "shot",
   folded: new Set(),
   source: null,
@@ -190,6 +193,7 @@ function adopt(project, { external = false } = {}) {
   if (!state.project.timeline.some((i) => i.id === state.item)) state.item = null;
   if (state.person && !(state.project.cast || []).some((p) => p.id === state.person)) state.person = null;
   if (!binOf(state.bin)) state.bin = null;
+  if (!effectOf(state.effect)) state.effect = null;
   if (external) {
     undo = [];
     redo = [];
@@ -315,6 +319,40 @@ function linkedRange(link, frames) {
   return [link.hold, frames - link.hold];
 }
 
+// A clip on the timeline shows a window of its take. Slipping slides the take under that window:
+// the clip keeps its place and its length, and plays an earlier or a later part of the take.
+function takeRoom(item) {
+  const clip = clipOf(item.clip);
+  const take = clip && activeTake(clip);
+  if (!take) return null;
+  const [first, last] = linkedRange(clip.link, take.frames);
+  return { first, last, before: Math.max(0, item.in - first), after: Math.max(0, last - item.out) };
+}
+
+function slipBy(item, frames) {
+  const room = takeRoom(item);
+  if (!room) return 0;
+  const shift = Math.max(-room.before, Math.min(room.after, Math.round(frames)));
+  item.in += shift;
+  item.out += shift;
+  return shift;
+}
+
+function slipSelected(frames) {
+  const item = state.project.timeline.find((i) => i.id === state.item);
+  const room = item && takeRoom(item);
+  if (!room) return;
+  if (!room.before && !room.after) {
+    toast("This clip already shows its whole take, so there is nothing to slip.");
+    return;
+  }
+  checkpoint();
+  if (slipBy(item, frames)) {
+    save();
+    renderAll();
+  }
+}
+
 function sideOf(item) {
   const take = activeTake(clipOf(item.clip));
   return { clip: item.clip, item: item.id, file: take.file, subfolder: take.subfolder, first: item.in, last: item.out };
@@ -371,7 +409,7 @@ function updateTools() {
   $("extendForward").disabled = !holdable;
   $("bridge").disabled = !bridgeable(item, next);
   $("merge").disabled = !(item && next && activeTake(clipOf(next.clip)) && next.start === itemEnd(item));
-  $("remove").disabled = !(state.item || state.gap || state.sound);
+  $("remove").disabled = !(state.item || state.gap || state.sound || state.effect);
   $("ripple").disabled = !state.item;
   $("closeGap").disabled = !state.gap;
 }
@@ -1128,6 +1166,7 @@ function selectClip(clipId, itemId = null) {
   state.person = null;
   state.bin = null;
   state.sound = null;
+  state.effect = null;
   renderCast();
   renderBin();
   renderInspector();
@@ -2367,6 +2406,20 @@ function showTab(id) {
 
 function renderInspector() {
   const panel = $("inspBody");
+  const effect = effectOf(state.effect);
+  if (effect) {
+    const own = "x" + effect.id;
+    if (own !== inspected) {
+      state.tab = "shot";
+      inspected = own;
+      $("inspector").scrollTop = 0;
+    }
+    if (state.tab !== "project") state.tab = "shot";
+    renderTabs([["shot", "VFX"], ["project", "Project"]]);
+    if (state.tab === "project") renderScene(panel, true);
+    else renderEffect(panel, effect);
+    return;
+  }
   const person = (state.project.cast || []).find((c) => c.id === state.person);
   const clip = person ? null : clipOf(state.clip);
   const bin = !clip && !person ? selectedBin() : null;
@@ -2718,7 +2771,87 @@ function timelineControls(item) {
   unit.textContent = "frames";
   row.append(name, kind, length, unit);
   box.append(speeds, row);
+  const use = takeUse(item);
+  if (use) box.append(use);
   return [box];
+}
+
+// How much of its take a clip shows, and a window to drag: the clip stays where it is and shows another part.
+function takeUse(item) {
+  const room = takeRoom(item);
+  if (!room) return null;
+  const total = room.last - room.first;
+  const box = document.createElement("div");
+  box.className = "take-use";
+  const title = document.createElement("span");
+  title.textContent = "Part of the take";
+  const bar = document.createElement("div");
+  bar.className = "take-bar";
+  const win = document.createElement("div");
+  win.className = "take-window";
+  const place = () => {
+    win.style.left = (100 * (item.in - room.first)) / total + "%";
+    win.style.width = (100 * (item.out - item.in)) / total + "%";
+  };
+  place();
+  bar.append(win);
+  const note = document.createElement("p");
+  note.className = "hint";
+  const say = () => {
+    const before = item.in - room.first;
+    const after = room.last - item.out;
+    note.textContent = !before && !after
+      ? "The clip shows its whole take."
+      : "Shows " + (item.out - item.in) + " of " + total + " frames: " + before + " unused before, " + after + " after. "
+        + "Drag the window, Alt-drag the clip, or press , and . to show another part. The clip keeps its place and length.";
+  };
+  say();
+  const free = room.before || room.after;
+  win.tabIndex = free ? 0 : -1;
+  win.setAttribute("role", "slider");
+  win.setAttribute("aria-label", "Part of the take the clip shows");
+  win.setAttribute("aria-valuemin", "0");
+  win.setAttribute("aria-valuemax", String(total - (item.out - item.in)));
+  win.setAttribute("aria-valuenow", String(item.in - room.first));
+  if (free) {
+    win.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      const origin = { x: event.clientX, in: item.in, out: item.out };
+      const scale = total / bar.getBoundingClientRect().width;
+      let changed = false;
+      const move = (ev) => {
+        const delta = Math.round((ev.clientX - origin.x) * scale);
+        if (delta !== 0 && !changed) {
+          checkpoint();
+          changed = true;
+        }
+        item.in = origin.in;
+        item.out = origin.out;
+        slipBy(item, delta);
+        place();
+        say();
+        showFrame();
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        if (changed) {
+          save();
+          renderAll();
+        }
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    });
+    win.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      event.stopPropagation();
+      slipSelected((event.key === "ArrowRight" ? 1 : -1) * (event.shiftKey ? 12 : 1));
+    });
+  }
+  box.append(title, bar, note);
+  return box;
 }
 
 function framesFor(clip) {
@@ -2835,7 +2968,7 @@ function layoutSoundLanes(count) {
       lane.dataset.lane = n;
       content.insertBefore(lane, $("playhead"));
     }
-    const rows = count ? "28px minmax(56px, 2fr) minmax(36px, 1fr)" + " 42px".repeat(count) : "";
+    const rows = count ? "28px 34px minmax(56px, 2fr) minmax(36px, 1fr)" + " 42px".repeat(count) : "";
     heads.style.gridTemplateRows = rows;
     content.style.gridTemplateRows = rows;
     // The timeline grows by its extra lanes, so the picture lane keeps its height.
@@ -2885,6 +3018,7 @@ function renderSounds() {
 
 function selectSound(id) {
   setSource(null);
+  state.effect = null;
   state.sound = id;
   state.clip = null;
   state.item = null;
@@ -3211,6 +3345,9 @@ function renderTimeline() {
     block.style.left = px(item.start) + "px";
     block.style.width = Math.max(14, px(itemLength(item))) + "px";
     block.dataset.item = item.id;
+    const room = take && takeRoom(item);
+    if (room?.before) block.classList.add("more-before");
+    if (room?.after) block.classList.add("more-after");
     block.tabIndex = 0;
     block.setAttribute("role", "button");
     block.setAttribute("aria-pressed", String(item.id === state.item));
@@ -3357,6 +3494,7 @@ function renderTimeline() {
   const focused = $("laneV").contains(document.activeElement) ? document.activeElement.dataset.item : null;
   $("laneV").replaceChildren(...blocks);
   $("laneA").replaceChildren(...waves);
+  renderEffects();
   renderSounds();
   if (focused) $("laneV").querySelector('[data-item="' + CSS.escape(focused) + '"]')?.focus();
   placePlayhead();
@@ -3409,6 +3547,556 @@ function refreshCutScores() {
   }, 900);
 }
 
+/* VFX: clips drawn by code, on a lane above the picture */
+
+const effectOf = (id) => (state.project?.effects || []).find((e) => e.id === id) || null;
+const effectAt = (frame) => (state.project?.effects || []).find((e) => frame >= e.start && frame < e.start + e.frames) || null;
+const fx = { runtime: null, key: "", source: null, params: "", meta: null, busy: false, wanted: null, error: null, rendering: null };
+
+// What a take of a VFX clip was made from: the same list the server stamps on the take, so the two can be compared.
+function effectStamp(effect) {
+  const first = effect.start, last = effect.start + effect.frames;
+  const below = sorted().filter((item) => item.start < last && first < itemEnd(item)).map((item) => {
+    const take = activeTake(clipOf(item.clip));
+    return [item.clip, take ? take.id : null, item.start, item.in, item.out, speedOf(item), item.transition?.type ?? null, item.transition?.frames ?? null];
+  });
+  return { rev: effect.rev || 0, start: effect.start, below };
+}
+
+function effectState(effect) {
+  if (fx.rendering?.id === effect.id) return "busy";
+  if (fx.error?.id === effect.id || effect.error) return "bad";
+  const take = activeTake(effect);
+  if (!take) return "todo";
+  return JSON.stringify(take.stamp) === JSON.stringify(effectStamp(effect)) ? "" : "stale";
+}
+
+function touchEffect(effect) {
+  effect.rev = (effect.rev || 0) + 1;      // what it draws changed: its take is out of date
+  delete effect.error;
+}
+
+function selectEffect(id) {
+  setSource(null);
+  state.effect = id;
+  state.clip = null;
+  state.item = null;
+  state.gap = null;
+  state.person = null;
+  state.bin = null;
+  state.sound = null;
+  renderAll();
+}
+
+function effectRoom(effect, start, frames) {
+  // The lane holds one clip at a time: a move or a stretch stops at its neighbours.
+  let low = 0, high = Infinity;
+  for (const other of state.project.effects || []) {
+    if (other.id === effect.id) continue;
+    if (other.start + other.frames <= effect.start) low = Math.max(low, other.start + other.frames);
+    else if (other.start >= effect.start + effect.frames) high = Math.min(high, other.start);
+  }
+  start = Math.max(low, start);
+  frames = Math.max(6, Math.min(frames, high - start));
+  if (start + frames > high) start = Math.max(low, high - frames);
+  return [start, frames];
+}
+
+function addEffect() {
+  checkpoint();
+  const effects = state.project.effects || (state.project.effects = []);
+  let start = Math.round(state.playhead);
+  const frames = 3 * FPS;
+  if (effects.some((e) => start < e.start + e.frames && e.start < start + frames)) start = Math.max(...effects.map((e) => e.start + e.frames));
+  const effect = { id: "x" + Math.random().toString(16).slice(2, 10), name: "VFX " + (effects.length + 1), start, frames, source: EFFECT_STARTER,
+    params: {}, rev: 1, takes: [], active: null };
+  effects.push(effect);
+  save();
+  selectEffect(effect.id);
+  toast("Added a VFX clip. It draws a title over the picture below: edit its code in the panel.");
+}
+
+function removeEffect(id) {
+  const effect = effectOf(id);
+  if (!effect) return;
+  checkpoint();
+  state.project.effects = state.project.effects.filter((e) => e.id !== id);
+  state.effect = null;
+  save();
+  renderAll();
+  toast("Removed " + effect.name + " from the VFX lane.", false, undoAction);
+}
+
+function renderEffects() {
+  const blocks = [];
+  for (const effect of state.project.effects || []) {
+    const block = document.createElement("div");
+    const status = effectState(effect);
+    block.className = ("fx " + status + (effect.id === state.effect ? " on" : "")).trim();
+    block.dataset.effect = effect.id;
+    block.style.left = px(effect.start) + "px";
+    block.style.width = Math.max(12, px(effect.frames)) + "px";
+    block.tabIndex = 0;
+    block.setAttribute("role", "button");
+    const what = { todo: "not rendered", stale: "out of date", bad: "has an error", busy: "rendering", "": "rendered" }[status];
+    block.setAttribute("aria-label", effect.name + ", VFX clip, " + what + ", at " + timecode(effect.start));
+    block.title = effect.name + ": " + what;
+    const name = document.createElement("div");
+    name.className = "name";
+    name.textContent = effect.name;
+    block.append(name);
+    for (const side of ["l", "r"]) {
+      const edge = document.createElement("div");
+      edge.className = "edge " + side;
+      block.append(edge);
+    }
+    block.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectEffect(effect.id);
+    });
+    block.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const edge = event.target.classList.contains("l") ? "l" : event.target.classList.contains("r") ? "r" : null;
+      if (state.effect !== effect.id) selectEffect(effect.id);
+      const live = effectOf(effect.id);
+      const origin = { x: event.clientX, start: live.start, frames: live.frames };
+      let changed = false;
+      const move = (ev) => {
+        const delta = Math.round((ev.clientX - origin.x) / state.zoom);
+        if (delta !== 0 && !changed) {
+          checkpoint();
+          changed = true;
+        }
+        if (edge === "l") {
+          const shift = Math.min(delta, origin.frames - 6);
+          [live.start, live.frames] = effectRoom(live, Math.max(0, origin.start + shift), origin.frames - shift);
+        } else if (edge === "r") {
+          [live.start, live.frames] = effectRoom(live, origin.start, Math.max(6, origin.frames + delta));
+        } else {
+          [live.start, live.frames] = effectRoom(live, Math.max(0, origin.start + delta), origin.frames);
+        }
+        const el = document.querySelector('.fx[data-effect="' + live.id + '"]');
+        if (el) {
+          el.style.left = px(live.start) + "px";
+          el.style.width = Math.max(12, px(live.frames)) + "px";
+        }
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        if (changed) {
+          if (live.frames !== origin.frames) touchEffect(live);
+          save();
+          renderAll();
+        }
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    });
+    blocks.push(block);
+  }
+  $("laneX").replaceChildren(...blocks);
+}
+
+// A VFX clip's named pictures, read once each and handed to its code as fresh bitmaps (a bitmap given away is gone).
+const inputBlobs = new Map();
+async function effectInputs(effect) {
+  const out = {};
+  for (const [name, asset] of Object.entries(effect.inputs || {})) {
+    const url = viewUrl(asset.file, asset.subfolder);
+    if (!inputBlobs.has(url)) {
+      inputBlobs.set(url, fetch(url).then((reply) => {
+        if (!reply.ok) throw new Error("The input " + name + " (" + asset.file + ") could not be read.");
+        return reply.blob();
+      }));
+    }
+    try {
+      out[name] = await createImageBitmap(await inputBlobs.get(url));
+    } catch (error) {
+      inputBlobs.delete(url);
+      throw error;
+    }
+  }
+  return out;
+}
+
+function previewSize() {
+  const shape = cutShape() || state.sizes?.[state.project.format || "16:9"]?.final?.[0]?.out || [1920, 1080];
+  const w = Math.min(960, shape[0]);
+  return [2 * Math.round(w / 2), 2 * Math.round((w * shape[1]) / shape[0] / 2)];
+}
+
+function renderSize() {
+  const shape = cutShape() || state.sizes?.[state.project.format || "16:9"]?.final?.[0]?.out || [1920, 1080];
+  return [2 * Math.round(shape[0] / 2), 2 * Math.round(shape[1] / 2)];
+}
+
+// The picture under the playhead, as the viewer is showing it.
+async function belowNow(w, h) {
+  if (!front.classList.contains("show") || front.readyState < 2 || !front.videoWidth) return null;
+  try {
+    return await createImageBitmap(front, { resizeWidth: w, resizeHeight: h, resizeQuality: "medium" });
+  } catch (_) {
+    return null;
+  }
+}
+
+function showEffectError() {
+  const box = document.getElementById("fxError");
+  if (!box) return;
+  const error = fx.error && fx.error.id === state.effect ? fx.error : null;
+  box.hidden = !error;
+  box.textContent = error ? (error.line ? "Line " + error.line + ": " : "") + error.message : "";
+}
+
+// Draws the VFX clip under the playhead into the viewer, live, from its code. Calls made while one frame is being
+// drawn collapse into the latest, so scrubbing and playback never queue up.
+async function previewEffect() {
+  const canvas = $("vfx");
+  const effect = viewing() ? null : effectAt(Math.floor(state.playhead));
+  if (!effect) {
+    canvas.hidden = true;
+    fx.wanted = null;
+    return;
+  }
+  fx.wanted = { id: effect.id, frame: Math.floor(state.playhead) };
+  if (fx.busy) return;
+  fx.busy = true;
+  try {
+    while (fx.wanted) {
+      const want = fx.wanted;
+      fx.wanted = null;
+      const e = effectOf(want.id);
+      if (!e) break;
+      const [w, h] = previewSize();
+      const key = [e.id, w, h, e.frames, JSON.stringify(e.inputs || {})].join("|");
+      const params = JSON.stringify(e.params || {});
+      try {
+        if (fx.key !== key || fx.source !== e.source) {
+          fx.runtime?.dispose();
+          fx.runtime = new VfxRuntime();
+          fx.key = "";
+          fx.meta = await fx.runtime.load({ source: e.source, width: w, height: h, fps: FPS, frames: e.frames, params: e.params || {},
+            inputs: await effectInputs(e) });
+          fx.key = key;
+          fx.source = e.source;
+          fx.params = params;
+          if (fx.error?.id === e.id) fx.error = null;
+          renderEffectControls();
+        } else if (fx.params !== params) {
+          await fx.runtime.setParams(e.params || {});
+          fx.params = params;
+        }
+        const bitmap = await fx.runtime.frame(want.frame - e.start, await belowNow(w, h));
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+        canvas.getContext("2d").drawImage(bitmap, 0, 0);
+        bitmap.close();
+        canvas.hidden = false;
+        if (fx.error?.id === e.id) fx.error = null;
+      } catch (error) {
+        fx.error = { id: e.id, message: error.message || String(error), line: error.line ?? null };
+        fx.source = null;          // try again when the code changes
+        fx.key = "";
+        canvas.hidden = true;
+      }
+      showEffectError();
+    }
+  } finally {
+    fx.busy = false;
+  }
+}
+
+function renderEffectControls() {
+  const box = document.getElementById("fxControls");
+  const effect = effectOf(state.effect);
+  if (!box || !effect) return;
+  const controls = fx.meta?.controls && fx.source === effect.source ? fx.meta.controls : {};
+  const rows = [];
+  for (const [key, c] of Object.entries(controls)) {
+    const row = document.createElement("label");
+    row.className = "fx-control";
+    const label = document.createElement("span");
+    label.textContent = c.label || key;
+    const current = key in (effect.params || {}) ? effect.params[key] : c.default;
+    const set = (value) => {
+      if (!fx.editing) {
+        checkpoint();
+        fx.editing = true;
+        setTimeout(() => { fx.editing = false; }, 800);
+      }
+      effect.params = { ...(effect.params || {}), [key]: value };
+      touchEffect(effect);
+      save();
+      previewEffect();
+    };
+    row.append(label);
+    if (c.type === "number" || c.type === "int") {
+      const input = document.createElement("input");
+      input.type = "range";
+      input.min = c.min ?? 0;
+      input.max = c.max ?? 1;
+      input.step = c.step ?? (c.type === "int" ? 1 : 0.01);
+      input.value = current;
+      const out = document.createElement("output");
+      out.textContent = String(current);
+      input.addEventListener("input", () => { out.textContent = input.value; set(Number(input.value)); });
+      row.append(input, out);
+    } else if (c.type === "bool") {
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(current);
+      input.addEventListener("change", () => set(input.checked));
+      row.append(input);
+    } else if (c.type === "enum") {
+      const input = document.createElement("select");
+      for (const option of c.options || []) {
+        const o = document.createElement("option");
+        o.value = o.textContent = option;
+        o.selected = option === current;
+        input.append(o);
+      }
+      input.addEventListener("change", () => set(input.value));
+      row.append(input);
+    } else if (c.type === "color") {
+      const input = document.createElement("input");
+      input.type = "color";
+      input.value = current || "#ffffff";
+      input.addEventListener("input", () => set(input.value));
+      row.append(input);
+    } else {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = current ?? "";
+      input.addEventListener("input", () => set(input.value));
+      row.append(input);
+    }
+    rows.push(row);
+  }
+  if (!rows.length) {
+    const none = document.createElement("p");
+    none.className = "hint";
+    none.textContent = "The code declares no controls. Export a meta object with controls to get sliders here.";
+    rows.push(none);
+  }
+  box.replaceChildren(...rows);
+}
+
+function renderEffect(panel, effect) {
+  const status = effectState(effect);
+  const state_ = document.createElement("p");
+  state_.className = "fx-state";
+  state_.id = "fxState";
+  const seconds = (effect.frames / FPS).toFixed(2).replace(/\.?0+$/, "");
+  state_.textContent = "On the VFX lane at " + timecode(effect.start) + ", " + seconds + " s. "
+    + ({ todo: "Not rendered: the export leaves it out until it is.", stale: "Out of date: it or the picture below changed since its render.",
+      bad: "Its code has an error.", busy: "Rendering.", "": "Rendered." }[status]);
+
+  const code = document.createElement("textarea");
+  code.className = "code";
+  code.spellcheck = false;
+  code.value = effect.source;
+  code.setAttribute("aria-label", "The code that draws this clip");
+  code.addEventListener("focus", () => checkpoint(), { once: true });
+  let wait = null;
+  code.addEventListener("input", () => {
+    effect.source = code.value;
+    touchEffect(effect);
+    save();
+    clearTimeout(wait);
+    wait = setTimeout(previewEffect, 350);
+  });
+  code.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    code.setRangeText("  ", code.selectionStart, code.selectionEnd, "end");
+    code.dispatchEvent(new Event("input"));
+  });
+  const error = document.createElement("p");
+  error.className = "fx-error";
+  error.id = "fxError";
+  error.hidden = true;
+
+  const controls = document.createElement("div");
+  controls.className = "fx-controls";
+  controls.id = "fxControls";
+
+  const actions = document.createElement("div");
+  actions.className = "row";
+  const go = document.createElement("button");
+  go.className = "primary";
+  go.textContent = fx.rendering?.id === effect.id ? "Rendering " + fx.rendering.done + " of " + fx.rendering.total : "Render";
+  go.disabled = Boolean(fx.rendering);
+  go.title = "Draw every frame over the picture below and keep the result as this clip's take";
+  go.addEventListener("click", () => renderEffectTake(effect.id));
+  const drop = document.createElement("button");
+  drop.className = "quiet";
+  drop.textContent = "Remove";
+  drop.addEventListener("click", () => removeEffect(effect.id));
+  actions.append(go, drop);
+
+  panel.replaceChildren(
+    section("VFX clip", [field("Name", effect.name, (v) => { effect.name = v || "VFX"; renderEffects(); }), state_]),
+    section("Controls", [controls]),
+    ...(Object.keys(effect.inputs || {}).length ? [section("Pictures it can draw", [Object.assign(document.createElement("p"), {
+      className: "hint", textContent: Object.entries(effect.inputs).map(([name, asset]) => "env.inputs." + name + ": " + asset.file).join("\n"),
+      style: "white-space: pre-wrap" })])] : []),
+    section("Code", [code, error]),
+    actions,
+  );
+  renderEffectControls();
+  showEffectError();
+}
+
+// One exact frame of the picture lane, for a render: the clip under that frame of the timeline, at that frame.
+const fxSource = document.createElement("video");
+fxSource.muted = true;
+fxSource.preload = "auto";
+fxSource.playsInline = true;
+
+async function exactBelow(frame, w, h, work) {
+  const item = leading(frame);
+  const url = item && frame < itemEnd(item) ? sourceOf(item) : null;
+  if (!url) return null;
+  if (fxSource.dataset.url !== url) {
+    fxSource.dataset.url = url;
+    fxSource.src = url;
+    await new Promise((resolve, reject) => {
+      fxSource.addEventListener("loadeddata", resolve, { once: true });
+      fxSource.addEventListener("error", () => reject(new Error("could not read the clip below")), { once: true });
+    });
+  }
+  const seconds = sourceSeconds(item, frame) + 0.5 / FPS;      // the middle of the frame, clear of rounding
+  if (Math.abs(fxSource.currentTime - seconds) > 1e-4) {
+    await new Promise((resolve) => {
+      fxSource.addEventListener("seeked", resolve, { once: true });
+      fxSource.currentTime = seconds;
+    });
+  }
+  // Cover the frame, as the viewer and the export do.
+  const scale = Math.max(w / fxSource.videoWidth, h / fxSource.videoHeight);
+  const dw = fxSource.videoWidth * scale, dh = fxSource.videoHeight * scale;
+  work.drawImage(fxSource, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  return createImageBitmap(work.canvas);
+}
+
+// Renders a VFX clip: every frame drawn by its code over the exact picture below, sent to the server, made into a take.
+async function renderEffectTake(id, claimed = null) {
+  const effect = effectOf(id);
+  if (!effect || fx.rendering) return;
+  const folder = state.folder;
+  fx.rendering = { id, done: 0, total: effect.frames };
+  renderAll();
+  const runtime = new VfxRuntime();
+  const path = "/project/" + encodeURIComponent(folder) + "/effect/" + encodeURIComponent(id);
+  try {
+    for (let tries = 0; unsaved() && tries < 60; tries++) await new Promise((r) => setTimeout(r, 150));
+    if (unsaved()) throw new Error("The project is still saving. Try again in a moment.");
+    const [w, h] = renderSize();
+    await runtime.load({ source: effect.source, width: w, height: h, fps: FPS, frames: effect.frames, params: effect.params || {},
+      inputs: await effectInputs(effect) });
+    const work = Object.assign(document.createElement("canvas"), { width: w, height: h }).getContext("2d");
+    const out = Object.assign(document.createElement("canvas"), { width: w, height: h }).getContext("2d");
+    const job = claimed || "j" + Math.random().toString(16).slice(2, 12);
+    let batch = [];
+    const send = async () => {
+      if (!batch.length) return;
+      const response = await fetch("/h3take/api" + path + "/frames?job=" + job, { method: "POST", body: new Blob(batch) });
+      if (!response.ok) throw new Error((await response.text()) || "The server refused the frames.");
+      batch = [];
+    };
+    for (let k = 0; k < effect.frames; k++) {
+      const bitmap = await runtime.frame(k, await exactBelow(effect.start + k, w, h, work));
+      out.drawImage(bitmap, 0, 0, w, h);
+      bitmap.close();
+      const blob = await new Promise((resolve) => out.canvas.toBlob(resolve, "image/jpeg", 0.93));
+      const size = new DataView(new ArrayBuffer(4));
+      size.setUint32(0, blob.size);
+      batch.push(size.buffer, blob);
+      if (batch.length >= 24) await send();
+      fx.rendering.done = k + 1;
+      const label = document.querySelector("#inspBody .row button.primary");
+      if (label && state.effect === id) label.textContent = "Rendering " + (k + 1) + " of " + effect.frames;
+    }
+    await send();
+    const result = await postJson(path + "/take", { job });
+    if (folder === state.folder && !unsaved()) adopt(result.project);
+    toast(effect.name + " is rendered.");
+  } catch (error) {
+    fx.error = { id, message: error.message || String(error), line: error.line ?? null };
+    toast("The VFX render stopped: " + (error.message || error), true);
+    if (claimed) {
+      // An agent asked for this render: tell it why it failed, on the clip.
+      const text = (error.line ? "Line " + error.line + ": " : "") + (error.message || String(error));
+      postJson(path + "/take", { error: text }).then((result) => {
+        if (folder === state.folder && !unsaved()) adopt(result.project);
+      }).catch(() => {});
+    }
+  } finally {
+    runtime.dispose();
+    fx.rendering = null;
+    renderAll();
+  }
+}
+
+// An agent asks for a VFX render with the render_effect operation. The code runs in a browser, so this editor looks
+// for such requests, claims one so no other open editor does it too, and renders it.
+async function serveEffectRequests() {
+  if (!state.project || fx.rendering || unsaved()) return;
+  const waiting = (state.project.effects || []).find((e) => e.queued === true);
+  if (!waiting) return;
+  const job = "j" + Math.random().toString(16).slice(2, 12);
+  const folder = state.folder;
+  try {
+    const reply = await postJson("/project/" + encodeURIComponent(folder) + "/effect/" + encodeURIComponent(waiting.id) + "/take", { claim: job });
+    if (!reply.claimed || folder !== state.folder) {
+      waiting.queued = { job: "elsewhere" };      // another editor has it; the next project update says how it went
+      return;
+    }
+    waiting.queued = { job };
+    await renderEffectTake(waiting.id, job);
+  } catch (_) {
+    // The server was not reachable just now; the next look tries again.
+  }
+}
+setInterval(serveEffectRequests, 2000);
+
+const EFFECT_STARTER = `// A VFX clip is a module that draws each frame. frame(env, k) must depend only on k.
+// env: canvas, width, height, fps, frames, params, THREE, below (the picture under this frame, or null)
+export const meta = {
+  controls: {
+    text: { type: 'text', default: 'Title' },
+    size: { type: 'number', min: 0.03, max: 0.3, step: 0.005, default: 0.09, label: 'Size' },
+    color: { type: 'color', default: '#ece8df' },
+  },
+};
+
+export function frame(env, k) {
+  const c = env.canvas.getContext('2d');
+  const { width: w, height: h } = env;
+  c.clearRect(0, 0, w, h);
+  if (env.below) c.drawImage(env.below, 0, 0, w, h);
+  else { c.fillStyle = '#1b1e23'; c.fillRect(0, 0, w, h); }
+  const t = Math.min(1, k / 12);                       // half a second in
+  const ease = 1 - Math.pow(1 - t, 3);
+  c.font = '700 ' + Math.round(h * env.params.size) + 'px "Segoe UI", system-ui, sans-serif';
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  c.globalAlpha = ease;
+  c.shadowColor = 'rgba(0,0,0,0.6)';
+  c.shadowBlur = h * 0.02;
+  c.fillStyle = env.params.color;
+  c.fillText(env.params.text, w / 2, h * 0.5 + (1 - ease) * h * 0.04);
+  c.globalAlpha = 1;
+  c.shadowBlur = 0;
+}
+`;
+
 function placePlayhead() {
   $("playhead").style.left = px(state.playhead) + "px";
   updateClock();
@@ -3451,6 +4139,7 @@ function bindBlock(block, item, clip) {
     const live = document.querySelector('.block[data-item="' + item.id + '"]');
     const sound = document.querySelector('.wave[data-item="' + item.id + '"]');
     const edge = event.target.classList.contains("l") ? "l" : event.target.classList.contains("r") ? "r" : null;
+    const slipping = event.altKey && !edge;
     const origin = { x: event.clientX, start: item.start, in: item.in, out: item.out };
     const limit = activeTake(clip)?.frames ?? Infinity;
     const points = snapPoints(item);
@@ -3462,6 +4151,14 @@ function bindBlock(block, item, clip) {
         changed = true;
       }
       const rate = speedOf(item);
+      if (slipping) {
+        // The picture follows the pointer: dragging right brings in what came before.
+        item.in = origin.in;
+        item.out = origin.out;
+        slipBy(item, -delta * rate);
+        seek(Math.max(item.start, Math.min(itemEnd(item) - 1, state.playhead)));
+        return;
+      }
       if (edge === "l") {
         const shift = Math.max(-origin.in, Math.min(Math.round(delta * rate), origin.out - origin.in - 6));
         item.in = origin.in + shift;
@@ -3485,9 +4182,10 @@ function bindBlock(block, item, clip) {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       if (changed) {
-        settle(item);
+        if (!slipping) settle(item);
         save();
       }
+      if (slipping) renderAll();
       renderTimeline();
       showFrame();
     };
@@ -3517,6 +4215,10 @@ function removeSelected() {
   }
   if (state.sound && !state.item) {
     removeSound(state.sound);
+    return;
+  }
+  if (state.effect && !state.item) {
+    removeEffect(state.effect);
     return;
   }
   if (!state.item) {
@@ -3701,6 +4403,11 @@ function cutShape() {
 }
 
 function showFrame() {
+  showPicture();
+  previewEffect();
+}
+
+function showPicture() {
   const clip = viewing();
   const shape = clip ? null : cutShape();
   $("screen").classList.toggle("cut", Boolean(shape));
@@ -3790,6 +4497,7 @@ function tick(now) {
   }
   lastTick = now;
   syncSounds();
+  previewEffect();
 
   const coming = incoming(state.playhead);
   if (coming && coming !== item && sourceOf(coming)) {
@@ -4276,6 +4984,7 @@ $("projectDelete").addEventListener("click", async () => {
 });
 
 $("newClip").addEventListener("click", addClip);
+$("addEffect").addEventListener("click", addEffect);
 $("addCast").addEventListener("click", addCastMember);
 $("addVoice").addEventListener("click", addVoiceMember);
 $("addRefmod").addEventListener("click", addRefmodMember);
@@ -4514,7 +5223,7 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (event.key === "Escape") {
-    if (state.clip || state.item || state.person || state.bin || state.gap || state.sound) selectClip(null);
+    if (state.clip || state.item || state.person || state.bin || state.gap || state.sound || state.effect) selectClip(null);
   } else if (event.code === "Space") {
     event.preventDefault();
     setPlaying(!state.playing);
@@ -4533,6 +5242,10 @@ window.addEventListener("keydown", (event) => {
     jumpEdit(1);
   } else if (event.key === "Home") seek(0);
   else if (event.key === "End") seek(viewEnd());
+  else if (event.key === ",") slipSelected(event.shiftKey ? -12 : -1);
+  else if (event.key === "." ) slipSelected(event.shiftKey ? 12 : 1);
+  else if (event.key === "<") slipSelected(-12);
+  else if (event.key === ">") slipSelected(12);
   else if (event.key === "[") cycleTake(-1);
   else if (event.key === "]") cycleTake(1);
   else if (event.key === "\\") fitTimeline();

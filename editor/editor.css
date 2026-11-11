@@ -277,6 +277,14 @@ label.lora-name { cursor: pointer; }
 .take-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
 .take-tools button { padding: 6px 10px; font-size: 13px; }
 .on-timeline { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.take-use { display: grid; gap: 6px; }
+.take-use > span { color: var(--muted); font-size: 12px; }
+.take-bar { position: relative; height: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--room); overflow: hidden; }
+.take-window { position: absolute; top: 0; bottom: 0; min-width: 6px; background: var(--tungsten); border-radius: 3px; cursor: ew-resize; touch-action: none; }
+.take-window[tabindex="-1"] { cursor: default; background: var(--line-hi); }
+.take-window:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+.block.more-before { border-left: 2px dotted var(--tungsten); }
+.block.more-after { border-right: 2px dotted var(--tungsten); }
 .speeds { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .speeds > span { color: var(--muted); font-size: 12px; }
 .speeds > span:first-child { min-width: 96px; }
@@ -298,7 +306,28 @@ label.lora-name { cursor: pointer; }
 .zoom input { width: 120px; }
 
 .tl-body { display: grid; grid-template-columns: var(--head) minmax(0, 1fr); min-height: 0; border-top: 1px solid var(--line); }
-.tl-heads, .tl-content { display: grid; grid-template-rows: 28px minmax(64px, 2fr) minmax(40px, 1fr); }
+.tl-heads, .tl-content { display: grid; grid-template-rows: 28px 34px minmax(64px, 2fr) minmax(40px, 1fr); }
+.lane.x { background: repeating-linear-gradient(135deg, transparent 0 9px, rgba(255, 255, 255, 0.018) 9px 10px); }
+.fx { position: absolute; top: 4px; bottom: 4px; display: flex; align-items: center; padding: 0 9px; border: 1px solid var(--line-hi); border-radius: 4px; background: #2f3a48; color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; cursor: grab; touch-action: none; }
+.fx.on { border-color: var(--tungsten); box-shadow: inset 0 0 0 1px var(--tungsten); }
+.fx.todo { background: transparent; border-style: dashed; color: var(--muted); }
+.fx.stale { border-color: var(--tungsten); border-style: dashed; }
+.fx.bad { border-color: var(--danger); }
+.fx.busy { background: var(--live-wash); border-color: var(--live); }
+.fx .name { overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.fx .edge { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
+.fx .edge.l { left: 0; }
+.fx .edge.r { right: 0; }
+.screen #vfx { position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: min(100cqw, calc(100cqh * var(--frame, 1.7778))); height: auto; aspect-ratio: var(--frame, 1.7778); z-index: 2; background: #000; }
+.screen #vfx[hidden] { display: none; }
+.code { width: 100%; min-height: 300px; padding: 10px; background: var(--room); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); font: 12px/1.5 ui-monospace, Consolas, "Cascadia Mono", monospace; white-space: pre; overflow: auto; resize: vertical; tab-size: 2; }
+.code:focus { outline: none; border-color: var(--tungsten); }
+.fx-error { margin: 8px 0 0; padding: 8px 10px; border: 1px solid var(--danger); border-radius: var(--radius); color: var(--danger); font-size: 12px; white-space: pre-wrap; }
+.fx-state { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+.fx-controls { display: grid; gap: 10px; }
+.fx-control { display: grid; grid-template-columns: 96px minmax(0, 1fr) 56px; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.fx-control input[type="text"], .fx-control select { grid-column: 2 / 4; padding: 5px 8px; background: var(--room); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); }
+.fx-control output { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
 .tl-heads { background: var(--panel); border-right: 1px solid var(--line); }
 .tl-head { display: flex; align-items: center; padding: 0 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
 .tl-scroll { overflow-x: auto; overflow-y: hidden; background: var(--room); }

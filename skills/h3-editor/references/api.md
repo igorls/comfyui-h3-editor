@@ -146,6 +146,40 @@ A clip extended, bridged or merged from a filed clip goes in the same bin.
 | `close_gap` | optional `frame` | No frame closes every gap. Returns `removed` |
 | `choose_take` | `clip`, `take` | Items keep their trim, cut short if the take is shorter |
 
+To slip a clip, send `update_item` with `in` and `out` moved by the same number of frames:
+the item keeps its `start` and length and shows another part of its take. Switching a
+clip's take, or rendering it again, also keeps the item where it is; a shorter take pulls
+`out` in.
+
+### VFX clips: drawn by code
+
+`add_effect`: `fields` with any of `name`, `start` (timeline frame), `frames`, `source` (the module's text), `params`
+(control values) and `inputs` (pictures the code may draw: `{"logo": {"file", "subfolder"}}`, each an uploaded asset or
+any picture in the output folder, such as a take's filmstrip; the code reads them as `env.inputs.logo`, an ImageBitmap). Returns `{"effect"}`. `update_effect`: `effect`, `fields`. `remove_effect`: `effect`. They sit on one
+lane above the picture and never overlap each other. The summary lists them under `effects` with a `state`: `not rendered`,
+`rendered` or `out of date`.
+
+The module is JavaScript:
+
+```js
+export const meta = { controls: { size: { type: 'number', min: 0, max: 1, default: 0.5 } } };   // optional
+export async function setup(env) {}                                                             // optional
+export function frame(env, k) {}     // draw frame k; depend only on k, env.params and env.below
+```
+
+`env` holds `canvas` (take a `2d` or a WebGL context from it), `width`, `height`, `fps`, `frames`, `params`, `inputs`, `below` (the
+picture under this frame as an ImageBitmap, or null where the lane below is empty) and `random(seed)`. A module that mentions
+`THREE` gets three.js as `env.THREE`, and one that mentions `belowTexture` gets the picture below as a ready `THREE.Texture`.
+Control types: `number`, `int`, `bool`, `enum` (with `options`), `color`, `text`. It runs in a sandbox: no network, no
+imports, no access to the page.
+
+`render_effect`: `effect`. A render bakes the clip over the picture below it into a take. The code runs in a browser, so
+the request waits until an editor page is open on the project, and that page does it, usually in seconds. The summary
+shows the clip as `waiting for an open editor to render it`, then `rendering`, then `rendered`; `wait` returns once no VFX
+render is waiting either. If none is open, ask the user to open the editor, or open it yourself in a browser you control.
+A failure is recorded on the clip as `error`, with the line of the module it came from. An export leaves out a VFX clip
+with no take, and its plan counts `effects_missing` and `effects_stale`.
+
 ### Linked clips
 
 `extend_after`, `extend_before`, `bridge`, `merge`: `item`, optional `seconds`, `action`,

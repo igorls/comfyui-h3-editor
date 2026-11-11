@@ -515,6 +515,96 @@ async def cuts(request):
     return web.json_response({"cuts": found, "worst": min(scored) if scored else None, "revision": data.get("revision", 0)})
 
 
+EFFECT_FRAME_LIMIT = 8 * 1024 * 1024     # one frame of a VFX render, as a JPEG
+
+
+def effect_job_folder(name, job):
+    """Where the frames of a VFX render collect until it is made into a take."""
+    if not job or not all(ch.isalnum() for ch in job) or len(job) > 40:
+        raise web.HTTPBadRequest(text="job is the render's id: letters and numbers")
+    return os.path.join(root(), name, "clips", ".fx_" + job)
+
+
+async def effect_frames(request):
+    """Take a batch of rendered frames of a VFX clip. The body is JPEGs, each after its length as 4 bytes, big end first."""
+    name = store.slug(request.match_info["name"])
+    data = read_project(name)
+    try:
+        store.find_effect(data, request.match_info["effect"])
+    except KeyError as error:
+        raise web.HTTPNotFound(text=str(error))
+    folder = effect_job_folder(name, request.query.get("job"))
+    os.makedirs(folder, exist_ok=True)
+    body = await request.read()
+    count = len([f for f in os.listdir(folder) if f.endswith(".jpg")])
+    at = 0
+    while at < len(body):
+        if at + 4 > len(body):
+            raise web.HTTPBadRequest(text="the frames end in the middle of a length")
+        size = int.from_bytes(body[at:at + 4], "big")
+        at += 4
+        if size < 4 or size > EFFECT_FRAME_LIMIT or at + size > len(body) or body[at:at + 2] != b"\xff\xd8":
+            raise web.HTTPBadRequest(text="frame %s is not a JPEG of a sensible size" % count)
+        with open(os.path.join(folder, "f_%05d.jpg" % count), "wb") as out:
+            out.write(body[at:at + size])
+        at += size
+        count += 1
+    return web.json_response({"frames": count})
+
+
+async def effect_take(request):
+    """Make the collected frames of a VFX render into the clip's take. {"job"} names the render, {"error"} records a failure."""
+    name = store.slug(request.match_info["name"])
+    effect_id = request.match_info["effect"]
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    data = read_project(name)
+    try:
+        effect = store.find_effect(data, effect_id)
+    except KeyError as error:
+        raise web.HTTPNotFound(text=str(error))
+    if body.get("claim"):
+        async with lock(name):
+            data = read_project(name)
+            claimed = store.claim_effect_render(data, effect_id, body["claim"])
+            if claimed:
+                commit(name, data, "render")
+        return web.json_response({"claimed": claimed})
+    if body.get("error"):
+        async with lock(name):
+            data = read_project(name)
+            failed = store.find_effect(data, effect_id)
+            failed["error"] = str(body["error"])[:600]
+            failed.pop("queued", None)
+            commit(name, data, "render")
+        return web.json_response({"revision": data.get("revision", 0), "project": data})
+    folder = effect_job_folder(name, body.get("job"))
+    frames = sorted(f for f in os.listdir(folder) if f.endswith(".jpg")) if os.path.isdir(folder) else []
+    if len(frames) != effect["frames"]:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise web.HTTPBadRequest(text="the render has %s frames and the clip %s" % (len(frames), effect["frames"]))
+    take_id = "t" + uuid.uuid4().hex[:8]
+    file = "fx_%s_%s.mp4" % (effect_id, take_id)
+    target = os.path.join(root(), name, "clips", file)
+    try:
+        await run(["ffmpeg", "-y", "-v", "error", "-framerate", str(store.FPS), "-i", os.path.join(folder, "f_%05d.jpg"),
+                   "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2:out_color_matrix=bt709,format=yuv420p", "-c:v", "libx264", "-crf", "14",
+                   "-preset", "medium", "-movflags", "+faststart", target])
+        info = await probe_file(target)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    take = {"id": take_id, "file": file, "subfolder": "%s/%s/clips" % (store.ROOT, name), "frames": info["frames"],
+            "poster": info["poster"], "strip": info["strip"]}
+    async with lock(name):
+        data = read_project(name)
+        store.accept_effect_take(data, effect_id, take)
+        commit(name, data, "render")
+    return web.json_response({"revision": data.get("revision", 0), "project": data, "take": take_id})
+
+
 async def history(request):
     folder = store.slug(request.match_info["name"])
     kept = history_folder(folder)
@@ -804,7 +894,8 @@ async def wait(request):
     deadline = time.monotonic() + timeout
     while True:
         data = read_project(folder)
-        done = data.get("revision", 0) > after if after is not None else not data.get("pending")
+        # A VFX render waits for an open editor, so it counts as rendering until one has done it.
+        done = data.get("revision", 0) > after if after is not None else not (data.get("pending") or store.effects_waiting(data))
         if done or time.monotonic() >= deadline:
             reply = store.describe(data)
             reply["timed_out"] = not done
@@ -1194,8 +1285,20 @@ async def export(request):
             continue
         if os.path.exists(found):
             sound_paths[sound["id"]] = found
+    effect_paths = {}
+    for effect in data.get("effects") or []:
+        take = store.active_take(effect)
+        if not take:
+            continue
+        try:
+            found = output_path(take.get("subfolder"), take["file"])
+        except web.HTTPException:
+            continue
+        if os.path.exists(found):
+            effect_paths[effect["id"]] = found
     try:
-        args = store.export_command(data, paths, target, scale=scale, quality=quality, sound_paths=sound_paths)
+        args = store.export_command(data, paths, target, scale=scale, quality=quality, sound_paths=sound_paths,
+                                    effect_paths=effect_paths)
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error))
     await run(args)
@@ -1228,6 +1331,8 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/graph", "graph"),
     ("POST", "/h3take/api/project/{name}/export", "export"),
     ("POST", "/h3take/api/project/{name}/asset", "upload"),
+    ("POST", "/h3take/api/project/{name}/effect/{effect}/frames", "effect_frames"),
+    ("POST", "/h3take/api/project/{name}/effect/{effect}/take", "effect_take"),
     ("POST", "/h3take/api/project/{name}/grab", "grab"),
     ("POST", "/h3take/api/project/{name}/grab_sound", "grab_sound"),
     ("POST", "/h3take/api/project/{name}/import", "import_media"),

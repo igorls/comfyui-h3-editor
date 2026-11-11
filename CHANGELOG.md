@@ -15,6 +15,28 @@ Each release is a tag on GitHub, `v` followed by the version.
   A jump cut, the same shot with the subject popped to another pose, scores
   low and gets a mark on the timeline with the reason. The same takes and trims
   always give the same score. For agents: `GET /project/{name}/cuts`.
+- **VFX clips: clips drawn by code.** A new VFX lane above the picture holds
+  clips whose picture is drawn by a small JavaScript module instead of the
+  model. The module draws each frame on a canvas, in 2D or with WebGL and
+  three.js, and gets the picture below it, so it can put a title over a shot,
+  build a transition across a cut, or composite with the shot itself. The
+  viewer draws it live as you scrub, type or move one of the controls the code
+  declares. Render bakes every frame over the exact picture below into a take,
+  in seconds and with no GPU model, and the export lays that take over the cut.
+  A clip can also be handed named pictures to draw, such as a logo or a
+  screenshot. A take is marked out of date when the code, a control, a
+  picture, the length or anything under the clip changes. The code runs in a sandbox with no network
+  and no access to the editor. three.js 0.186 ships with the pack. For agents:
+  `add_effect`, `update_effect`, `remove_effect` and `render_effect`. The
+  code runs in a browser, so a render an agent asks for is done by an open
+  editor page, and waits until there is one.
+- **Slip.** A clip that shows only part of its take can show another part
+  without moving or changing length, so a shot cut to a music cue can be
+  auditioned against a longer take with the rest of the edit untouched.
+  Alt-drag the clip, press `,` and `.`, or drag the new window under Part of
+  the take in the Timeline tab, which also says how many frames are unused
+  before and after. A clip with more take on either side has a dotted edge.
+  For agents: `update_item` with `in` and `out` moved by the same amount.
 
 ### Fixed
 

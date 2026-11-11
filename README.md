@@ -187,6 +187,8 @@ work on one project at once.
 | Delete | On the timeline, remove a clip from it, or close a selected gap. In the Clips panel, delete the clip or bin |
 | Shift+Delete | Remove a clip from the timeline and close the space |
 | [ , ] | Flip between takes of the selected clip |
+| , . | Slip the selected clip: show an earlier or later part of its take without moving it. With Shift, half a second |
+| Alt+drag | Slip a clip on the timeline |
 | Ctrl+wheel, \\ | Zoom at the pointer, fit the whole scene |
 | Ctrl+Z, Ctrl+Shift+Z | Undo, redo |
 

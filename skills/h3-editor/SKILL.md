@@ -180,6 +180,24 @@ ignored on a clip that holds a track, because the track already is the voice. To
 words for each window, use word timings if the user has them. A window starting at `from`
 covers about `from` to `from + seconds`.
 
+## VFX clips: pictures drawn by code
+
+Titles, captions, lower thirds, diagrams, a transition of your own, or an effect on a shot do not need the model. Write
+them as a VFX clip: a small JavaScript module on the VFX lane, above the picture, that draws each frame and is handed the
+picture below it. It renders in seconds, costs no GPU time and comes out the same every time.
+
+1. `add_effect` with `start`, `frames` and `source`. `references/api.md` has the module's contract: `frame(env, k)` draws
+   frame `k` on `env.canvas`, in 2D or with WebGL and three.js, and `env.below` is the shot under it.
+2. Declare what the user may want to tune (a size, a colour, a word) as `meta.controls`, and read it from `env.params`.
+   The user then gets sliders, and you change a value with `update_effect` and `params`, not by rewriting the code.
+3. `render_effect`, then `wait`. An open editor page does the render. A clip left `waiting for an open editor` means
+   none is open: ask the user to open the editor.
+4. Read the summary. An `error` on the clip names the line; fix the code and render again. A clip `out of date` needs
+   another render: its code, a control, its length or a shot under it changed.
+
+Keep `frame` a pure function of `k`: no clock, no `Math.random()` (use `env.random(seed)`). Draw from `env.width` and
+`env.height`, never fixed pixels, because the preview is smaller than the render.
+
 ## Linked clips: extend, bridge, merge
 
 These generate new footage from frames already on the timeline. They hold 39 real
