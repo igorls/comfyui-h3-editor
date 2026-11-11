@@ -7,6 +7,15 @@ Each release is a tag on GitHub, `v` followed by the version.
 
 ## 0.4.1, 2026-11-11
 
+### Added
+
+- **Draft size and Final size**, in the Project tab under Format. A draft can
+  render at a medium size, 960x544 for 16:9, instead of the small one. A final
+  can skip the enlarging pass and stay at 1344x768, or render at the medium or
+  the small size. A smaller size needs less GPU memory and renders faster. A
+  project that picks none renders as before. For agents: `set_project` takes
+  `sizes`, and `GET /projects` lists the choices.
+
 ### Fixed
 
 - A LoRA trained on one of the pruned H3 base files failed every render on a

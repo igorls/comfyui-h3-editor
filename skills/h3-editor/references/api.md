@@ -179,6 +179,13 @@ pick only an `available` one. A new project starts on the first installed profil
 project that names none renders on it. The format sets new renders and imports, and export fits
 every clip to it.
 
+`set_project` also takes `sizes`, for a GPU with less memory or for speed:
+`{"draft": "medium", "final": "large"}`. A draft is `small` (the usual) or `medium`. A final is
+`full` (the usual: sampled large, then enlarged), `large`, `medium` or `small`, and only `full`
+is enlarged. Leave a quality out, or send `null`, for the usual size. `GET /projects` lists
+every choice per format under `sizes`, with `width`, `height` and the size it comes out at,
+`out`. The summary's `sizes` says what the project renders at.
+
 `set_project` also takes `loras`, the LoRAs every new render of the project samples with,
 drafts and finals alike, and `realism`:
 
@@ -307,6 +314,7 @@ rather than one call each.
 |---|---|---|---|
 | draft | 640x352 | 352x640 | 480x480 |
 | final | 1344x768 | 768x1344 | 1024x1024 |
+| `medium`, when the project asks for it | 960x544 | 544x960 | 768x768 |
 
 Steps depend on the project's profile: HyperFlow takes 4 for a draft and 6 for a final,
 MiniMax H3 Turbo 6 and 6, the 20-step families (`h3`, `singularity`, `dasiwa`) 10 and 20,

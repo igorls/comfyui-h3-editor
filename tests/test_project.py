@@ -1,6 +1,8 @@
 import re
 import unittest
 
+import project as project_module
+
 from policy import bridge_spans, legal_length, video_span
 from project import (add_sound, remove_sound, update_sound, MODELS, PRESET_LIMIT, PROFILES, REALISM_LORAS, REFINE_TAIL, active_take, add_cast, add_clip, apply_op, cast_pictures, clean_checkpoints,
                      clip_prompt, describe, encoder_status, update_cast, export_command, export_plan, finals_status,
@@ -327,6 +329,78 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(active_take({"takes": takes, "active": "t1"})["id"], "t1")
         self.assertEqual(active_take({"takes": takes})["id"], "t2")
         self.assertIsNone(active_take({"takes": []}))
+
+
+class SizeTest(unittest.TestCase):
+    """The sizes a project can render at instead of the usual ones for its format."""
+
+    def planned(self, quality, **fields):
+        project = new_project("x")
+        set_project(project, fields)
+        made, _ = add_clip(project, {"action": "A keeper walks to the window."})
+        return project, plan_render(project, "x", made["id"], quality, 3, HYPERFLOW | FINALS)
+
+    def test_the_usual_sizes_are_the_first_choices_and_match_the_formats(self):
+        for shape, sizes in project_module.FORMATS.items():
+            usual = {"format": shape}
+            self.assertEqual(project_module.render_size(usual, "draft"), sizes["draft"] + (False,))
+            self.assertEqual(project_module.render_size(usual, "final"), sizes["final"] + (True,))
+            self.assertEqual(project_module.SIZES[shape]["small"], sizes["draft"])
+            self.assertEqual(project_module.SIZES[shape]["large"], sizes["final"])
+            for width, height in project_module.SIZES[shape].values():
+                self.assertEqual((width % 32, height % 32), (0, 0))
+
+    def test_a_project_that_names_no_size_renders_as_before(self):
+        _, (job, graph) = self.planned("final")
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (1344, 768))
+        self.assertEqual(job["size"], [1920, 1088])
+        _, (job, graph) = self.planned("draft")
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (640, 352))
+        self.assertNotIn("size", job)
+
+    def test_a_smaller_final_is_sampled_at_that_size_and_not_enlarged(self):
+        project, (job, graph) = self.planned("final", format="9:16", sizes={"final": "medium"})
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (544, 960))
+        for node in ("80", "82", "90"):
+            self.assertNotIn(node, graph)
+        self.assertEqual(job["size"], [544, 960])
+        self.assertEqual(project_module.take_size(project, {"id": "t", "quality": "final", "size": job["size"]}), (544, 960))
+
+    def test_a_large_final_keeps_h3s_own_size_and_records_none(self):
+        _, (job, graph) = self.planned("final", sizes={"final": "large"})
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (1344, 768))
+        self.assertNotIn("80", graph)
+        self.assertNotIn("size", job)
+
+    def test_a_medium_draft_records_its_size(self):
+        _, (job, graph) = self.planned("draft", sizes={"draft": "medium"})
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (960, 544))
+        self.assertEqual(job["size"], [960, 544])
+
+    def test_setting_sizes_keeps_only_the_ones_that_differ_and_refuses_unknown_ones(self):
+        project = new_project("x")
+        set_project(project, {"sizes": {"draft": "small", "final": "large"}})
+        self.assertEqual(project["sizes"], {"final": "large"})
+        self.assertEqual(describe(project)["sizes"], {"draft": {"width": 640, "height": 352, "name": "small"},
+                                                      "final": {"width": 1344, "height": 768, "name": "large"}})
+        set_project(project, {"sizes": {"final": "full"}})
+        self.assertNotIn("sizes", project)
+        set_project(project, {"sizes": {"draft": "medium"}})
+        set_project(project, {"sizes": None})
+        self.assertNotIn("sizes", project)
+        for wrong in ({"final": "huge"}, {"draft": "large"}, {"preview": "small"}, "small"):
+            with self.assertRaises(ValueError):
+                set_project(project, {"sizes": wrong})
+
+    def test_a_size_the_editor_does_not_know_falls_back_to_the_usual_one(self):
+        self.assertEqual(project_module.render_size({"sizes": {"final": "huge", "draft": 7}}, "final"), (1344, 768, True))
+        self.assertEqual(project_module.render_size({"sizes": "small"}, "draft"), (640, 352, False))
+
+    def test_the_editor_is_told_every_choice_with_the_size_it_comes_out_at(self):
+        table = project_module.size_choices()
+        self.assertEqual([row["id"] for row in table["16:9"]["final"]], ["full", "large", "medium", "small"])
+        self.assertEqual(table["16:9"]["final"][0], {"id": "full", "width": 1344, "height": 768, "out": [1920, 1088]})
+        self.assertEqual(table["1:1"]["draft"][1], {"id": "medium", "width": 768, "height": 768, "out": [768, 768]})
 
 
 class LoraTest(unittest.TestCase):

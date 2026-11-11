@@ -87,6 +87,24 @@ steps. Both extras are optional:
 
 The editor says which ones are missing, under **Model** in the Project tab.
 
+### Other sizes
+
+A project can render at other sizes, with **Draft size** and **Final size** in
+the Project tab. A smaller size needs less GPU memory and renders faster.
+
+| Size | 16:9 | 9:16 | 1:1 | For |
+|---|---|---|---|---|
+| Small | 640x352 | 352x640 | 480x480 | Drafts, as usual, and finals |
+| Medium | 960x544 | 544x960 | 768x768 | Drafts and finals |
+| Large | 1344x768 | 768x1344 | 1024x1024 | Finals, without the enlarging pass |
+| Full | 1920x1088 | 1088x1920 | 1440x1440 | Finals, as usual |
+
+A final below Full is not enlarged, so it loads no upscaler and samples once.
+The Realism Slider still runs on it. Takes already rendered keep their size.
+
+Steps belong to the model, not the project: to render with other steps, add a
+checkpoint with the same file under [your own checkpoints](#your-own-checkpoints).
+
 Export joins the cut at the size of its largest picture.
 
 ## Live preview

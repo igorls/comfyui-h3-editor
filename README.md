@@ -213,7 +213,7 @@ Press ? in the editor for this list.
 | "HyperFlow H3 Flash GGUF files need the gguf Python package" | The same |
 | Finals come out at 768x1344 or 1344x768 | Add the latent upscaler. The Model hint says so too |
 | The live preview is a still | Add `taeh3.safetensors` |
-| ComfyUI runs out of memory | Try one of HyperFlow's GGUF files, which come in smaller sizes. So far the editor has been tested on one 96 GB GPU only |
+| ComfyUI runs out of memory | Pick a smaller **Final size** in the Project tab, or try one of HyperFlow's GGUF files, which come in smaller sizes. So far the editor has been tested on one 96 GB GPU only |
 
 ## Develop
 

@@ -32,6 +32,16 @@ FORMATS = {
     "9:16": {"draft": (352, 640), "final": (768, 1344), "refine": (1088, 1920)},
     "1:1": {"draft": (480, 480), "final": (1024, 1024), "refine": (1440, 1440)},
 }
+# Sizes a project can ask for instead of the usual ones, for a GPU with less memory or for
+# speed. A draft is small unless the project asks for medium. A final is full unless it asks
+# for less: full renders large and is then enlarged to the refine size, and the others come
+# out as sampled.
+SIZES = {
+    "16:9": {"small": (640, 352), "medium": (960, 544), "large": (1344, 768)},
+    "9:16": {"small": (352, 640), "medium": (544, 960), "large": (768, 1344)},
+    "1:1": {"small": (480, 480), "medium": (768, 768), "large": (1024, 1024)},
+}
+SIZE_CHOICES = {"draft": ("small", "medium"), "final": ("full", "large", "medium", "small")}
 LANGUAGE = "English"
 # The range a recorded picture side must fall in before export trusts it.
 MIN_SIDE, MAX_SIDE = 16, 8192
@@ -41,6 +51,37 @@ def frame_size(project, quality):
     """Width and height for a quality in this project's format. Imported footage counts as final."""
     sizes = FORMATS.get(project.get("format") or "16:9", FORMATS["16:9"])
     return sizes["draft" if quality == "draft" else "final"]
+
+
+def render_size(project, quality):
+    """Width and height a new render of this quality is sampled at, and whether it is then enlarged.
+
+    The project's own choice under "sizes" where it makes one, or the usual size for its format.
+    """
+    quality = "draft" if quality == "draft" else "final"
+    shape = project.get("format") if project.get("format") in FORMATS else "16:9"
+    chosen = project.get("sizes")
+    name = chosen.get(quality) if isinstance(chosen, dict) else None
+    if name not in SIZE_CHOICES[quality]:
+        name = SIZE_CHOICES[quality][0]
+    if name == "full":
+        return FORMATS[shape]["final"] + (True,)
+    return SIZES[shape][name] + (False,)
+
+
+def size_choices():
+    """Every size a project can pick, per format and quality, for the editor: id, width, height, and the size it comes out at."""
+    table = {}
+    for shape in FORMATS:
+        table[shape] = {}
+        for quality, names in SIZE_CHOICES.items():
+            rows = []
+            for name in names:
+                width, height, refined = render_size({"format": shape, "sizes": {quality: name}}, quality)
+                rows.append({"id": name, "width": width, "height": height,
+                             "out": list(FORMATS[shape]["refine"] if refined else (width, height))})
+            table[shape][quality] = rows
+    return table
 
 
 def take_size(project, take):
@@ -675,9 +716,12 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
         raise ValueError("describe what happens in this clip before rendering it")
     if quality not in QUALITIES:
         raise ValueError("quality must be one of %s" % (tuple(QUALITIES),))
-    width, height = frame_size(project, quality)
+    width, height, enlarged = render_size(project, quality)
     _, profile = project_profile(project, available, clip)
     size = dict(QUALITIES[quality], width=width, height=height, steps=profile["steps"][quality])
+    if not enlarged:
+        # The project asked for finals at the size they are sampled at.
+        size.pop("refine", None)
     models = project_models(project, available, clip)
     references = has_references(project, clip)
     # A family's fl2va model takes a prompt alone. Anything with references goes to its ref2va model.
@@ -1108,7 +1152,7 @@ MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
                "first", "last", "language", "track", "bin", "profile", "loras")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
-PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "realism", "checkpoints", "text_encoder", "vae", "audio_vae")
+PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "realism", "checkpoints", "text_encoder", "vae", "audio_vae", "sizes")
 # A project's own LoRAs: how many, how strong, and where their nodes start in a render graph.
 LORA_LIMIT = 8
 LORA_RANGE = (-2.0, 2.0)
@@ -1745,6 +1789,23 @@ def clean_checkpoints(value, limit=CHECKPOINT_LIMIT):
     return rows
 
 
+def clean_sizes(value):
+    """The sizes a project asks for, without the ones that are the usual size anyway. None asks for none."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or any(key not in SIZE_CHOICES for key in value):
+        raise ValueError("sizes takes draft and final, such as {\"draft\": \"medium\", \"final\": \"large\"}")
+    chosen = {}
+    for quality, name in value.items():
+        if name is None:
+            continue
+        if name not in SIZE_CHOICES[quality]:
+            raise ValueError("the %s size must be one of %s" % (quality, ", ".join(SIZE_CHOICES[quality])))
+        if name != SIZE_CHOICES[quality][0]:
+            chosen[quality] = name
+    return chosen
+
+
 def set_project(project, fields):
     check_fields(fields, PROJECT_FIELDS)
     # The project's own checkpoints first, so the same call can pick one as its profile.
@@ -1768,6 +1829,12 @@ def set_project(project, fields):
                 project["models"] = chosen
             else:
                 project.pop("models", None)
+            continue
+        if key == "sizes":
+            project.pop("sizes", None)
+            chosen = clean_sizes(value)
+            if chosen:
+                project["sizes"] = chosen
             continue
         if key == "realism":
             # None goes back to the usual strength.
@@ -1928,6 +1995,9 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None):
                           steps=graph["12"]["inputs"]["steps"], sampler=graph["11"]["inputs"]["sampler_name"])}
     if "91" in graph:
         job["size"] = [graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]]
+    elif tuple(render_size(project, quality)[:2]) != tuple(frame_size(project, quality)):
+        # A size the project chose. A take that records none is at the usual size for its format.
+        job["size"] = [graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]]
     if clip.get("track"):
         # Once rendered, the take's sound is replaced by this exact slice of the track.
         job["track"] = dict(clip["track"], seconds=graph["10"]["inputs"]["length"] / float(FPS))
@@ -2119,6 +2189,10 @@ def describe(project):
         "name": project.get("name"), "revision": project.get("revision", 0), "style": project.get("style", ""),
         "format": project.get("format") or "16:9", "language": project.get("language") or LANGUAGE,
         "profile": project_profile(project)[0],
+        "sizes": {quality: dict(zip(("width", "height"), render_size(project, quality)[:2]),
+                                name=(project.get("sizes") or {}).get(quality) if isinstance(project.get("sizes"), dict)
+                                and (project.get("sizes") or {}).get(quality) in SIZE_CHOICES[quality] else SIZE_CHOICES[quality][0])
+                  for quality in SIZE_CHOICES},
         "checkpoints": [{"id": name, "title": profile["title"], "unet": profile["unet"][0], "steps": profile["steps"],
                          "sampler": profile["sampler"], "scheduler": profile.get("scheduler") or "simple"}
                         for name, profile in profiles.items() if profile.get("custom")],

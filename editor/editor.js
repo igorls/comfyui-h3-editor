@@ -34,6 +34,7 @@ const state = {
   finals: [],
   loras: [],
   realism: null,
+  sizes: null,
   checkpoints: [],
   presets: [],
   refmods: { installed: false, files: [] },
@@ -2185,6 +2186,8 @@ function renderScene(panel, selected = false) {
     checkpoint();
     state.project.format = shapes.value;
     save();
+    // The sizes on offer follow the format.
+    renderInspector();
   });
   shape.append(shapeTitle, shapes);
   const formatHint = document.createElement("p");
@@ -2237,6 +2240,7 @@ function renderScene(panel, selected = false) {
     section("Format and model", [
       shape,
       formatHint,
+      ...sizeChoices(),
       ...(state.profiles.length ? [model, modelHint, manageModels] : []),
       ...encoderChoices(),
       field("Language people speak", state.project.language || "", (v) => {
@@ -2247,6 +2251,49 @@ function renderScene(panel, selected = false) {
     loraSection(),
     section("Overview", [facts]),
   );
+}
+
+// The sizes drafts and finals render at. The first of each list is the usual one, and a project
+// names a size only when it picks another.
+function sizeChoices() {
+  const table = state.sizes?.[state.project.format || "16:9"];
+  if (!table) return [];
+  const names = { small: "Small", medium: "Medium", large: "Large", full: "Full" };
+  const choice = (quality, title) => {
+    const label = document.createElement("label");
+    label.className = "choice";
+    const name = document.createElement("span");
+    name.textContent = title;
+    const select = document.createElement("select");
+    select.dataset.key = title;
+    const usual = table[quality][0].id;
+    const current = table[quality].some((row) => row.id === state.project.sizes?.[quality]) ? state.project.sizes[quality] : usual;
+    for (const row of table[quality]) {
+      const option = document.createElement("option");
+      option.value = row.id;
+      option.textContent = names[row.id] + ", " + row.out[0] + " × " + row.out[1];
+      option.selected = row.id === current;
+      select.append(option);
+    }
+    select.addEventListener("change", () => {
+      checkpoint();
+      const sizes = { ...(state.project.sizes || {}) };
+      if (select.value === usual) delete sizes[quality];
+      else sizes[quality] = select.value;
+      if (Object.keys(sizes).length) state.project.sizes = sizes;
+      else delete state.project.sizes;
+      save();
+    });
+    label.append(name, select);
+    return label;
+  };
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  const full = table.final.find((row) => row.id === "full");
+  hint.textContent = "New renders use these sizes. A smaller one needs less GPU memory and renders faster."
+    + (full ? " Full samples at " + full.width + " × " + full.height + ", then redraws its last steps at " + full.out[0] + " × " + full.out[1] + "." : "")
+    + " Steps are set per model, in Models and their settings.";
+  return [choice("draft", "Draft size"), choice("final", "Final size"), hint];
 }
 
 function renderBinPanel(panel, bin) {
@@ -3965,7 +4012,7 @@ async function openProject(folder) {
 }
 
 async function refreshProjects(selected) {
-  const { projects, titles, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets, refmods, encoders } = await api("/projects");
+  const { projects, titles, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets, refmods, encoders, sizes } = await api("/projects");
   state.encoders = encoders || { text_encoders: [], vaes: [], auto: {}, missing: [] };
   state.presets = presets || [];
   state.refmods = refmods || { installed: false, files: [] };
@@ -3978,6 +4025,7 @@ async function refreshProjects(selected) {
   state.finals = finals || [];
   state.loras = loras || [];
   state.realism = realism || null;
+  state.sizes = sizes || null;
   $("project").replaceChildren(...projects.map((name) => {
     const option = document.createElement("option");
     option.value = name;

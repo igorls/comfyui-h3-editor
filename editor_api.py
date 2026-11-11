@@ -433,7 +433,7 @@ async def projects(request):
     available = available_models()
     return web.json_response({"projects": names, "titles": project_titles(names), "profiles": store.profile_status(available),
                               "finals": store.finals_status(available),
-                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), "refmods": refmods_status(), "encoders": encoder_choices(available), **sampling_choices()})
+                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), "refmods": refmods_status(), "encoders": encoder_choices(available), "sizes": store.size_choices(), **sampling_choices()})
 
 
 async def create(request):
