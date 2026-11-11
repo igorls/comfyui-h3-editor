@@ -3025,7 +3025,8 @@ function syncSounds() {
 /* Timeline height */
 
 function setTimelineHeight(value, keep = false) {
-  const height = Math.round(Math.min(window.innerHeight * 0.72, Math.max(190, value)));
+  // The viewer and the panels above keep enough room to work in, however short the window.
+  const height = Math.round(Math.max(190, Math.min(window.innerHeight * 0.72, window.innerHeight - 394, value)));
   document.documentElement.style.setProperty("--tl-h", height + "px");
   if (keep) {
     try { localStorage.setItem("h3take.timeline", String(height)); } catch (_) {}
@@ -4417,6 +4418,10 @@ window.addEventListener("resize", () => {
     try { saved = Number(localStorage.getItem(side.key)); } catch (_) {}
     if (saved) setSideWidth(side, saved);
   }
+  // The timeline gives way too, and comes back to the height it was dragged to when there is room again.
+  let tall = 0;
+  try { tall = Number(localStorage.getItem("h3take.timeline")); } catch (_) {}
+  setTimelineHeight(tall || $("timeline").getBoundingClientRect().height - (parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--tl-extra")) || 0));
   if (state.project) renderTimeline();
 });
 

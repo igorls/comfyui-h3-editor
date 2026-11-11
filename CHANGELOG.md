@@ -5,7 +5,7 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
-## Unreleased
+## 0.4.0, 2026-11-11
 
 ### Changed
 
@@ -24,8 +24,8 @@ Each release is a tag on GitHub, `v` followed by the version.
   **Add** menu.
 - **The sound follows its picture while you drag or trim a clip**, instead of
   jumping there when you let go.
-- **A project opens showing its whole cut**, and the panels give way when the
-  window gets narrower, so the viewer keeps its room.
+- **A project opens showing its whole cut**, and the panels and the timeline
+  give way when the window gets smaller, so the viewer keeps its room.
 - **Messages stack and can be closed.** Deleting a clip, a bin or a take, or
   removing a cast member, shows an Undo button in its message.
 - **The header says what is rendering.** It names the clip, how far it is and

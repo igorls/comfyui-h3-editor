@@ -134,18 +134,23 @@
       </li>
       <li>
         <h3>Keep people and places the same.</h3>
-        <p>Add their pictures to the cast and write @Name in a shot. Give them a voice, or add a narrator who is only a voice.</p>
+        <p>Add their pictures to the cast, up to 8 per member, and write @Name in a shot or drag the member into the text. Give them a voice, or add a narrator who is only a voice.</p>
         <p class="ctls"><span class="ctl">Add reference</span><span class="ctl">Add voice</span></p>
       </li>
       <li>
         <h3>Join shots without a visible cut.</h3>
-        <p>Extend a clip forward or back, bridge two clips, or merge a join. A new clip carries on from 39 real frames and the sound of the clips it joins.</p>
-        <p class="ctls"><span class="ctl">Extend forward</span><span class="ctl">Bridge to next</span><span class="ctl">Merge with next</span></p>
+        <p>Extend a clip forward or back, bridge two clips, or merge a join. A new clip carries on from 39 real frames and the sound of the clips it joins. An empty space between two clips offers the bridge.</p>
+        <p class="ctls"><span class="ctl">Generate</span><span class="ctl">Extend forward</span><span class="ctl">Bridge to next</span><span class="ctl">Merge with next</span></p>
       </li>
       <li>
         <h3>Edit as in any editor.</h3>
         <p>Trim, split, move, change speed, add transitions, flip between takes, file clips in bins, bring in your own footage and pictures, and export one video. Moving a rendered clip never renders it again.</p>
         <p class="ctls"><span class="ctl">Split</span><span class="ctl">Ripple delete</span><span class="ctl">Export</span></p>
+      </li>
+      <li>
+        <h3>Add music and narration.</h3>
+        <p>Lay sound files under the cut on lanes of their own. Move them, trim them and set their volume; they play in step with the picture, and the export mixes them in.</p>
+        <p class="ctls"><span class="ctl">Add sound</span></p>
       </li>
       <li>
         <h3>Try fast, finish large.</h3>
@@ -154,8 +159,8 @@
       </li>
       <li>
         <h3>Bring your own models and LoRAs.</h3>
-        <p>Eight H3 models are built in, and any other H3 checkpoint works with its own steps, sampler and scheduler, for the whole project or for one clip. Add LoRAs and set each one's strength with a slider.</p>
-        <p class="ctls"><span class="ctl">Model</span><span class="ctl">Models and their settings</span><span class="ctl">LoRAs</span></p>
+        <p>Eight H3 models are built in, and any other H3 checkpoint works with its own steps, sampler and scheduler, for the whole project or for one clip. Add LoRAs to the project or to one clip, set each one's strength, and choose whether it runs on every step or joins after the first ones.</p>
+        <p class="ctls"><span class="ctl">Models and their settings</span><span class="ctl">LoRAs</span><span class="ctl">LoRAs for this clip</span></p>
       </li>
       <li>
         <h3>Generate to a recorded voice.</h3>
@@ -169,8 +174,8 @@
       </li>
     </ul>
     <figure class="shot">
-      <img src="images/editor.jpg" width="2880" height="1760" loading="lazy" alt="The editor with a kitchen scene open: clips and cast on the left, the viewer in the middle, the project's own checkpoint and its LoRAs with strength sliders on the right, and four clips with their sound on the timeline below.">
-      <figcaption>The whole editor, on one screen: clips and cast, the viewer, the project's models and LoRAs, and the timeline. It opens from ComfyUI's sidebar and needs no other custom node pack.</figcaption>
+      <img src="images/editor.jpg" width="2880" height="1760" loading="lazy" alt="The editor with a kitchen scene open: clips and cast on the left, the viewer in the middle, the selected clip's Shot tab with what happens, the camera and the render buttons on the right, and four clips with their sound on the timeline below.">
+      <figcaption>The whole editor, on one screen: clips and cast, the viewer, the selected clip in tabs, and the timeline. It opens from ComfyUI's sidebar and needs no other custom node pack.</figcaption>
     </figure>
   </section>
 

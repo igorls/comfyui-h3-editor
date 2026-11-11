@@ -98,8 +98,6 @@ button:disabled { opacity: 0.42; cursor: default; }
 .bin-head.holds .folder { stroke: var(--tungsten); }
 .bin-clips { display: flex; flex-direction: column; gap: 4px; margin-left: 13px; padding-left: 6px; border-left: 1px solid var(--line); }
 .bin-clips .empty { padding: 4px 4px 8px; font-size: 13px; }
-.icon-button { display: grid; place-items: center; padding: 0 9px; }
-.icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .head-row { display: flex; align-items: center; gap: 6px; }
 .head-row .name-input { flex: 1; min-width: 0; }
 .icon.delete { flex: none; width: 30px; height: 30px; color: var(--muted); }

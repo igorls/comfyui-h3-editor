@@ -6,41 +6,43 @@ render them on your own GPU, and cut them together, picture and sound.
 **[Project site](https://igorls.github.io/comfyui-h3-editor/)**: watch a cut
 made with it, shot by shot.
 
-![H3 Editor: the clips, the viewer, the project's checkpoint and LoRA sliders, and a four-shot cut with its sound on the timeline](docs/images/editor.jpg)
+![H3 Editor: the clips and cast, the viewer, a clip's shot in the panel on the right, and a four-shot cut with its sound on the timeline](docs/images/editor.jpg)
 
 ## What you can do
 
 - **Write shots, not graphs.** Describe what happens and what is said. The
   editor builds the ComfyUI graph, queues it, and shows the clip moving, with
   sound, while it samples.
-- **Several pictures per cast member.** Give a character up to 8 pictures from
-  different angles, and shots keep what one picture cannot show.
-- **RefMods, if you use them.** With the ComfyUI-MiniMaxH3Mod pack installed, a
-  cast member can carry a RefMod. This is the one optional extra that needs
-  another custom node pack.
-- **Keep people and places the same.** Add their pictures to the cast and
-  write @Name in a shot. Give them a voice, or add a narrator who is only a voice.
+- **Keep people and places the same.** Add their pictures to the cast, up to 8
+  per member, and write @Name in a shot or drag the member into the text. Give
+  them a voice, or add a narrator who is only a voice.
 - **Join shots without a visible cut.** Extend a clip forward or back, bridge
   two clips, or merge a join. A new clip carries on from real frames and sound
   of the clips it joins.
 - **Edit as in any editor.** Trim, split, move, change speed, add transitions,
   flip between takes, file clips in bins, bring in your own footage and
   pictures, and export one video.
+- **Add music and narration.** Lay sound files under the cut on lanes of their
+  own, trim them and set their volume. The export mixes them in.
 - **Try fast, finish large.** Drafts are small and quick. Finals are refined at
   up to 1920 pixels, with a realism LoRA for natural skin.
 - **Pick the model, per project or per clip.** HyperFlow H3 Flash, MiniMax H3,
-  its Turbo LoRA, Singularity and DaSiWa are built in, and a clip can render on
-  a different one than the rest of the project. Any other H3 checkpoint works
-  too: pick its file, set its steps, sampler and scheduler, and save it as a
-  preset for every project.
-- **Bring your LoRAs.** Add LoRAs trained on MiniMax H3 to a project and set each
-  one's strength with a slider. Every render of the project uses them.
+  its Turbo LoRA, Singularity, DaSiWa and 10Eros Max are built in, and a clip
+  can render on a different one than the rest of the project. Any other H3
+  checkpoint works too: pick its file, set its steps, sampler and scheduler,
+  and save it as a preset for every project.
+- **Bring your LoRAs.** Add LoRAs trained on MiniMax H3 to a project, or to one
+  clip, set each one's strength, and choose whether it runs on every step or
+  only after the first ones have set the framing.
 - **Generate to a recorded voice.** Give a clip a recorded track, such as an
   approved narration, and its picture is generated to it.
 - **Let an agent make the video.** Everything the editor does is an HTTP call,
   and an agent skill teaches the whole workflow.
+- **RefMods, if you use them.** With the ComfyUI-MiniMaxH3Mod pack installed, a
+  cast member can carry a RefMod, and the editor can make one from the member's
+  pictures. This is the one optional extra that needs another custom node pack.
 
-It needs no other custom node pack.
+Everything else needs no other custom node pack.
 
 ## Quick start
 
@@ -87,7 +89,7 @@ repository: `qwen3vl_32b_minimax_h3_int8_convrot.safetensors` (25 GB) and
 `qwen3vl_32b_minimax_h3_bf16.safetensors` (48 GB), and
 `minimax_h3_video_vae_int8_convrot.safetensors` (2.6 GB). Any one of each is
 enough: the editor renders with what it finds, and with more than one installed
-you pick in the Project section.
+you pick in the Project tab.
 
 These are optional, and worth having:
 
@@ -114,13 +116,23 @@ Other H3 checkpoints work as well; see [models and quality](docs/models.md).
 
 ## Using the editor
 
-**Clips and takes.** Every render of a clip is a take with its own seed and the
-prompt that made it. Flip between takes with `[` and `]`, keep a seed to render
-variations of one result, or restore a take's prompt. Rendered clips stay on
-disk: moving, trimming or splitting them never renders anything again.
+**The panel on the right.** Select a clip and it shows the clip in tabs:
+**Shot** for what happens, the cast, sound and model, **Takes** for its renders,
+and **Timeline** for its speed and transition. The **Project** tab is always
+there, with the look, format, model and LoRAs that every clip shares. Esc
+selects nothing.
 
-**Cast and voices.** Add pictures to **Cast** and choose who is in each clip.
-Write @Name in **What happens** to place them, and in **Who speaks** to use
+**Clips and takes.** Every render of a clip is a take with its own seed and the
+prompt that made it. Run the pointer across a take's picture to look through
+it, flip between takes with `[` and `]`, keep a seed to render variations of
+one result, or restore a take's prompt. Rendered clips stay on disk: moving,
+trimming or splitting them never renders anything again. **Render all drafts**
+renders every clip that has no take yet, the ones that share a model one after
+another.
+
+**Cast and voices.** **Add** in the Cast panel adds a reference picture or a
+voice. Choose who is in each clip, and write @Name in **What happens** to place
+them, or drag their card into the text. Write @Name in **Who speaks** to use
 their voice. A voice can be uploaded, or taken from a clip on the timeline.
 
 **Joining shots.** Select a clip on the timeline, open **Generate** and choose **Extend forward** or
@@ -128,7 +140,8 @@ their voice. A voice can be uploaded, or taken from a clip on the timeline.
 generates what connects it to the following clip, and **Merge with next**
 replaces the join between two clips with a generated crossing. These clips hold
 39 real frames and their sound from the clips they join, so the cut does not
-show. If a clip they join changes, they are marked: render them again.
+show. If a clip they join changes, they are marked: render them again. An empty
+space between two rendered clips shows a plus that generates the bridge.
 
 **First and last frames.** Give a clip an exact first or last frame by
 uploading a picture, or press **Use playhead frame**.
@@ -150,10 +163,17 @@ the timeline; click the timeline to go back to the cut. File clips in bins with
 the folder button and drag clips onto them. Delete a clip with the trash button
 in its panel, or with Delete in the Clips panel.
 
+**Models and LoRAs.** **Models and their settings** in the Project tab lists
+every model the project can render with, and adds your own checkpoints. The
+LoRAs section adds LoRAs for the whole project; a clip's Shot tab has **LoRAs
+for this clip**. See [models and quality](docs/models.md).
+
 **Projects.** Projects live in `h3take_projects` in ComfyUI's output folder.
-Renders run on the server, so closing the editor never loses one. Every change
-is a revision you can go back to, and two editors, or an editor and an agent,
-can work on one project at once.
+The menu beside the project list renames, duplicates or deletes the open one; a
+deleted project is moved to a `.trash` folder there, never erased. Renders run
+on the server, so closing the editor never loses one. Every change is a
+revision you can go back to, and two editors, or an editor and an agent, can
+work on one project at once.
 
 | Key | Does |
 |---|---|
@@ -162,6 +182,8 @@ can work on one project at once.
 | Up, Down | Jump to the previous or next edit |
 | Home, End | Go to the start or end |
 | S | Split at the playhead |
+| Esc | Select nothing |
+| Tab, Enter | Reach a clip or a sound on the timeline, and select it |
 | Delete | On the timeline, remove a clip from it, or close a selected gap. In the Clips panel, delete the clip or bin |
 | Shift+Delete | Remove a clip from the timeline and close the space |
 | [ , ] | Flip between takes of the selected clip |
@@ -186,7 +208,7 @@ Press ? in the editor for this list.
 
 | You see | Do |
 |---|---|
-| A model in the Model menu says "not installed" | Its hint names the missing file. Put it in the folder from the tables above, then reload the editor |
+| A model in the Model menu says "not installed" | Its hint names the missing file, and so does the Models dialog. Put it in the folder from the tables above, then reload the editor |
 | "ffmpeg is missing" | Install the requirements, step 1 above, and restart ComfyUI |
 | "HyperFlow H3 Flash GGUF files need the gguf Python package" | The same |
 | Finals come out at 768x1344 or 1344x768 | Add the latent upscaler. The Model hint says so too |

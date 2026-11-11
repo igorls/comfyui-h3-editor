@@ -28,7 +28,7 @@
 
   <main class="work">
     <aside class="bin" aria-label="Clips and cast">
-      <div class="panel-head"><h2>Clips <span id="clipCount" class="count"></span></h2><div class="head-tools"><button id="newBin" class="tool" aria-label="New bin" data-tip="New bin, a folder for clips"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.2a1.7 1.7 0 0 1 1.7-1.7h3.9l2 2.1h7.7a1.7 1.7 0 0 1 1.7 1.7v7.5a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z"/><path d="M12 10.6v5M9.5 13.1h5"/></svg></button><button id="importClip" class="tool tip-end" aria-label="Import" data-tip="Import a video or a picture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10.5M8 11l4 4 4-4"/><path d="M4.5 15.5v2.3a1.7 1.7 0 0 0 1.7 1.7h11.6a1.7 1.7 0 0 0 1.7-1.7v-2.3"/></svg></button><button id="newClip" class="quiet new-clip" aria-label="New clip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg><span>New clip</span></button></div></div>
+      <div class="panel-head"><h2>Clips <span id="clipCount" class="count"></span></h2><div class="head-tools"><button id="newBin" class="tool" aria-label="New bin" title="New bin, a folder for clips"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.2a1.7 1.7 0 0 1 1.7-1.7h3.9l2 2.1h7.7a1.7 1.7 0 0 1 1.7 1.7v7.5a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z"/><path d="M12 10.6v5M9.5 13.1h5"/></svg></button><button id="importClip" class="tool" aria-label="Import" title="Import a video or a picture"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10.5M8 11l4 4 4-4"/><path d="M4.5 15.5v2.3a1.7 1.7 0 0 0 1.7 1.7h11.6a1.7 1.7 0 0 0 1.7-1.7v-2.3"/></svg></button><button id="newClip" class="quiet new-clip" aria-label="New clip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg><span>New clip</span></button></div></div>
       <div id="clips" class="clips"></div>
       <div class="panel-head cast-head"><h2>Cast</h2><div class="head-tools"><button id="castAdd" class="quiet menu-button" aria-haspopup="menu" popovertarget="castMenu">Add<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button></div></div>
       <div id="castMenu" class="menu" popover role="menu" aria-label="Add to the cast">
@@ -181,6 +181,7 @@
     <dt>Home, End</dt><dd>Start or end of the scene</dd>
     <dt>S</dt><dd>Split at the playhead</dd>
     <dt>Esc</dt><dd>Select nothing</dd>
+    <dt>Tab, Enter</dt><dd>Reach a clip or a sound on the timeline, and select it</dd>
     <dt>Delete</dt><dd>On the timeline, remove a clip from it, or close a selected gap. In the Clips panel, delete the clip or bin</dd>
     <dt>Shift+Delete</dt><dd>Remove a clip from the timeline and close the space</dd>
     <dt>[ and ]</dt><dd>Flip between takes of the selected clip</dd>
