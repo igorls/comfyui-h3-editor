@@ -290,6 +290,10 @@ ids, and each clip's state. Before you export, check:
 - no gaps, because a gap exports as black and silence. `close_gap` without a frame
   closes all of them;
 - nothing is `source changed`;
+- when the user has a Gemini key set, `python scripts/h3.py rate PROJECT --from A --to B` rates a stretch against a
+  rubric (same person from start to end, match with the cast picture, sharp face, light, background, movement, attention, cuts). It is a second opinion on what frames
+  alone cannot tell you, such as whether a stretch drags. It sends that part of the video to Google, so run it on the
+  ranges the user cares about, not as a routine step;
 - no cut scores low. `python scripts/h3.py cuts PROJECT` scores each place where two
   rendered clips touch, 0 to 100, from the pictures. A `jump` (the same shot, the
   subject pops) under 60 needs fixing: extend the first clip and let the second

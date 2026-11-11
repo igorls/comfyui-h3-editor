@@ -386,6 +386,20 @@ label.lora-name { cursor: pointer; }
 .wave.sound .edge.r { right: 0; }
 .wave.sound .edge:hover { background: rgba(87, 189, 176, 0.35); }
 .wave.sound:focus-visible { outline-offset: -2px; }
+.range { position: absolute; top: 0; bottom: 0; z-index: 4; background: rgba(87, 189, 176, 0.14); border-left: 2px solid var(--live); border-right: 2px solid var(--live); pointer-events: none; }
+.range[hidden] { display: none; }
+.rater-key { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 14px; font-size: 12px; color: var(--muted); }
+.rater-key input { flex: 1 1 220px; padding: 6px 8px; background: var(--room); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); }
+.rater-rows { display: grid; gap: 12px; margin: 6px 0 10px; }
+.rater-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 64px; align-items: center; column-gap: 12px; row-gap: 3px; }
+.rater-row .what { font-weight: 600; }
+.rater-row .meter { position: relative; height: 10px; border-radius: 5px; background: var(--room); border: 1px solid var(--line); overflow: hidden; }
+.rater-row .meter i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--live); }
+.rater-row .meter i.low { background: var(--danger); }
+.rater-row .meter i.mid { background: var(--tungsten); }
+.rater-row .num { text-align: right; font-variant-numeric: tabular-nums; }
+.rater-row .level { grid-column: 2 / 4; color: var(--muted); font-size: 12px; }
+.rater-past { margin-top: 8px; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--tungsten); pointer-events: none; z-index: 5; }
 .playhead::before { content: ""; position: absolute; top: 0; left: -6px; width: 14px; height: 12px; background: var(--tungsten); clip-path: polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%); }
 

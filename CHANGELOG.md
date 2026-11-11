@@ -15,6 +15,21 @@ Each release is a tag on GitHub, `v` followed by the version.
   A jump cut, the same shot with the subject popped to another pose, scores
   low and gets a mark on the timeline with the reason. The same takes and trims
   always give the same score. For agents: `GET /project/{name}/cuts`.
+- **Rate a range with Gemini.** Mark a range of the cut (I and O at the
+  playhead, or Shift-drag on the ruler) and press Rate: that part is exported
+  small, sent to Google's Gemini Decision model with your own API key, and
+  comes back rated against a rubric. Six are checks, each read as how likely
+  the good answer is: the same person from start to end, matching the cast
+  picture (which is sent along), a sharp face, natural light, a background
+  that stays put, and natural movement. One is a scale: how well it holds
+  attention. A last row, smooth cuts, is the editor's own cut measurement for
+  that range, because the model sees about a frame a second and cannot notice
+  a jump cut. Each row has a bar and the description of where it
+  landed. Ratings are kept with the project, so a range can be
+  compared with how it scored before. This is optional and off until a key is
+  saved: the key is entered in the Rate dialog and kept with ComfyUI, never in
+  a project, and the video is deleted at Google once rated. For agents:
+  `POST /project/{name}/rate`, with a rubric of their own if they want one.
 - **VFX clips: clips drawn by code.** A new VFX lane above the picture holds
   clips whose picture is drawn by a small JavaScript module instead of the
   model. The module draws each frame on a canvas, in 2D or with WebGL and

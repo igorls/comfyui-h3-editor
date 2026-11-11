@@ -46,6 +46,7 @@ const state = {
   bin: null,
   sound: null,
   effect: null,
+  range: null,
   tab: "shot",
   folded: new Set(),
   source: null,
@@ -3495,6 +3496,7 @@ function renderTimeline() {
   $("laneV").replaceChildren(...blocks);
   $("laneA").replaceChildren(...waves);
   renderEffects();
+  showRange();
   renderSounds();
   if (focused) $("laneV").querySelector('[data-item="' + CSS.escape(focused) + '"]')?.focus();
   placePlayhead();
@@ -4164,6 +4166,156 @@ export function frame(env, k) {
   c.shadowBlur = 0;
 }
 `;
+
+/* Rating a range of the cut with Gemini Decision */
+
+// The range marked on the timeline, in frames: I and O at the playhead, or a Shift-drag on the ruler.
+function setRange(a, b) {
+  const end = sceneEnd();
+  if (a === null || b === null) state.range = null;
+  else {
+    const first = Math.max(0, Math.min(Math.round(a), Math.round(b))), last = Math.min(end || Infinity, Math.max(Math.round(a), Math.round(b)));
+    state.range = last > first ? { a: first, b: last } : null;
+  }
+  showRange();
+}
+
+function showRange() {
+  const band = $("range");
+  band.hidden = !state.range;
+  if (!state.range) return;
+  band.style.left = px(state.range.a) + "px";
+  band.style.width = Math.max(2, px(state.range.b - state.range.a)) + "px";
+}
+
+// What Rate will look at: the marked range, else the selected clip on the timeline, else the cut from its start.
+const RATE_MOST = 180 * FPS;
+function rateSpan() {
+  if (state.range) return { a: state.range.a, b: state.range.b, what: "the marked range" };
+  const item = state.project.timeline.find((i) => i.id === state.item);
+  if (item) return { a: item.start, b: itemEnd(item), what: clipOf(item.clip).name };
+  return { a: 0, b: Math.min(sceneEnd(), RATE_MOST), what: sceneEnd() > RATE_MOST ? "the first three minutes of the cut" : "the whole cut" };
+}
+
+const rater = { busy: false, key: null };
+
+function raterKey() {
+  const box = $("raterKey");
+  const set = rater.key?.set;
+  const note = document.createElement("span");
+  note.textContent = set ? "A Gemini API key is set" + (rater.key.source === "environment" ? " in ComfyUI's environment." : ", saved with this ComfyUI.")
+    : "Rating needs your Gemini API key. It is saved with this ComfyUI, never in a project.";
+  const input = document.createElement("input");
+  input.type = "password";
+  input.autocomplete = "off";
+  input.placeholder = set ? "Paste another key to replace it" : "Paste your Gemini API key";
+  input.setAttribute("aria-label", "Gemini API key");
+  const keep = document.createElement("button");
+  keep.className = "quiet";
+  keep.textContent = set ? "Replace" : "Save key";
+  keep.addEventListener("click", async () => {
+    if (!input.value.trim()) return;
+    try {
+      rater.key = (await postJson("/settings", { gemini_key: input.value.trim() }, "PUT")).gemini;
+      $("raterResult").textContent = "The key is saved.";
+    } catch (error) {
+      $("raterResult").textContent = error.message;
+    }
+    raterKey();
+  });
+  box.replaceChildren(note, input, keep);
+  $("raterGo").disabled = rater.busy || !rater.key?.set;
+}
+
+function raterRows(rating) {
+  const rows = (rating?.rows || []).map((row) => {
+    const box = document.createElement("div");
+    box.className = "rater-row";
+    const what = document.createElement("div");
+    what.className = "what";
+    what.textContent = row.title;
+    const meter = document.createElement("div");
+    meter.className = "meter";
+    const num = document.createElement("div");
+    num.className = "num";
+    const level = document.createElement("div");
+    level.className = "level";
+    if (row.error) {
+      num.textContent = "–";
+      level.textContent = row.error;
+    } else {
+      const fill = document.createElement("i");
+      fill.style.width = Math.round(row.part * 100) + "%";
+      fill.className = row.part < 0.45 ? "low" : row.part < 0.7 ? "mid" : "";
+      meter.append(fill);
+      meter.setAttribute("role", "img");
+      meter.setAttribute("aria-label", row.title + ": " + (row.of === 1 ? Math.round(row.part * 100) + "% likely" : row.score.toFixed(1) + " of " + row.of));
+      // A check has two ends, so it reads as how likely the good one is. A scale reads as a level.
+      num.textContent = row.of === 1 ? Math.round(row.part * 100) + "%" : row.score.toFixed(1) + " / " + row.of;
+      level.textContent = row.level + (row.of === 1 || row.confidence === null || row.confidence === undefined ? "" : " · " + Math.round(row.confidence * 100) + "% sure");
+    }
+    box.append(what, meter, num, level);
+    return box;
+  });
+  $("raterRows").replaceChildren(...rows);
+}
+
+const ratingMean = (rating) => {
+  const parts = (rating.rows || []).filter((r) => !r.error).map((r) => r.part);
+  return parts.length ? Math.round((100 * parts.reduce((a, b) => a + b, 0)) / parts.length) : null;
+};
+
+function raterPast(span) {
+  // Earlier ratings that looked at some of the same frames: how this stretch scored before.
+  const past = (state.project.ratings || []).filter((r) => r.from < span.b && span.a < r.to).slice(0, 6);
+  $("raterPast").textContent = past.length
+    ? "Earlier ratings here:\n" + past.map((r) => r.at.replace("T", " ") + "  " + timecode(r.from) + " to " + timecode(r.to) + "  " + (ratingMean(r) ?? "–") + "%").join("\n")
+    : "";
+  return past;
+}
+
+async function openRater() {
+  await flush();
+  const span = rateSpan();
+  const seconds = (span.b - span.a) / FPS;
+  $("raterSummary").textContent = "Rate " + span.what + ": " + timecode(span.a) + " to " + timecode(span.b) + ", " + seconds.toFixed(1) + " s."
+    + (span.b - span.a > RATE_MOST ? " That is more than three minutes: mark a shorter range." : "");
+  $("raterResult").textContent = "";
+  const past = raterPast(span);
+  const same = past.find((r) => r.from === span.a && r.to === span.b);
+  raterRows(same || null);
+  $("rater").showModal();
+  try {
+    rater.key = (await api("/settings")).gemini;
+  } catch (_) {
+    rater.key = { set: false };
+    $("raterResult").textContent = "This ComfyUI is running an older H3 Editor: restart it to use ratings.";
+  }
+  raterKey();
+  $("raterGo").onclick = async () => {
+    rater.busy = true;
+    $("raterGo").disabled = true;
+    $("raterGo").textContent = "Rating";
+    $("raterResult").textContent = "Exporting the range and sending it. A minute of video takes about half a minute.";
+    const folder = state.folder;
+    try {
+      const reply = await postJson("/project/" + encodeURIComponent(folder) + "/rate", { from: span.a, to: span.b });
+      if (folder === state.folder && !unsaved()) adopt(reply.project);
+      raterRows(reply.rating);
+      const mean = ratingMean(reply.rating);
+      $("raterResult").textContent = (mean === null ? "" : "Overall " + mean + "%. ") + (reply.rating.tokens ? reply.rating.tokens.toLocaleString() + " tokens." : "");
+      raterPast(span);
+    } catch (error) {
+      $("raterResult").textContent = error.message;
+    }
+    rater.busy = false;
+    $("raterGo").textContent = "Rate";
+    $("raterGo").disabled = !rater.key?.set;
+  };
+}
+
+$("rate").addEventListener("click", openRater);
+$("raterClose").addEventListener("click", () => $("rater").close());
 
 function placePlayhead() {
   $("playhead").style.left = px(state.playhead) + "px";
@@ -5245,7 +5397,12 @@ $("ruler").addEventListener("pointerdown", (event) => {
   const frameAt = (ev) => (ev.clientX - $("ruler").getBoundingClientRect().left) / state.zoom;
   setSource(null);
   seek(frameAt(event));
-  const move = (ev) => seek(frameAt(ev));
+  // With Shift held, the drag also marks a range, from where it started to where it is.
+  const from = event.shiftKey ? frameAt(event) : null;
+  const move = (ev) => {
+    seek(frameAt(ev));
+    if (from !== null) setRange(from, frameAt(ev));
+  };
   const up = () => {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
@@ -5292,6 +5449,7 @@ window.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape") {
     if (state.clip || state.item || state.person || state.bin || state.gap || state.sound || state.effect) selectClip(null);
+    else if (state.range) setRange(null, null);
   } else if (event.code === "Space") {
     event.preventDefault();
     setPlaying(!state.playing);
@@ -5314,6 +5472,8 @@ window.addEventListener("keydown", (event) => {
   else if (event.key === "." ) slipSelected(event.shiftKey ? 12 : 1);
   else if (event.key === "<") slipSelected(-12);
   else if (event.key === ">") slipSelected(12);
+  else if (event.key === "i" || event.key === "I") setRange(here(), state.range && state.range.b > here() ? state.range.b : sceneEnd());
+  else if (event.key === "o" || event.key === "O") setRange(state.range && state.range.a < here() ? state.range.a : 0, here());
   else if (event.key === "[") cycleTake(-1);
   else if (event.key === "]") cycleTake(1);
   else if (event.key === "\\") fitTimeline();

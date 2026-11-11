@@ -9,7 +9,7 @@ import importlib
 import logging
 import sys
 
-MODULES = ("policy", "twins", "latent_writer", "prompting", "h3lora", "media", "ggml_dequant", "ggml_ops", "hyperflow", "project", "cuts",
+MODULES = ("policy", "twins", "latent_writer", "prompting", "h3lora", "media", "ggml_dequant", "ggml_ops", "hyperflow", "project", "cuts", "judge",
            "editor_api", "nodes", "preview")
 
 

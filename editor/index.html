@@ -100,6 +100,7 @@
       </div>
       <button id="addSound" class="quiet" title="Lay music, narration or another sound under the cut, on a lane of its own">Add sound</button>
       <button id="addEffect" class="quiet" title="Add a clip drawn by code on the VFX lane, over the picture at the playhead">Add VFX</button>
+      <button id="rate" class="quiet" title="Rate a range of the cut against a rubric with Gemini. Mark a range with I and O, or Shift-drag on the ruler">Rate</button>
       <div class="spacer"></div>
       <button id="fit" class="quiet" title="Show the whole scene (\)">Fit</button>
       <label class="zoom">Zoom <input id="zoom" type="range" min="0.1" max="12" step="0.1" value="3"></label>
@@ -112,6 +113,7 @@
           <div class="lane x" id="laneX"></div>
           <div class="lane v" id="laneV"></div>
           <div class="lane a" id="laneA"></div>
+          <div class="range" id="range" hidden></div>
           <div class="playhead" id="playhead"></div>
         </div>
       </div>
@@ -168,6 +170,18 @@
   </div>
   <div class="exporter-foot"><a id="exporterLink" class="quiet button" hidden download>Download again</a><span class="spacer"></span><button id="exporterGo" class="primary">Export</button></div>
 </dialog>
+<dialog id="rater" class="keys exporter rater" aria-labelledby="raterTitle">
+  <div class="keys-head"><h2 id="raterTitle">Rate a range</h2><button id="raterClose" class="quiet">Close</button></div>
+  <div class="exporter-body">
+    <p id="raterSummary" class="exporter-summary"></p>
+    <p class="hint">This sends that part of the cut, at half size, to Google's Gemini with your own API key. It is deleted there once it is rated. Each criterion comes back as a level, with how sure the model is.</p>
+    <div id="raterKey" class="rater-key"></div>
+    <div id="raterRows" class="rater-rows" aria-live="polite"></div>
+    <p id="raterResult" class="hint" aria-live="polite"></p>
+    <div id="raterPast" class="rater-past"></div>
+  </div>
+  <div class="exporter-foot"><span class="spacer"></span><button id="raterGo" class="primary">Rate</button></div>
+</dialog>
 <dialog id="picker" class="keys picker" aria-labelledby="pickerTitle">
   <div class="keys-head"><h2 id="pickerTitle">Add a LoRA</h2><button id="pickerClose" class="quiet">Close</button></div>
   <div class="picker-search"><input id="pickerSearch" type="search" autocomplete="off" spellcheck="false" aria-label="Search"><span id="pickerCount" class="count"></span></div>
@@ -187,6 +201,7 @@
     <dt>Tab, Enter</dt><dd>Reach a clip or a sound on the timeline, and select it</dd>
     <dt>Delete</dt><dd>On the timeline, remove a clip from it, or close a selected gap. In the Clips panel, delete the clip or bin</dd>
     <dt>Shift+Delete</dt><dd>Remove a clip from the timeline and close the space</dd>
+    <dt>I and O</dt><dd>Mark the start and the end of a range at the playhead, for Rate. Shift-drag on the ruler marks one too; Esc clears it</dd>
     <dt>[ and ]</dt><dd>Flip between takes of the selected clip</dd>
     <dt>, and .</dt><dd>Slip the selected clip: show an earlier or a later part of its take, without moving it. With Shift, half a second</dd>
     <dt>Alt+drag</dt><dd>Slip a clip on the timeline</dd>

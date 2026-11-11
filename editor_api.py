@@ -489,6 +489,13 @@ async def cuts(request):
     The numbers come from the pictures alone (see cuts.py), so the same takes and the same trims give the same scores.
     """
     data = read_project(request.match_info["name"])
+    found = await score_cuts(data)
+    scored = [c["score"] for c in found if c["score"] is not None]
+    return web.json_response({"cuts": found, "worst": min(scored) if scored else None, "revision": data.get("revision", 0)})
+
+
+async def score_cuts(data):
+    """The score of every cut of a project's timeline, in order."""
     order = store.ordered(data)
     gate = asyncio.Semaphore(4)
 
@@ -510,9 +517,7 @@ async def cuts(request):
             return dict(entry, kind="unreadable", score=None, notes=[str(getattr(error, "text", None) or error)[:200]])
 
     pairs = [(a, b) for a, b in zip(order[:-1], order[1:]) if store.item_end(a) == b["start"]]
-    found = await asyncio.gather(*[one(a, b) for a, b in pairs])
-    scored = [c["score"] for c in found if c["score"] is not None]
-    return web.json_response({"cuts": found, "worst": min(scored) if scored else None, "revision": data.get("revision", 0)})
+    return await asyncio.gather(*[one(a, b) for a, b in pairs])
 
 
 EFFECT_FRAME_LIMIT = 8 * 1024 * 1024     # one frame of a VFX render, as a JPEG
@@ -607,6 +612,158 @@ async def effect_take(request):
         store.accept_effect_take(data, effect_id, take)
         commit(name, data, "render")
     return web.json_response({"revision": data.get("revision", 0), "project": data, "take": take_id})
+
+
+def settings_file():
+    """Where the editor keeps what belongs to this installation and to no project: for now, the user's Gemini key."""
+    return os.path.join(folder_paths.get_user_directory(), "h3take", "settings.json")
+
+
+def read_settings():
+    try:
+        with open(settings_file(), encoding="utf-8") as file:
+            found = json.load(file)
+        return found if isinstance(found, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def gemini_key():
+    """The key ratings are made with: the one saved in the editor, else the GEMINI_API_KEY of the environment."""
+    return str(read_settings().get("gemini_key") or os.environ.get("GEMINI_API_KEY") or "").strip()
+
+
+def settings_reply():
+    saved = bool(str(read_settings().get("gemini_key") or "").strip())
+    return {"gemini": {"set": bool(gemini_key()), "source": "saved" if saved else "environment" if gemini_key() else None}}
+
+
+async def settings(request):
+    """Whether a Gemini key is set. The key itself is never sent back."""
+    return web.json_response(settings_reply())
+
+
+async def save_settings(request):
+    """Save or clear the Gemini key: {"gemini_key": "..."}, empty to clear."""
+    body = await request.json()
+    if not isinstance(body, dict) or not isinstance(body.get("gemini_key"), str):
+        return refused("send gemini_key, the key as text, or empty text to remove it")
+    key = body["gemini_key"].strip()
+    if len(key) > 400 or any(ch.isspace() for ch in key):
+        return refused("that does not look like an API key")
+    found = read_settings()
+    if key:
+        found["gemini_key"] = key
+    else:
+        found.pop("gemini_key", None)
+    path = settings_file()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    write_json(path, found)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return web.json_response(settings_reply())
+
+
+async def rate(request):
+    """Rate a range of the cut against a rubric with Gemini Decision. {"from", "to"} are timeline frames.
+
+    The range is exported small, sent to Google with the user's own key, rated, and deleted there. Optional: "rubric"
+    (a list of {key, title?, instructions, levels}, worst level first), "resolution" (low, medium, high) and "note".
+    """
+    from . import judge
+
+    name = store.slug(request.match_info["name"])
+    data = read_project(name)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    end = store.scene_end(data)
+    try:
+        first = int(body.get("from", 0))
+        last = min(end, int(body.get("to", end)))
+        if first < 0 or last - first < store.FPS // 2:
+            return refused("the range must hold at least half a second of the cut; the cut ends at frame %s" % end)
+        if last - first > store.RATING_FRAMES:
+            return refused("a rating looks at up to %s seconds at a time; this range is %.1f" % (
+                store.RATING_FRAMES // store.FPS, (last - first) / float(store.FPS)))
+        rubric = judge.clean_rubric(body.get("rubric"))
+        part = store.slice_project(data, first, last)
+    except (TypeError, ValueError) as error:
+        return refused(plain(error))
+    key = gemini_key()
+    if not key:
+        return refused("No Gemini API key is set. Add one in the editor (Rate, then Key), or set GEMINI_API_KEY for ComfyUI.", 409)
+
+    def path_of(holder):
+        try:
+            found = output_path(holder.get("subfolder"), holder["file"])
+        except web.HTTPException:
+            return None
+        return found if os.path.exists(found) else None
+
+    paths = {}
+    for clip in data.get("clips", []):
+        take = store.active_take(clip)
+        if take and path_of(take):
+            paths[clip["id"]] = path_of(take)
+    sound_paths = {s["id"]: path_of(s) for s in part.get("sounds") or [] if path_of(s)}
+    effect_paths = {}
+    for effect in part.get("effects") or []:
+        take = store.active_take(effect)
+        if take and path_of(take):
+            effect_paths[effect["id"]] = path_of(take)
+    folder = os.path.join(root(), name, "ratings")
+    os.makedirs(folder, exist_ok=True)
+    target = os.path.join(folder, "range_%s.mp4" % uuid.uuid4().hex[:10])
+    try:
+        try:
+            args = store.export_command(part, paths, target, scale=0.5, quality="small", sound_paths=sound_paths, effect_paths=effect_paths)
+        except ValueError as error:
+            return refused(plain(error))
+        await run(args)
+        if os.path.getsize(target) > 300 * 1024 * 1024:
+            return refused("that range makes too large a file to send; rate a shorter one")
+        try:
+            pictures = []
+            if body.get("reference", True):
+                # The first picture of each cast member seen in the range, so the model can compare against it.
+                seen = {i["clip"] for i in part["timeline"]}
+                wanted = {m for c in data.get("clips", []) if c["id"] in seen for m in (c.get("cast") or [])}
+                for person in data.get("cast", []):
+                    held = store.member_pictures(person)
+                    if person["id"] in wanted and held and len(pictures) < 3 and path_of(held[0]):
+                        pictures.append((person.get("name") or "the person", path_of(held[0])))
+            result = await judge.rate(key, target, rubric, body.get("resolution") or "low", body.get("note") or "", pictures)
+        except judge.JudgeError as error:
+            return refused(str(error), 502)
+        except (ValueError, OSError, asyncio.TimeoutError) as error:
+            return refused("The rating could not be made: %s" % (plain(error) or type(error).__name__), 502)
+    finally:
+        if os.path.exists(target):
+            os.remove(target)
+    rows = result["rows"]
+    if body.get("rubric") is None:
+        # The model sees about one frame a second, too few to notice a jump cut. The editor measures every cut from
+        # the frames on both sides, so that row comes from the measurement, not from the model.
+        inside = [c for c in await score_cuts(data) if first < c["at"] < last and c["score"] is not None]
+        if inside:
+            worst = min(inside, key=lambda c: c["score"])
+            why = "; ".join(worst.get("notes") or []) or worst["kind"]
+            rows = rows + [{"key": "cuts", "title": "Smooth cuts", "measured": True, "score": round(worst["score"] / 25.0, 1), "of": 4,
+                            "part": round(worst["score"] / 100.0, 4), "confidence": None,
+                            "level": "Measured by the editor: the worst of %s cut%s scores %s of 100 (%s)" % (
+                                len(inside), "" if len(inside) == 1 else "s", worst["score"], why)}]
+    rating = {"from": first, "to": last, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "resolution": body.get("resolution") or "low",
+              "rows": rows, "tokens": result["tokens"]}
+    async with lock(name):
+        data = read_project(name)
+        kept = store.add_rating(data, rating)
+        commit(name, data, "rating")
+    return web.json_response({"rating": kept, "revision": data.get("revision", 0), "project": data})
 
 
 async def history(request):
@@ -1339,6 +1496,9 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/graph", "graph"),
     ("POST", "/h3take/api/project/{name}/export", "export"),
     ("POST", "/h3take/api/project/{name}/asset", "upload"),
+    ("POST", "/h3take/api/project/{name}/rate", "rate"),
+    ("GET", "/h3take/api/settings", "settings"),
+    ("PUT", "/h3take/api/settings", "save_settings"),
     ("POST", "/h3take/api/project/{name}/effect/{effect}/frames", "effect_frames"),
     ("POST", "/h3take/api/project/{name}/effect/{effect}/take", "effect_take"),
     ("POST", "/h3take/api/project/{name}/grab", "grab"),

@@ -185,6 +185,11 @@ def main():
     p = sub.add_parser("cuts", help="A score from 0 to 100 for every cut between two rendered clips, worst first.")
     p.add_argument("project")
     p.add_argument("--json", action="store_true", help="The raw scores as JSON.")
+    p = sub.add_parser("rate", help="Rate a range of the cut against a rubric with Gemini (needs the user's key set in the editor).")
+    p.add_argument("project")
+    p.add_argument("--from", dest="first", type=int, default=0, help="First timeline frame of the range.")
+    p.add_argument("--to", dest="last", type=int, default=None, help="Frame the range stops before. Default: the end of the cut.")
+    p.add_argument("--json", action="store_true", help="The raw rating as JSON.")
     p = sub.add_parser("wait", help="Wait until nothing is rendering, then print the summary.")
     p.add_argument("project")
     p.add_argument("--timeout", type=float, default=1800, help="Seconds. Default 1800.")
@@ -247,6 +252,23 @@ def main():
                 print("%4s  %-12s at frame %-6d %s > %s  %s" % ("-" if cut["score"] is None else cut["score"], cut["kind"], cut["at"],
                                                               cut["before"], cut["after"], "; ".join(cut["notes"])))
             print("worst: %s" % found["worst"])
+    elif c == "rate":
+        body = {"from": args.first}
+        if args.last is not None:
+            body["to"] = args.last
+        made = api("POST", project_path(args.project) + "/rate", body)["rating"]
+        if args.json:
+            print(json.dumps(made, indent=1, ensure_ascii=False))
+        else:
+            for row in made["rows"]:
+                if row.get("error"):
+                    print("   -   %-24s %s" % (row["title"], row["error"]))
+                else:
+                    if row["of"] == 1:      # a check: how likely its good end is
+                        print(" %3d%%  %-26s %s" % (round(100 * row["part"]), row["title"], row["level"]))
+                    else:
+                        sure = "" if row.get("confidence") is None else " (%d%% sure)" % round(100 * row["confidence"])
+                        print("%3.1f/%d  %-26s %s%s" % (row["score"], row["of"], row["title"], row["level"], sure))
     elif c == "summary":
         s = api("GET", project_path(args.project) + "/summary")
         print(json.dumps(s, indent=1, ensure_ascii=False) if args.json else text_summary(s))

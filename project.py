@@ -1078,8 +1078,11 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
         number = len(items) + len(extra) + laid
         args += ["-i", effect_paths[effect["id"]]]
         first = effect["start"] / float(FPS)
-        last = min(cursor, effect["start"] + min(effect["frames"], int(take.get("frames") or effect["frames"]))) / float(FPS)
-        chains.append("[%s:v]%s,setpts=PTS-STARTPTS+%.5f/TB[e%s]" % (number, finish, first, number))
+        last = min(cursor, effect["start"] + min(effect["frames"], int(take.get("frames") or effect["frames"])
+                                                      - int(effect.get("skip") or 0))) / float(FPS)
+        skip = int(effect.get("skip") or 0)
+        trim = "trim=start_frame=%s,setpts=PTS-STARTPTS," % skip if skip else ""
+        chains.append("[%s:v]%s%s,setpts=PTS-STARTPTS+%.5f/TB[e%s]" % (number, trim, finish, first, number))
         chains.append("[%s][e%s]overlay=eof_action=pass:enable='between(t,%.5f,%.5f)',settb=1/%s[o%s]" % (
             video, number, first, last - 0.5 / FPS, FPS, number))
         video = "o%s" % number
@@ -1089,6 +1092,71 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
              "-c:v", "libx264", "-crf", str(EXPORT_QUALITY[quality]), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
              "-movflags", "+faststart", out_path]
     return args
+
+
+RATING_FRAMES = 180 * FPS        # the longest stretch of the cut one rating looks at
+RATINGS_KEPT = 40
+
+
+def slice_project(project, first, last):
+    """The part of the cut from frame first up to frame last, as a project of its own that starts at frame 0.
+
+    Clips, sounds and VFX clips that cross an end are trimmed there. Used to export one range of the timeline.
+    """
+    first, last = int(first), int(last)
+    if first < 0 or last <= first:
+        raise ValueError("a range runs from a frame to a later one")
+    out = copy.deepcopy(project)
+    items = []
+    for item in ordered(project):
+        start, end = item["start"], item_end(item)
+        if end <= first or start >= last:
+            continue
+        speed = clean_speed(item.get("speed"))
+        head, tail = max(0, first - start), max(0, end - last)
+        new = copy.deepcopy(item)
+        new["in"] = item["in"] + int(round(head * speed))
+        new["out"] = item["out"] - int(round(tail * speed))
+        new["start"] = max(start, first) - first
+        if head:
+            new.pop("transition", None)      # what it came in over is outside the range
+        if new["out"] - new["in"] >= 1:
+            items.append(new)
+    out["timeline"] = items
+    sounds = []
+    for sound in project.get("sounds") or []:
+        start, end = sound.get("start", 0), sound.get("start", 0) + sound.get("frames", 0)
+        if end <= first or start >= last:
+            continue
+        head, tail = max(0, first - start), max(0, end - last)
+        new = copy.deepcopy(sound)
+        new["offset"] = round(float(sound.get("offset") or 0.0) + head / float(FPS), 4)
+        new["frames"] = sound["frames"] - head - tail
+        new["start"] = max(start, first) - first
+        if new["frames"] >= 1:
+            sounds.append(new)
+    out["sounds"] = sounds
+    effects = []
+    for effect in project.get("effects") or []:
+        start, end = effect["start"], effect["start"] + effect["frames"]
+        if end <= first or start >= last:
+            continue
+        head, tail = max(0, first - start), max(0, end - last)
+        new = copy.deepcopy(effect)
+        new["skip"] = head                   # frames of its take that fall before the range
+        new["frames"] = effect["frames"] - head - tail
+        new["start"] = max(start, first) - first
+        if new["frames"] >= 1:
+            effects.append(new)
+    out["effects"] = effects
+    return out
+
+
+def add_rating(project, rating):
+    """Keep a rating with the project, newest first, so a range can be compared with how it scored before."""
+    rows = [dict(rating, id=new_id("r"))] + list(project.get("ratings") or [])
+    project["ratings"] = rows[:RATINGS_KEPT]
+    return project["ratings"][0]
 
 
 # Extra sound. Music, narration or effects laid under the cut on lanes of their own, mixed in at export.
