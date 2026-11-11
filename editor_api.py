@@ -587,8 +587,12 @@ async def effect_take(request):
         shutil.rmtree(folder, ignore_errors=True)
         raise web.HTTPBadRequest(text="the render has %s frames and the clip %s" % (len(frames), effect["frames"]))
     take_id = "t" + uuid.uuid4().hex[:8]
-    file = "fx_%s_%s.mp4" % (effect_id, take_id)
-    target = os.path.join(root(), name, "clips", file)
+    # Named from an id made here, never from the clip's own id, which a saved project could have set to anything.
+    file = "fx_%s.mp4" % take_id
+    clips_folder = os.path.realpath(os.path.join(root(), name, "clips"))
+    target = os.path.realpath(os.path.join(clips_folder, file))
+    if os.path.dirname(target) != clips_folder:
+        raise web.HTTPBadRequest(text="the take would be saved outside the project")
     try:
         await run(["ffmpeg", "-y", "-v", "error", "-framerate", str(store.FPS), "-i", os.path.join(folder, "f_%05d.jpg"),
                    "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2:out_color_matrix=bt709,format=yuv420p", "-c:v", "libx264", "-crf", "14",
@@ -1208,7 +1212,10 @@ async def import_media(request):
         clip_id, take_id = store.new_id("c"), store.new_id("t")
         target = os.path.join(root(), folder, "clips", "%s_%s.mp4" % (clip_id, take_id))
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        width, height = store.frame_size(data, "final")
+        # Footage is kept at the size this project's finals come out at, so it is never smaller than the shots beside it.
+        width, height, refined = store.render_size(data, "final")
+        if refined:
+            width, height = store.refine_size(data)
         await normalize(saved, target, width, height, fit, extension in PICTURES, seconds, start, end)
     except ValueError as error:
         return refused(plain(error))
@@ -1217,7 +1224,8 @@ async def import_media(request):
             os.remove(saved)
     info = await probe_file(target)
     take = {"id": take_id, "clip": clip_id, "file": os.path.basename(target), "subfolder": "%s/%s/clips" % (store.ROOT, folder),
-            "poster": info["poster"], "frames": info["frames"], "quality": "footage", "seed": None, "source": original}
+            "poster": info["poster"], "frames": info["frames"], "quality": "footage", "seed": None, "source": original,
+            "size": [width, height]}
     if info.get("strip"):
         take["strip"] = info["strip"]
     place = str(fields.get("place", "true")).lower() not in ("false", "0", "no")

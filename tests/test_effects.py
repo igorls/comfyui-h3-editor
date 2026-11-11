@@ -116,6 +116,17 @@ class EffectTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 update_effect(project, effect["id"], {"inputs": inputs})
 
+    def test_a_clip_carries_data_for_its_code(self):
+        project = cut()
+        effect = add_effect(project, {"data": {"lines": [{"words": [{"w": "Hi", "s": 0.5, "e": 0.8}]}]}})
+        accept_effect_take(project, effect["id"], {"id": "t9", "file": "fx.mp4", "frames": 72})
+        update_effect(project, effect["id"], {"data": {"lines": []}})
+        self.assertTrue(effect_stale(project, effect))                  # other words draw another take
+        with self.assertRaises(ValueError):
+            update_effect(project, effect["id"], {"data": {"when": object()}})
+        with self.assertRaises(ValueError):
+            update_effect(project, effect["id"], {"data": "x" * (store.EFFECT_DATA_LIMIT + 1)})
+
     def test_bad_fields_are_refused(self):
         project = cut()
         for fields in ({"frames": 0}, {"start": -1}, {"source": 5}, {"params": []}, {"colour": "red"}):

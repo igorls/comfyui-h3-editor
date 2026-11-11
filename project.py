@@ -4,6 +4,7 @@ Moving or trimming on the timeline never touches a render. No Comfy import.
 """
 
 import copy
+import json
 import math
 import random
 import re
@@ -1173,7 +1174,8 @@ def remove_sound(project, sound_id):
 # draws every frame and can use the picture below it. The editor runs the module in the browser; a render bakes the
 # finished picture for the clip's span into a take, which the export lays over the cut.
 
-EFFECT_FIELDS = ("name", "start", "frames", "source", "params", "inputs")
+EFFECT_FIELDS = ("name", "start", "frames", "source", "params", "inputs", "data")
+EFFECT_DATA_LIMIT = 2000000
 EFFECT_INPUTS = 8
 EFFECT_SOURCE_LIMIT = 200000
 EFFECT_STARTER = """// A VFX clip is a module that draws each frame. frame(env, k) must depend only on k.
@@ -1236,6 +1238,15 @@ def clean_effect_fields(fields):
         if not isinstance(fields["params"], dict):
             raise ValueError("params is an object of control values")
         out["params"] = copy.deepcopy(fields["params"])
+    if "data" in fields:
+        # Anything the code should read and cannot fetch: word timings for captions, numbers for a chart.
+        try:
+            size = len(json.dumps(fields["data"]))
+        except (TypeError, ValueError):
+            raise ValueError("data must be JSON: objects, lists, text, numbers")
+        if size > EFFECT_DATA_LIMIT:
+            raise ValueError("data is %s characters as JSON; the most is %s" % (size, EFFECT_DATA_LIMIT))
+        out["data"] = copy.deepcopy(fields["data"])
     if "inputs" in fields:
         # Pictures the code may draw: a name it asks for by, and an uploaded file. The code cannot fetch anything itself.
         given = fields["inputs"]
@@ -1276,7 +1287,7 @@ def add_effect(project, fields=None):
 def update_effect(project, effect_id, fields):
     effect = find_effect(project, effect_id)
     fields = clean_effect_fields(fields)
-    before = {key: effect.get(key) for key in ("frames", "source", "params", "inputs")}
+    before = {key: effect.get(key) for key in ("frames", "source", "params", "inputs", "data")}
     check_effect_room(project, dict(effect, **fields))   # the lane, with the new place and length
     effect.update(fields)
     if any(effect.get(key) != value for key, value in before.items()):

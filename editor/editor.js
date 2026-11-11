@@ -3645,6 +3645,17 @@ function renderEffects() {
     name.className = "name";
     name.textContent = effect.name;
     block.append(name);
+    if (status === "busy") {
+      // The render's progress, on the clip itself: a bar that fills, and how far along it is.
+      const bar = document.createElement("div");
+      bar.className = "fx-bar";
+      bar.setAttribute("role", "progressbar");
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", "100");
+      const note = document.createElement("div");
+      note.className = "fx-note";
+      block.append(bar, note);
+    }
     for (const side of ["l", "r"]) {
       const edge = document.createElement("div");
       edge.className = "edge " + side;
@@ -3699,7 +3710,41 @@ function renderEffects() {
     blocks.push(block);
   }
   $("laneX").replaceChildren(...blocks);
+  showEffectProgress();
 }
+
+// How far a VFX render has got, wherever it shows: on the clip, on the Render button and in the page's title, so it
+// can be read from another tab.
+function showEffectProgress() {
+  const job = fx.rendering;
+  if (!job) return;
+  const part = job.total ? job.done / job.total : 0;
+  const percent = Math.floor(part * 100);
+  const spent = (performance.now() - job.began) / 1000;
+  const left = job.done > 24 ? (spent / job.done) * (job.total - job.done) : null;
+  const time = left === null ? "" : left >= 90 ? ", about " + Math.round(left / 60) + " min left" : ", about " + Math.max(1, Math.round(left)) + " s left";
+  const block = document.querySelector('.fx[data-effect="' + job.id + '"]');
+  if (block) {
+    const bar = block.querySelector(".fx-bar");
+    if (bar) {
+      bar.style.width = percent + "%";
+      bar.setAttribute("aria-valuenow", String(percent));
+    }
+    const note = block.querySelector(".fx-note");
+    if (note) note.textContent = percent + "%" + time;
+    block.title = job.name + ": rendering, frame " + job.done + " of " + job.total + time;
+  }
+  const label = document.querySelector("#inspBody .row button.primary");
+  if (label && state.effect === job.id) label.textContent = "Rendering " + job.done + " of " + job.total + time;
+  document.title = percent + "% " + job.name + " · " + job.title;
+}
+
+// A VFX render runs in this page. Closing or reloading it would throw the render away, so the browser asks first.
+window.addEventListener("beforeunload", (event) => {
+  if (!fx.rendering) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 
 // A VFX clip's named pictures, read once each and handed to its code as fresh bitmaps (a bitmap given away is gone).
 const inputBlobs = new Map();
@@ -3723,6 +3768,15 @@ async function effectInputs(effect) {
   return out;
 }
 
+// A clip's data can be large, so the preview tells one version from the next by a mark, not by comparing it whole.
+const dataMarks = new WeakMap();
+let dataMarkNext = 1;
+function dataMark(effect) {
+  if (!effect.data || typeof effect.data !== "object") return String(effect.data ?? "");
+  if (!dataMarks.has(effect.data)) dataMarks.set(effect.data, dataMarkNext++);
+  return "d" + dataMarks.get(effect.data);
+}
+
 function previewSize() {
   const shape = cutShape() || state.sizes?.[state.project.format || "16:9"]?.final?.[0]?.out || [1920, 1080];
   const w = Math.min(960, shape[0]);
@@ -3736,7 +3790,21 @@ function renderSize() {
 
 // The picture under the playhead, as the viewer is showing it.
 async function belowNow(w, h) {
-  if (!front.classList.contains("show") || front.readyState < 2 || !front.videoWidth) return null;
+  if (!front.classList.contains("show")) return null;
+  if (front.seeking || front.readyState < 2) {
+    // A long clip takes a moment to land on a frame it was just sent to: wait for it, but not for ever.
+    await new Promise((resolve) => {
+      const done = () => {
+        front.removeEventListener("seeked", done);
+        front.removeEventListener("canplay", done);
+        resolve();
+      };
+      front.addEventListener("seeked", done);
+      front.addEventListener("canplay", done);
+      setTimeout(done, 2000);
+    });
+  }
+  if (front.readyState < 2 || !front.videoWidth) return null;
   try {
     return await createImageBitmap(front, { resizeWidth: w, resizeHeight: h, resizeQuality: "medium" });
   } catch (_) {
@@ -3772,7 +3840,7 @@ async function previewEffect() {
       const e = effectOf(want.id);
       if (!e) break;
       const [w, h] = previewSize();
-      const key = [e.id, w, h, e.frames, JSON.stringify(e.inputs || {})].join("|");
+      const key = [e.id, w, h, e.frames, JSON.stringify(e.inputs || {}), dataMark(e)].join("|");
       const params = JSON.stringify(e.params || {});
       try {
         if (fx.key !== key || fx.source !== e.source) {
@@ -3780,7 +3848,7 @@ async function previewEffect() {
           fx.runtime = new VfxRuntime();
           fx.key = "";
           fx.meta = await fx.runtime.load({ source: e.source, width: w, height: h, fps: FPS, frames: e.frames, params: e.params || {},
-            inputs: await effectInputs(e) });
+            inputs: await effectInputs(e), data: e.data ?? null });
           fx.key = key;
           fx.source = e.source;
           fx.params = params;
@@ -3990,7 +4058,7 @@ async function renderEffectTake(id, claimed = null) {
   const effect = effectOf(id);
   if (!effect || fx.rendering) return;
   const folder = state.folder;
-  fx.rendering = { id, done: 0, total: effect.frames };
+  fx.rendering = { id, done: 0, total: effect.frames, name: effect.name, began: performance.now(), title: document.title };
   renderAll();
   const runtime = new VfxRuntime();
   const path = "/project/" + encodeURIComponent(folder) + "/effect/" + encodeURIComponent(id);
@@ -3999,7 +4067,7 @@ async function renderEffectTake(id, claimed = null) {
     if (unsaved()) throw new Error("The project is still saving. Try again in a moment.");
     const [w, h] = renderSize();
     await runtime.load({ source: effect.source, width: w, height: h, fps: FPS, frames: effect.frames, params: effect.params || {},
-      inputs: await effectInputs(effect) });
+      inputs: await effectInputs(effect), data: effect.data ?? null });
     const work = Object.assign(document.createElement("canvas"), { width: w, height: h }).getContext("2d");
     const out = Object.assign(document.createElement("canvas"), { width: w, height: h }).getContext("2d");
     const job = claimed || "j" + Math.random().toString(16).slice(2, 12);
@@ -4020,8 +4088,7 @@ async function renderEffectTake(id, claimed = null) {
       batch.push(size.buffer, blob);
       if (batch.length >= 24) await send();
       fx.rendering.done = k + 1;
-      const label = document.querySelector("#inspBody .row button.primary");
-      if (label && state.effect === id) label.textContent = "Rendering " + (k + 1) + " of " + effect.frames;
+      showEffectProgress();
     }
     await send();
     const result = await postJson(path + "/take", { job });
@@ -4039,6 +4106,7 @@ async function renderEffectTake(id, claimed = null) {
     }
   } finally {
     runtime.dispose();
+    document.title = fx.rendering.title;
     fx.rendering = null;
     renderAll();
   }

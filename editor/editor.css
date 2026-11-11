@@ -314,7 +314,9 @@ label.lora-name { cursor: pointer; }
 .fx.stale { border-color: var(--tungsten); border-style: dashed; }
 .fx.bad { border-color: var(--danger); }
 .fx.busy { background: var(--live-wash); border-color: var(--live); }
-.fx .name { overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.fx .name { position: relative; z-index: 1; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.fx-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(87, 189, 176, 0.38); pointer-events: none; transition: width 0.2s linear; }
+.fx-note { position: relative; z-index: 1; margin-left: 10px; color: var(--live); font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap; }
 .fx .edge { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
 .fx .edge.l { left: 0; }
 .fx .edge.r { right: 0; }

@@ -155,7 +155,8 @@ clip's take, or rendering it again, also keeps the item where it is; a shorter t
 
 `add_effect`: `fields` with any of `name`, `start` (timeline frame), `frames`, `source` (the module's text), `params`
 (control values) and `inputs` (pictures the code may draw: `{"logo": {"file", "subfolder"}}`, each an uploaded asset or
-any picture in the output folder, such as a take's filmstrip; the code reads them as `env.inputs.logo`, an ImageBitmap). Returns `{"effect"}`. `update_effect`: `effect`, `fields`. `remove_effect`: `effect`. They sit on one
+any picture in the output folder, such as a take's filmstrip; the code reads them as `env.inputs.logo`, an ImageBitmap)
+and `data` (any JSON the code should read as `env.data`, such as word timings for captions; up to 2 MB). Returns `{"effect"}`. `update_effect`: `effect`, `fields`. `remove_effect`: `effect`. They sit on one
 lane above the picture and never overlap each other. The summary lists them under `effects` with a `state`: `not rendered`,
 `rendered` or `out of date`.
 
@@ -167,11 +168,12 @@ export async function setup(env) {}                                             
 export function frame(env, k) {}     // draw frame k; depend only on k, env.params and env.below
 ```
 
-`env` holds `canvas` (take a `2d` or a WebGL context from it), `width`, `height`, `fps`, `frames`, `params`, `inputs`, `below` (the
+`env` holds `canvas` (an OffscreenCanvas: take a `2d` or a WebGL context from it), `width`, `height`, `fps`, `frames`, `params`,
+`inputs`, `data`, `below` (the
 picture under this frame as an ImageBitmap, or null where the lane below is empty) and `random(seed)`. A module that mentions
 `THREE` gets three.js as `env.THREE`, and one that mentions `belowTexture` gets the picture below as a ready `THREE.Texture`.
-Control types: `number`, `int`, `bool`, `enum` (with `options`), `color`, `text`. It runs in a sandbox: no network, no
-imports, no access to the page.
+Control types: `number`, `int`, `bool`, `enum` (with `options`), `color`, `text`. It runs in a worker inside a sandbox: there is
+no `document` or `window`, no network and no imports. A module that takes over 20 seconds on a frame is stopped.
 
 `render_effect`: `effect`. A render bakes the clip over the picture below it into a take. The code runs in a browser, so
 the request waits until an editor page is open on the project, and that page does it, usually in seconds. The summary

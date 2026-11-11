@@ -24,9 +24,11 @@ Each release is a tag on GitHub, `v` followed by the version.
   declares. Render bakes every frame over the exact picture below into a take,
   in seconds and with no GPU model, and the export lays that take over the cut.
   A clip can also be handed named pictures to draw, such as a logo or a
-  screenshot. A take is marked out of date when the code, a control, a
-  picture, the length or anything under the clip changes. The code runs in a sandbox with no network
-  and no access to the editor. three.js 0.186 ships with the pack. For agents:
+  screenshot, and data to read, such as the word timings of a narration for
+  captions. A take is marked out of date when the code, a control, a
+  picture, the length or anything under the clip changes. The code runs in a worker inside a sandboxed frame: it has
+  no page to navigate, no network and no access to the editor, and one that
+  hangs is stopped. three.js 0.186 ships with the pack. For agents:
   `add_effect`, `update_effect`, `remove_effect` and `render_effect`. The
   code runs in a browser, so a render an agent asks for is done by an open
   editor page, and waits until there is one.
@@ -37,6 +39,12 @@ Each release is a tag on GitHub, `v` followed by the version.
   the take in the Timeline tab, which also says how many frames are unused
   before and after. A clip with more take on either side has a dotted edge.
   For agents: `update_item` with `in` and `out` moved by the same amount.
+
+### Changed
+
+- Imported footage and pictures are kept at the size the project's finals
+  come out at, 1920x1088 for 16:9, where they used to be made 1344x768. A
+  1080p recording now stays as sharp as the shots beside it.
 
 ### Fixed
 
