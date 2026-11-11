@@ -81,9 +81,14 @@ def compose_reference_prompt(style, action, subjects=(), first_frame=False, last
         definitions.append("%s is the last frame of [Shot 1]." % last_tag)
         retention.append("%s ([Shot 1] last frame): fully_preserved - the shot ends exactly on this frame." % last_tag)
     for number, subject in enumerate(subjects, 1):
-        picture += 1
+        # A subject with several pictures names them all, in the order H3 Take is given them.
+        tags = []
+        for _ in range(max(1, int(subject.get("picture_count") or 1))):
+            picture += 1
+            tags.append("<Picture %s>" % picture)
+        where = tags[0] if len(tags) == 1 else ", ".join(tags[:-1]) + " and " + tags[-1]
         who = (subject.get("description") or subject["name"]).strip().rstrip(".")
-        definitions.append("<Subject %s> is %s in <Picture %s>." % (number, who, picture))
+        definitions.append("<Subject %s> is %s in %s." % (number, who, where))
         retention.append("<Subject %s> (appears in [Shot 1]): fully_preserved - their identity and appearance are retained." % number)
 
     voiced = bool(voice) and bool(dialogue.strip())

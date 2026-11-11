@@ -29,7 +29,7 @@ except the two uploads.
 | `POST /project/{name}/asset` | multipart `file`: PNG, JPEG or WebP, or WAV, MP3, FLAC, M4A, OGG, OPUS, AAC | `{"file", "subfolder"}`, an asset |
 | `POST /project/{name}/grab` | `{"file", "subfolder", "frame"}`, a take's file and a frame of it | A picture asset |
 | `POST /project/{name}/grab_sound` | `{"file", "subfolder", "first", "last"}` in take frames | A WAV asset, 30 s at most |
-| `POST /project/{name}/export` | `{}` | `{"filename", "subfolder"}` in ComfyUI's output folder |
+| `POST /project/{name}/export` | `{}`, or any of `scale` (1, 0.75 or 0.5 of the rendered size), `quality` (`best`, `high`, the default, or `small`) and `name` (the file's name instead of the project's) | `{"filename", "subfolder", "bytes", "plan"}` in ComfyUI's output folder. With `"plan": true` nothing is made: `{"plan": {"width", "height", "frames", "seconds", "clips", "drafts", "missing", "gaps"}}` says what an export would hold |
 | `GET /project/{name}/history` | | `{"revisions": [{"revision", "time", "source", "clips", "frames"}]}`, newest first |
 | `POST /project/{name}/restore` | `{"revision"}` | `{"revision", "summary"}` |
 | `POST /sheet` | `{"filename", "subfolder", "frames"?, "first"?, "last"?, "count"?, "tile_width"?}` | `{"sheet", "picked", "frames"}`: a grid of frames saved beside the clip |
@@ -173,8 +173,8 @@ drafts and finals alike, and `realism`:
   `"on": false` keeps a LoRA in the list without rendering with it. Send `[]` to clear it.
   Use LoRAs trained on MiniMax H3: others have no layers to land on. A LoRA whose file is
   not installed is left out of renders.
-- `realism` is how strong the Realism Slider is on finals, from 0 to 3. It is 1.5 unless
-  set, 0 turns it off, and `null` goes back to 1.5. Drafts never run it.
+- `realism` is how strong the Realism Slider is on finals, from 0 to 3. It is 1.2 unless
+  set, 0 turns it off, and `null` goes back to 1.2. Drafts never run it.
 
 Takes already rendered do not change: render a clip again to see a new strength.
 
@@ -202,6 +202,15 @@ changes.
   The list replaces the whole list, up to 12; a clip or project that names a checkpoint
   no longer listed renders on the project's model, or the first one installed.
 
+`set_project` also takes `text_encoder`, `vae` and `audio_vae`: a file name as ComfyUI lists
+it, or `null`. H3's text encoder and VAEs are published in several precisions (nvfp4, int8,
+fp16, bf16), and a render takes the first one installed unless the project names one. A
+named file that is not installed gives way to an installed one. `GET /projects` gives
+`encoders` as `{"text_encoders": [file, ...], "vaes": [file, ...], "auto": {"text_encoder",
+"vae", "audio_vae"}, "missing": [note, ...]}`: `auto` is what a render takes by itself, and
+`missing` says which of the three no file was found for. A take records `text_encoder` and
+`vae` in `models`.
+
 Checkpoints the user saved as presets are shared by every project. `GET /presets` returns
 `{"checkpoints": [...]}` in the same shape, and `GET /projects` carries them as `presets`.
 A project renders on its own copy, so to use a preset, send its row in `set_project`
@@ -217,6 +226,24 @@ while the voice is its own object:
   "file": "3f1c.png", "subfolder": "h3take_projects/Teaser/assets",
   "voice": {"file": "9a0b.wav", "subfolder": "h3take_projects/Teaser/assets"}}}
 ```
+
+A cast member can have more pictures beside the main one: other angles, other light, the
+whole figure. Send them as `pictures`, a list of picture assets, in `add_cast` or
+`update_cast`; the list replaces the one before, and `[]` clears it. A member takes up to 8
+pictures, the main one included. H3 takes 9 pictures in one shot, pinned first and last
+frames included: every member in the shot brings its main picture, and the room left is
+shared out one more picture per member in turn. The summary gives each member's count as
+`pictures`.
+
+A cast member can also carry a RefMod, a reference saved with the ComfyUI-MiniMaxH3Mod
+custom node pack: `"refmod": {"file": "hero_v1", "strength": 1.0}` in `add_cast` or
+`update_cast`, and `null` removes it. `file` is a name from `refmods.files` in
+`GET /projects`, and `strength` runs from 0 to 1. It works beside pictures or in place of
+them: a member that is only a RefMod renders on the prompt-only model, with `@Name` written
+out as the name and description. `GET /projects` gives `refmods` as
+`{"installed", "files"}`; when the pack is not installed, or the file is missing, renders
+leave the RefMod out. The editor does not make RefMods. A take records the ones it used in
+`models.refmods`.
 
 `update_cast`: `cast`, `fields`: `name`,
 `description`, `voice` (`null` removes it, unless it is all they have). `remove_cast`:

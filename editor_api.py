@@ -17,6 +17,7 @@ import folder_paths
 
 from . import media
 from . import project as store
+from .policy import editor_id
 
 PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "editor")
 
@@ -226,14 +227,59 @@ async def page(request):
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
 
+def refmod_files():
+    """The RefMods the ComfyUI-MiniMaxH3Mod pack's loader offers, or None when that pack is not installed."""
+    import nodes as comfy_nodes
+
+    loader = comfy_nodes.NODE_CLASS_MAPPINGS.get("MiniMaxH3RefModsLoader")
+    if loader is None or "MiniMaxH3RefModApply" not in comfy_nodes.NODE_CLASS_MAPPINGS:
+        return None
+    try:
+        options = loader.INPUT_TYPES()["required"]["mod_1"][0]
+    except Exception:
+        logging.exception("H3 Editor could not read the RefMod list")
+        return []
+    return [name for name in options if isinstance(name, str) and name not in ("", "None", "(none)")]
+
+
+def encoder_choices(available):
+    """The text encoders and video VAEs to offer, with the one a render takes by itself and what is missing."""
+    import folder_paths
+
+    def listed(*kinds):
+        found = set()
+        for kind in kinds:
+            if kind in folder_paths.folder_names_and_paths:
+                found.update(folder_paths.get_filename_list(kind))
+        # The ones made for MiniMax H3 when there are any, so the menu is not every model on the disk.
+        made = sorted((f for f in found if "minimax_h3" in f.lower().replace("-", "_")), key=str.lower)
+        return made or sorted(found, key=str.lower)
+
+    status = store.encoder_status(available)
+    return {"text_encoders": listed("text_encoders", "clip"),
+            "vaes": video_vaes(listed("vae")), "auto": status["auto"], "missing": status["missing"]}
+
+
+def video_vaes(files):
+    """The video VAEs among H3's VAE files, which also include its audio and image ones."""
+    video = [f for f in files if "video" in f.lower()]
+    return video or [f for f in files if "audio" not in f.lower()]
+
+
+def refmods_status():
+    files = refmod_files()
+    return {"installed": files is not None, "files": files or []}
+
+
 def available_models():
-    """The model files ComfyUI lists, for finding a checkpoint profile's files."""
+    """The model files ComfyUI lists, for finding a checkpoint profile's files, and the RefMods on offer."""
     import folder_paths
 
     names = set()
-    for kind in ("diffusion_models", "unet_gguf", "loras", "latent_upscale_models"):
+    for kind in ("diffusion_models", "unet_gguf", "loras", "latent_upscale_models", "text_encoders", "clip", "vae"):
         if kind in folder_paths.folder_names_and_paths:
             names.update(folder_paths.get_filename_list(kind))
+    names.update(store.REFMOD_PREFIX + name for name in refmod_files() or [])
     return names
 
 
@@ -299,7 +345,7 @@ async def projects(request):
     available = available_models()
     return web.json_response({"projects": names, "profiles": store.profile_status(available),
                               "finals": store.finals_status(available),
-                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), **sampling_choices()})
+                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), "refmods": refmods_status(), "encoders": encoder_choices(available), **sampling_choices()})
 
 
 async def create(request):
@@ -380,7 +426,7 @@ async def graph(request):
                                    available_models())
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error))
-    return web.json_response({"graph": built})
+    return web.json_response({"graph": own_nodes(built)})
 
 
 async def probe_file(path):
@@ -436,12 +482,29 @@ async def comfy(method, path, body=None):
             return response.status, data
 
 
+def own_nodes(graph):
+    """The graph with the pack's nodes named by their twins, ids no other pack registers.
+
+    Another pack that also registers a node called H3LivePreview or H3Lora replaces ours under
+    that id. The twins keep the editor's renders on this pack's own nodes whatever else is installed.
+    """
+    import nodes as comfy_nodes
+
+    out = {}
+    for key, node in graph.items():
+        twin = editor_id(str(node.get("class_type", "")))
+        out[key] = dict(node, class_type=twin) if twin in comfy_nodes.NODE_CLASS_MAPPINGS else node
+    return out
+
+
 async def queue_prompt(graph, client_id=None):
     from . import nodes
 
+    graph = own_nodes(graph)
+
     # Only a .gguf needs the gguf package. The INT8 safetensors load without it.
     if nodes.HYPERFLOW_MISSING and any(
-        n.get("class_type") == "H3HyperFlowLoader" and str(n.get("inputs", {}).get("unet_name", "")).endswith(".gguf")
+        n.get("class_type") in ("H3HyperFlowLoader", "H3EditorHyperFlowLoader") and str(n.get("inputs", {}).get("unet_name", "")).endswith(".gguf")
         for n in graph.values()
     ):
         raise Refused(nodes.HYPERFLOW_MISSING)
@@ -932,8 +995,25 @@ async def grab(request):
 
 
 async def export(request):
+    """Join the timeline into one video. With "plan" in the body, only say what the export would hold."""
     name = store.slug(request.match_info["name"])
     data = read_project(name)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    scale = body.get("scale", 1.0)
+    quality = body.get("quality") or "high"
+    if scale not in store.EXPORT_SCALES or quality not in store.EXPORT_QUALITY:
+        raise web.HTTPBadRequest(text="scale is one of %s and quality one of %s" % (
+            ", ".join("%g" % s for s in store.EXPORT_SCALES), ", ".join(store.EXPORT_QUALITY)))
+    try:
+        plan = store.export_plan(data, scale)
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error))
+    if body.get("plan"):
+        return web.json_response({"plan": plan, "name": name})
     paths = {}
     for clip in data.get("clips", []):
         take = store.active_take(clip)
@@ -941,18 +1021,21 @@ async def export(request):
             paths[clip["id"]] = output_path(take.get("subfolder"), take["file"])
     folder = os.path.join(root(), name, "exports")
     os.makedirs(folder, exist_ok=True)
+    # The file is named after the project, or after what the user typed, and numbered so nothing is overwritten.
+    stem = store.slug(body["name"]) if str(body.get("name") or "").strip() else name
     number = 1
-    while os.path.exists(os.path.join(folder, "%s_%03d.mp4" % (name, number))):
+    while os.path.exists(os.path.join(folder, "%s_%03d.mp4" % (stem, number))):
         number += 1
-    target = os.path.join(folder, "%s_%03d.mp4" % (name, number))
+    target = os.path.join(folder, "%s_%03d.mp4" % (stem, number))
     try:
-        args = store.export_command(data, paths, target)
+        args = store.export_command(data, paths, target, scale=scale, quality=quality)
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error))
     await run(args)
     return web.json_response({
         "filename": os.path.basename(target),
         "subfolder": "%s/%s/exports" % (store.ROOT, name),
+        "bytes": os.path.getsize(target), "plan": plan,
     })
 
 

@@ -25,6 +25,13 @@ HYPERFLOW_DROPPED = {49: (9,), 47: (6, 21, 22)}
 LORA_MODES = ("auto", "merge")
 # A block number in a LoRA key, as blocks.12. or blocks_12_, after any prefix.
 LORA_UNET = "lora_unet_"
+EDITOR_PREFIX = "H3Editor"
+
+
+def editor_id(node_id):
+    """The id of a pack node's twin, which only this pack registers: H3Lora becomes H3EditorLora."""
+    return EDITOR_PREFIX + node_id[2:] if node_id.startswith("H3") and not node_id.startswith(EDITOR_PREFIX) else node_id
+
 LORA_BLOCK = re.compile(r"(?<![A-Za-z0-9])blocks([._])(\d+)(?=[._])")
 
 
@@ -424,6 +431,21 @@ def dotted_lora_key(key, modules):
     head, dot, tail = key.partition(".")
     module = modules.get(head[len(LORA_UNET):])
     return module + dot + tail if module else key
+
+
+def premapped_blocks(metadata):
+    """The H3 blocks a LoRA file says it was already renumbered around, or None when it says nothing.
+
+    A LoRA published for one HyperFlow model carries hyperflow.dropped_blocks in its metadata,
+    such as "6,21,22". Its keys already count that model's blocks, so they must not be moved again.
+    """
+    text = (metadata or {}).get("hyperflow.dropped_blocks")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        return tuple(sorted(int(part) for part in text.replace(" ", "").split(",") if part))
+    except ValueError:
+        return None
 
 
 def hyperflow_lora_key(key, dropped):

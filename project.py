@@ -21,8 +21,9 @@ QUALITIES = {
     "draft": {},
     # A final renders at the final size, H3's own size of about a megapixel. Its picture is
     # then upscaled to the refine size, where the model redraws its last steps. The Realism
-    # Slider runs on both passes at this strength.
-    "final": {"refine": True, "lora": 1.5},
+    # Slider skips early structure steps on the first pass (start_sigma 0.75) and runs across
+    # the whole refine pass at this strength.
+    "final": {"refine": True, "lora": 1.2, "lora_start_sigma": 0.75},
 }
 # Picture sizes per project format. Draft is for trying things, final for the cut, and
 # refine is the size a final comes out at.
@@ -66,6 +67,7 @@ def refine_size(project):
 # fl2va model when a clip is only a prompt. Its INT8 safetensors and GGUF files load as
 # HyperFlow (see is_hyperflow). A final's picture is enlarged by MiniMax's learned latent
 # upscaler and refined at that size, with the MMH3 Realism Slider LoRA on the model.
+REALISM_LORAS = ("MMH3-Realism-V2.safetensors", "MMH3-RealismSlider-V1.safetensors")
 MODELS = {
     "unet": "hyperflow/minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors",
     "unet_text": "hyperflow/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors",
@@ -73,7 +75,7 @@ MODELS = {
     "vae": "minimax_h3_video_vae_fp16.safetensors",
     "audio_vae": "minimax_h3_audio_vae_fp32.safetensors",
     "latent_upscaler": "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
-    "lora": "MMH3-RealismSlider-V1.safetensors",
+    "lora": REALISM_LORAS[0],
 }
 # The last steps a final redraws at the refine size, for families whose own schedule has no
 # good place to start them: HyperFlow's 6-step tail from its fourth step.
@@ -215,13 +217,18 @@ def installed(name, available=None):
     return available is None or name in available
 
 
+def realism_lora(available=None):
+    """The installed Realism Slider file: V2 first, falling back to V1 when only V1 is installed."""
+    return pick_file(REALISM_LORAS, available)
+
+
 def finals_status(available):
     """What a final leaves out because its file is not installed, in words for the editor."""
     notes = []
     if not installed(MODELS["latent_upscaler"], available):
         notes.append("Finals stay at H3's own size, because %s is not installed in models/latent_upscale_models."
                      % MODELS["latent_upscaler"])
-    if not installed(MODELS["lora"], available):
+    if realism_lora(available) is None:
         notes.append("Finals render without the Realism Slider, because %s is not installed in models/loras."
                      % MODELS["lora"])
     return notes
@@ -257,7 +264,8 @@ def project_loras(project, available=None):
 
 def lora_status(available):
     """What the editor needs to offer LoRAs: the Realism Slider's file, its usual strength, and whether it is installed."""
-    return {"file": MODELS["lora"], "strength": QUALITIES["final"]["lora"], "installed": installed(MODELS["lora"], available),
+    found = realism_lora(available)
+    return {"file": found or MODELS["lora"], "strength": QUALITIES["final"]["lora"], "installed": found is not None,
             "range": list(REALISM_RANGE), "lora_range": list(LORA_RANGE), "limit": LORA_LIMIT}
 
 
@@ -296,15 +304,45 @@ def is_hyperflow(name):
     return base.endswith(".gguf") or (base.endswith(".safetensors") and "hyperflow" in base)
 
 
+# H3's text encoder and VAEs are published in several precisions. A render takes the first one
+# installed, in this order, unless the project names another: the last name of each list matches
+# any other precision. PROJECT_ENCODERS maps what set_project calls them to the keys used here.
+MODEL_CHOICES = {
+    "clip": ["qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
+             "qwen3vl_32b_minimax_h3_bf16.safetensors", "qwen3vl_32b_minimax_h3*"],
+    "vae": ["minimax_h3_video_vae_fp16.safetensors", "minimax_h3_video_vae_int8_convrot.safetensors", "minimax_h3_video_vae*"],
+    "audio_vae": ["minimax_h3_audio_vae_fp32.safetensors", "minimax_h3_audio_vae*"],
+}
+PROJECT_ENCODERS = {"text_encoder": "clip", "vae": "vae", "audio_vae": "audio_vae"}
+
+
+def encoder_status(available):
+    """What the editor needs to offer a text encoder and a video VAE: the one a render takes by itself, and what is missing."""
+    found = {name: pick_file(MODEL_CHOICES[key], available) for name, key in PROJECT_ENCODERS.items()}
+    where = {"text_encoder": "models/text_encoders", "vae": "models/vae", "audio_vae": "models/vae"}
+    missing = ["No MiniMax H3 %s is installed. Put %s in %s." % (name.replace("_", " "), MODEL_CHOICES[key][0], where[name])
+               for name, key in PROJECT_ENCODERS.items() if found[name] is None]
+    return {"auto": found, "missing": missing}
+
+
 def project_models(project, available=None, clip=None):
     """The models a render uses: the profile's, with any the project names, except retired ones."""
     _, profile = project_profile(project, available, clip)
     models = dict(MODELS)
+    for key, names in MODEL_CHOICES.items():
+        models[key] = pick_file(names, available) or names[0]
     models["unet"] = pick_file(profile["unet"], available) or profile["unet"][0]
     models["unet_text"] = pick_file(profile.get("unet_text"), available)
+    models["lora"] = realism_lora(available) or MODELS["lora"]
     if profile.get("lora"):
         models["profile_lora"] = pick_file([profile["lora"][0]], available) or profile["lora"][0]
     named = {key: name for key, name in (project.get("models") or {}).items() if name and name not in RETIRED}
+    for key in MODEL_CHOICES:
+        # A text encoder or VAE the project names but this machine lacks gives way to an installed one.
+        if key in named and isinstance(named[key], str) and available is not None:
+            named[key] = pick_file([named[key].replace("\\", "/")], available)
+            if named[key] is None:
+                del named[key]
     if "unet" in named and "unet_text" not in named:
         # A project that names its own model renders every clip on it.
         models["unet_text"] = None
@@ -379,6 +417,72 @@ def clip_cast(project, clip):
     return [c for c in project.get("cast", []) if c["id"] in chosen and c.get("file")]
 
 
+def member_pictures(member):
+    """A cast member's pictures as assets: the main one first, then the others, up to CAST_PICTURES."""
+    if not member.get("file"):
+        return []
+    others = [p for p in member.get("pictures") or [] if isinstance(p, dict) and isinstance(p.get("file"), str) and p["file"]]
+    return ([member] + others)[:CAST_PICTURES]
+
+
+def cast_pictures(project, clip):
+    """Each pictured cast member of a clip, with the pictures it brings to the shot.
+
+    H3 takes H3_PICTURES pictures in all, pinned first and last frames included. Every member
+    brings its main picture, and the room left is dealt out one more picture per member in turn,
+    so one member with many pictures never crowds out another.
+    """
+    members = clip_cast(project, clip)
+    have = [member_pictures(member) for member in members]
+    room = H3_PICTURES - bool(frame_of(clip, "first")) - bool(frame_of(clip, "last"))
+    taken = [0] * len(members)
+    for _ in range(CAST_PICTURES):
+        for index, pictures in enumerate(have):
+            if taken[index] < len(pictures) and sum(taken) < room:
+                taken[index] += 1
+    return [(member, have[index][:taken[index]]) for index, member in enumerate(members) if taken[index]]
+
+
+def clip_refmods(project, clip, available=None):
+    """The RefMods a clip renders with, as (member, file, strength): one for each chosen cast member that has one.
+
+    available holds refmod:<name> for every RefMod the pack offers, so a RefMod is left out when
+    the pack or the file is missing. Unknown counts as installed, as for models.
+    """
+    chosen = clip.get("cast") or []
+    rows = []
+    for member in project.get("cast", []):
+        mod = member.get("refmod")
+        if member["id"] not in chosen or not isinstance(mod, dict) or not isinstance(mod.get("file"), str) or not mod["file"]:
+            continue
+        strength = mod.get("strength", 1.0)
+        if isinstance(strength, bool) or not isinstance(strength, (int, float)):
+            strength = 1.0
+        strength = max(0.0, min(1.0, float(strength)))
+        if strength and (available is None or REFMOD_PREFIX + mod["file"] in available):
+            rows.append((member, mod["file"], strength))
+    return rows[:REFMOD_SLOTS]
+
+
+def name_unpictured(text, members):
+    """Write out cast members who have no picture: @Name becomes their name and, the first time, what they look like.
+
+    A member with a picture is a numbered subject of the prompt. One that is only a RefMod has
+    no number to point at, so the words carry who they are.
+    """
+    for member in sorted(members, key=lambda m: -len(m["name"])):
+        who = str(member.get("description") or "").strip().rstrip(".,")
+        seen = []
+
+        def swap(match, member=member, who=who, seen=seen):
+            first = not seen
+            seen.append(1)
+            return "%s, %s," % (member["name"], who) if first and who else member["name"]
+
+        text = re.sub("@" + re.escape(member["name"]), swap, text, flags=re.IGNORECASE)
+    return text
+
+
 def clip_language(project, clip):
     return (clip.get("language") or project.get("language") or LANGUAGE).strip()
 
@@ -439,7 +543,11 @@ def clip_prompt(project, clip):
         "music": clip.get("music", ""),
         "language": clip_language(project, clip),
     }
-    cast = clip_cast(project, clip)
+    shown = cast_pictures(project, clip)
+    cast = [dict(member, picture_count=len(pictures)) for member, pictures in shown]
+    chosen = clip.get("cast") or []
+    action = name_unpictured(clip.get("action", ""), [m for m in project.get("cast", [])
+                                                      if m["id"] in chosen and m.get("refmod") and not m.get("file")])
     voice = clip_voice(project, clip)
     if has_references(project, clip):
         owner = None
@@ -447,10 +555,10 @@ def clip_prompt(project, clip):
             number = next((n for n, c in enumerate(cast, 1) if c["id"] == voice["id"]), None)
             owner = {"subject": number} if number else {"description": voice.get("description") or voice["name"]}
         return compose_reference_prompt(
-            project.get("style", ""), clip.get("action", ""), subjects=cast,
+            project.get("style", ""), action, subjects=cast,
             first_frame=bool(frame_of(clip, "first")), last_frame=bool(frame_of(clip, "last")), voice=owner, **fields,
         )
-    return compose_prompt(project.get("style", ""), clip.get("action", ""), **fields)
+    return compose_prompt(project.get("style", ""), action, **fields)
 
 
 def still_node(asset):
@@ -521,7 +629,10 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
     realism = realism_strength(project, size)
     if realism and models.get("lora") and installed(models["lora"], available):
         # The Realism Slider, on the model both passes sample with. Without it a final still renders.
-        graph["95"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": models["lora"], "strength": realism}}
+        lora_inputs = {"model": model, "lora_name": models["lora"], "strength": realism}
+        if size.get("lora_start_sigma") is not None:
+            lora_inputs["start_sigma"] = size["lora_start_sigma"]
+        graph["95"] = {"class_type": "H3Lora", "inputs": lora_inputs}
         model = ["95", 0]
     for n, (file, strength) in enumerate(project_loras(project, available)):
         # The project's own LoRAs, stacked in the order the project lists them, on drafts and finals alike.
@@ -538,10 +649,14 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
         graph["41"] = still_node(last)
         take_inputs["end_image"] = ["41", 0]
     take_inputs["anchor"] = "both" if first and last else "start" if first else "end" if last else "none"
-    for index, member in enumerate(clip_cast(project, clip)):
-        node = str(50 + index)
-        graph[node] = still_node(member)
-        take_inputs["ref_images.ref_image_%s" % index] = [node, 0]
+    index = 0
+    for _, pictures in cast_pictures(project, clip):
+        # A member's pictures sit together, in the order the prompt numbers them.
+        for asset in pictures:
+            node = str(50 + index)
+            graph[node] = still_node(asset)
+            take_inputs["ref_images.ref_image_%s" % index] = [node, 0]
+            index += 1
     voice = clip_voice(project, clip)
     if voice:
         sound = voice["voice"]
@@ -576,6 +691,21 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
         # Without the latent upscaler a final stays at H3's own size.
         tail = profile.get("refine_sigmas") or profile["refine_from"]
         add_refine(graph, refine_size(project), tail, models["latent_upscaler"])
+    mods = clip_refmods(project, clip, available)
+    if mods:
+        # Each chosen cast member's RefMod joins what H3 Take conditions on, in both passes of a final.
+        loader = {"show_info": False}
+        for slot in range(1, REFMOD_SLOTS + 1):
+            _, file, strength = mods[slot - 1] if slot <= len(mods) else (None, "(none)", 1.0)
+            loader.update({"mod_%s" % slot: file, "strength_%s" % slot: strength, "copies_%s" % slot: 1})
+        graph["72"] = {"class_type": "MiniMaxH3RefModsLoader", "inputs": loader}
+        guiders = sorted((key for key, node in graph.items() if node["class_type"] == "BasicGuider"), key=int)
+        for number, key in enumerate(guiders):
+            node = str(73 + number)
+            graph[node] = {"class_type": "MiniMaxH3RefModApply", "inputs": {
+                "conditioning": graph[key]["inputs"]["conditioning"], "mods": ["72", 0], "override": False, "retention": 1.0,
+                "curve_direction": "constant", "scramble_seed": -1, "curve_shape": "linear", "curve_value": 1.0}}
+            graph[key]["inputs"]["conditioning"] = [node, 0]
     return graph
 
 
@@ -649,7 +779,46 @@ def tempo_chain(speed):
     return ",".join(steps)
 
 
-def export_command(project, paths, out_path, width=None, height=None):
+# How hard an export is compressed: x264's quality number, where lower keeps more.
+EXPORT_QUALITY = {"best": 12, "high": 16, "small": 23}
+EXPORT_SCALES = (1.0, 0.75, 0.5)
+
+
+def export_plan(project, scale=1.0):
+    """What an export of the timeline will hold, before making it: its size and length, and what to know first.
+
+    drafts counts the generated clips whose take on the timeline is a draft, missing the ones
+    with no render (they are left out), and gaps the stretches of black between clips.
+    """
+    clips = {c["id"]: c for c in project.get("clips", [])}
+    width = height = drafts = missing = 0
+    for item in project.get("timeline", []):
+        clip = clips.get(item.get("clip")) or {}
+        take = active_take(clip)
+        if not take:
+            missing += 1
+            continue
+        if take.get("quality") == "draft" and clip.get("kind") != "footage":
+            drafts += 1
+        w, h = take_size(project, take)
+        if w > width:
+            width, height = w, h
+    end = cursor = gaps = 0
+    for item in ordered(project):
+        if item["start"] > cursor:
+            gaps += 1
+        cursor = max(cursor, item_end(item))
+        end = cursor
+    return {"width": scaled(width, scale), "height": scaled(height, scale), "frames": end, "seconds": round(end / float(FPS), 2),
+            "clips": len(project.get("timeline", [])) - missing, "drafts": drafts, "missing": missing, "gaps": gaps}
+
+
+def scaled(side, scale):
+    """A picture side at a part of its size, kept even, as video encoders need."""
+    return max(2, 2 * int(round(side * scale / 2.0)))
+
+
+def export_command(project, paths, out_path, width=None, height=None, scale=1.0, quality="high"):
     """ffmpeg arguments that join the timeline's rendered clips. Gaps become black and silence.
 
     paths maps a clip id to the file of its active take. Clips with no render
@@ -669,6 +838,11 @@ def export_command(project, paths, out_path, width=None, height=None):
             w, h = take_size(project, active_take(clips[item["clip"]]) or {})
             if w > width:
                 width, height = w, h
+    if scale not in EXPORT_SCALES:
+        raise ValueError("scale must be one of %s" % ", ".join("%g" % s for s in EXPORT_SCALES))
+    if quality not in EXPORT_QUALITY:
+        raise ValueError("quality must be one of %s" % ", ".join(EXPORT_QUALITY))
+    width, height = scaled(width, scale), scaled(height, scale)
 
     args = ["ffmpeg", "-y", "-v", "error"]
     chains = []
@@ -721,7 +895,8 @@ def export_command(project, paths, out_path, width=None, height=None):
         cursor = item["start"] + item_length(item)
 
     args += ["-filter_complex", ";".join(chains), "-map", "[%s]" % video, "-map", "[%s]" % audio,
-             "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", out_path]
+             "-c:v", "libx264", "-crf", str(EXPORT_QUALITY[quality]), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+             "-movflags", "+faststart", out_path]
     return args
 
 
@@ -732,13 +907,20 @@ MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
                "first", "last", "language", "track", "bin", "profile")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
-PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "realism", "checkpoints")
+PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "realism", "checkpoints", "text_encoder", "vae", "audio_vae")
 # A project's own LoRAs: how many, how strong, and where their nodes start in a render graph.
 LORA_LIMIT = 8
 LORA_RANGE = (-2.0, 2.0)
 REALISM_RANGE = (0.0, 3.0)
 LORA_NODE = 100
-CAST_FIELDS = ("name", "description", "voice")
+CAST_FIELDS = ("name", "description", "voice", "pictures", "refmod")
+# A RefMod is a reference saved by the ComfyUI-MiniMaxH3Mod pack. The editor renders with one only
+# when that pack is installed: its loader takes this many, and the model list names each as refmod:<name>.
+REFMOD_SLOTS = 8
+REFMOD_PREFIX = "refmod:"
+# A cast member can have several pictures, the main one included. H3 takes this many pictures in one shot.
+CAST_PICTURES = 8
+H3_PICTURES = 9
 BIN_FIELDS = ("name",)
 LINK_MODES = ("extend_after", "extend_before", "bridge", "merge")
 LINK_TITLES = {"extend_after": "After ", "extend_before": "Before ", "bridge": "Bridge from ", "merge": "Merge from "}
@@ -1357,6 +1539,20 @@ def set_project(project, fields):
         if key == "loras":
             project["loras"] = clean_loras(value)
             continue
+        if key in PROJECT_ENCODERS:
+            # A file as ComfyUI lists it, or None for the first one installed.
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError("%s is a file name, or null to take the first one installed" % key)
+            chosen = dict(project.get("models") or {})
+            if value is None:
+                chosen.pop(PROJECT_ENCODERS[key], None)
+            else:
+                chosen[PROJECT_ENCODERS[key]] = value
+            if chosen:
+                project["models"] = chosen
+            else:
+                project.pop("models", None)
+            continue
         if key == "realism":
             # None goes back to the usual strength.
             if value is None:
@@ -1375,11 +1571,33 @@ def set_project(project, fields):
         project[key] = value.strip() if key == "language" else value
 
 
+def clean_pictures(value, person):
+    """More pictures of a cast member, beside the main one: other angles, other light, the whole figure."""
+    if not isinstance(value, list):
+        raise ValueError("pictures is a list of picture assets")
+    if not person.get("file"):
+        raise ValueError("%s needs a main picture before it takes more" % person.get("name", "a cast member"))
+    if len(value) > CAST_PICTURES - 1:
+        raise ValueError("a cast member takes up to %s pictures, the main one included" % CAST_PICTURES)
+    return [clean_asset(asset, "a picture") for asset in value]
+
+
+def clean_refmod(value):
+    """A cast member's RefMod: its name as the RefMod pack's loader lists it, and how strong it is, from 0 to 1."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("file"), str) or not value["file"].strip():
+        raise ValueError("a RefMod needs file, its name as Load H3 RefMods lists it")
+    check_fields(value, ("file", "strength"))
+    return {"file": value["file"], "strength": clean_strength(value.get("strength", 1.0), (0.0, 1.0), "a RefMod's strength")}
+
+
 def add_cast(project, fields):
-    """A person or place from a picture, a voice with no picture, or both."""
+    """A person or place from a picture, a voice with no picture, a RefMod, or any of them together."""
     check_fields({k: v for k, v in fields.items() if k not in ("file", "subfolder")}, CAST_FIELDS)
     voice = clean_asset(fields.get("voice"), "a voice")
-    asset = clean_asset(fields, "a cast member") if fields.get("file") or not voice else None
+    refmod = clean_refmod(fields.get("refmod"))
+    asset = clean_asset(fields, "a cast member") if fields.get("file") or not (voice or refmod) else None
     project.setdefault("cast", [])
     person = {"id": new_id("p"), "name": str(fields.get("name") or "Person %s" % (len(project["cast"]) + 1)),
               "description": str(fields.get("description") or "")}
@@ -1387,6 +1605,10 @@ def add_cast(project, fields):
         person.update(asset)
     if voice:
         person["voice"] = voice
+    if fields.get("pictures"):
+        person["pictures"] = clean_pictures(fields["pictures"], person)
+    if refmod:
+        person["refmod"] = refmod
     project["cast"].append(person)
     return person
 
@@ -1396,12 +1618,23 @@ def update_cast(project, cast_id, fields):
     person = find_cast(project, cast_id)
     for key, value in fields.items():
         if key == "voice":
-            if value is None and not person.get("file"):
+            if value is None and not (person.get("file") or person.get("refmod")):
                 raise ValueError("%s is only a voice. Remove the cast member instead" % person["name"])
             if value is None:
                 person.pop("voice", None)
             else:
                 person["voice"] = clean_asset(value, "a voice")
+            continue
+        if key == "pictures":
+            person["pictures"] = clean_pictures(value or [], person)
+            continue
+        if key == "refmod":
+            if value is None and not (person.get("file") or person.get("voice")):
+                raise ValueError("%s is only a RefMod. Remove the cast member instead" % person["name"])
+            if value is None:
+                person.pop("refmod", None)
+            else:
+                person["refmod"] = clean_refmod(value)
             continue
         if not isinstance(value, str):
             raise ValueError("%s must be text" % key)
@@ -1436,7 +1669,12 @@ def remove_cast(project, cast_id):
 
 def render_models(graph):
     """The models a render graph samples with, so a take records what made it."""
-    used = {"unet": graph["1"]["inputs"]["unet_name"], "checkpoint": graph["10"]["inputs"]["checkpoint"]}
+    used = {"unet": graph["1"]["inputs"]["unet_name"], "checkpoint": graph["10"]["inputs"]["checkpoint"],
+            "text_encoder": graph["2"]["inputs"]["clip_name"], "vae": graph["3"]["inputs"]["vae_name"]}
+    if "72" in graph:
+        slots = graph["72"]["inputs"]
+        used["refmods"] = [{"file": slots["mod_%s" % n], "strength": slots["strength_%s" % n]}
+                           for n in range(1, REFMOD_SLOTS + 1) if slots.get("mod_%s" % n) not in (None, "(none)")]
     if "81" in graph:
         used["upscaler"] = graph["81"]["inputs"]["model_name"]
     if "94" in graph:
@@ -1666,7 +1904,9 @@ def describe(project):
                   for r in project.get("loras") or [] if isinstance(r, dict) and r.get("file")],
         "frames": scene_end(project), "length": timecode(scene_end(project)), "fps": FPS,
         "cast": [{"id": p["id"], "name": p["name"], "description": p.get("description", ""),
-                  "picture": bool(p.get("file")), "voice": bool(p.get("voice"))} for p in project.get("cast", [])],
+                  "picture": bool(p.get("file")), "pictures": len(member_pictures(p)), "voice": bool(p.get("voice")),
+                  **({"refmod": p["refmod"]["file"]} if isinstance(p.get("refmod"), dict) and p["refmod"].get("file") else {})}
+                 for p in project.get("cast", [])],
         "bins": [{"id": b["id"], "name": b["name"], "clips": sum(1 for c in project.get("clips", []) if c.get("bin") == b["id"])}
                  for b in project.get("bins", [])],
         "clips": clips, "timeline": timeline, "gaps": gaps,

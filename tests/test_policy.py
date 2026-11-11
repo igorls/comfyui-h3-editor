@@ -7,7 +7,9 @@ from policy import (
     hold_curve,
     HYPERFLOW_DROPPED,
     dotted_lora_key,
+    editor_id,
     hyperflow_lora_key,
+    premapped_blocks,
     latent_frames,
     legal_length,
     merge_curves,
@@ -229,6 +231,23 @@ class PolicyTest(unittest.TestCase):
 
 def block_of(key):
     return int(key.split("blocks.")[1].split(".")[0])
+
+
+class PremappedBlocksTest(unittest.TestCase):
+    def test_a_file_says_which_blocks_it_was_renumbered_around(self):
+        self.assertEqual(premapped_blocks({"hyperflow.dropped_blocks": "6,21,22"}), HYPERFLOW_DROPPED[47])
+        self.assertEqual(premapped_blocks({"hyperflow.dropped_blocks": " 9 "}), HYPERFLOW_DROPPED[49])
+        for nothing in (None, {}, {"hyperflow.dropped_blocks": ""}, {"hyperflow.dropped_blocks": "six"}, {"hyperflow.variant": "fl2va"}):
+            self.assertIsNone(premapped_blocks(nothing))
+
+
+class EditorIdTest(unittest.TestCase):
+    def test_a_pack_node_has_a_twin_id_of_its_own(self):
+        self.assertEqual([editor_id(n) for n in ("H3Take", "H3Lora", "H3LivePreview")],
+                         ["H3EditorTake", "H3EditorLora", "H3EditorLivePreview"])
+        # A twin has no twin, and other packs' nodes keep their ids.
+        self.assertEqual([editor_id(n) for n in ("H3EditorLora", "UNETLoader", "MiniMaxH3SigmaShift")],
+                         ["H3EditorLora", "UNETLoader", "MiniMaxH3SigmaShift"])
 
 
 class DottedLoraKeyTest(unittest.TestCase):

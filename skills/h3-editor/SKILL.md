@@ -130,6 +130,11 @@ returned asset in `add_cast` with a name and a description. Choose who is in a c
 its `cast` field, and write `@Name` in its action to place them. A cast member keeps the
 same face and look from clip to clip.
 
+One picture only shows what is in it. When the user has several pictures of a character
+(front, three-quarter, profile, the whole figure), add the others as the member's
+`pictures`: shots then keep details the main picture cannot show, such as hair length from
+behind or what they wear.
+
 A voice works the same way. Give a cast member a `voice` asset, or add a voice with no
 picture, such as a narrator. Write `@Name` in a clip's speaker field, for example
 `"@Narrator, off-screen"`. Every line they say then uses that voice's timbre. A cast

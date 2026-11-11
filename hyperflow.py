@@ -284,6 +284,8 @@ class LowRankLinear(nn.Module):
         super().__init__()
         self.down = down
         self.up = up
+        self.in_features = down.in_features
+        self.out_features = up.out_features
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.up(self.down(x))
@@ -295,6 +297,8 @@ class SplitQKV(nn.Module):
         self.q_proj = q_proj
         self.k_proj = k_proj
         self.v_proj = v_proj
+        self.in_features = q_proj.in_features
+        self.out_features = q_proj.out_features + k_proj.out_features + v_proj.out_features
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.cat((self.q_proj(x), self.k_proj(x), self.v_proj(x)), dim=-1)

@@ -36,6 +36,8 @@ const state = {
   realism: null,
   checkpoints: [],
   presets: [],
+  refmods: { installed: false, files: [] },
+  encoders: { text_encoders: [], vaes: [], auto: {}, missing: [] },
   samplers: [],
   schedulers: [],
   bin: null,
@@ -663,15 +665,21 @@ function castPicker(clip) {
   title.textContent = "Cast in this clip";
   const picks = document.createElement("div");
   picks.className = "picks";
-  const pictured = state.project.cast.filter((p) => p.file);
+  const pictured = state.project.cast.filter((p) => p.file || p.refmod);
   for (const person of pictured) {
     const on = (clip.cast || []).includes(person.id);
     const pick = document.createElement("button");
     pick.className = "pick" + (on ? " on" : "");
     pick.setAttribute("aria-pressed", String(on));
-    const image = document.createElement("img");
-    image.alt = "";
-    image.src = assetUrl(person);
+    // A member that is only a RefMod has no picture to show.
+    const image = document.createElement(person.file ? "img" : "span");
+    if (person.file) {
+      image.alt = "";
+      image.src = assetUrl(person);
+    } else {
+      image.className = "mod-mark";
+      image.textContent = "RefMod";
+    }
     const name = document.createElement("span");
     name.textContent = person.name;
     pick.append(image, name);
@@ -707,6 +715,10 @@ function renderCast() {
       image = document.createElement("img");
       image.alt = "";
       image.src = assetUrl(person);
+    } else if (person.refmod) {
+      image = document.createElement("span");
+      image.className = "mod-mark";
+      image.textContent = "RefMod";
     } else {
       image = document.createElement("span");
       image.className = "voice-mark";
@@ -726,42 +738,157 @@ function renderCast() {
   }));
 }
 
+const CAST_PICTURES = 8;
+
+// A RefMod is a reference saved with the ComfyUI-MiniMaxH3Mod pack. A cast member can carry one,
+// beside its pictures or in place of them, and shots with that member render with it.
+function refmodSection(person) {
+  const current = person.refmod?.file || "";
+  const known = state.refmods.files.includes(current);
+  const options = [["", "None"], ...state.refmods.files.map((name) => [name, name])];
+  if (current && !known) options.splice(1, 0, [current, current + " (not found)"]);
+  const pick = choice("RefMod file", options, current, (value) => {
+    if (value) person.refmod = { file: value, strength: person.refmod?.strength ?? 1 };
+    else if (person.file || person.voice) delete person.refmod;
+    else toast(person.name + " is only a RefMod. Remove the cast member instead.", true);
+    renderCast();
+  });
+  const parts = [pick];
+  if (person.refmod) {
+    const strength = typeof person.refmod.strength === "number" ? person.refmod.strength : 1;
+    parts.push(strengthSlider("RefMod strength", person.name + " RefMod strength", strength, [0, 1], 1,
+      (v) => { if (person.refmod) person.refmod.strength = v; }));
+  }
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  if (!state.refmods.installed) hint.textContent = "Renders leave this RefMod out: the ComfyUI-MiniMaxH3Mod pack is not installed.";
+  else if (current && !known) hint.textContent = "Renders leave it out until " + current + " is in models/refmods.";
+  else if (!state.refmods.files.length) hint.textContent = "No RefMods in models/refmods yet. Make one with the pack's Create H3 RefMod node.";
+  else if (person.refmod && !person.file) hint.textContent = "With no picture, shots render on the prompt-only model, so describe them above. A whole RefMod can make drafts several times slower.";
+  else hint.textContent = "A reference saved with the ComfyUI-MiniMaxH3Mod pack, added to every shot with " + person.name + ". A whole RefMod can make drafts several times slower.";
+  parts.push(hint);
+  return parts;
+}
+
+function addRefmodMember() {
+  const file = state.refmods.files[0];
+  if (!file) return;
+  checkpoint();
+  state.project.cast = state.project.cast || [];
+  const person = { id: uid("p"), name: "Person " + (state.project.cast.length + 1), description: "", refmod: { file, strength: 1 } };
+  state.project.cast.push(person);
+  state.person = person.id;
+  state.clip = null;
+  state.item = null;
+  save();
+  renderAll();
+}
+
+// More pictures of the same cast member: other angles, other light, the whole figure.
+function morePictures(person) {
+  const box = document.createElement("div");
+  box.className = "more-pictures";
+  const others = (person.pictures || []).filter((p) => p && p.file);
+  const row = document.createElement("div");
+  row.className = "picture-row";
+  for (const asset of others) {
+    const cell = document.createElement("div");
+    cell.className = "picture";
+    const image = document.createElement("img");
+    image.src = assetUrl(asset);
+    image.alt = "Another picture of " + person.name;
+    const remove = document.createElement("button");
+    remove.className = "picture-remove";
+    remove.textContent = "\u00d7";
+    remove.title = "Remove this picture";
+    remove.setAttribute("aria-label", "Remove this picture of " + person.name);
+    remove.addEventListener("click", () => {
+      checkpoint();
+      person.pictures = person.pictures.filter((p) => p !== asset);
+      if (!person.pictures.length) delete person.pictures;
+      save();
+      renderInspector();
+    });
+    cell.append(image, remove);
+    row.append(cell);
+  }
+  if (others.length < CAST_PICTURES - 1) {
+    const add = document.createElement("button");
+    add.className = "quiet picture-add";
+    add.textContent = others.length ? "Add" : "Add more pictures";
+    add.title = "Add another picture of " + person.name;
+    add.addEventListener("click", async () => {
+      const file = await pickFile($("castFile"));
+      if (!file) return;
+      try {
+        const asset = await uploadPicture(file);
+        checkpoint();
+        person.pictures = [...(person.pictures || []), asset];
+        save();
+        renderInspector();
+      } catch (error) {
+        toast(error.message, true);
+      }
+    });
+    row.append(add);
+  }
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = others.length
+    ? (others.length + 1) + " of " + CAST_PICTURES + " pictures. A shot takes 9 pictures in all, shared between its cast."
+    : "Other angles and the whole figure help a shot keep them the same.";
+  box.append(row, hint);
+  return box;
+}
+
 function renderPerson(panel, person) {
+  // The same frame as a clip or a bin: a head with the name, then one section for each thing.
   const head = document.createElement("div");
-  head.className = "panel-head";
+  head.className = "inspector-head";
+  const row = document.createElement("div");
+  row.className = "head-row";
   const title = document.createElement("h2");
+  title.className = "head-title";
   title.textContent = person.name;
-  const remove = document.createElement("button");
-  remove.className = "quiet";
-  remove.textContent = "Remove";
-  remove.addEventListener("click", () => {
+  row.append(title, trashButton("Remove " + person.name + " from the cast", () => {
     checkpoint();
     state.project.cast = state.project.cast.filter((c) => c !== person);
     for (const clip of state.project.clips) clip.cast = (clip.cast || []).filter((id) => id !== person.id);
     state.person = null;
     save();
     renderAll();
-  });
-  head.append(title, remove);
+  }));
+  const line = document.createElement("p");
+  line.className = "status";
+  const has = [];
+  if (person.file) has.push(1 + (person.pictures || []).length === 1 ? "1 picture" : 1 + (person.pictures || []).length + " pictures");
+  if (person.voice) has.push("a voice");
+  if (person.refmod) has.push("a RefMod");
+  const used = state.project.clips.filter((c) => (c.cast || []).includes(person.id)).length;
+  line.textContent = has.join(", ") + (used ? ". In " + used + (used === 1 ? " clip" : " clips") : ". Not in a clip yet");
+  head.append(row, line);
   const parts = [head];
   if (person.file) {
     const image = document.createElement("img");
     image.className = "portrait";
     image.alt = person.name;
     image.src = assetUrl(person);
-    parts.push(image);
+    parts.push(section("Pictures", [image, morePictures(person)]));
   }
   parts.push(
-    field("Name", person.name, (v) => {
-      person.name = v.trim() || person.name;
-      title.textContent = person.name;
-      renderCast();
-    }),
-    person.file
-      ? field("What they look like", person.description, (v) => (person.description = v), { big: true })
-      : field("How they sound", person.description, (v) => (person.description = v), { area: true, placeholder: "A warm, calm female narrator" }),
+    section("About", [
+      field("Name", person.name, (v) => {
+        person.name = v.trim() || person.name;
+        title.textContent = person.name;
+        renderCast();
+      }),
+      person.file || person.refmod
+        ? field("What they look like", person.description, (v) => (person.description = v), { big: true })
+        : field("How they sound", person.description, (v) => (person.description = v), { area: true, placeholder: "A warm, calm female narrator" }),
+    ]),
     section("Voice", [voiceSection(person)]),
   );
+  if (state.refmods.installed || person.refmod) parts.push(section("RefMod", refmodSection(person)));
   panel.replaceChildren(...parts);
 }
 
@@ -1284,6 +1411,35 @@ function choice(label, options, value, onChange) {
   return wrap;
 }
 
+// H3's text encoder and video VAE come in several precisions. A project renders with the first
+// one installed unless it names another here.
+function encoderChoices() {
+  const rows = [["Text encoder", "clip", state.encoders.text_encoders, state.encoders.auto.text_encoder],
+    ["Video VAE", "vae", state.encoders.vaes, state.encoders.auto.vae]];
+  const out = [];
+  for (const [label, key, files, auto] of rows) {
+    const current = state.project.models?.[key] || "";
+    // Nothing to choose between, and nothing chosen: no menu.
+    if (files.length < 2 && !current) continue;
+    const options = [["", "Automatic" + (auto ? ": " + fileName(auto) : "")], ...files.map((f) => [f, fileName(f)])];
+    if (current && !files.some((f) => sameFile(f, current))) options.push([current, fileName(current) + " (not installed)"]);
+    out.push(choice(label, options, current, (value) => {
+      const models = { ...(state.project.models || {}) };
+      if (value) models[key] = value;
+      else delete models[key];
+      if (Object.keys(models).length) state.project.models = models;
+      else delete state.project.models;
+    }));
+  }
+  if (out.length) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "The int8 and nvfp4 files are smaller and load faster; bf16 and fp16 are the full precision. New renders use the choice.";
+    out.push(hint);
+  }
+  return out;
+}
+
 let openCheckpoint = null;
 
 // Any H3 checkpoint the user has: its file, the built-in model whose settings it starts from,
@@ -1535,6 +1691,82 @@ function strengthSlider(key, label, value, [min, max], usual, onChange) {
   return wrap;
 }
 
+// A searchable list in a dialog, for folders that hold hundreds of files. Resolves to the file picked, or null.
+function pickFile2(title, files, hint) {
+  const dialog = $("picker");
+  const search = $("pickerSearch");
+  const list = $("pickerList");
+  $("pickerTitle").textContent = title;
+  $("pickerHint").textContent = hint;
+  search.value = "";
+  search.placeholder = "Search " + files.length + (files.length === 1 ? " file" : " files");
+  let active = 0;
+  let shown = [];
+  return new Promise((resolve) => {
+    const finish = (file) => {
+      search.removeEventListener("input", draw);
+      search.removeEventListener("keydown", keys);
+      dialog.removeEventListener("close", closed);
+      $("pickerClose").removeEventListener("click", cancel);
+      if (dialog.open) dialog.close();
+      resolve(file);
+    };
+    const cancel = () => finish(null);
+    const closed = () => finish(null);
+    function draw(event) {
+      if (event) active = 0;
+      // Every word typed must be somewhere in the name, in any order.
+      const words = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+      shown = files.filter((f) => words.every((w) => f.toLowerCase().includes(w)));
+      active = Math.min(active, Math.max(0, shown.length - 1));
+      $("pickerCount").textContent = words.length ? shown.length + " of " + files.length : "";
+      if (!shown.length) {
+        const none = document.createElement("p");
+        none.className = "empty";
+        none.textContent = "Nothing matches. Try fewer letters.";
+        list.replaceChildren(none);
+        return;
+      }
+      list.replaceChildren(...shown.map((file, index) => {
+        const item = document.createElement("button");
+        item.className = "picker-item" + (index === active ? " on" : "");
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", String(index === active));
+        item.title = file;
+        const name = document.createElement("b");
+        name.textContent = loraName(file);
+        item.append(name);
+        const folder = file.replaceAll("\\", "/").split("/").slice(0, -1).join("/");
+        if (folder) {
+          const where = document.createElement("span");
+          where.textContent = folder;
+          item.append(where);
+        }
+        item.addEventListener("click", () => finish(file));
+        return item;
+      }));
+      list.children[active]?.scrollIntoView({ block: "nearest" });
+    }
+    function keys(event) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        active = Math.max(0, Math.min(shown.length - 1, active + (event.key === "ArrowDown" ? 1 : -1)));
+        draw();
+      } else if (event.key === "Enter" && shown[active]) {
+        event.preventDefault();
+        finish(shown[active]);
+      }
+    }
+    search.addEventListener("input", draw);
+    search.addEventListener("keydown", keys);
+    dialog.addEventListener("close", closed);
+    $("pickerClose").addEventListener("click", cancel);
+    draw();
+    dialog.showModal();
+    search.focus();
+  });
+}
+
 const loraName = (file) => file.replaceAll("\\", "/").split("/").pop().replace(/\.(safetensors|ckpt|pt|pth)$/i, "");
 const sameFile = (a, b) => a.replaceAll("\\", "/") === b.replaceAll("\\", "/");
 
@@ -1553,28 +1785,44 @@ function loraSection() {
   list.className = "loras";
   if (state.realism?.installed) {
     const usual = state.realism.strength;
+    // It can be switched off like any other LoRA: off is a strength of zero, and finals render without it.
+    const on = state.project.realism !== 0;
     const row = document.createElement("div");
-    row.className = "lora";
+    row.className = "lora" + (on ? "" : " off");
     const head = document.createElement("div");
     head.className = "lora-head";
-    const name = document.createElement("span");
+    const name = document.createElement("label");
     name.className = "lora-name";
-    name.textContent = "Realism Slider";
     name.title = state.realism.file;
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = on;
+    box.dataset.key = "Realism on";
+    box.addEventListener("change", () => change(() => {
+      if (box.checked) delete state.project.realism;
+      else state.project.realism = 0;
+    }));
+    const label = document.createElement("span");
+    label.textContent = "Realism Slider";
+    name.append(box, label);
     const note = document.createElement("span");
     note.className = "lora-note";
-    note.textContent = "Finals only";
+    note.textContent = on ? "Finals only" : "Off";
     const reset = document.createElement("button");
     reset.className = "quiet small";
     reset.textContent = "Reset";
     reset.title = "Back to " + usual.toFixed(2);
-    reset.hidden = typeof state.project.realism !== "number" || state.project.realism === usual;
+    reset.hidden = !on || typeof state.project.realism !== "number" || state.project.realism === usual;
     reset.addEventListener("click", () => change(() => delete state.project.realism));
     head.append(name, note, reset);
     row.append(head, strengthSlider("Realism", "Realism Slider strength on finals", state.project.realism ?? usual, limits.range, usual, (v) => {
       if (v === usual) delete state.project.realism;
       else state.project.realism = v;
-      reset.hidden = v === usual;
+      reset.hidden = v === usual || v === 0;
+      // Dragging it to zero switches it off, and dragging it up switches it on again.
+      box.checked = v !== 0;
+      row.classList.toggle("off", v === 0);
+      note.textContent = v === 0 ? "Off" : "Finals only";
     }));
     list.append(row);
   }
@@ -1621,32 +1869,17 @@ function loraSection() {
     full.textContent = "A project takes up to " + limits.limit + " LoRAs. Remove one to add another.";
     children.push(full);
   } else if (free.length) {
-    const add = document.createElement("label");
-    add.className = "field";
-    const title = document.createElement("span");
-    title.textContent = "Add a LoRA";
-    const input = document.createElement("input");
-    input.type = "search";
-    input.placeholder = "Search " + free.length + " in models/loras";
-    input.dataset.key = "Add a LoRA";
-    input.setAttribute("list", "lora-files");
-    const options = document.createElement("datalist");
-    options.id = "lora-files";
-    for (const file of free) {
-      const option = document.createElement("option");
-      option.value = file;
-      options.append(option);
-    }
-    const pick = () => {
-      const file = free.find((f) => f === input.value);
+    const add = document.createElement("button");
+    add.className = "quiet wide";
+    add.textContent = "Add a LoRA";
+    add.dataset.key = "Add a LoRA";
+    add.addEventListener("click", async () => {
+      const file = await pickFile2("Add a LoRA", free, "From models/loras. Only LoRAs trained on MiniMax H3 have an effect.");
       if (!file) return;
       change(() => {
         state.project.loras = [...(state.project.loras || []), { id: "l" + crypto.randomUUID().replaceAll("-", "").slice(0, 8), file, strength: 1, on: true }];
       });
-    };
-    input.addEventListener("input", pick);
-    input.addEventListener("change", pick);
-    add.append(title, input, options);
+    });
     children.push(add);
   }
   const hint = document.createElement("p");
@@ -1725,7 +1958,7 @@ function renderScene(panel) {
   const describeModel = () => {
     const profile = profileOf(models.value);
     if (!profile) modelHint.textContent = "";
-    else if (profile.available) modelHint.textContent = [profile.hint + " New renders use it.", ...state.finals].join(" ");
+    else if (profile.available) modelHint.textContent = [profile.hint + " New renders use it.", ...state.finals, ...state.encoders.missing].join(" ");
     else modelHint.textContent = "Not installed. Needs " + profile.missing.join(" and ") + ".";
   };
   describeModel();
@@ -1746,6 +1979,7 @@ function renderScene(panel) {
       shape,
       formatHint,
       ...(state.profiles.length ? [model, modelHint] : []),
+      ...encoderChoices(),
       field("Language people speak", state.project.language || "", (v) => {
         if (v.trim()) state.project.language = v.trim();
         else delete state.project.language;
@@ -1874,7 +2108,7 @@ function renderInspector() {
     field("What happens", clip.action, (v) => (clip.action = v), { big: true, placeholder: "Describe what we see and hear, in the order it happens." }),
     timing,
     ...framesFor(clip),
-    ...(state.project.cast?.some((p) => p.file) ? castPicker(clip) : []),
+    ...(state.project.cast?.some((p) => p.file || p.refmod) ? castPicker(clip) : []),
   ]));
 
   const voiced = ["speaker", "dialogue", "sound", "music"].filter((k) => String(clip[k] || "").trim()).length;
@@ -2222,6 +2456,61 @@ function setTimelineHeight(value, keep = false) {
   return height;
 }
 
+// The clips panel and the inspector are as wide as the user drags them, on this browser.
+const SIDES = {
+  splitBin: { name: "--bin-w", key: "h3take.bin", min: 200, max: 520, panel: () => document.querySelector(".bin"), sign: 1 },
+  splitInspector: { name: "--insp-w", key: "h3take.inspector", min: 300, max: 680, panel: () => $("inspector"), sign: -1 },
+};
+
+function setSideWidth(side, width, keep = false) {
+  // The viewer always keeps room for itself, whatever the panels ask for.
+  const other = Object.values(SIDES).find((s) => s !== side).panel().getBoundingClientRect().width;
+  const room = window.innerWidth - other - 12 - 360;
+  const wide = Math.round(Math.max(side.min, Math.min(side.max, room, width)));
+  document.documentElement.style.setProperty(side.name, wide + "px");
+  if (keep) {
+    try { localStorage.setItem(side.key, String(wide)); } catch (_) {}
+  }
+}
+
+function bindSideSplitters() {
+  for (const [id, side] of Object.entries(SIDES)) {
+    const handle = $(id);
+    try {
+      const saved = Number(localStorage.getItem(side.key));
+      if (saved) setSideWidth(side, saved);
+    } catch (_) {}
+    const settle = () => state.project && renderTimeline();
+    handle.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      handle.classList.add("dragging");
+      const from = side.panel().getBoundingClientRect().width;
+      const move = (ev) => setSideWidth(side, from + side.sign * (ev.clientX - event.clientX));
+      const up = (ev) => {
+        handle.classList.remove("dragging");
+        setSideWidth(side, from + side.sign * (ev.clientX - event.clientX), true);
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        settle();
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    });
+    handle.addEventListener("dblclick", () => {
+      document.documentElement.style.removeProperty(side.name);
+      try { localStorage.removeItem(side.key); } catch (_) {}
+      settle();
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const now = side.panel().getBoundingClientRect().width;
+      setSideWidth(side, now + side.sign * (event.key === "ArrowRight" ? 24 : -24), true);
+      settle();
+    });
+  }
+}
+
 function bindSplitter() {
   const handle = $("splitter");
   try {
@@ -2325,6 +2614,15 @@ function renderTimeline() {
       name.append(rate);
     }
     block.append(film, name);
+    if (take && clip.kind !== "footage" && px(itemLength(item)) >= 64) {
+      // Whether the take on the timeline is a quick draft or a finished final.
+      const grade = document.createElement("div");
+      const final = take.quality === "final";
+      grade.className = "grade " + (final ? "final" : "draft");
+      grade.textContent = final ? "Final" : "Draft";
+      grade.title = final ? "A final render" : "A draft. Render a final when the shot is right.";
+      block.append(grade);
+    }
     if (item.transition) {
       const mark = document.createElement("div");
       mark.className = "tr";
@@ -2556,11 +2854,15 @@ function leading(frame) {
   return others[0] || coming;
 }
 
+// Seconds the next clip runs, silent, before its cut.
+const PREROLL = 0.4;
+
 function clearMix() {
   for (const video of [front, back]) {
     video.style.opacity = "";
     video.style.clipPath = "";
     video.volume = 1;
+    video.muted = false;
   }
   front.style.zIndex = "1";
   back.style.zIndex = "2";
@@ -2572,6 +2874,7 @@ function applyMix(item, frame) {
   front.style.zIndex = "1";
   back.style.zIndex = "2";
   back.classList.add("show");
+  back.muted = false;
   front.volume = 1 - progress;
   back.volume = progress;
   if (kind === "wipe") {
@@ -2589,7 +2892,7 @@ function applyMix(item, frame) {
 
 function place(video, item, frame, tolerance = 0.01) {
   load(video, sourceOf(item));
-  video.playbackRate = speedOf(item);
+  if (video.playbackRate !== speedOf(item)) video.playbackRate = speedOf(item);
   const seconds = sourceSeconds(item, frame);
   if (Math.abs(video.currentTime - seconds) > tolerance) video.currentTime = seconds;
 }
@@ -2633,20 +2936,23 @@ function showFrame() {
     showSource(clip);
     return;
   }
-  const item = leading(state.playhead);
+  // Stopped on the very end of the cut, the viewer keeps the last frame instead of going empty.
+  const end = sceneEnd();
+  const frame = end && state.playhead >= end ? end - 1 : state.playhead;
+  const item = leading(frame);
   const url = sourceOf(item);
   const job = state.running || jobFor(item?.clip || state.clip);
   const slate = $("slate");
   clearMix();
   if (url) {
-    place(front, item, state.playhead);
+    place(front, item, frame);
     front.classList.add("show");
     back.classList.remove("show");
     slate.textContent = "";
-    const coming = incoming(state.playhead);
+    const coming = incoming(frame);
     if (coming && coming !== item && sourceOf(coming)) {
-      place(back, coming, state.playhead);
-      applyMix(coming, state.playhead);
+      place(back, coming, frame);
+      applyMix(coming, frame);
     }
   } else {
     front.classList.remove("show");
@@ -2699,7 +3005,9 @@ function tick(now) {
   const item = leading(state.playhead);
   const url = sourceOf(item);
   if (url && !front.paused && front.dataset.url === url) {
-    state.playhead = item.start + (front.currentTime * FPS - item.in) / speedOf(item);
+    // Never before the clip's own start. A video's time can read a hair under its in-point, and a
+    // playhead a hair before the cut would hand the picture back to the clip that just ended.
+    state.playhead = Math.max(item.start, item.start + (front.currentTime * FPS - item.in) / speedOf(item));
   } else {
     state.playhead += ((now - lastTick) / 1000) * FPS;
   }
@@ -2716,7 +3024,30 @@ function tick(now) {
     const following = item ? sorted().find((i) => i.start >= itemEnd(item) - (i.transition?.frames || 0) && i !== item) : nextItem(state.playhead);
     if (following && sourceOf(following) && back.paused) {
       load(back, sourceOf(following));
-      back.currentTime = following.in / FPS;
+      // A video takes a moment to start, which would be a hole in the sound at every cut. So the
+      // next clip waits a little before its in-point and starts early and silent, to be running
+      // when the cut comes. A clip cut in at its very first frame has nothing before it to run.
+      const rate = speedOf(following);
+      const parked = Math.max(0, following.in / FPS - PREROLL * rate);
+      const lead = (following.start - state.playhead) / FPS;
+      if (lead > 0 && lead * rate <= following.in / FPS - parked && back.readyState >= 3 && !back.seeking) {
+        back.volume = 0;
+        back.playbackRate = rate;
+        back.play().catch(() => {});
+      } else if (!back.seeking && Math.abs(back.currentTime - parked) > 0.01) {
+        // Once is enough. Seeking again on every frame keeps the next clip from being ready.
+        back.currentTime = parked;
+      }
+    } else if (following && back.volume === 0 && !back.paused && back.dataset.url === sourceOf(following)) {
+      // While it runs silent, nudge its speed so it is on its in-point exactly when the cut comes:
+      // early would skip a frame, late would show one from before the cut.
+      // It settles at its own speed a little before the cut: a change of speed at the cut itself
+      // makes the sound stumble.
+      const rate = speedOf(following);
+      const lead = (following.start - state.playhead) / FPS;
+      const off = back.currentTime - (following.in / FPS - lead * rate);
+      const steer = lead < 0.12 ? 1 : off < -0.015 ? 1.3 : off > 0.015 ? 0.75 : 1;
+      if (back.playbackRate !== rate * steer) back.playbackRate = rate * steer;
     }
   }
 
@@ -2726,6 +3057,7 @@ function tick(now) {
       if (back.dataset.url === sourceOf(current)) swap();
       place(front, current, state.playhead, 0.08);
       front.classList.add("show");
+      front.volume = 1;
       front.play().catch(() => {});
       if (!incoming(state.playhead)) back.pause();
     } else {
@@ -2967,8 +3299,12 @@ async function openProject(folder) {
 }
 
 async function refreshProjects(selected) {
-  const { projects, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets } = await api("/projects");
+  const { projects, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets, refmods, encoders } = await api("/projects");
+  state.encoders = encoders || { text_encoders: [], vaes: [], auto: {}, missing: [] };
   state.presets = presets || [];
+  state.refmods = refmods || { installed: false, files: [] };
+  // Adding a cast member from a RefMod only makes sense with the pack and a file to pick.
+  $("addRefmod").hidden = !(state.refmods.installed && state.refmods.files.length);
   state.checkpoints = checkpoints || [];
   state.samplers = samplers || [];
   state.schedulers = schedulers || [];
@@ -3002,13 +3338,50 @@ async function start() {
 }
 
 $("project").addEventListener("change", (event) => openProject(event.target.value));
+// A new project is named in a dialog of the editor's own. The browser's prompt box does not
+// open in every place the editor runs, such as an embedded browser.
 $("newProject").addEventListener("click", () => {
-  const name = prompt("Project name");
-  if (name) createProject(name).catch((e) => toast(e.message, true));
+  const hint = $("creatorHint");
+  $("creatorName").value = "";
+  $("creatorFormat").value = "16:9";
+  hint.textContent = "Its name becomes its folder in ComfyUI's output folder. The format can be changed later.";
+  hint.classList.remove("bad");
+  $("creatorGo").disabled = false;
+  $("creator").showModal();
+  $("creatorName").focus();
+});
+$("creatorClose").addEventListener("click", () => $("creator").close());
+$("creatorForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const hint = $("creatorHint");
+  const name = $("creatorName").value.trim();
+  const bad = (text) => {
+    hint.textContent = text;
+    hint.classList.add("bad");
+    $("creatorName").focus();
+  };
+  if (!/[A-Za-z0-9]/.test(name)) return bad("Give it a name with letters or numbers.");
+  const folder = name.replace(/[^A-Za-z0-9 _-]/g, "").trim().replaceAll(" ", "_").slice(0, 64);
+  if ([...$("project").options].some((o) => o.value.toLowerCase() === folder.toLowerCase())) return bad("There is already a project called " + folder.replaceAll("_", " ") + ". Pick another name.");
+  $("creatorGo").disabled = true;
+  try {
+    await createProject(name);
+    const format = $("creatorFormat").value;
+    if (format !== (state.project.format || "16:9")) {
+      state.project.format = format;
+      save();
+      renderAll();
+    }
+    $("creator").close();
+  } catch (error) {
+    bad(error.message);
+  }
+  $("creatorGo").disabled = false;
 });
 $("newClip").addEventListener("click", addClip);
 $("addCast").addEventListener("click", addCastMember);
 $("addVoice").addEventListener("click", addVoiceMember);
+$("addRefmod").addEventListener("click", addRefmodMember);
 $("importClip").addEventListener("click", importFootage);
 $("newBin").addEventListener("click", addBin);
 
@@ -3044,22 +3417,91 @@ $("renderAll").addEventListener("click", () => {
     for (const clip of waiting) await renderClip(clip, "draft");
   })();
 });
-$("export").addEventListener("click", async () => {
+// Export joins the timeline into one video file. The dialog says what will be in it first.
+const megabytes = (bytes) => (bytes >= 1e9 ? (bytes / 1e9).toFixed(2) + " GB" : Math.max(0.1, bytes / 1e6).toFixed(1) + " MB");
+
+async function openExporter() {
+  const dialog = $("exporter");
+  const result = $("exporterResult");
+  const go = $("exporterGo");
   clearTimeout(saveTimer);
-  $("export").disabled = true;
+  await flush();
+  let plan;
   try {
-    await flush();
-    const result = await postJson("/project/" + state.folder + "/export", {});
-    toast("Exported " + result.filename + " to " + result.subfolder);
+    plan = (await postJson("/project/" + state.folder + "/export", { plan: true })).plan;
   } catch (error) {
     toast(error.message, true);
+    return;
   }
-  $("export").disabled = false;
-});
+  if (!plan.clips) {
+    toast("There are no rendered clips on the timeline to export.", true);
+    return;
+  }
+  const full = [plan.width, plan.height];
+  const even = (side, scale) => Math.max(2, 2 * Math.round((side * scale) / 2));
+  $("exporterScale").replaceChildren(...[[1, "As rendered"], [0.75, "Three quarters"], [0.5, "Half"]].map(([scale, label]) => {
+    const option = document.createElement("option");
+    option.value = String(scale);
+    option.textContent = label + ", " + even(full[0], scale) + " x " + even(full[1], scale);
+    return option;
+  }));
+  $("exporterSummary").textContent = timecode(plan.frames) + " (" + plan.seconds + " seconds), " + plan.clips + (plan.clips === 1 ? " clip" : " clips") + ", with sound, as an MP4.";
+  const notes = [];
+  if (plan.drafts) notes.push(plan.drafts + (plan.drafts === 1 ? " clip is still a draft" : " clips are still drafts") + ". Drafts are small, so they will look soft next to finals.");
+  if (plan.missing) notes.push(plan.missing + (plan.missing === 1 ? " clip has no render and is" : " clips have no render and are") + " left out.");
+  if (plan.gaps) notes.push(plan.gaps + (plan.gaps === 1 ? " gap" : " gaps") + " on the timeline will be black and silent.");
+  $("exporterNotes").replaceChildren(...notes.map((text) => {
+    const item = document.createElement("li");
+    item.textContent = text;
+    return item;
+  }));
+  $("exporterName").value = state.folder;
+  try { $("exporterDownload").checked = localStorage.getItem("h3take.export.download") !== "no"; } catch (_) {}
+  result.textContent = "It is saved in ComfyUI's output folder, under " + "h3take_projects/" + state.folder + "/exports.";
+  result.classList.remove("bad");
+  $("exporterLink").hidden = true;
+  go.disabled = false;
+  go.textContent = "Export";
+  dialog.showModal();
+}
+
+async function runExport() {
+  const go = $("exporterGo");
+  const result = $("exporterResult");
+  const link = $("exporterLink");
+  const download = $("exporterDownload").checked;
+  try { localStorage.setItem("h3take.export.download", download ? "yes" : "no"); } catch (_) {}
+  go.disabled = true;
+  go.textContent = "Exporting";
+  link.hidden = true;
+  result.classList.remove("bad");
+  result.textContent = "Joining the clips. A long cut can take a minute or two.";
+  try {
+    const made = await postJson("/project/" + state.folder + "/export", {
+      scale: Number($("exporterScale").value), quality: $("exporterQuality").value, name: $("exporterName").value.trim(),
+    });
+    link.href = viewUrl(made.filename, made.subfolder);
+    link.setAttribute("download", made.filename);
+    link.hidden = false;
+    link.textContent = download ? "Download again" : "Download";
+    result.textContent = "Saved " + made.filename + ", " + megabytes(made.bytes) + ", in " + made.subfolder + " of ComfyUI's output folder.";
+    if (download) link.click();
+  } catch (error) {
+    result.classList.add("bad");
+    result.textContent = error.message;
+  }
+  go.disabled = false;
+  go.textContent = "Export again";
+}
+
+$("export").addEventListener("click", openExporter);
+$("exporterGo").addEventListener("click", runExport);
+$("exporterClose").addEventListener("click", () => $("exporter").close());
 $("play").addEventListener("click", () => setPlaying(!state.playing));
 $("shortcuts").addEventListener("click", () => $("keys").showModal());
 $("keysClose").addEventListener("click", () => $("keys").close());
 bindSplitter();
+bindSideSplitters();
 $("toStart").addEventListener("click", () => seek(0));
 $("back").addEventListener("click", () => seek(here() - 1));
 $("forward").addEventListener("click", () => seek(here() + 1));
@@ -3085,6 +3527,8 @@ $("tlScroll").addEventListener("wheel", (event) => {
 }, { passive: false });
 
 $("ruler").addEventListener("pointerdown", (event) => {
+  // A drag along the ruler moves the playhead. It must not start a text selection across the page.
+  event.preventDefault();
   const frameAt = (ev) => (ev.clientX - $("ruler").getBoundingClientRect().left) / state.zoom;
   setSource(null);
   seek(frameAt(event));

@@ -27,6 +27,7 @@ from comfy_api.latest import io
 from server import PromptServer
 
 from . import media
+from .twins import with_twins
 
 FPS = 24
 TAE_PREFIX = "taeh3"
@@ -251,3 +252,5 @@ class H3LivePreview(io.ComfyNode):
 
 NODE_CLASS_MAPPINGS = {"H3LivePreview": H3LivePreview}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3LivePreview": "H3 Live Preview"}
+# The editor's graphs name the twin, an id no other pack registers (see twins.py).
+NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = with_twins(NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS)

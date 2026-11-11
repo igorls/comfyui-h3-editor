@@ -23,7 +23,7 @@
     <aside class="bin" aria-label="Clips and cast">
       <div class="panel-head"><h2>Clips <span id="clipCount" class="count"></span></h2><div class="head-tools"><button id="newBin" class="quiet icon-button" aria-label="New bin" title="New bin, a folder for clips"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.2a1.7 1.7 0 0 1 1.7-1.7h3.9l2 2.1h7.7a1.7 1.7 0 0 1 1.7 1.7v7.5a1.7 1.7 0 0 1-1.7 1.7H5.2a1.7 1.7 0 0 1-1.7-1.7z"/><path d="M12 10.6v5M9.5 13.1h5"/></svg></button><button id="importClip" class="quiet" title="Bring in a video or a picture">Import</button><button id="newClip" class="quiet">New clip</button></div></div>
       <div id="clips" class="clips"></div>
-      <div class="panel-head cast-head"><h2>Cast</h2><div class="head-tools"><button id="addVoice" class="quiet" title="A voice with no picture, such as a narrator">Add voice</button><button id="addCast" class="quiet">Add reference</button></div></div>
+      <div class="panel-head cast-head"><h2>Cast</h2><div class="head-tools"><button id="addVoice" class="quiet" title="A voice with no picture, such as a narrator">Add voice</button><button id="addCast" class="quiet">Add reference</button><button id="addRefmod" class="quiet" title="A cast member from a RefMod, a reference saved with the ComfyUI-MiniMaxH3Mod pack" hidden>Add RefMod</button></div></div>
       <div id="cast" class="cast"></div>
       <input id="castFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
       <input id="frameFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -31,6 +31,7 @@
       <input id="voiceFile" type="file" accept="audio/*" hidden>
     </aside>
 
+    <div class="splitter-v" id="splitBin" role="separator" aria-orientation="vertical" aria-label="Resize the clips panel" title="Drag to resize. Double-click to reset." tabindex="0"></div>
     <section class="stage" aria-label="Viewer">
       <div id="screen" class="screen">
         <video id="videoA" playsinline></video>
@@ -59,6 +60,7 @@
       </div>
     </section>
 
+    <div class="splitter-v" id="splitInspector" role="separator" aria-orientation="vertical" aria-label="Resize the inspector" title="Drag to resize. Double-click to reset." tabindex="0"></div>
     <aside class="inspector" id="inspector" aria-label="Inspector"></aside>
   </main>
 
@@ -96,6 +98,46 @@
   </section>
 </div>
 
+<dialog id="creator" class="keys exporter" aria-labelledby="creatorTitle">
+  <form id="creatorForm" method="dialog">
+    <div class="keys-head"><h2 id="creatorTitle">New project</h2><button id="creatorClose" class="quiet" type="button">Close</button></div>
+    <div class="exporter-body">
+      <label class="field"><span>Name</span><input id="creatorName" type="text" autocomplete="off" spellcheck="false" maxlength="64" placeholder="Morning teaser"></label>
+      <label class="choice"><span>Format</span><select id="creatorFormat">
+        <option value="16:9" selected>Wide, 16:9</option>
+        <option value="9:16">Vertical, 9:16</option>
+        <option value="1:1">Square, 1:1</option>
+      </select></label>
+      <p id="creatorHint" class="hint" aria-live="polite"></p>
+    </div>
+    <div class="exporter-foot"><span class="spacer"></span><button id="creatorGo" class="primary" type="submit">Create project</button></div>
+  </form>
+</dialog>
+<dialog id="exporter" class="keys exporter" aria-labelledby="exporterTitle">
+  <div class="keys-head"><h2 id="exporterTitle">Export the cut</h2><button id="exporterClose" class="quiet">Close</button></div>
+  <div class="exporter-body">
+    <p id="exporterSummary" class="exporter-summary"></p>
+    <ul id="exporterNotes" class="exporter-notes"></ul>
+    <label class="field"><span>File name</span><input id="exporterName" type="text" autocomplete="off" spellcheck="false"></label>
+    <div class="halves">
+      <label class="choice"><span>Size</span><select id="exporterScale"></select></label>
+      <label class="choice"><span>Quality</span><select id="exporterQuality">
+        <option value="best">Best, the largest file</option>
+        <option value="high" selected>High</option>
+        <option value="small">Smaller file</option>
+      </select></label>
+    </div>
+    <label class="check"><input id="exporterDownload" type="checkbox" checked><span>Download it to this computer when it is done</span></label>
+    <p id="exporterResult" class="hint" aria-live="polite"></p>
+  </div>
+  <div class="exporter-foot"><a id="exporterLink" class="quiet button" hidden download>Download again</a><span class="spacer"></span><button id="exporterGo" class="primary">Export</button></div>
+</dialog>
+<dialog id="picker" class="keys picker" aria-labelledby="pickerTitle">
+  <div class="keys-head"><h2 id="pickerTitle">Add a LoRA</h2><button id="pickerClose" class="quiet">Close</button></div>
+  <div class="picker-search"><input id="pickerSearch" type="search" autocomplete="off" spellcheck="false" aria-label="Search"><span id="pickerCount" class="count"></span></div>
+  <div id="pickerList" class="picker-list" role="listbox" aria-labelledby="pickerTitle"></div>
+  <p id="pickerHint" class="hint"></p>
+</dialog>
 <dialog id="keys" class="keys" aria-labelledby="keysTitle">
   <div class="keys-head"><h2 id="keysTitle">Keyboard shortcuts</h2><button id="keysClose" class="quiet">Close</button></div>
   <dl>

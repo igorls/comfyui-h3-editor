@@ -131,7 +131,7 @@ class RenderRecordTest(unittest.TestCase):
         finish_render(project, "prompt-1", {"filename": "x.mp4", "subfolder": "s"}, {"frames": 124, "poster": "x.jpg"})
         take = store.active_take(clip)
         self.assertEqual(take["size"], [1920, 1088])
-        self.assertEqual(take["models"]["lora_strength"], 1.5)
+        self.assertEqual(take["models"]["lora_strength"], 1.2)
         self.assertEqual(take["models"]["profile"], "hyperflow")
 
     def test_a_failed_render_says_why(self):

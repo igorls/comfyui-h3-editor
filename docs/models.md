@@ -72,13 +72,14 @@ the larger size: HyperFlow its last 3 of 6, the 20-step families their last 3 of
 at 1088x1920, a 16:9 one at 1920x1088 and a 1:1 one at 1440x1440. The sound is
 the first pass's, and held frames stay as they are.
 
-Finals also run the MMH3 Realism Slider LoRA at 1.5 on both passes, for a matte,
-less made-up skin. Both extras are optional:
+Finals also run the MMH3 Realism Slider LoRA at 1.2 (`start_sigma = 0.75`) on
+both passes, for natural, un-airbrushed skin without drifting early composition
+steps. Both extras are optional:
 
 | File | Folder | Size | Where to get it | Without it |
 |---|---|---|---|---|
 | `minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors` | `models/latent_upscale_models` | 0.7 GB | [LBH-123-AI/Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler), `minimax_h3_latent_upscaler_3d_conv_v1/` | Finals stay at H3's own size |
-| `MMH3-RealismSlider-V1.safetensors` | `models/loras` | 3 MB | Civitai model 3014078 (needs a Civitai login) | Finals render without it |
+| `MMH3-Realism-V2.safetensors` | `models/loras` | 71 MB | [Civitai model 3041489](https://civitai.com/models/3041489) (falls back to `MMH3-RealismSlider-V1.safetensors` if only V1 is installed) | Finals render without it |
 
 The editor says which ones are missing, under **Model** in the Scene panel.
 
@@ -101,9 +102,11 @@ The H3 LoRA node applies a LoRA trained on MiniMax H3.
   too, from a small bundled grid.
 - HyperFlow H3 Flash prunes some of H3's blocks: its ref2va model dropped block 9
   and its fl2va model blocks 6, 21 and 22. The node moves a LoRA's later blocks
-  down to match, so they land on the layers they were trained for. A LoRA
-  attaches only where HyperFlow keeps a layer whole, and ComfyUI skips the rest
-  with a warning: on fl2va, the Realism Slider's last `fc2` is one.
+  down to match, so they land on the layers they were trained for, and attaches
+  at run time on HyperFlow's factorized low-rank and split-QKV layers too.
+- Optional `start_sigma` and `end_sigma` inputs let a LoRA run only on part of
+  the schedule, such as `start_sigma = 0.68` to keep early composition steps
+  untouched and apply the LoRA on detail steps.
 - Several H3 LoRA nodes in a row stack.
 
 In the editor, a project has its own LoRAs. With no clip selected, the panel on
@@ -111,7 +114,7 @@ the right has a LoRAs section: search `models/loras` to add one, drag its slider
 to set its strength from -2 to 2, untick it to render without it, or remove it.
 Every new render of the project samples with the ones that are ticked, in the
 order listed, on drafts and finals alike. The same section has the Realism
-Slider's strength on finals, from 0 to 3; it starts at 1.5.
+Slider's strength on finals, from 0 to 3; it starts at 1.2.
 
 ## Your own checkpoints
 

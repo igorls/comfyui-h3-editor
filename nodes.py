@@ -12,6 +12,7 @@ from PIL import Image, ImageOps
 
 from .latent_writer import carry_tail, encode_audio, encode_video, write_holds
 from . import h3lora
+from .twins import with_twins
 from . import hyperflow
 from . import media
 
@@ -381,10 +382,11 @@ class H3Lora(io.ComfyNode):
             display_name="H3 LoRA",
             category="minimax/h3",
             description=(
-                "Apply a LoRA trained on MiniMax H3. On int8 or fp8 weights it is added at run time, so small "
-                "updates are not rounded away. On a pruned base its time-conditioning part is added at run time "
-                "too. HyperFlow H3 Flash prunes some of H3's blocks, so there the LoRA's later blocks move down "
-                "to land on the layers they were trained for. Several H3 LoRA nodes in a row stack."
+                "Apply a LoRA trained on MiniMax H3. On int8 or fp8 weights and HyperFlow's factorized layers it is "
+                "added at run time, so small updates are not rounded away or skipped. On a pruned base its "
+                "time-conditioning part is added at run time too. HyperFlow H3 Flash prunes some of H3's blocks, so "
+                "there the LoRA's later blocks move down to land on the layers they were trained for. Several H3 LoRA "
+                "nodes in a row stack, each with its own optional sigma window."
             ),
             inputs=[
                 io.Model.Input("model"),
@@ -393,14 +395,19 @@ class H3Lora(io.ComfyNode):
                 io.Combo.Input("mode", options=list(LORA_MODES), default="auto", optional=True,
                                tooltip="auto adds the LoRA at run time where that keeps it sharp. merge folds it into "
                                        "the weights: the least memory, but softer on int8 and fp8 weights."),
+                io.Float.Input("start_sigma", default=1.0, min=0.0, max=1.0, step=0.005, optional=True,
+                               tooltip="Highest noise level (sigma) where this LoRA runs. 1.0 runs from the first step; 0.68 "
+                                       "skips early structure steps so composition stays locked and detail steps get the LoRA."),
+                io.Float.Input("end_sigma", default=0.0, min=0.0, max=1.0, step=0.005, optional=True,
+                               tooltip="Lowest noise level (sigma) where this LoRA runs. 0.0 runs to the final step."),
             ],
             outputs=[io.Model.Output(display_name="model")],
         )
 
     @classmethod
-    def execute(cls, model, lora_name, strength, mode="auto") -> io.NodeOutput:
+    def execute(cls, model, lora_name, strength, mode="auto", start_sigma=1.0, end_sigma=0.0) -> io.NodeOutput:
         path = folder_paths.get_full_path_or_raise("loras", lora_name)
-        return io.NodeOutput(h3lora.apply(model, path, lora_name, strength, mode or "auto"))
+        return io.NodeOutput(h3lora.apply(model, path, lora_name, strength, mode or "auto", start_sigma, end_sigma))
 
 
 class H3HyperFlowLoader(io.ComfyNode):
@@ -522,3 +529,5 @@ NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3LoadStill"
 NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3LoadStill": "H3 Load Still",
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3RefineLatent": "H3 Refine Latent",
                               "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas"}
+# The editor's graphs name each node's twin, an id no other pack registers (see twins.py).
+NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = with_twins(NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS)

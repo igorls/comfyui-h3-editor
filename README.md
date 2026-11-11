@@ -13,6 +13,11 @@ made with it, shot by shot.
 - **Write shots, not graphs.** Describe what happens and what is said. The
   editor builds the ComfyUI graph, queues it, and shows the clip moving, with
   sound, while it samples.
+- **Several pictures per cast member.** Give a character up to 8 pictures from
+  different angles, and shots keep what one picture cannot show.
+- **RefMods, if you use them.** With the ComfyUI-MiniMaxH3Mod pack installed, a
+  cast member can carry a RefMod. This is the one optional extra that needs
+  another custom node pack.
 - **Keep people and places the same.** Add their pictures to the cast and
   write @Name in a shot. Give them a voice, or add a narrator who is only a voice.
 - **Join shots without a visible cut.** Extend a clip forward or back, bridge
@@ -77,12 +82,19 @@ more. On a smaller GPU, take its GGUF files in their place, from Q8_0 at 15.2 GB
 down to Q3_K_M at 7.2 GB, anywhere in `models/diffusion_models`; see
 [models and quality](docs/models.md#hyperflows-other-files).
 
+The text encoder and the video VAE also come in other precisions in the same
+repository: `qwen3vl_32b_minimax_h3_int8_convrot.safetensors` (25 GB) and
+`qwen3vl_32b_minimax_h3_bf16.safetensors` (48 GB), and
+`minimax_h3_video_vae_int8_convrot.safetensors` (2.6 GB). Any one of each is
+enough: the editor renders with what it finds, and with more than one installed
+you pick in the Project section.
+
 These are optional, and worth having:
 
 | File | Folder | Size | Where to get it | For |
 |---|---|---|---|---|
 | `minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors` | `models/latent_upscale_models` | 0.7 GB | [LBH-123-AI/Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) | Finals at up to 1920 pixels |
-| `MMH3-RealismSlider-V1.safetensors` | `models/loras` | 3 MB | Civitai model 3014078 | Natural skin in finals |
+| `MMH3-Realism-V2.safetensors` | `models/loras` | 71 MB | [Civitai model 3041489](https://civitai.com/models/3041489) | Natural skin in finals |
 | `taeh3.safetensors` | `models/vae_approx` | 23 MB | [OzzyGT/taeh3](https://huggingface.co/OzzyGT/taeh3) | The moving live preview |
 
 Other H3 checkpoints work as well; see [models and quality](docs/models.md).

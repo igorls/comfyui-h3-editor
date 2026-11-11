@@ -1,8 +1,10 @@
+import re
 import unittest
 
 from policy import bridge_spans, legal_length, video_span
-from project import (MODELS, PRESET_LIMIT, PROFILES, REFINE_TAIL, active_take, add_clip, apply_op, clean_checkpoints, clip_prompt, export_command, finals_status,
-                     frame_of, installed_profile, is_hyperflow, item_length, linked_length, new_project, pick_file,
+from project import (MODELS, PRESET_LIMIT, PROFILES, REALISM_LORAS, REFINE_TAIL, active_take, add_cast, add_clip, apply_op, cast_pictures, clean_checkpoints,
+                     clip_prompt, describe, encoder_status, update_cast, export_command, export_plan, finals_status,
+                     frame_of, installed_profile, is_hyperflow, item_length, linked_length, lora_status, new_project, pick_file,
                      plan_render, profile_status, project_models, render_graph, render_models, set_project, slug,
                      snap_frames, tempo_chain)
 
@@ -123,10 +125,10 @@ class ProjectTest(unittest.TestCase):
 
     def test_a_final_samples_both_passes_with_the_realism_slider(self):
         graph = render_graph(new_project("x"), "x", clip(), "t1", "final", 3)
-        self.assertEqual(graph["95"]["inputs"], {"model": ["1", 0], "lora_name": MODELS["lora"], "strength": 1.5})
+        self.assertEqual(graph["95"]["inputs"], {"model": ["1", 0], "lora_name": MODELS["lora"], "strength": 1.2, "start_sigma": 0.75})
         self.assertEqual(graph["5"]["inputs"]["model"], ["95", 0])
         used = render_models(graph)
-        self.assertEqual((used["lora"], used["lora_strength"]), (MODELS["lora"], 1.5))
+        self.assertEqual((used["lora"], used["lora_strength"]), (MODELS["lora"], 1.2))
 
     def test_the_refine_take_holds_what_the_first_take_holds(self):
         track = {"file": "t.wav", "subfolder": "s", "from": 2.0}
@@ -385,10 +387,60 @@ class LoraTest(unittest.TestCase):
         self.assertNotIn("95", graph)
         self.assertEqual(graph["5"]["inputs"]["model"], ["1", 0])
         set_project(project, {"realism": None})
-        self.assertEqual(render_graph(project, "x", clip(), "t1", "final", 3)["95"]["inputs"]["strength"], 1.5)
+        self.assertEqual(render_graph(project, "x", clip(), "t1", "final", 3)["95"]["inputs"]["strength"], 1.2)
         for bad in (4, -1, "strong", True):
             with self.assertRaises(ValueError):
                 set_project(project, {"realism": bad})
+
+    def test_realism_slider_prefers_v2_and_falls_back_to_v1_when_only_v1_is_installed(self):
+        v2, v1 = REALISM_LORAS
+        only_v1 = HYPERFLOW | {MODELS["latent_upscaler"], v1}
+        both = only_v1 | {v2}
+        self.assertEqual(finals_status(only_v1), [])
+        self.assertEqual(lora_status(only_v1)["file"], v1)
+        self.assertTrue(lora_status(only_v1)["installed"])
+        self.assertEqual(render_graph(new_project("x"), "x", clip(), "t1", "final", 3, only_v1)["95"]["inputs"]["lora_name"], v1)
+        self.assertEqual(lora_status(both)["file"], v2)
+        self.assertEqual(render_graph(new_project("x"), "x", clip(), "t1", "final", 3, both)["95"]["inputs"]["lora_name"], v2)
+
+
+class EncoderTest(unittest.TestCase):
+    INT8 = {"qwen3vl_32b_minimax_h3_int8_convrot.safetensors", "minimax_h3_video_vae_int8_convrot.safetensors",
+            "minimax_h3_audio_vae_fp32.safetensors"}
+
+    def test_a_render_takes_the_text_encoder_and_vae_that_are_installed(self):
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3, HYPERFLOW | self.INT8)
+        self.assertEqual(graph["2"]["inputs"]["clip_name"], "qwen3vl_32b_minimax_h3_int8_convrot.safetensors")
+        self.assertEqual(graph["3"]["inputs"]["vae_name"], "minimax_h3_video_vae_int8_convrot.safetensors")
+        self.assertEqual(graph["4"]["inputs"]["vae_name"], "minimax_h3_audio_vae_fp32.safetensors")
+        # With the usual files beside them, the usual files win, and another precision is found by its name.
+        both = HYPERFLOW | self.INT8 | {MODELS["clip"], MODELS["vae"], "split/qwen3vl_32b_minimax_h3_fp8.safetensors"}
+        graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3, both)
+        self.assertEqual((graph["2"]["inputs"]["clip_name"], graph["3"]["inputs"]["vae_name"]), (MODELS["clip"], MODELS["vae"]))
+        only = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3, HYPERFLOW | {"split/qwen3vl_32b_minimax_h3_fp8.safetensors"})
+        self.assertEqual(only["2"]["inputs"]["clip_name"], "split/qwen3vl_32b_minimax_h3_fp8.safetensors")
+        # Nothing known, or nothing installed: the usual names, so the graph says what is missing.
+        self.assertEqual(render_graph(new_project("x"), "x", clip(), "t1", "draft", 3)["2"]["inputs"]["clip_name"], MODELS["clip"])
+        self.assertEqual(len(encoder_status(HYPERFLOW)["missing"]), 3)
+        self.assertEqual(encoder_status(HYPERFLOW | self.INT8)["missing"], [])
+
+    def test_a_project_can_name_its_text_encoder_and_vae(self):
+        project = new_project("x")
+        both = HYPERFLOW | self.INT8 | {MODELS["clip"], MODELS["vae"]}
+        set_project(project, {"text_encoder": "qwen3vl_32b_minimax_h3_int8_convrot.safetensors", "vae": "minimax_h3_video_vae_int8_convrot.safetensors"})
+        job, graph = plan_render(project, "x", add_clip(project, {"action": "A keeper climbs."})[0]["id"], "draft", 3, both)
+        self.assertEqual(graph["2"]["inputs"]["clip_name"], "qwen3vl_32b_minimax_h3_int8_convrot.safetensors")
+        self.assertEqual(graph["3"]["inputs"]["vae_name"], "minimax_h3_video_vae_int8_convrot.safetensors")
+        self.assertEqual((job["models"]["text_encoder"], job["models"]["vae"]),
+                         ("qwen3vl_32b_minimax_h3_int8_convrot.safetensors", "minimax_h3_video_vae_int8_convrot.safetensors"))
+        # A named file this machine lacks gives way to an installed one.
+        graph = render_graph(project, "x", clip(), "t1", "draft", 3, HYPERFLOW | {MODELS["clip"], MODELS["vae"]})
+        self.assertEqual((graph["2"]["inputs"]["clip_name"], graph["3"]["inputs"]["vae_name"]), (MODELS["clip"], MODELS["vae"]))
+        set_project(project, {"text_encoder": None, "vae": None})
+        self.assertNotIn("models", project)
+        for bad in (3, "", ["a"]):
+            with self.assertRaises(ValueError):
+                set_project(project, {"vae": bad})
 
 
 class ClipModelTest(unittest.TestCase):
@@ -517,6 +569,71 @@ class CastTest(unittest.TestCase):
         ]
         return project
 
+    def test_a_member_brings_all_its_pictures_to_the_shot(self):
+        project = self.project()
+        update_cast(project, "a", {"pictures": [{"file": "side.png", "subfolder": "p/assets"}, {"file": "back.png", "subfolder": "p/assets"}]})
+        graph = render_graph(project, "x", clip(cast=["a", "b"], action="@Tom looks at @Sea."), "t1", "draft", 3)
+        self.assertEqual([graph[str(n)]["inputs"]["file"] for n in (50, 51, 52, 53)],
+                         ["p/assets/a.png", "p/assets/side.png", "p/assets/back.png", "p/assets/b.png"])
+        self.assertEqual(graph["10"]["inputs"]["ref_images.ref_image_3"], ["53", 0])
+        prompt = graph["10"]["inputs"]["prompt"]
+        self.assertIn("<Subject 1> is the keeper in <Picture 1>, <Picture 2> and <Picture 3>.", prompt)
+        self.assertIn("<Subject 2> is the sea in <Picture 4>.", prompt)
+
+    def test_pictures_are_shared_out_within_what_h3_takes(self):
+        project = self.project()
+        more = [{"file": "t%s.png" % n, "subfolder": "p/assets"} for n in range(7)]
+        update_cast(project, "a", {"pictures": more})
+        update_cast(project, "b", {"pictures": more[:3]})
+        shot = clip(cast=["a", "b"], first={"file": "f.png"})
+        # Eight in all beside the first frame: one each, then one more each in turn.
+        self.assertEqual([len(pictures) for _, pictures in cast_pictures(project, shot)], [4, 4])
+        graph = render_graph(project, "x", shot, "t1", "draft", 3)
+        self.assertIn("57", graph)
+        self.assertNotIn("58", graph)
+        self.assertIn("<Subject 1> is the keeper in <Picture 2>, <Picture 3>, <Picture 4> and <Picture 5>.", graph["10"]["inputs"]["prompt"])
+        with self.assertRaises(ValueError):
+            update_cast(project, "a", {"pictures": more + more[:1]})
+        with self.assertRaises(ValueError):
+            update_cast(project, "a", {"pictures": [{"subfolder": "p"}]})
+        update_cast(project, "a", {"pictures": []})
+        self.assertEqual(describe(project)["cast"][0]["pictures"], 1)
+
+    def test_a_members_refmod_joins_the_conditioning_of_both_passes(self):
+        project = self.project()
+        update_cast(project, "a", {"refmod": {"file": "tom_v1", "strength": 0.8}})
+        final = render_graph(project, "x", clip(cast=["a"], action="@Tom waits."), "t1", "final", 3)
+        self.assertEqual(final["72"]["inputs"]["mod_1"], "tom_v1")
+        self.assertEqual((final["72"]["inputs"]["strength_1"], final["72"]["inputs"]["mod_2"]), (0.8, "(none)"))
+        self.assertEqual(final["73"]["inputs"]["conditioning"], ["10", 0])
+        self.assertEqual(final["13"]["inputs"]["conditioning"], ["73", 0])
+        self.assertEqual(final["74"]["inputs"]["conditioning"], ["80", 0])
+        self.assertEqual(final["88"]["inputs"]["conditioning"], ["74", 0])
+        self.assertEqual(render_models(final)["refmods"], [{"file": "tom_v1", "strength": 0.8}])
+        # Only for a clip that chose the member, and only when the pack offers the file.
+        self.assertNotIn("72", render_graph(project, "x", clip(cast=["b"]), "t1", "draft", 3))
+        self.assertNotIn("72", render_graph(project, "x", clip(cast=["a"]), "t1", "draft", 3, HYPERFLOW))
+        self.assertIn("72", render_graph(project, "x", clip(cast=["a"]), "t1", "draft", 3, HYPERFLOW | {"refmod:tom_v1"}))
+        self.assertEqual(describe(project)["cast"][0]["refmod"], "tom_v1")
+
+    def test_a_member_that_is_only_a_refmod_renders_from_the_prompt(self):
+        project = new_project("x")
+        made = add_cast(project, {"name": "Mira", "description": "a tall woman in a red scarf.", "refmod": {"file": "mira"}})
+        self.assertEqual(made["refmod"], {"file": "mira", "strength": 1.0})
+        graph = render_graph(project, "x", clip(cast=[made["id"]], action="@Mira turns. Then @mira smiles."), "t1", "draft", 3)
+        # No picture, so the prompt-only model, with her written out the first time she is named.
+        self.assertEqual(graph["10"]["inputs"]["checkpoint"], "fl2va")
+        self.assertIn("Mira, a tall woman in a red scarf, turns. Then Mira smiles.", graph["10"]["inputs"]["prompt"])
+        self.assertEqual(graph["13"]["inputs"]["conditioning"], ["73", 0])
+        for bad in ({"strength": 1}, {"file": "v", "strength": 2}, {"file": "v", "copies": 3}, "mira"):
+            with self.assertRaises(ValueError):
+                update_cast(project, made["id"], {"refmod": bad})
+        with self.assertRaises(ValueError):
+            update_cast(project, made["id"], {"refmod": None})
+        # A project file written by hand cannot break a render.
+        made["refmod"] = {"file": "mira", "strength": "strong"}
+        self.assertEqual(render_graph(project, "x", clip(cast=[made["id"]]), "t1", "draft", 3)["72"]["inputs"]["strength_1"], 1.0)
+
     def test_a_clip_only_gets_the_cast_it_chose(self):
         graph = render_graph(self.project(), "x", clip(cast=["b"]), "t1", "draft", 3)
         self.assertEqual(graph["50"]["inputs"]["file"], "p/assets/b.png")
@@ -603,6 +720,14 @@ class ExportTest(unittest.TestCase):
         ]
         args = export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4")
         self.assertLess(args.index("a.mp4"), args.index("b.mp4"))
+        # A smaller, lighter export: half the picture, compressed harder.
+        full = re.search(r"crop=(\d+):(\d+)", self.filter_of(args))
+        small = export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4", scale=0.5, quality="small")
+        self.assertEqual((args[args.index("-crf") + 1], small[small.index("-crf") + 1]), ("16", "23"))
+        self.assertIn("crop=%s:%s" % (int(full.group(1)) // 2, int(full.group(2)) // 2), self.filter_of(small))
+        for bad in ({"scale": 0.3}, {"quality": "tiny"}):
+            with self.assertRaises(ValueError):
+                export_command(self.project, {"a": "a.mp4"}, "o.mp4", **bad)
         self.assertIn("trim=start_frame=10:end_frame=110", self.filter_of(args))
         self.assertIn("concat=n=2:v=1:a=1", self.filter_of(args))
         self.assertEqual(args[args.index("-map") + 1], "[k0v]")
@@ -673,6 +798,21 @@ class ExportTest(unittest.TestCase):
         self.project["clips"][1]["takes"] = [{"id": "t2", "quality": "final", "size": [1920, 1088]}]
         text = self.filter_of(export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4"))
         self.assertIn("scale=1920:1088:", text)
+
+    def test_a_plan_says_what_an_export_will_hold(self):
+        project = new_project("x")
+        project["clips"] = [
+            {"id": "a", "name": "A", "takes": [{"id": "t", "quality": "final", "size": [1920, 1088], "frames": 100}], "active": "t"},
+            {"id": "b", "name": "B", "takes": [{"id": "u", "quality": "draft", "size": [640, 352], "frames": 50}], "active": "u"},
+            {"id": "c", "name": "C", "takes": [], "active": None},
+        ]
+        project["timeline"] = [{"id": "1", "clip": "a", "start": 0, "in": 0, "out": 100},
+                               {"id": "2", "clip": "b", "start": 120, "in": 0, "out": 50},
+                               {"id": "3", "clip": "c", "start": 170, "in": 0, "out": 24}]
+        plan = export_plan(project)
+        self.assertEqual((plan["width"], plan["height"], plan["frames"]), (1920, 1088, 194))
+        self.assertEqual((plan["clips"], plan["drafts"], plan["missing"], plan["gaps"]), (2, 1, 1, 1))
+        self.assertEqual((export_plan(project, 0.5)["width"], export_plan(project, 0.5)["height"]), (960, 544))
 
     def test_nothing_to_export_says_so(self):
         with self.assertRaises(ValueError):
