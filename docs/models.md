@@ -20,7 +20,9 @@ order, so a fresh install renders with whatever it has.
 A clip can render with a different profile than its project: select the clip
 and pick one under **Model** in the panel on the right. Its next render uses it,
 and takes keep the profile that made them. ComfyUI loads the other profile's
-models when the queue reaches such a clip, which takes a while.
+models when the queue reaches such a clip, which takes a while. **Render all
+drafts** queues the clips that share a model one after another, so each model
+is loaded once.
 
 | Profile | Files | Steps, draft and final |
 |---|---|---|

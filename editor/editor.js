@@ -901,6 +901,7 @@ function renderPerson(panel, person) {
     state.person = null;
     save();
     renderAll();
+    toast("Removed " + person.name + " from the cast.", false, undoAction);
   }));
   const line = document.createElement("p");
   line.className = "status";
@@ -1496,11 +1497,11 @@ function modelSummary(row) {
   const steps = (quality) => (custom && row.steps?.[quality]) || base.steps?.[quality] || "?";
   const lora = custom && row.lora === false ? null : base.lora;
   const parts = [
-    fileName(row.unet || ""),
     steps("draft") + " and " + steps("final") + " steps",
     ((custom && row.sampler) || base.sampler || "") + " / " + ((custom && row.scheduler) || base.scheduler || "simple"),
   ];
   if (lora) parts.push("adds " + fileName(lora));
+  parts.push(fileName(row.unet || ""));
   return parts.filter(Boolean).join(", ");
 }
 
@@ -1659,6 +1660,7 @@ function renderModels() {
     const sub = document.createElement("p");
     sub.className = "model-sub" + (status.bad ? " bad" : "");
     sub.textContent = status.text;
+    sub.title = status.text;
     main.append(name, sub);
     const side = document.createElement("div");
     side.className = "model-actions";
@@ -2426,10 +2428,12 @@ function versions(clip) {
   }, !current.saved);
   button("Delete take", () => {
     checkpoint();
+    const number = clip.takes.indexOf(current) + 1;
     clip.takes = clip.takes.filter((t) => t !== current);
     clip.active = clip.takes.at(-1)?.id ?? null;
     save();
     renderAll();
+    toast("Deleted take " + number + " of " + clip.name + ".", false, undoAction);
   }, clip.takes.length < 2);
   return [takes, tools];
 }
@@ -2903,7 +2907,11 @@ function placePlayhead() {
 }
 
 function updateClock() {
-  $("time").textContent = timecode(here());
+  const now = timecode(here());
+  const frames = document.createElement("span");
+  frames.className = "frames-part";
+  frames.textContent = now.slice(5);
+  $("time").replaceChildren(now.slice(0, 5), frames);
   $("total").textContent = "of " + timecode(viewEnd());
 }
 
@@ -3340,8 +3348,32 @@ function seek(frame) {
 /* Rendering */
 
 function updateQueue() {
+  const box = $("queue");
   const count = state.jobs.size;
-  $("queue").textContent = count ? (count === 1 ? "Rendering 1 clip" : "Rendering " + count + " clips") : "";
+  if (!count) {
+    box.replaceChildren();
+    return;
+  }
+  const front = () => state.running || state.jobs.values().next().value;
+  const clip = state.running && clipOf(state.running.clip);
+  const waiting = count - (state.running ? 1 : 0);
+  const parts = [];
+  if (clip) parts.push(clip.name + ", " + Math.round((state.running.progress || 0) * 100) + "%");
+  else if (state.running) parts.push("Rendering");
+  if (waiting) parts.push(waiting + " waiting");
+  let chip = box.firstElementChild;
+  if (!chip) {
+    chip = document.createElement("button");
+    chip.className = "queue-chip";
+    chip.title = "Show the clip that is rendering";
+    chip.addEventListener("click", () => {
+      const job = front();
+      if (!job || !clipOf(job.clip)) return;
+      selectClip(job.clip, state.project.timeline.find((i) => i.clip === job.clip)?.id ?? null);
+    });
+    box.append(chip);
+  }
+  chip.textContent = parts.join(", ");
 }
 
 // Renders are queued by the server, which also attaches the finished take to the project.
@@ -3452,6 +3484,7 @@ function onMessage({ type, data }) {
   }
   if (state.running !== job) {
     state.running = job;
+    updateQueue();
     renderTimeline();
     renderInspector();
   }
@@ -3464,6 +3497,7 @@ function onMessage({ type, data }) {
     job.max = data.max;
     job.stage = STAGES[15];
     job.progress = data.value / data.max;
+    updateQueue();
     const bar = document.querySelector(".block.rendering .bar");
     if (bar) bar.style.width = Math.round(job.progress * 100) + "%";
     const clip = clipOf(job.clip);
@@ -3648,8 +3682,27 @@ $("close").addEventListener("click", () => window.parent.postMessage("h3-editor-
 $("renderAll").addEventListener("click", () => {
   const waiting = sorted().map((i) => clipOf(i.clip)).filter((c, i, all) => c && !c.takes.length && all.indexOf(c) === i);
   if (!waiting.length) return toast("Every clip on the timeline already has a render.");
+  const ready = waiting.filter((c) => c.action.trim() && !jobFor(c.id));
+  const blank = waiting.filter((c) => !c.action.trim());
   (async () => {
-    for (const clip of waiting) await renderClip(clip, "draft");
+    if (ready.length) {
+      try {
+        await flush();
+        // One batch, so the server can run the clips that share a model one after another.
+        const ops = ready.map((c) => ({ op: "render", clip: c.id, quality: "draft", client_id: clientId }));
+        await postJson("/project/" + state.folder + "/ops", { ops });
+        adopt(await api("/project/" + state.folder));
+        updateQueue();
+        renderAll();
+      } catch (error) {
+        // One clip that cannot render stops a batch. Asked for one at a time, the others still go.
+        try { adopt(await api("/project/" + state.folder)); } catch (_) {}
+        for (const clip of ready) await renderClip(clip, "draft");
+      }
+    }
+    if (blank.length) {
+      toast((blank.length === 1 ? blank[0].name + " has" : blank.length + " clips have") + " nothing in What happens yet, so " + (blank.length === 1 ? "it was" : "they were") + " left out.", true);
+    }
   })();
 });
 // Export joins the timeline into one video file. The dialog says what will be in it first.

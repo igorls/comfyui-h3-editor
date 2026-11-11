@@ -35,6 +35,24 @@ def editor_id(node_id):
 LORA_BLOCK = re.compile(r"(?<![A-Za-z0-9])blocks([._])(\d+)(?=[._])")
 
 
+def group_by_model(models, first=None):
+    """The order to run a batch of renders in, so that each model is loaded once.
+
+    models names the model of each render, in the order they were asked for. The result is
+    the positions in running order: renders that share a model run together, the groups in
+    the order their first render was asked for, and each group in its own order. first is
+    the model the queue already ends on; a batch that uses it starts with it.
+    """
+    groups = []
+    for model in models:
+        if model not in groups:
+            groups.append(model)
+    if first in groups:
+        groups.remove(first)
+        groups.insert(0, first)
+    return [index for group in groups for index, model in enumerate(models) if model == group]
+
+
 def legal_length(length):
     length = int(length)
     return length >= 5 and (length - 5) % 17 == 0

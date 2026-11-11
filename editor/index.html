@@ -13,7 +13,7 @@
     <select id="project" aria-label="Project"></select>
     <button id="newProject" class="quiet">New project</button>
     <div class="spacer"></div>
-    <div id="queue" class="queue" aria-live="polite"></div>
+    <div id="queue" class="queue"></div>
     <button id="renderAll" class="quiet">Render all drafts</button>
     <button id="export" class="primary">Export</button>
     <button id="shortcuts" class="tool tip-end" aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts (?)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6.5" width="18" height="11" rx="2"/><path d="M7 10.5h.01M10.3 10.5h.01M13.7 10.5h.01M17 10.5h.01M8.5 14h7"/></svg></button>
@@ -62,7 +62,7 @@
         <button id="forward" class="icon" aria-label="One frame forward" title="One frame forward (Right)">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6.5L15 12l-5.5 5.5"/></svg>
         </button>
-        <span class="clock"><span id="time" class="time">00:00:00</span><span id="total" class="total"></span></span>
+        <span class="clock" title="Minutes, seconds and frames"><span id="time" class="time">00:00:00</span><span id="total" class="total"></span></span>
       </div>
     </section>
 

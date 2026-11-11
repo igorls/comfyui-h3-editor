@@ -17,7 +17,7 @@ import folder_paths
 
 from . import media
 from . import project as store
-from .policy import editor_id
+from .policy import editor_id, group_by_model
 
 PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "editor")
 
@@ -603,19 +603,28 @@ async def operations(request):
             try:
                 if kind == "render":
                     clip_id = store._resolve(op.get("clip"), names, "clip")
-                    store.plan_render(copy.deepcopy(work), folder, clip_id, op.get("quality") or "draft", op.get("seed"),
-                                      available_models())
-                    later.append((index, op, clip_id))
+                    planned, _ = store.plan_render(copy.deepcopy(work), folder, clip_id, op.get("quality") or "draft",
+                                                   op.get("seed"), available_models())
+                    later.append((index, op, clip_id, planned["models"]["unet"]))
                     results.append(None)
                 elif kind == "cancel":
-                    later.append((index, op, store._resolve(op.get("clip"), names, "clip")))
+                    later.append((index, op, store._resolve(op.get("clip"), names, "clip"), None))
                     results.append(None)
                 else:
                     results.append(store.apply_op(work, op, names))
             except (ValueError, KeyError, TypeError) as error:
                 return refused("operation %s (%s): %s" % (index + 1, kind, plain(error)), index=index)
+        # Renders that share a model run one after another, so a mixed batch loads each model once.
+        # They trade places only with each other: a cancel stays where it was asked for.
+        slots = [n for n, entry in enumerate(later) if entry[1]["op"] == "render"]
+        queued = work.get("pending") or []
+        ends_on = (queued[-1].get("models") or {}).get("unet") if queued else None
+        order = group_by_model([later[n][3] for n in slots], ends_on)
+        arranged = list(later)
+        for slot, pick in zip(slots, order):
+            arranged[slot] = later[slots[pick]]
         problem = None
-        for index, op, clip_id in later:
+        for index, op, clip_id, _ in arranged:
             try:
                 if op["op"] == "render":
                     job = await start_render(work, folder, clip_id, op.get("quality"), op.get("seed"), op.get("client_id"))

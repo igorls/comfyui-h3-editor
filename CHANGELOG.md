@@ -26,11 +26,20 @@ Each release is a tag on GitHub, `v` followed by the version.
   jumping there when you let go.
 - **A project opens showing its whole cut**, and the panels give way when the
   window gets narrower, so the viewer keeps its room.
-- **Messages stack and can be closed.** Deleting a clip or a bin shows an Undo
-  button in its message.
+- **Messages stack and can be closed.** Deleting a clip, a bin or a take, or
+  removing a cast member, shows an Undo button in its message.
+- **The header says what is rendering.** It names the clip, how far it is and
+  how many are waiting; press it to go to that clip.
+- **The clock shows minutes and seconds first**, with the frames smaller after
+  them.
 
 ### Added
 
+- **Batches of renders are grouped by model.** Render all drafts, and a batch
+  of renders sent by an agent, queue the clips that load the same model file
+  one after another, so a project that mixes models, or prompt-only clips with
+  clips that have pictures, loads each model once instead of going back and
+  forth.
 - **A bridge button in an empty space.** A gap between two rendered clips on
   the timeline shows a plus: press it to generate the clip that connects them.
 - **Timeline clips work from the keyboard.** Tab reaches each clip and Enter

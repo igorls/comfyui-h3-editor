@@ -1,5 +1,6 @@
 import unittest
 from policy import (
+    group_by_model,
     audio_ticks,
     audio_window,
     bridge_spans,
@@ -239,6 +240,23 @@ class PremappedBlocksTest(unittest.TestCase):
         self.assertEqual(premapped_blocks({"hyperflow.dropped_blocks": " 9 "}), HYPERFLOW_DROPPED[49])
         for nothing in (None, {}, {"hyperflow.dropped_blocks": ""}, {"hyperflow.dropped_blocks": "six"}, {"hyperflow.variant": "fl2va"}):
             self.assertIsNone(premapped_blocks(nothing))
+
+
+class GroupByModelTest(unittest.TestCase):
+    def test_renders_that_share_a_model_run_together(self):
+        self.assertEqual(group_by_model(["ref", "text", "ref", "text", "ref"]), [0, 2, 4, 1, 3])
+
+    def test_a_batch_on_one_model_keeps_its_order(self):
+        self.assertEqual(group_by_model(["ref", "ref", "ref"]), [0, 1, 2])
+
+    def test_it_starts_with_the_model_the_queue_ends_on(self):
+        self.assertEqual(group_by_model(["ref", "text", "ref"], first="text"), [1, 0, 2])
+
+    def test_a_model_the_batch_does_not_use_changes_nothing(self):
+        self.assertEqual(group_by_model(["ref", "text"], first="other"), [0, 1])
+
+    def test_an_empty_batch_is_empty(self):
+        self.assertEqual(group_by_model([]), [])
 
 
 class EditorIdTest(unittest.TestCase):

@@ -46,7 +46,10 @@ button:disabled { opacity: 0.42; cursor: default; }
 .app { display: grid; grid-template-rows: 48px minmax(0, 1fr) 6px var(--tl-h); height: 100vh; }
 .bar { display: flex; align-items: center; gap: 8px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .bar select { min-width: 220px; padding: 5px 9px; background-color: var(--raised); border: 1px solid var(--line); border-radius: var(--radius); font-weight: 600; }
-.queue { color: var(--live); font-variant-numeric: tabular-nums; margin-right: 6px; }
+.queue { margin-right: 2px; }
+.queue-chip { display: flex; align-items: center; gap: 8px; padding: 5px 10px; background: transparent; border: 1px solid var(--line); color: var(--live); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.queue-chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
+.queue-chip:hover { background: var(--raised); }
 
 .work { display: grid; grid-template-columns: var(--bin-w, 264px) 6px minmax(0, 1fr) 6px var(--insp-w, 380px); min-height: 0; }
 .splitter-v { position: relative; background: var(--panel); cursor: ew-resize; touch-action: none; }
@@ -149,6 +152,7 @@ button:disabled { opacity: 0.42; cursor: default; }
 .play.playing .i-pause { display: block; }
 .clock { display: flex; align-items: baseline; gap: 8px; margin-left: 14px; }
 .time { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+.time .frames-part { color: var(--muted); font-size: 15px; font-weight: 500; }
 .total { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 .inspector { display: flex; flex-direction: column; border-left: 1px solid var(--line); overflow-y: auto; }
@@ -353,7 +357,7 @@ label.lora-name { cursor: pointer; }
 .model-row.on { border-color: var(--tungsten); }
 .model-main { flex: 1; min-width: 0; }
 .model-main b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-sub { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.model-sub { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-sub.bad { color: var(--danger); }
 .model-actions { flex: none; display: flex; align-items: center; gap: 6px; }
 .model-actions .small { padding: 5px 11px; font-size: 12px; }

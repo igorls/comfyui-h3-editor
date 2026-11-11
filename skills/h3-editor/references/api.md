@@ -261,6 +261,12 @@ speaker when they should not be seen.
 Returns `{"clip", "job", "take"}`. It is refused for footage, for a clip with no action, and for a clip already
 rendering. Renders run after the edits in the same batch. `cancel`: `clip` or `job`.
 
+The renders of one batch are queued grouped by the model file each one loads, so a batch that
+mixes models (prompt-only clips and clips with pictures, or clips on different profiles) loads
+each model once. Groups keep the order their first render was asked for, and a batch starts
+with the model the queue already ends on. So send the renders you want together in one batch
+rather than one call each.
+
 | quality | 16:9 | 9:16 | 1:1 |
 |---|---|---|---|
 | draft | 640x352 | 352x640 | 480x480 |
