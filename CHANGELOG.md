@@ -23,6 +23,12 @@ Each release is a tag on GitHub, `v` followed by the version.
   picture (which is sent along), a sharp face, natural light, a background
   that stays put, and natural movement. One is a scale: how well it holds
   attention. A last row, smooth cuts, is the editor's own cut measurement for
+- **Soft clips.** The editor measures how sharp each rendered clip is at the
+  size of the cut, and marks a clip `Soft` on the timeline when it sits far
+  under the rest: a draft left among finals, or footage smaller than the cut.
+  For agents: `GET /project/{name}/detail`. For any finished file,
+  `python detail.py film.mp4` lists the stretches that are much softer than
+  the rest, with their times. The same pictures always give the same numbers.
   that range, because the model sees about a frame a second and cannot notice
   a jump cut. Each row has a bar and the description of where it
   landed. Ratings are kept with the project, so a range can be

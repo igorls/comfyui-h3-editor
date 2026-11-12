@@ -185,6 +185,9 @@ def main():
     p = sub.add_parser("cuts", help="A score from 0 to 100 for every cut between two rendered clips, worst first.")
     p.add_argument("project")
     p.add_argument("--json", action="store_true", help="The raw scores as JSON.")
+    p = sub.add_parser("detail", help="How sharp each clip on the timeline is at the cut's size, and which are soft next to the rest.")
+    p.add_argument("project")
+    p.add_argument("--json", action="store_true", help="The raw numbers as JSON.")
     p = sub.add_parser("rate", help="Rate a range of the cut against a rubric with Gemini (needs the user's key set in the editor).")
     p.add_argument("project")
     p.add_argument("--from", dest="first", type=int, default=0, help="First timeline frame of the range.")
@@ -252,6 +255,16 @@ def main():
                 print("%4s  %-12s at frame %-6d %s > %s  %s" % ("-" if cut["score"] is None else cut["score"], cut["kind"], cut["at"],
                                                               cut["before"], cut["after"], "; ".join(cut["notes"])))
             print("worst: %s" % found["worst"])
+    elif c == "detail":
+        found = api("GET", project_path(args.project) + "/detail")
+        if args.json:
+            print(json.dumps(found, indent=1, ensure_ascii=False))
+        else:
+            for row in found["clips"]:
+                print("%-5s %-10s at frame %-6d fine %s  %s" % ("SOFT" if row["soft"] else "", row["item"], row["at"],
+                                                              "-" if row["fine"] is None else "%.3f" % row["fine"],
+                                                              "" if row["part"] is None else "%d%% of the cut's level" % round(100 * row["part"])))
+            print("level: %s at %s" % (found["level"], "x".join(str(n) for n in found["size"] or [])))
     elif c == "rate":
         body = {"from": args.first}
         if args.last is not None:

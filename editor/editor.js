@@ -3486,7 +3486,29 @@ function renderTimeline() {
   refreshCutScores();
   if (state.gap) {
     const mark = document.createElement("div");
+  for (const row of shownTakes()) {
+    const found = fineScores.get(row.key);
+    if (!found || !found.soft) continue;
+    const mark = document.createElement("button");
+    mark.className = "soft-mark";
+    mark.style.left = px(row.item.start + (itemEnd(row.item) - row.item.start) / 2) + "px";
+    mark.textContent = "Soft";
+    const draft = row.take.quality === "draft";
+    mark.title = clipOf(row.item.clip).name + " is soft next to the rest of the cut: " + Math.round(found.part * 100) + "% of its fine detail. "
+      + (draft ? "It is a draft among finals: render a final." : "Its picture is smaller than the cut's, or blurred.");
+    mark.setAttribute("aria-label", mark.title);
+    mark.addEventListener("pointerdown", (event) => event.stopPropagation());
+    mark.addEventListener("click", () => {
+      state.clip = row.item.clip;
+      state.item = row.item.id;
+      state.gap = null;
+      seek(row.item.start);
+      renderAll();
+    });
+    blocks.push(mark);
+  }
     mark.className = "gapmark";
+  refreshFineScores();
     mark.style.left = px(state.gap.start) + "px";
     mark.style.width = px(state.gap.end - state.gap.start) + "px";
     blocks.push(mark);
@@ -3552,6 +3574,48 @@ function refreshCutScores() {
 /* VFX: clips drawn by code, on a lane above the picture */
 
 const effectOf = (id) => (state.project?.effects || []).find((e) => e.id === id) || null;
+// Detail: the server measures how sharp each rendered clip is at the size of the cut. A clip far under the level of
+// the rest gets a mark: a draft left among finals, or footage smaller than the cut. Whether a clip is soft depends on
+// the whole cut, so every answer replaces what was known.
+const fineScores = new Map();
+let fineAsked = "";
+let fineTimer = null;
+
+function shownTakes() {
+  const shape = (cutShape() || []).join("x");
+  const found = [];
+  for (const item of sorted()) {
+    const take = activeTake(clipOf(item.clip));
+    if (take) found.push({ item, take, key: [item.id, take.id, item.in, item.out, shape].join("|") });
+  }
+  return found;
+}
+
+function refreshFineScores() {
+  const wanted = shownTakes();
+  const signature = state.folder + "/" + wanted.map((c) => c.key).join(",");
+  if (signature === fineAsked || wanted.length < 2) return;
+  clearTimeout(fineTimer);
+  fineTimer = setTimeout(async () => {
+    if (unsaved()) return refreshFineScores();
+    fineAsked = signature;
+    const folder = state.folder;
+    try {
+      const reply = await api("/project/" + encodeURIComponent(folder) + "/detail");
+      if (folder !== state.folder) return;
+      const now = new Map(shownTakes().map((c) => [c.item.id, c.key]));
+      fineScores.clear();
+      for (const row of reply.clips) {
+        const key = now.get(row.item);
+        if (key) fineScores.set(key, row);
+      }
+      renderTimeline();
+    } catch (_) {
+      // An older server has no detail scores; the timeline works without them.
+    }
+  }, 1200);
+}
+
 const effectAt = (frame) => (state.project?.effects || []).find((e) => frame >= e.start && frame < e.start + e.frames) || null;
 const fx = { runtime: null, key: "", source: null, params: "", meta: null, busy: false, wanted: null, error: null, rendering: null };
 

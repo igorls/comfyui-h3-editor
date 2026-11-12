@@ -17,6 +17,7 @@ from aiohttp import web
 import folder_paths
 
 from . import cuts as cutscore
+from . import detail as finescore
 from . import media
 from . import project as store
 from .policy import editor_id, group_by_model
@@ -518,6 +519,54 @@ async def score_cuts(data):
 
     pairs = [(a, b) for a, b in zip(order[:-1], order[1:]) if store.item_end(a) == b["start"]]
     return await asyncio.gather(*[one(a, b) for a, b in pairs])
+
+
+FINE_SCORES = {}
+
+
+async def detail(request):
+    """How sharp each clip of the timeline is at the size of the cut, and which are soft next to the rest.
+
+    A clip is soft when its fine detail is under half the level of the cut: a draft among finals, or small footage.
+    The numbers come from the pictures alone (see detail.py).
+    """
+    data = read_project(request.match_info["name"])
+    found = await score_detail(data)
+    return web.json_response(dict(found, revision=data.get("revision", 0)))
+
+
+async def score_detail(data):
+    """The fine detail of every rendered clip on a project's timeline, in order."""
+    gate = asyncio.Semaphore(3)
+    shown = []
+    for item in store.ordered(data):
+        take = store.active_take(store.find_clip(data, item["clip"]) or {})
+        if not take:
+            continue
+        try:
+            shown.append((item, output_path(take.get("subfolder"), take["file"]), store.take_size(data, take)))
+        except (ValueError, web.HTTPException):
+            continue
+    if not shown:
+        return {"level": None, "size": None, "clips": []}
+    width, height = max((size for _, _, size in shown), key=lambda size: size[0])      # the cut takes its largest picture
+
+    async def one(item, path):
+        try:
+            key = (path, os.path.getmtime(path), item["in"], item["out"], width, height)
+            if key not in FINE_SCORES:
+                async with gate:
+                    FINE_SCORES[key] = await asyncio.to_thread(finescore.clip_fine, path, item["in"], item["out"], width, height, media.command)
+                while len(FINE_SCORES) > 2000:
+                    FINE_SCORES.pop(next(iter(FINE_SCORES)))
+            return FINE_SCORES[key]
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
+            return None
+
+    values = await asyncio.gather(*[one(item, path) for item, path, _ in shown])
+    found = finescore.soft_clips([(item["id"], value, item["out"] - item["in"]) for (item, _, _), value in zip(shown, values)])
+    return {"level": found["level"], "size": [width, height],
+            "clips": [dict(row, item=row.pop("id"), at=item["start"]) for row, (item, _, _) in zip(found["clips"], shown)]}
 
 
 EFFECT_FRAME_LIMIT = 8 * 1024 * 1024     # one frame of a VFX render, as a JPEG
@@ -1487,6 +1536,7 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/duplicate", "duplicate"),
     ("GET", "/h3take/api/project/{name}/summary", "summary"),
     ("GET", "/h3take/api/project/{name}/cuts", "cuts"),
+    ("GET", "/h3take/api/project/{name}/detail", "detail"),
     ("GET", "/h3take/api/project/{name}/history", "history"),
     ("POST", "/h3take/api/project/{name}/restore", "restore"),
     ("POST", "/h3take/api/project/{name}/ops", "operations"),

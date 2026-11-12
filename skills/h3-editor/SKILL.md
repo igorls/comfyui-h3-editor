@@ -294,6 +294,10 @@ ids, and each clip's state. Before you export, check:
   rubric (same person from start to end, match with the cast picture, sharp face, light, background, movement, attention, cuts). It is a second opinion on what frames
   alone cannot tell you, such as whether a stretch drags. It sends that part of the video to Google, so run it on the
   ranges the user cares about, not as a routine step;
+- no clip is soft. `python scripts/h3.py detail PROJECT` measures how sharp each clip is at the size of the cut and
+  marks the ones far under the rest `SOFT`: a draft left among finals, or footage smaller than the cut. Render that
+  clip as a final. For a finished file of any origin, `python detail.py FILE.mp4`, run from the H3 Editor pack's
+  folder, lists the stretches that are much softer than the rest, with their times;
 - no cut scores low. `python scripts/h3.py cuts PROJECT` scores each place where two
   rendered clips touch, 0 to 100, from the pictures. A `jump` (the same shot, the
   subject pops) under 60 needs fixing: extend the first clip and let the second
