@@ -181,6 +181,7 @@ def main():
     p.add_argument("project")
     p.add_argument("clips", nargs="+")
     p.add_argument("--final", action="store_true")
+    p.add_argument("--upscale", action="store_true", help="Enlarge each clip's final two times (a new take), instead of rendering.")
     p.add_argument("--seed", type=int)
     p = sub.add_parser("cuts", help="A score from 0 to 100 for every cut between two rendered clips, worst first.")
     p.add_argument("project")
@@ -254,6 +255,13 @@ def main():
             for cut in sorted(found["cuts"], key=lambda x: 101 if x["score"] is None else x["score"]):
                 print("%4s  %-12s at frame %-6d %s > %s  %s" % ("-" if cut["score"] is None else cut["score"], cut["kind"], cut["at"],
                                                               cut["before"], cut["after"], "; ".join(cut["notes"])))
+            for cut in found.get("effects") or []:
+                print("%4s  %-12s at frame %-6d %s of VFX clip %s  %s" % ("-" if cut["score"] is None else cut["score"], cut["kind"], cut["at"],
+                                                                         "into the start" if cut["edge"] == "start" else "out of the end",
+                                                                         cut["effect"], "; ".join(cut["notes"])))
+            for row in found.get("inside") or []:
+                print("%4s  %-12s at frame %-6d inside %s, frame %d of its take  %s" % (row["score"], "inside: " + row["kind"], row["at"], row["item"],
+                                                                                    row["frame"], "; ".join(row["notes"])))
             print("worst: %s" % found["worst"])
     elif c == "detail":
         found = api("GET", project_path(args.project) + "/detail")
@@ -290,7 +298,7 @@ def main():
         show(result["results"])
         print(text_summary(result["summary"]))
     elif c == "render":
-        ops = [{"op": "render", "clip": clip, "quality": "final" if args.final else "draft"} for clip in args.clips]
+        ops = [{"op": "render", "clip": clip, "quality": "upscale" if args.upscale else "final" if args.final else "draft"} for clip in args.clips]
         if args.seed is not None:
             for op in ops:
                 op["seed"] = args.seed

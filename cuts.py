@@ -18,8 +18,21 @@ score  0..100. continuous 90-100, new shot 70-100, jump 0-60 (up to 90 when it i
 
 The editor scores every cut of a timeline with score_cut(); GET /h3take/api/project/{name}/cuts returns them.
 
+scan() does the same for a finished file, where nothing says where the cuts are: it finds every place the picture
+changes more than its own motion explains, scores it as above, and reports a shot of STRAY frames or fewer between
+two cuts as a stray frame (score 0): a frame of another picture left in by mistake. A fade or a dip to black changes
+a little on every frame, so it is not a cut and is not reported.
+
+inside() looks into one generated take, which should be one shot: a cut in it, or a fade to another picture (the
+model sometimes ends a take by dissolving into a different room), is reported with the frame where it starts.
+
 Usage: python cuts.py a.mp4 b.mp4 [c.mp4 ...]      scores each cut between neighbours, prints a table
        python cuts.py --json a.mp4 b.mp4
+       python cuts.py --scan film.mp4 [--all]     every cut inside one file that needs a look (--all: every cut)
+       python cuts.py --scan film.mp4 --at 113,234,355   only the cuts at these frames: where the edit put them.
+                                                  A screen recording or an animation changes abruptly inside one
+                                                  shot, and a scan without --at reports each of those as a cut
+       python cuts.py --inside take.mp4           where a take that should be one shot changes picture
 Needs ffmpeg and numpy.
 """
 import json
@@ -29,6 +42,9 @@ import sys
 import numpy as np
 
 W, H, N, FPS = 96, 54, 5, 24
+STRAY = 3           # a shot of this many frames or fewer is a stray frame, not a shot
+SPAN = 12           # a fade is looked for across this many frames
+POP = 0.12          # a step under this is a blink, a gesture or a ripple, not a change of picture
 
 
 def plain(args):
@@ -129,9 +145,130 @@ def score(a, b):
     return dict(judge(m), **{k: round(v, 4) for k, v in m.items()})
 
 
+def whole(path, command=plain):
+    """Every frame of a file at W x H, as float RGB in 0..1."""
+    raw = subprocess.run(command(["ffmpeg", "-v", "error", "-i", str(path), "-an", "-vf", "fps=%d,scale=%d:%d:flags=area" % (FPS, W, H),
+                                  "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]), capture_output=True, check=True).stdout
+    return np.frombuffer(raw, dtype=np.uint8).reshape(-1, H, W, 3).astype(np.float32) / 255.0
+
+
+def find_cuts(pictures):
+    """The cuts inside a run of frames: [{"at", kind, score, notes, ...}], at being the first frame after the cut.
+
+    A shot of STRAY frames or fewer between two cuts is one finding, a stray frame, with "frames" saying how many.
+    """
+    y = [luma(p.astype(np.float64)) for p in pictures]
+    steps = [local(a, b) for a, b in zip(y[:-1], y[1:])]
+    found = []
+    for k, step in enumerate(steps):
+        if step <= 0.02:
+            continue                                   # under what any cut is allowed: not worth measuring
+        before = pictures[max(0, k - N + 1):k + 1].astype(np.float64)
+        after = pictures[k + 1:k + 1 + N].astype(np.float64)
+        m = measure(before, after)
+        verdict = judge(m)
+        if verdict["kind"] != "continuous":
+            found.append(dict(verdict, at=k + 1, **{name: round(value, 4) for name, value in m.items()}))
+    out, k = [], 0
+    while k < len(found):
+        cut = found[k]
+        strong = lambda c: c["kind"] == "new shot" or c["step"] >= POP       # a real change of picture, not a ripple
+        if k + 1 < len(found) and found[k + 1]["at"] - cut["at"] <= STRAY and strong(cut) and strong(found[k + 1]):
+            count = found[k + 1]["at"] - cut["at"]
+            out.append({"at": cut["at"], "kind": "stray frame", "score": 0, "frames": count,
+                        "notes": ["%d frame%s of another picture between two cuts" % (count, "" if count == 1 else "s")]})
+            k += 2
+        else:
+            out.append(cut)
+            k += 1
+    return out
+
+
+def likeness(a, b):
+    """How alike two luma pictures are in layout, -1..1."""
+    sa, sb = blurred(a), blurred(b)
+    da, db = sa - sa.mean(), sb - sb.mean()
+    spread = float(np.sqrt((da * da).sum() * (db * db).sum()))
+    return float((da * db).sum() / spread) if spread > 1e-9 else 1.0
+
+
+def find_inside(pictures):
+    """Where a run of frames that should be one shot changes picture: [{"at", "kind", "score", "notes"}].
+
+    kind is "cut" (a hard cut, or a stray frame) or "fade" (the picture dims or dissolves into another within SPAN
+    frames, with no cut). at is the first frame of the change.
+    """
+    found = []
+    hard = find_cuts(pictures)
+    hard = [cut for cut in hard if cut["kind"] != "jump" or cut["step"] >= POP]
+    for cut in hard:
+        stray = cut["kind"] == "stray frame"
+        found.append({"at": cut["at"], "kind": "cut", "score": 0 if stray or cut["kind"] == "new shot" else min(cut["score"], 60),
+                      "notes": cut["notes"] if stray else ["the take cuts to another picture" if cut["kind"] == "new shot"
+                                                           else "the subject pops inside the take"]})
+    y = [luma(p.astype(np.float64)) for p in pictures]
+    light = [float(v.mean()) for v in y]
+    k = SPAN
+    while k < len(y):
+        if any(k - SPAN < cut["at"] <= k for cut in hard):
+            k += 1
+            continue
+        dims = light[k] < 0.6 * light[k - SPAN] and light[k - SPAN] > 0.05
+        other = likeness(y[k], y[k - SPAN]) < 0.3
+        if dims or other:
+            start = k - SPAN
+            if dims:                                   # where it starts to dim, not where it was last whole
+                start = next(j for j in range(k - SPAN + 1, k + 1) if light[j] < 0.95 * light[k - SPAN]) - 1
+            found.append({"at": start, "kind": "fade", "score": 0,
+                          "notes": ["the picture fades out" if dims else "the picture dissolves into another one"]})
+            k += 3 * SPAN                              # one finding for one fade
+        else:
+            k += 1
+    return sorted(found, key=lambda row: row["at"])
+
+
+def inside(path, command=plain):
+    """Where one take changes picture, each with its time in seconds."""
+    return [dict(row, time=round(row["at"] / float(FPS), 3)) for row in find_inside(whole(path, command))]
+
+
+def scan(path, command=plain):
+    """Every cut inside one file, in order, each with its time in seconds."""
+    return [dict(cut, time=round(cut["at"] / float(FPS), 3)) for cut in find_cuts(whole(path, command))]
+
+
 def main(argv):
     as_json = "--json" in argv
     files = [f for f in argv if not f.startswith("--")]
+    if "--inside" in argv:
+        if len(files) != 1:
+            raise SystemExit(__doc__)
+        rows = inside(files[0])
+        if as_json:
+            print(json.dumps(rows, indent=1))
+            return
+        for r in rows:
+            print("%3d  %-5s %d:%05.2f  frame %-6d %s" % (r["score"], r["kind"], int(r["time"]) // 60, r["time"] % 60, r["at"], "; ".join(r["notes"])))
+        print("one shot, nothing found" if not rows else "%d found" % len(rows))
+        return
+    if "--scan" in argv:
+        marks = None
+        if "--at" in argv:
+            marks = [int(n) for n in argv[argv.index("--at") + 1].split(",") if n.strip()]
+            files = [f for f in files if f != argv[argv.index("--at") + 1]]
+        if len(files) != 1:
+            raise SystemExit(__doc__)
+        rows = scan(files[0])
+        if marks is not None:
+            rows = [r for r in rows if any(abs(r["at"] - m) <= STRAY for m in marks)]
+        if as_json:
+            print(json.dumps(rows, indent=1))
+            return
+        shown = rows if "--all" in argv else [r for r in rows if r["score"] < 70]
+        for r in shown:
+            print("%3d  %-11s %d:%05.2f  frame %-6d %s" % (r["score"], r["kind"], int(r["time"]) // 60, r["time"] % 60, r["at"], "; ".join(r["notes"])))
+        print("%d cuts, %d need a look" % (len(rows), sum(1 for r in rows if r["score"] < 70)))
+        return
     if len(files) < 2:
         raise SystemExit(__doc__)
     rows = [dict(score(a, b), cut="%s > %s" % (a, b)) for a, b in zip(files[:-1], files[1:])]

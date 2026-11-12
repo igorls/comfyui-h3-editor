@@ -15,6 +15,25 @@ Each release is a tag on GitHub, `v` followed by the version.
   A jump cut, the same shot with the subject popped to another pose, scores
   low and gets a mark on the timeline with the reason. The same takes and trims
   always give the same score. For agents: `GET /project/{name}/cuts`.
+  The cut into and out of a rendered VFX clip is scored the same way, against
+  the picture under it. A generated take that should be one shot is checked
+  inside as well: where it cuts or fades to another picture, the timeline gets
+  a mark at that frame. `python cuts.py --scan film.mp4` scores the cuts of a
+  finished file, and reports a few frames of another picture left between two
+  cuts as a stray frame.
+- **Upscale a final two times.** **Upscale 2x**, on a clip whose take is a
+  final, enlarges it with RelayVSR, a video upscaler ComfyUI runs natively: a
+  1920 x 1088 final becomes 3840 x 2176, as a new take with the same sound. It
+  needs two files from Comfy-Org/RelayVSR in ComfyUI's models folder, and
+  about 16 GB of GPU memory for an eight-second clip. Clips of up to ten
+  seconds at a time. For agents: the `render` operation with
+  `"quality": "upscale"`.
+- **Soft clips.** The editor measures how sharp each rendered clip is at the
+  size of the cut, and marks a clip `Soft` on the timeline when it sits far
+  under the rest: a draft left among finals, or footage smaller than the cut.
+  For agents: `GET /project/{name}/detail`. For any finished file,
+  `python detail.py film.mp4` lists the stretches that are much softer than
+  the rest, with their times. The same pictures always give the same numbers.
 - **Rate a range with Gemini.** Mark a range of the cut (I and O at the
   playhead, or Shift-drag on the ruler) and press Rate: that part is exported
   small, sent to Google's Gemini Decision model with your own API key, and
@@ -23,12 +42,6 @@ Each release is a tag on GitHub, `v` followed by the version.
   picture (which is sent along), a sharp face, natural light, a background
   that stays put, and natural movement. One is a scale: how well it holds
   attention. A last row, smooth cuts, is the editor's own cut measurement for
-- **Soft clips.** The editor measures how sharp each rendered clip is at the
-  size of the cut, and marks a clip `Soft` on the timeline when it sits far
-  under the rest: a draft left among finals, or footage smaller than the cut.
-  For agents: `GET /project/{name}/detail`. For any finished file,
-  `python detail.py film.mp4` lists the stretches that are much softer than
-  the rest, with their times. The same pictures always give the same numbers.
   that range, because the model sees about a frame a second and cannot notice
   a jump cut. Each row has a bar and the description of where it
   landed. Ratings are kept with the project, so a range can be

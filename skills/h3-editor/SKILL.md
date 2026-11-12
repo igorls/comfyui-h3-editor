@@ -298,6 +298,16 @@ ids, and each clip's state. Before you export, check:
   marks the ones far under the rest `SOFT`: a draft left among finals, or footage smaller than the cut. Render that
   clip as a final. For a finished file of any origin, `python detail.py FILE.mp4`, run from the H3 Editor pack's
   folder, lists the stretches that are much softer than the rest, with their times;
+- for a 4K delivery, upscale last: `python scripts/h3.py render PROJECT CLIP --upscale` enlarges a clip's final two
+  times (1920 x 1088 becomes 3840 x 2176) as a new take, in seconds. Do it once the cut is settled and every clip is
+  a final: a clip that extends an upscaled clip would be generated from the enlarged picture. Upscale every clip of
+  the cut: one left at the old size is enlarged plainly at export and looks softer than its neighbours (about 70% of
+  their detail in `detail`, which is not low enough to be marked `SOFT`);
+- no take changes picture inside, and no VFX clip pops in or out. The same `cuts` command lists both after the cuts:
+  `inside: fade` or `inside: cut` means a generated take dissolves or cuts to another picture partway (the model
+  sometimes ends a take that way): trim the clip to end before that frame, or render it again with another seed. A
+  low score `into the start` or `out of the end` of a VFX clip means its first or last frame does not match the
+  picture under it: render the VFX clip again if the clip under it changed, or move its edge to a cut;
 - no cut scores low. `python scripts/h3.py cuts PROJECT` scores each place where two
   rendered clips touch, 0 to 100, from the pictures. A `jump` (the same shot, the
   subject pops) under 60 needs fixing: extend the first clip and let the second

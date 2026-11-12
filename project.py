@@ -2254,8 +2254,79 @@ def render_models(graph):
     return used
 
 
+# Upscaling. A finished final can be enlarged two times with RelayVSR, a video super-resolution model ComfyUI runs
+# natively: a large model writes reference latents for sparse keyframes and a small decoder carries them over every
+# frame. The result is a new take of the clip, at twice the size, with the same sound.
+UPSCALER = {"model": "relayvsr_x2_lightx2v_int8_convrot.safetensors", "vae": "relayvsr_flash_vae_x2_fp32.safetensors"}
+UPSCALE_QUALITY = "upscale"
+UPSCALE_MOST = 240          # frames: the enlarged frames are all held in memory at once, about 100 MB each at 4K
+
+
+def upscaler_files(available=None):
+    """The upscaler's two files as ComfyUI lists them (they may sit in a subfolder), or None for one that is missing."""
+    found = {}
+    for kind, name in UPSCALER.items():
+        if available is None:
+            found[kind] = name
+        else:
+            found[kind] = next((entry for entry in sorted(available) if entry.replace("\\", "/").split("/")[-1] == name), None)
+    return found
+
+
+def upscale_graph(folder, clip, take, source, files):
+    """The graph that enlarges one take of a clip two times and saves it as another take."""
+    file = "%s/%s" % (source["subfolder"], source["file"]) if source.get("subfolder") else source["file"]
+    return {
+        "30": {"class_type": "H3LoadClip", "inputs": {"file": file, "first": 0, "last": 0}},
+        "31": {"class_type": "UNETLoader", "inputs": {"unet_name": files["model"], "weight_dtype": "default"}},
+        "32": {"class_type": "VAELoader", "inputs": {"vae_name": files["vae"]}},
+        "33": {"class_type": "RelayVSRConditioning", "inputs": {"model": ["31", 0], "images": ["30", 0]}},
+        "34": {"class_type": "KSampler", "inputs": {
+            "model": ["31", 0], "seed": 0, "steps": 1, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple",
+            "positive": ["33", 0], "negative": ["33", 0], "latent_image": ["33", 1], "denoise": 1.0}},
+        "35": {"class_type": "VSRDecode", "inputs": {"vae": ["32", 0], "samples": ["34", 0], "images": ["30", 0], "detail": 1.0}},
+        "18": {"class_type": "CreateVideo", "inputs": {"images": ["35", 0], "fps": float(FPS), "audio": ["30", 1]}},
+        "19": {"class_type": "SaveVideo", "inputs": {
+            "video": ["18", 0], "filename_prefix": "%s/%s/clips/%s_%s" % (ROOT, folder, clip["id"], take),
+            "format": "auto", "codec": "auto"}},
+    }
+
+
+def plan_upscale(project, folder, clip_id, available=None):
+    """The graph that enlarges a clip's active take two times, and the job that will make the result a take."""
+    clip = find_clip(project, clip_id)
+    if any(j["clip"] == clip_id for j in project.get("pending", [])):
+        raise ValueError("%s is already rendering" % clip["name"])
+    source = active_take(clip)
+    if not source:
+        raise ValueError("%s has no render to upscale" % clip["name"])
+    if source.get("upscaled"):
+        raise ValueError("%s is already upscaled. Choose the take it was made from to upscale again" % clip["name"])
+    if source.get("quality") == "draft" and clip.get("kind") != "footage":
+        raise ValueError("%s is a draft. Render a final first, then upscale it" % clip["name"])
+    if int(source.get("frames") or 0) > UPSCALE_MOST:
+        raise ValueError("%s is %s frames. Upscaling holds every enlarged frame in memory, so it takes up to %s at a time"
+                         % (clip["name"], source.get("frames"), UPSCALE_MOST))
+    files = upscaler_files(available)
+    missing = [UPSCALER[kind] for kind in ("model", "vae") if not files[kind]]
+    if missing:
+        raise ValueError("Upscaling needs %s in ComfyUI's models folder (diffusion_models and vae), from Comfy-Org/RelayVSR on Hugging Face"
+                         % " and ".join(missing))
+    width, height = take_size(project, source)
+    if not (2 * width <= MAX_SIDE and 2 * height <= MAX_SIDE):
+        raise ValueError("%s is %sx%s: twice that is larger than the editor handles" % (clip["name"], width, height))
+    take = new_id("t")
+    job = {"clip": clip_id, "take": take, "quality": "final", "seed": int(source.get("seed") or 0), "saved": copy.deepcopy(source.get("saved")),
+           "size": [2 * width, 2 * height], "upscaled": source["id"],
+           # The take keeps what made its picture, plus the upscaler. A batch groups it by the model it loads.
+           "models": dict(source.get("models") or {}, video_upscaler=files["model"]), "loads": files["model"]}
+    return job, upscale_graph(folder, clip, take, source, files)
+
+
 def plan_render(project, folder, clip_id, quality, seed=None, available=None):
     """The graph for a new take, and the job that will turn its file into a take."""
+    if quality == UPSCALE_QUALITY:
+        return plan_upscale(project, folder, clip_id, available)
     clip = find_clip(project, clip_id)
     if clip.get("kind") == "footage":
         raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip["name"])
@@ -2308,7 +2379,7 @@ def finish_render(project, job_id, file, info):
     take = {"id": job["take"], "file": file["filename"], "subfolder": file.get("subfolder") or "",
             "poster": info["poster"], "frames": int(info["frames"]), "quality": job["quality"],
             "seed": job["seed"], "saved": job.get("saved")}
-    for key in ("models", "upscale", "size"):
+    for key in ("models", "upscale", "size", "upscaled"):
         if job.get(key):
             take[key] = job[key]
     if info.get("strip"):

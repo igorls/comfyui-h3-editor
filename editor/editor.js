@@ -1186,7 +1186,7 @@ function clipStatus(clip) {
   if (clip.kind === "footage") return { kind: "", text: "Footage" };
   if (isStale(clip)) return { kind: "danger", text: "Source changed" };
   const take = activeTake(clip);
-  const quality = take.quality === "final" ? "Final" : "Draft";
+  const quality = take.upscaled ? "Upscaled" : take.quality === "final" ? "Final" : "Draft";
   return { kind: "", text: clip.takes.length > 1 ? quality + ", take " + (clip.takes.indexOf(take) + 1) + " of " + clip.takes.length : quality };
 }
 
@@ -2585,6 +2585,17 @@ function renderInspector() {
       button.addEventListener("click", () => renderClip(clip, quality));
       actions.append(button);
     }
+    const shown = activeTake(clip);
+    if (shown && shown.quality === "final" && !shown.upscaled) {
+      // A finished final can be enlarged two times: a new take of the same picture and sound, at twice the size.
+      const shape = takeShape(shown);
+      const button = document.createElement("button");
+      button.className = "quiet";
+      button.textContent = "Upscale 2x";
+      button.title = "Enlarge this final to " + 2 * shape[0] + " x " + 2 * shape[1] + " with RelayVSR. It becomes a new take; do it once the cut is settled.";
+      button.addEventListener("click", () => renderClip(clip, "upscale"));
+      actions.append(button);
+    }
   }
   foot.append(actions);
   parts.push(foot);
@@ -3483,9 +3494,6 @@ function renderTimeline() {
     });
     blocks.push(mark);
   }
-  refreshCutScores();
-  if (state.gap) {
-    const mark = document.createElement("div");
   for (const row of shownTakes()) {
     const found = fineScores.get(row.key);
     if (!found || !found.soft) continue;
@@ -3507,8 +3515,34 @@ function renderTimeline() {
     });
     blocks.push(mark);
   }
-    mark.className = "gapmark";
+  for (const row of cutExtras.effects) {
+    const effect = effectOf(row.effect);
+    if (!effect || activeTake(effect)?.id !== row.take || row.score === null || row.score >= CUT_FINE) continue;
+    const at = row.edge === "start" ? effect.start : effect.start + effect.frames;
+    const why = (row.edge === "start" ? "Cut into " : "Cut out of ") + effect.name + ". "
+      + (row.kind === "jump" ? "Jump cut: " + (row.notes.join(", ") || "the same shot, not continuous") + ". Make the VFX clip start and end on the picture under it, or move it to a cut."
+        : row.notes.join(", ") || row.kind);
+    blocks.push(cutMark(at, row.score, "Cut score " + row.score + " of 100. " + why, () => selectEffect(effect.id)));
+  }
+  for (const row of cutExtras.inside) {
+    const item = state.project.timeline.find((i) => i.id === row.item);
+    if (!item || activeTake(clipOf(item.clip))?.id !== row.take || row.frame < item.in || row.frame >= item.out) continue;
+    const at = item.start + Math.round((row.frame - item.in) / speedOf(item));
+    const why = clipOf(item.clip).name + " changes picture inside the take: " + row.notes.join(", ")
+      + ". Trim the clip to end before it, or render it again with another seed.";
+    blocks.push(cutMark(at, row.score, why, () => {
+      state.clip = item.clip;
+      state.item = item.id;
+      state.gap = null;
+      seek(Math.max(item.start, at - 1));
+      renderAll();
+    }));
+  }
+  refreshCutScores();
   refreshFineScores();
+  if (state.gap) {
+    const mark = document.createElement("div");
+    mark.className = "gapmark";
     mark.style.left = px(state.gap.start) + "px";
     mark.style.width = px(state.gap.end - state.gap.start) + "px";
     blocks.push(mark);
@@ -3533,6 +3567,21 @@ const cutScores = new Map();
 let cutsAsked = "";
 let cutsTimer = null;
 
+// What else the server's cut scores hold: the cuts into and out of VFX clips, and takes that change picture inside.
+const cutExtras = { effects: [], inside: [] };
+
+function cutMark(frame, score, title, act) {
+  const mark = document.createElement("button");
+  mark.className = "cut-score" + (score < CUT_BAD ? " bad" : "");
+  mark.style.left = px(frame) + "px";
+  mark.textContent = score;
+  mark.title = title;
+  mark.setAttribute("aria-label", title);
+  mark.addEventListener("pointerdown", (event) => event.stopPropagation());
+  mark.addEventListener("click", act);
+  return mark;
+}
+
 function touchingCuts() {
   const order = sorted();
   const found = [];
@@ -3548,8 +3597,10 @@ function touchingCuts() {
 
 function refreshCutScores() {
   const wanted = touchingCuts();
-  const signature = state.folder + "/" + wanted.map((c) => c.key).join(",");
-  if (signature === cutsAsked || !wanted.some((c) => !cutScores.has(c.key))) return;
+  // Asked again whenever a cut, a shown take or a VFX clip changes: the answer covers all three.
+  const signature = state.folder + "/" + wanted.map((c) => c.key).join(",") + "/" + shownTakes().map((c) => c.key).join(",") + "/"
+    + (state.project.effects || []).map((e) => [e.id, activeTake(e)?.id, e.start, e.frames].join("|")).join(",");
+  if (signature === cutsAsked) return;
   clearTimeout(cutsTimer);
   // Wait until the project is saved and still: the server scores what it has on disk.
   cutsTimer = setTimeout(async () => {
@@ -3564,6 +3615,8 @@ function refreshCutScores() {
         const key = now.get(cut.before + ">" + cut.after);
         if (key) cutScores.set(key, cut);
       }
+      cutExtras.effects = reply.effects || [];
+      cutExtras.inside = reply.inside || [];
       renderTimeline();
     } catch (_) {
       // An older server has no cut scores; the timeline works without them.
@@ -3571,9 +3624,6 @@ function refreshCutScores() {
   }, 900);
 }
 
-/* VFX: clips drawn by code, on a lane above the picture */
-
-const effectOf = (id) => (state.project?.effects || []).find((e) => e.id === id) || null;
 // Detail: the server measures how sharp each rendered clip is at the size of the cut. A clip far under the level of
 // the rest gets a mark: a draft left among finals, or footage smaller than the cut. Whether a clip is soft depends on
 // the whole cut, so every answer replaces what was known.
@@ -3616,6 +3666,9 @@ function refreshFineScores() {
   }, 1200);
 }
 
+/* VFX: clips drawn by code, on a lane above the picture */
+
+const effectOf = (id) => (state.project?.effects || []).find((e) => e.id === id) || null;
 const effectAt = (frame) => (state.project?.effects || []).find((e) => frame >= e.start && frame < e.start + e.frames) || null;
 const fx = { runtime: null, key: "", source: null, params: "", meta: null, busy: false, wanted: null, error: null, rendering: null };
 

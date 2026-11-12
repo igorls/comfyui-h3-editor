@@ -490,9 +490,10 @@ async def cuts(request):
     The numbers come from the pictures alone (see cuts.py), so the same takes and the same trims give the same scores.
     """
     data = read_project(request.match_info["name"])
-    found = await score_cuts(data)
-    scored = [c["score"] for c in found if c["score"] is not None]
-    return web.json_response({"cuts": found, "worst": min(scored) if scored else None, "revision": data.get("revision", 0)})
+    found, edges, inside = await asyncio.gather(score_cuts(data), score_effect_cuts(data), score_inside(data))
+    scored = [c["score"] for c in found + edges + inside if c["score"] is not None]
+    return web.json_response({"cuts": found, "effects": edges, "inside": inside, "worst": min(scored) if scored else None,
+                              "revision": data.get("revision", 0)})
 
 
 async def score_cuts(data):
@@ -519,6 +520,86 @@ async def score_cuts(data):
 
     pairs = [(a, b) for a, b in zip(order[:-1], order[1:]) if store.item_end(a) == b["start"]]
     return await asyncio.gather(*[one(a, b) for a, b in pairs])
+
+
+def shown_at(data, frame, skip=None):
+    """What the cut shows at a timeline frame: (file, frame of that file), or None for black.
+
+    A VFX clip's take covers the picture under it, so it wins. skip names a VFX clip to look under.
+    """
+    for effect in data.get("effects") or []:
+        if effect["id"] != skip and effect["start"] <= frame < effect["start"] + effect["frames"]:
+            take = store.active_take(effect)
+            if take:
+                return output_path(take.get("subfolder"), take["file"]), frame - effect["start"]
+    for item in store.ordered(data):
+        if item["start"] <= frame < store.item_end(item):
+            take = store.active_take(store.find_clip(data, item["clip"]) or {})
+            if not take:
+                return None
+            speed = store.clean_speed(item.get("speed"))
+            return output_path(take.get("subfolder"), take["file"]), item["in"] + int(round((frame - item["start"]) * speed))
+    return None
+
+
+async def score_effect_cuts(data):
+    """A score for the cut into and out of every rendered VFX clip: what the cut shows just before against the clip's
+    first frame, and its last frame against what comes after. Black on the other side is not a cut to score."""
+    found = []
+    for effect in data.get("effects") or []:
+        take = store.active_take(effect)
+        if not take:
+            continue
+        first, last = effect["start"], effect["start"] + effect["frames"]
+        try:
+            own = output_path(take.get("subfolder"), take["file"])
+            sides = (("start", first, shown_at(data, first - 1, effect["id"]) if first > 0 else None, (own, 0)),
+                     ("end", last, (own, effect["frames"] - 1), shown_at(data, last, effect["id"])))
+        except (ValueError, web.HTTPException):
+            continue
+        for edge, at, before, after in sides:
+            if not before or not after:
+                continue
+            entry = {"effect": effect["id"], "take": take["id"], "edge": edge, "at": at}
+            try:
+                key = (before[0], os.path.getmtime(before[0]), before[1] + 1, after[0], os.path.getmtime(after[0]), after[1])
+                if key not in CUT_SCORES:
+                    CUT_SCORES[key] = await asyncio.to_thread(cutscore.score_cut, before[0], before[1] + 1, after[0], after[1], media.command)
+                found.append(dict(entry, **CUT_SCORES[key]))
+            except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+                found.append(dict(entry, kind="unreadable", score=None, notes=[str(getattr(error, "text", None) or error)[:200]]))
+    return found
+
+
+INSIDE_SCORES = {}
+
+
+async def score_inside(data):
+    """Where a generated take on the timeline changes picture within the part its clip shows: a cut inside it, or a
+    fade to another picture. Imported footage is left alone: it may hold cuts of its own."""
+    gate = asyncio.Semaphore(3)
+
+    async def one(item):
+        clip = store.find_clip(data, item["clip"]) or {}
+        take = store.active_take(clip)
+        if not take or clip.get("kind") == "footage":
+            return []
+        try:
+            path = output_path(take.get("subfolder"), take["file"])
+            key = (path, os.path.getmtime(path))
+            if key not in INSIDE_SCORES:
+                async with gate:
+                    INSIDE_SCORES[key] = await asyncio.to_thread(cutscore.inside, path, media.command)
+                while len(INSIDE_SCORES) > 2000:
+                    INSIDE_SCORES.pop(next(iter(INSIDE_SCORES)))
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, web.HTTPException):
+            return []
+        speed = store.clean_speed(item.get("speed"))
+        return [{"item": item["id"], "take": take["id"], "frame": row["at"], "at": item["start"] + int(round((row["at"] - item["in"]) / speed)),
+                 "kind": row["kind"], "score": row["score"], "notes": row["notes"]}
+                for row in INSIDE_SCORES[key] if item["in"] <= row["at"] < item["out"]]
+
+    return [row for rows in await asyncio.gather(*[one(item) for item in store.ordered(data)]) for row in rows]
 
 
 FINE_SCORES = {}
@@ -1029,7 +1110,7 @@ async def operations(request):
                     clip_id = store._resolve(op.get("clip"), names, "clip")
                     planned, _ = store.plan_render(copy.deepcopy(work), folder, clip_id, op.get("quality") or "draft",
                                                    op.get("seed"), available_models())
-                    later.append((index, op, clip_id, planned["models"]["unet"]))
+                    later.append((index, op, clip_id, planned.get("loads") or planned["models"]["unet"]))
                     results.append(None)
                 elif kind == "cancel":
                     later.append((index, op, store._resolve(op.get("clip"), names, "clip"), None))
@@ -1053,7 +1134,7 @@ async def operations(request):
         # They trade places only with each other: a cancel stays where it was asked for.
         slots = [n for n, entry in enumerate(later) if entry[1]["op"] == "render"]
         queued = work.get("pending") or []
-        ends_on = (queued[-1].get("models") or {}).get("unet") if queued else None
+        ends_on = (queued[-1].get("loads") or (queued[-1].get("models") or {}).get("unet")) if queued else None
         order = group_by_model([later[n][3] for n in slots], ends_on)
         arranged = list(later)
         for slot, pick in zip(slots, order):
