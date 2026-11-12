@@ -182,6 +182,24 @@
   </div>
   <div class="exporter-foot"><span class="spacer"></span><button id="raterGo" class="primary">Rate</button></div>
 </dialog>
+<dialog id="writerSetup" class="keys exporter" aria-labelledby="writerSetupTitle">
+  <div class="keys-head"><h2 id="writerSetupTitle">Writing with a language model</h2><button id="writerSetupClose" class="quiet">Close</button></div>
+  <div class="exporter-body">
+    <p class="hint">Rewrite and Write shots send text from this browser to the endpoint you name: the project's look and language, the cast's names and descriptions, and the clips' text. No pictures and no sound. These settings, the key included, stay in this browser. They are never saved in a project or sent to ComfyUI.</p>
+    <div id="writerSetupFields"></div>
+    <p id="writerSetupResult" class="hint" aria-live="polite"></p>
+  </div>
+  <div class="exporter-foot"><button id="writerSetupTest" class="quiet">Test</button><span class="spacer"></span><button id="writerSetupSave" class="primary">Save</button></div>
+</dialog>
+<dialog id="writer" class="keys exporter writer" aria-labelledby="writerTitle">
+  <div class="keys-head"><h2 id="writerTitle"></h2><button id="writerClose" class="quiet">Close</button></div>
+  <div class="exporter-body">
+    <div id="writerAsk"></div>
+    <p id="writerResult" class="hint" aria-live="polite"></p>
+    <div id="writerPreview" class="writer-preview"></div>
+  </div>
+  <div class="exporter-foot"><button id="writerGo" class="quiet"></button><span class="spacer"></span><button id="writerUse" class="primary" disabled></button></div>
+</dialog>
 <dialog id="picker" class="keys picker" aria-labelledby="pickerTitle">
   <div class="keys-head"><h2 id="pickerTitle">Add a LoRA</h2><button id="pickerClose" class="quiet">Close</button></div>
   <div class="picker-search"><input id="pickerSearch" type="search" autocomplete="off" spellcheck="false" aria-label="Search"><span id="pickerCount" class="count"></span></div>

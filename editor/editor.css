@@ -401,6 +401,18 @@ label.lora-name { cursor: pointer; }
 .rater-row .meter i.mid { background: var(--tungsten); }
 .rater-row .num { text-align: right; font-variant-numeric: tabular-nums; }
 .rater-row .level { grid-column: 2 / 4; color: var(--muted); font-size: 12px; }
+.writer { width: min(640px, calc(100vw - 32px)); }
+.writer-preview { display: grid; gap: 10px; margin: 0 0 14px; max-height: 42vh; overflow: auto; }
+.writer-preview:empty { display: none; }
+.writer-shot { padding: 10px 12px; background: var(--room); border: 1px solid var(--line); border-radius: var(--radius); }
+.writer-shot h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.writer-shot h3 span { margin-left: 8px; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.writer .writer-shot dl { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 12px; margin: 0; padding: 0; font-size: 13px; }
+.writer .writer-shot dt { color: var(--muted); font-size: 12px; padding: 1px 0 0; font-weight: 400; }
+.writer .writer-shot dd { margin: 0; padding: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.writer-model { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.writer-model button { margin-bottom: 12px; }
+.writer-numbers { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .rater-past { margin-top: 8px; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--tungsten); pointer-events: none; z-index: 5; }
 .playhead::before { content: ""; position: absolute; top: 0; left: -6px; width: 14px; height: 12px; background: var(--tungsten); clip-path: polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%); }

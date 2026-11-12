@@ -29,3 +29,11 @@ ComfyUI-GGUF
   Used in: ggml_dequant.py, its dequant.py copied unchanged, and ggml_ops.py,
   its ops.py and the GGUFModelPatcher class from its nodes.py. Their headers say
   what was changed.
+
+universal-llm-client
+  Author: Igor Lins e Silva
+  Source: https://github.com/igorls/universal-llm-client (version 4.6.0, from npm)
+  License: MIT, in editor/vendor/universal-llm-client.LICENSE
+  Used in: editor/vendor/universal-llm-client.js, the package's dist/index.js
+  bundled into one file for the browser, unchanged. editor/writer.js calls it
+  to reach the language model a user sets up for writing.

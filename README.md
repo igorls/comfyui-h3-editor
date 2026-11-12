@@ -31,6 +31,9 @@ made with it, shot by shot.
   can render on a different one than the rest of the project. Any other H3
   checkpoint works too: pick its file, set its steps, sampler and scheduler,
   and save it as a preset for every project.
+- **Let a language model write.** Describe the video and it writes the shots as
+  clips, or rewrites one clip from what you ask for. It uses the model you
+  name: any OpenAI-compatible endpoint, Anthropic, Gemini or Ollama.
 - **Bring your LoRAs.** Add LoRAs trained on MiniMax H3 to a project, or to one
   clip, set each one's strength, and choose whether it runs on every step or
   only after the first ones have set the framing.

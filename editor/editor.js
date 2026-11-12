@@ -15,6 +15,7 @@ const clientId = (() => {
 const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the picture", 17: "Decoding the sound", 18: "Assembling", 19: "Saving" };
 
 import { VfxRuntime } from "./vfx-runtime.js";
+import * as writer from "./writer.js";
 
 const state = {
   folder: null,
@@ -2289,6 +2290,7 @@ function renderScene(panel, selected = false) {
       }, { placeholder: "English" }),
     ]),
     loraSection(),
+    writingSection(),
     section("Overview", [facts]),
   );
 }
@@ -2522,6 +2524,7 @@ function renderInspector() {
   );
   if (state.tab === "shot") parts.push(section("Shot", [
     field("What happens", clip.action, (v) => (clip.action = v), { big: true, placeholder: "Describe what we see and hear, in the order it happens." }),
+    rewriteButton(clip),
     timing,
     ...framesFor(clip),
     ...(state.project.cast?.some((p) => p.file || p.refmod) ? castPicker(clip) : []),
@@ -4432,6 +4435,305 @@ async function openRater() {
 }
 
 $("rate").addEventListener("click", openRater);
+
+/* Writing with a language model. The calls are made by writer.js, from this browser. */
+const writing = { busy: false, made: null };
+
+// A labelled input for a dialog. Unlike field(), it changes nothing in the project.
+function plainField(label, value, { area = false, type = "text", placeholder = "" } = {}) {
+  const wrap = document.createElement("label");
+  wrap.className = "field";
+  const title = document.createElement("span");
+  title.textContent = label;
+  const input = document.createElement(area ? "textarea" : "input");
+  if (!area) input.type = type;
+  if (placeholder) input.placeholder = placeholder;
+  input.autocomplete = "off";
+  input.spellcheck = area;
+  input.value = value ?? "";
+  wrap.append(title, input);
+  return { wrap, input };
+}
+
+function writerNote(text, bad = false, target = "writerResult") {
+  $(target).textContent = text;
+  $(target).classList.toggle("bad", bad);
+}
+
+function openWriterSetup(then = null) {
+  const draft = writer.settings();
+  const note = (text, bad = false) => writerNote(text, bad, "writerSetupResult");
+  const draw = () => {
+    const kind = writer.provider(draft.type);
+    const type = document.createElement("label");
+    type.className = "choice";
+    const typeTitle = document.createElement("span");
+    typeTitle.textContent = "Provider";
+    const types = document.createElement("select");
+    for (const row of writer.PROVIDERS) {
+      const option = document.createElement("option");
+      option.value = row.id;
+      option.textContent = row.title;
+      option.selected = row.id === draft.type;
+      types.append(option);
+    }
+    types.addEventListener("change", () => {
+      draft.type = types.value;
+      draft.url = "";
+      draw();
+    });
+    type.append(typeTitle, types);
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = kind.hint;
+    const address = plainField("Address", draft.url, { placeholder: kind.address || "Google's own address" });
+    address.input.addEventListener("input", () => (draft.url = address.input.value));
+    const model = plainField("Model", draft.model, { placeholder: "The model's name, as the endpoint lists it" });
+    const names = document.createElement("datalist");
+    names.id = "writerModels";
+    model.input.setAttribute("list", names.id);
+    model.input.addEventListener("input", () => (draft.model = model.input.value));
+    const list = document.createElement("button");
+    list.className = "quiet";
+    list.textContent = "List models";
+    list.addEventListener("click", async () => {
+      note("Asking the endpoint for its models.");
+      try {
+        const found = await writer.listModels(draft);
+        names.replaceChildren(...found.map((name) => Object.assign(document.createElement("option"), { value: name })));
+        note(found.length ? found.length + " models. Type in Model to choose one." : "The endpoint lists no models. Type the name.");
+        model.input.focus();
+      } catch (error) {
+        note(error.message, true);
+      }
+    });
+    const modelRow = document.createElement("div");
+    modelRow.className = "writer-model";
+    modelRow.append(model.wrap, list);
+    const key = plainField(kind.key ? "API key" : "API key, if the endpoint asks for one", draft.key, { type: "password", placeholder: "Paste your key" });
+    key.input.addEventListener("input", () => (draft.key = key.input.value));
+    $("writerSetupFields").replaceChildren(type, hint, address.wrap, modelRow, names, key.wrap);
+  };
+  draw();
+  note("");
+  $("writerSetupTest").onclick = async () => {
+    if (!writer.ready(draft)) return note("Name a model first" + (writer.provider(draft.type).key ? ", and paste a key." : "."), true);
+    $("writerSetupTest").disabled = true;
+    note("Asking the model.");
+    try {
+      note("It answered: " + (await writer.test(draft)));
+    } catch (error) {
+      note(error.message, true);
+    }
+    $("writerSetupTest").disabled = false;
+  };
+  $("writerSetupSave").onclick = () => {
+    if (!writer.saveSettings(draft)) return note("This browser would not keep the settings.", true);
+    $("writerSetup").close();
+    renderInspector();
+    if (then && writer.ready()) then();
+  };
+  $("writerSetup").showModal();
+}
+
+// One written shot, as a card: its name and length, then each field that holds something.
+function shotCard(shot, title = null) {
+  const card = document.createElement("div");
+  card.className = "writer-shot";
+  if (title) {
+    const head = document.createElement("h3");
+    head.textContent = title;
+    if (shot.seconds) {
+      const length = document.createElement("span");
+      length.textContent = shot.seconds + " s";
+      head.append(length);
+    }
+    card.append(head);
+  }
+  const list = document.createElement("dl");
+  for (const key of writer.FIELDS) {
+    if (!shot[key]) continue;
+    const dt = document.createElement("dt");
+    dt.textContent = writer.LABELS[key];
+    const dd = document.createElement("dd");
+    dd.textContent = shot[key];
+    list.append(dt, dd);
+  }
+  card.append(list);
+  return card;
+}
+
+// The writing dialog, for one clip or for a list of new ones. run asks the model and returns
+// what it wrote, show draws that, and apply puts it into the project.
+function openWriter(job) {
+  if (!writer.ready()) return openWriterSetup(() => openWriter(job));
+  writing.made = null;
+  $("writerTitle").textContent = job.title;
+  $("writerAsk").replaceChildren(...job.fields);
+  $("writerPreview").replaceChildren();
+  $("writerGo").textContent = job.go;
+  $("writerUse").textContent = job.use(null);
+  $("writerUse").disabled = true;
+  const given = writer.settings();
+  writerNote("Uses " + given.model + " on " + writer.provider(given.type).title + ".");
+  $("writerGo").onclick = async () => {
+    if (writing.busy) return;
+    writing.busy = true;
+    $("writerGo").disabled = true;
+    $("writerUse").disabled = true;
+    writerNote("Writing. A local model can take a minute.");
+    const folder = state.folder;
+    try {
+      const made = await job.run();
+      if (folder !== state.folder || !$("writer").open) return;
+      writing.made = made;
+      $("writerPreview").replaceChildren(...job.show(made));
+      $("writerUse").textContent = job.use(made);
+      $("writerUse").disabled = false;
+      $("writerGo").textContent = "Write again";
+      writerNote("Read it before you use it. Nothing has changed yet.");
+    } catch (error) {
+      writerNote(error.message, true);
+    } finally {
+      writing.busy = false;
+      $("writerGo").disabled = false;
+    }
+  };
+  $("writerUse").onclick = () => {
+    if (!writing.made) return;
+    job.apply(writing.made);
+    writing.made = null;
+    $("writer").close();
+  };
+  $("writer").showModal();
+  $("writerAsk").querySelector("textarea")?.focus();
+}
+
+// The clips on either side of this one in the cut, so the model keeps the shot in step with them.
+function neighbours(clip) {
+  const placed = [...state.project.timeline].sort((a, b) => a.start - b.start);
+  const at = placed.findIndex((item) => item.clip === clip.id);
+  const other = (item) => (item ? clipOf(item.clip) || null : null);
+  return at < 0 ? { before: null, after: null } : { before: other(placed[at - 1]), after: other(placed[at + 1]) };
+}
+
+// Cast members with a picture or a RefMod join a clip's cast when its text places them.
+function castIn(text) {
+  return (state.project.cast || [])
+    .filter((person) => (person.file || person.refmod) && person.name && String(text).split("@" + person.name).slice(1).some((rest) => !/^[\w-]/.test(rest)))
+    .map((person) => person.id);
+}
+
+function openRewrite(clip) {
+  const empty = !String(clip.action || "").trim();
+  const directions = plainField(empty ? "What is this shot" : "What should change", "", {
+    area: true,
+    placeholder: empty ? "A keeper climbs the lighthouse stairs at dusk, out of breath." : "Leave empty to tighten it as it is. Or: make it night, slow the camera, add a line.",
+  });
+  openWriter({
+    title: (empty ? "Write " : "Rewrite ") + clip.name,
+    fields: [directions.wrap],
+    go: empty ? "Write" : "Rewrite",
+    use: () => "Use it",
+    run: () => writer.rewrite({ project: state.project, clip, ...neighbours(clip), directions: directions.input.value }),
+    show: (made) => [shotCard(made)],
+    apply: (made) => {
+      const live = clipOf(clip.id);
+      if (!live) return;
+      checkpoint();
+      for (const key of writer.FIELDS) live[key] = made[key];
+      const placed = castIn(made.action).filter((id) => !(live.cast || []).includes(id));
+      if (placed.length) live.cast = [...(live.cast || []), ...placed];
+      save();
+      renderAll();
+      toast((empty ? "Wrote " : "Rewrote ") + live.name + ". Ctrl+Z brings the old text back.");
+    },
+  });
+}
+
+function openWriteShots() {
+  const brief = plainField("Describe the video", "", {
+    area: true,
+    placeholder: "Who is in it, where it happens, what happens, and what is said. For example: a 20 second teaser for a seaside cafe opening at dawn.",
+  });
+  brief.input.classList.add("big");
+  const count = plainField("Shots", 4, { type: "number" });
+  const each = plainField("Seconds each", 5, { type: "number" });
+  for (const [input, [low, high]] of [[count.input, writer.LIMITS.shots], [each.input, writer.LIMITS.seconds]]) {
+    input.min = low;
+    input.max = high;
+  }
+  const numbers = document.createElement("div");
+  numbers.className = "writer-numbers";
+  numbers.append(count.wrap, each.wrap);
+  openWriter({
+    title: "Write shots",
+    fields: [brief.wrap, numbers],
+    go: "Write shots",
+    use: (made) => (made ? "Add " + made.length + (made.length === 1 ? " clip" : " clips") : "Add clips"),
+    run: async () => {
+      if (!brief.input.value.trim()) throw new Error("Describe the video first.");
+      return writer.writeShots({ project: state.project, brief: brief.input.value, count: count.input.value, seconds: each.input.value });
+    },
+    show: (made) => made.map((shot) => shotCard(shot, shot.name)),
+    apply: (made) => {
+      checkpoint();
+      const bin = selectedBin();
+      let first = null;
+      for (const shot of made) {
+        const clip = { id: uid("c"), name: shot.name, action: shot.action, camera: shot.camera, speaker: shot.speaker, dialogue: shot.dialogue,
+          sound: shot.sound, music: shot.music, seconds: shot.seconds, takes: [], active: null };
+        const cast = castIn(shot.action);
+        if (cast.length) clip.cast = cast;
+        if (bin) clip.bin = bin.id;
+        state.project.clips.push(clip);
+        placeOnTimeline(clip, sceneEnd());
+        first = first || clip;
+      }
+      state.clip = first.id;
+      state.person = null;
+      state.item = state.project.timeline.find((item) => item.clip === first.id)?.id || null;
+      state.tab = "shot";
+      save();
+      renderAll();
+      toast("Added " + made.length + (made.length === 1 ? " clip" : " clips") + " at the end of the cut. Render all drafts to see them.");
+    },
+  });
+}
+
+function rewriteButton(clip) {
+  const button = document.createElement("button");
+  button.className = "quiet wide";
+  button.dataset.key = "Rewrite";
+  button.textContent = String(clip.action || "").trim() ? "Rewrite with a language model" : "Write with a language model";
+  button.title = "A language model writes this shot's text, for you to read before it replaces anything";
+  button.addEventListener("click", () => openRewrite(clip));
+  return button;
+}
+
+function writingSection() {
+  const given = writer.settings();
+  const set = writer.ready(given);
+  const shots = document.createElement("button");
+  shots.className = "quiet wide";
+  shots.dataset.key = "Write shots";
+  shots.textContent = "Write shots";
+  shots.title = "Describe the video, and a language model writes its shots as new clips";
+  shots.addEventListener("click", openWriteShots);
+  const setup = document.createElement("button");
+  setup.className = "quiet wide";
+  setup.dataset.key = "Writing setup";
+  setup.textContent = set ? "Change the language model" : "Set up a language model";
+  setup.addEventListener("click", () => openWriterSetup());
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = set ? "Writing uses " + given.model + " on " + writer.provider(given.type).title + ", from this browser."
+    : "A language model can write a video's shots, or rewrite one clip. It works with any OpenAI-compatible endpoint, Anthropic, Gemini or Ollama.";
+  return section("Writing", [shots, setup, hint]);
+}
+
+$("writerClose").addEventListener("click", () => $("writer").close());
+$("writerSetupClose").addEventListener("click", () => $("writerSetup").close());
 $("raterClose").addEventListener("click", () => $("rater").close());
 
 function placePlayhead() {
