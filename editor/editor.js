@@ -5010,6 +5010,19 @@ function load(video, url) {
   }
 }
 
+// The live preview loops a clip that is still being sampled, so its sound is off until asked for.
+let liveSound = false;
+try { liveSound = localStorage.getItem("h3take.liveSound") === "on"; } catch (_) {}
+
+function setLiveSound(on) {
+  liveSound = on;
+  try { localStorage.setItem("h3take.liveSound", on ? "on" : "off"); } catch (_) {}
+  $("motion").muted = !on;
+  const button = $("liveSound");
+  button.setAttribute("aria-pressed", String(on));
+  button.dataset.tip = on ? "Mute the preview" : "Hear the preview";
+}
+
 function showLive(job) {
   const live = $("live");
   const image = $("preview");
@@ -5018,6 +5031,7 @@ function showLive(job) {
   live.hidden = !showing;
   image.hidden = !(showing && job.preview && !job.motion);
   motion.hidden = !(showing && job.motion);
+  $("liveSound").hidden = motion.hidden;
   if (!showing) {
     motion.pause();
     return;
@@ -5026,17 +5040,22 @@ function showLive(job) {
   if (job.motion && motion.dataset.url !== job.motion) {
     const resume = motion.currentTime;
     motion.dataset.url = job.motion;
+    motion.muted = !liveSound;
     motion.src = job.motion;
     motion.onloadedmetadata = () => {
       motion.currentTime = resume % (motion.duration || 1);
       motion.play().catch(() => {
-        motion.muted = true;
+        // The browser would not start it with sound: play it muted, and say so on the button.
+        setLiveSound(false);
         motion.play().catch(() => {});
       });
     };
   }
   live.textContent = (clipOf(job.clip)?.name || "Clip") + ": " + (job.stage || "Waiting in the queue") + (job.max ? ", step " + job.step + " of " + job.max : "");
 }
+
+setLiveSound(liveSound);
+$("liveSound").addEventListener("click", () => setLiveSound(!liveSound));
 
 function speedOf(item) {
   return item?.speed || 1;

@@ -5,6 +5,14 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## Unreleased
+
+### Changed
+
+- **The live preview starts muted.** While a clip samples, its looping preview
+  no longer plays sound until you turn it on with the speaker button in the
+  corner of the viewer. The editor remembers the choice.
+
 ## 0.5.0, 2026-11-13
 
 ### Added

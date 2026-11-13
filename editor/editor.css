@@ -137,6 +137,10 @@ button:disabled { opacity: 0.42; cursor: default; }
 .screen #preview, .screen #motion { z-index: 3; visibility: visible; background: #000; }
 .slate { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--muted); pointer-events: none; }
 .screen > .live { z-index: 4; position: absolute; left: 14px; bottom: 14px; padding: 6px 12px; border-radius: var(--radius); background: rgba(20, 24, 28, 0.84); color: var(--live); font-variant-numeric: tabular-nums; }
+.screen > .live-sound { z-index: 4; position: absolute; right: 14px; bottom: 14px; background: rgba(20, 24, 28, 0.84); border-radius: var(--radius); color: var(--text); }
+.screen > .live-sound[hidden] { display: none; }
+.live-sound[aria-pressed="false"] .on, .live-sound[aria-pressed="true"] .off { display: none; }
+.live-sound[data-tip]::after { top: auto; bottom: calc(100% + 6px); left: auto; right: 0; }
 /* A clip played on its own, outside the cut. */
 .screen > .source-tag { z-index: 4; position: absolute; left: 14px; top: 14px; right: 14px; display: flex; align-items: center; gap: 12px; width: max-content; max-width: calc(100% - 28px); padding: 4px 4px 4px 12px; border-radius: var(--radius); background: rgba(20, 24, 28, 0.84); }
 .screen > .source-tag[hidden] { display: none; }

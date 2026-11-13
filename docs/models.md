@@ -130,8 +130,10 @@ Export joins the cut at the size of its largest picture.
 
 ## Live preview
 
-While a clip samples, the player loops the whole clip with its sound, updated at
-every step. That needs `taeh3.safetensors` (23 MB) from
+While a clip samples, the player loops the whole clip, updated at every step.
+Its sound is off at first, since it is rough until the last steps: the speaker
+button in the corner of the viewer turns it on, and the editor remembers the
+choice. That needs `taeh3.safetensors` (23 MB) from
 [OzzyGT/taeh3](https://huggingface.co/OzzyGT/taeh3) in `models/vae_approx`.
 Without it the preview is a rough still.
 
