@@ -690,6 +690,38 @@ async function uploadFrame(clip, side) {
   }
 }
 
+// A place a picture file can be dropped on: it lights up while one is dragged over it, and hands the dropped
+// picture to take(file). Anything that is not a picture is turned away with a message.
+function dropTarget(element, take, what = "a picture") {
+  const pictures = (event) => [...(event.dataTransfer?.items || [])].some((row) => row.kind === "file");
+  let depth = 0;
+  element.addEventListener("dragenter", (event) => {
+    if (!pictures(event)) return;
+    event.preventDefault();
+    depth += 1;
+    element.classList.add("drop-hot");
+  });
+  element.addEventListener("dragover", (event) => {
+    if (!pictures(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+  element.addEventListener("dragleave", () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) element.classList.remove("drop-hot");
+  });
+  element.addEventListener("drop", (event) => {
+    if (!pictures(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    depth = 0;
+    element.classList.remove("drop-hot");
+    const file = [...event.dataTransfer.files].find((f) => /^image\/(png|jpeg|webp)$/.test(f.type));
+    if (!file) return toast("Drop " + what + ": a PNG, JPEG or WebP file.", true);
+    take(file);
+  });
+}
+
 async function grabFrame(clip, side) {
   // The frame the viewer shows: of the clip on its own, or of the cut at the playhead.
   const alone = viewing();
@@ -723,6 +755,9 @@ function frameSlot(clip, side, label) {
   title.textContent = label;
   const picture = document.createElement("div");
   picture.className = "picture";
+  // The box takes the project's shape, so a frame shows whole.
+  const [wide, tall] = String(state.project.format || "16:9").split(":").map(Number);
+  if (wide > 0 && tall > 0) picture.style.setProperty("--frame", String(wide / tall));
   const ways = document.createElement("div");
   ways.className = "ways";
   const button = (text, run) => {
@@ -737,12 +772,21 @@ function frameSlot(clip, side, label) {
     image.alt = label;
     image.src = assetUrl(clip[side]);
     picture.append(image);
+    picture.title = "Drop a picture here to replace it";
     button("Remove", () => setClipFrame(clip, side, null));
   } else {
-    picture.textContent = "None";
+    picture.textContent = "Drop a picture here";
     button("Use playhead frame", () => grabFrame(clip, side));
     button("Upload", () => uploadFrame(clip, side));
   }
+  dropTarget(picture, async (file) => {
+    try {
+      setClipFrame(clip, side, await uploadPicture(file));
+      toast(label + " of " + clip.name + " is " + file.name + ".");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }, "a picture for the " + label.toLowerCase());
   slot.append(title, picture, ways);
   return slot;
 }
@@ -796,6 +840,7 @@ function renderCast() {
   list.replaceChildren(...cast.map((person) => {
     const button = document.createElement("button");
     button.className = "person" + (person.id === state.person ? " on" : "") + (person.voice && person.file ? " voiced" : "");
+    button.dataset.person = person.id;
     if (person.voice) button.title = person.file ? person.name + " has a voice" : person.name + " is a voice";
     let image;
     if (person.file) {
@@ -826,6 +871,8 @@ function renderCast() {
       state.clip = null;
       state.item = null;
       state.bin = null;
+      state.effect = null;
+      state.sound = null;
       renderAll();
     });
     return button;
@@ -987,6 +1034,16 @@ function morePictures(person) {
   return box;
 }
 
+function removePerson(person) {
+  checkpoint();
+  state.project.cast = state.project.cast.filter((c) => c !== person);
+  for (const clip of state.project.clips) clip.cast = (clip.cast || []).filter((id) => id !== person.id);
+  if (state.person === person.id) state.person = null;
+  save();
+  renderAll();
+  toast("Removed " + person.name + " from the cast.", false, undoAction);
+}
+
 function renderPerson(panel, person) {
   // The same frame as a clip or a bin: a head with the name, then one section for each thing.
   const head = document.createElement("div");
@@ -996,15 +1053,7 @@ function renderPerson(panel, person) {
   const title = document.createElement("h2");
   title.className = "head-title";
   title.textContent = person.name;
-  row.append(title, trashButton("Remove " + person.name + " from the cast", () => {
-    checkpoint();
-    state.project.cast = state.project.cast.filter((c) => c !== person);
-    for (const clip of state.project.clips) clip.cast = (clip.cast || []).filter((id) => id !== person.id);
-    state.person = null;
-    save();
-    renderAll();
-    toast("Removed " + person.name + " from the cast.", false, undoAction);
-  }));
+  row.append(title, trashButton("Remove " + person.name + " from the cast", () => removePerson(person)));
   const line = document.createElement("p");
   line.className = "status";
   const has = [];
@@ -1198,7 +1247,9 @@ function clipSeconds(clip) {
 }
 
 // Run the pointer across a thumbnail to scrub through the clip, frame strip permitting.
-function skim(thumb, take) {
+// fit is "cover" for the small thumbnails of the Clips panel, which crop to fill, or "contain" for a picture
+// that must show whole, such as a take in the Takes tab.
+function skim(thumb, take, fit = "cover") {
   const poster = "url(" + viewUrl(take.poster, take.subfolder) + ")";
   thumb.style.backgroundImage = poster;
   if (!take.strip) return;
@@ -1212,13 +1263,24 @@ function skim(thumb, take) {
     const share = Math.min(0.999, Math.max(0, (event.clientX - rect.left) / rect.width));
     const { count, w, h } = take.strip;
     const index = Math.floor(share * count);
-    // Each frame covers the thumbnail like the poster does, cropped to fit and never squeezed.
-    const scale = w && h ? Math.max(rect.width / w, rect.height / h) : 0;
+    // Each frame sits in the thumbnail as the poster does, cropped to cover it or shown whole, never squeezed.
+    const scale = w && h ? (fit === "contain" ? Math.min : Math.max)(rect.width / w, rect.height / h) : 0;
     const tileW = scale ? w * scale : rect.width;
     const tileH = scale ? h * scale : rect.height;
     thumb.style.backgroundImage = sprite;
     thumb.style.backgroundSize = count * tileW + "px " + tileH + "px";
-    thumb.style.backgroundPosition = (rect.width - tileW) / 2 - index * tileW + "px " + (rect.height - tileH) / 2 + "px";
+    if (fit === "contain") {
+      // A frame smaller than the box would show its neighbours in the strip beside it: the picture is clipped
+      // to a box of the frame's own size, in the middle.
+      const sideX = Math.max(0, (rect.width - tileW) / 2);
+      const sideY = Math.max(0, (rect.height - tileH) / 2);
+      thumb.style.padding = sideY + "px " + sideX + "px";
+      thumb.style.backgroundClip = "content-box";
+      thumb.style.backgroundOrigin = "content-box";
+      thumb.style.backgroundPosition = -index * tileW + "px 0px";
+    } else {
+      thumb.style.backgroundPosition = (rect.width - tileW) / 2 - index * tileW + "px " + (rect.height - tileH) / 2 + "px";
+    }
     line.hidden = false;
     line.style.left = share * 100 + "%";
   });
@@ -1226,6 +1288,9 @@ function skim(thumb, take) {
     thumb.style.backgroundImage = poster;
     thumb.style.backgroundSize = "";
     thumb.style.backgroundPosition = "";
+    thumb.style.padding = "";
+    thumb.style.backgroundClip = "";
+    thumb.style.backgroundOrigin = "";
     line.hidden = true;
   });
 }
@@ -2280,10 +2345,16 @@ function renderScene(panel, selected = false) {
   model.append(modelTitle, models);
   // Every model, with its settings, and the user's own checkpoints, live in one dialog.
   const manageModels = document.createElement("button");
-  manageModels.className = "quiet wide";
+  manageModels.type = "button";
+  manageModels.className = "label-action";
   manageModels.textContent = "Models and their settings";
   manageModels.dataset.key = "Models";
-  manageModels.addEventListener("click", () => openModels(null));
+  manageModels.addEventListener("click", (event) => {
+    event.preventDefault();
+    openModels(null);
+  });
+  modelTitle.classList.add("label-row");
+  modelTitle.append(manageModels);
   panel.replaceChildren(
     head,
     section("Look", [field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true })]),
@@ -2291,17 +2362,14 @@ function renderScene(panel, selected = false) {
       shape,
       formatHint,
       ...sizeChoices(),
-      ...(state.profiles.length ? [model, modelHint, manageModels] : []),
+      ...(state.profiles.length ? [model, modelHint] : []),
       ...encoderChoices(),
       field("Language people speak", state.project.language || "", (v) => {
         if (v.trim()) state.project.language = v.trim();
         else delete state.project.language;
       }, { placeholder: "English" }),
     ]),
-    loraSection(),
-    writingSection(),
-    notesSection(),
-    section("Overview", [facts]),
+    ...[loraSection(), writingSection(), notesSection(), section("Overview", [facts])].filter(Boolean),
   );
 }
 
@@ -2355,7 +2423,10 @@ function sizeChoices() {
       + sharp.out[0] + " × " + sharp.out[1] + ": quicker than Full, with crisper edges and the smoother skin of the sampled size."
       + (relay && !relay.installed ? " It needs " + relay.missing.join(" and ") + " from " + relay.source + " on Hugging Face." : "") : "")
     + " Steps are set per model, in Models and their settings.";
-  return [choice("draft", "Draft size"), choice("final", "Final size"), hint];
+  const pair = document.createElement("div");
+  pair.className = "pair";
+  pair.append(choice("draft", "Draft size"), choice("final", "Final size"));
+  return [pair, hint];
 }
 
 function renderBinPanel(panel, bin) {
@@ -2427,7 +2498,49 @@ function showTab(id) {
   $("inspector").scrollTop = 0;
 }
 
+// Explanations longer than this are help for people new to the editor: hidden unless Help is on, and kept as the
+// tip of the control they explain. Shorter lines say what is the case, and always show.
+const HELP_LONGER = 90;
+let showHelp = false;
+try { showHelp = localStorage.getItem("h3take.help") === "on"; } catch (_) {}
+
+function tidyHints(panel) {
+  $("inspector").classList.toggle("show-help", showHelp);
+  for (const hint of panel.querySelectorAll(".hint")) {
+    const text = hint.textContent.trim();
+    if (text.length <= HELP_LONGER) continue;
+    hint.classList.add("help");
+    // The tip goes on what the explanation follows: a field, a choice, a button or a row of them.
+    const before = hint.previousElementSibling;
+    const target = before && (before.matches(".field, .choice, .pair, button, .ways, .row, .speeds, .voice, .picture-row, h3") ? before : null);
+    if (target && !target.title) target.title = text;
+  }
+}
+
+function helpToggle() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "insp-help";
+  button.setAttribute("aria-pressed", String(showHelp));
+  button.setAttribute("aria-label", "Help");
+  button.title = showHelp ? "Hide the explanations" : "Show the explanations under each setting";
+  button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.2-2.4 3.7M12 16.8h.01"/></svg>';
+  button.addEventListener("click", () => {
+    showHelp = !showHelp;
+    try { localStorage.setItem("h3take.help", showHelp ? "on" : "off"); } catch (_) {}
+    renderInspector();
+  });
+  return button;
+}
+
 function renderInspector() {
+  drawInspector();
+  tidyHints($("inspBody"));
+  $("inspTabs").querySelector(".insp-help")?.remove();
+  $("inspTabs").append(helpToggle());
+}
+
+function drawInspector() {
   const panel = $("inspBody");
   const effect = effectOf(state.effect);
   if (effect) {
@@ -2714,7 +2827,11 @@ function versions(clip) {
     // Its picture scrubs through the take as the pointer crosses it, like a clip in the Clips panel.
     const img = document.createElement("div");
     img.className = "take-thumb";
-    skim(img, take);
+    // The box takes the project's shape, the same for every take so they line up, and the picture shows whole in it.
+    const [wide, tall] = String(state.project.format || "16:9").split(":").map(Number);
+    const shape = wide > 0 && tall > 0 ? wide / tall : 16 / 9;
+    img.style.setProperty("--frame", String(shape));
+    skim(img, take, "contain");
     const label = document.createElement("span");
     label.textContent = "Take " + (index + 1) + ", " + take.quality;
     const madeWith = take.models?.profile_title || profileOf(take.models?.profile)?.title;
@@ -2835,7 +2952,7 @@ function timelineControls(item) {
   }
 
   const row = document.createElement("div");
-  row.className = "speeds";
+  row.className = "speeds transition";
   const name = document.createElement("span");
   name.textContent = "Transition in";
   const kind = document.createElement("select");
@@ -4691,7 +4808,139 @@ async function openRater() {
 $("rate").addEventListener("click", openRater);
 
 /* Writing with a language model. The calls are made by writer.js, from this browser. */
-const writing = { busy: false, made: null };
+const writing = { busy: false, made: null, added: [], draw: null };
+
+// Pictures for the writing model. The cast's own pictures always go, so it sees who it writes about; the user can
+// add more for one dialog (a place, a product, a frame of the cut). Each is shrunk to a JPEG of at most 768 pixels.
+const WRITER_CAST_MOST = 6;
+const WRITER_ADDED_MOST = 4;
+const shrunk = new Map();
+
+async function shrinkPicture(source) {
+  const key = typeof source === "string" ? source : null;
+  if (key && shrunk.has(key)) return shrunk.get(key);
+  const blob = typeof source === "string" ? await (await fetch(source)).blob() : source;
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, 768 / Math.max(bitmap.width, bitmap.height));
+  const canvas = new OffscreenCanvas(Math.max(1, Math.round(bitmap.width * scale)), Math.max(1, Math.round(bitmap.height * scale)));
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const out = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+  const url = await new Promise((done, fail) => {
+    const reader = new FileReader();
+    reader.onload = () => done(reader.result);
+    reader.onerror = () => fail(new Error("Could not read a picture for the writing model."));
+    reader.readAsDataURL(out);
+  });
+  const made = { blob: out, url };
+  if (key) shrunk.set(key, made);
+  return made;
+}
+
+const writerCast = () => (state.project.cast || []).filter((person) => person.file && person.name).slice(0, WRITER_CAST_MOST);
+
+async function writerPictures() {
+  const rows = [];
+  for (const person of writerCast()) rows.push({ label: "@" + person.name + ", a cast member: how they look", ...(await shrinkPicture(assetUrl(person))) });
+  for (const added of writing.added) rows.push({ label: "A picture the user added" + (added.name ? ": " + added.name : ""), ...(await shrinkPicture(added.blob)) });
+  return rows;
+}
+
+function addWriterPicture(blob, name) {
+  if (writing.added.length >= WRITER_ADDED_MOST) return toast("Up to " + WRITER_ADDED_MOST + " added pictures. Remove one first.", true);
+  writing.added.push({ blob, name: name || "", thumb: URL.createObjectURL(blob) });
+  writing.draw?.();
+}
+
+// The frame the viewer shows right now, as a picture.
+async function viewerPicture() {
+  const video = [...document.querySelectorAll("#screen video.show")].pop();
+  if (!video || video.readyState < 2 || !video.videoWidth) throw new Error("The viewer shows no frame. Move the playhead over a rendered clip.");
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+  return new Promise((done) => canvas.toBlob(done, "image/jpeg", 0.92));
+}
+
+function picturesStrip() {
+  const box = document.createElement("div");
+  box.className = "writer-pictures";
+  const head = document.createElement("span");
+  head.className = "writer-pictures-head";
+  head.textContent = "Pictures it sees";
+  const thumbs = document.createElement("div");
+  thumbs.className = "writer-thumbs";
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  const tile = (src, caption, title, remove = null) => {
+    const figure = document.createElement("figure");
+    figure.className = "writer-thumb";
+    figure.title = title;
+    const image = document.createElement("img");
+    image.alt = "";
+    image.src = src;
+    const label = document.createElement("figcaption");
+    label.textContent = caption;
+    figure.append(image, label);
+    if (remove) {
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "writer-thumb-remove";
+      drop.setAttribute("aria-label", "Remove this picture");
+      drop.textContent = "\u00d7";
+      drop.addEventListener("click", remove);
+      figure.append(drop);
+    }
+    return figure;
+  };
+  const adder = (label, title, run) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "quiet writer-thumb-add";
+    button.textContent = label;
+    button.title = title;
+    button.addEventListener("click", run);
+    return button;
+  };
+  writing.draw = () => {
+    const cast = writerCast();
+    thumbs.replaceChildren(
+      ...cast.map((person) => tile(assetUrl(person), "@" + person.name, "Always sent: how @" + person.name + " looks")),
+      ...writing.added.map((added, index) => tile(added.thumb, added.name || "Added", "Sent with this request", () => {
+        URL.revokeObjectURL(added.thumb);
+        writing.added.splice(index, 1);
+        writing.draw();
+      })),
+      ...(writing.added.length < WRITER_ADDED_MOST ? [
+        adder("Add picture", "Upload a picture for the model to look at", async () => {
+          const file = await pickFile($("frameFile"));
+          if (file) addWriterPicture(file, file.name);
+        }),
+        adder("Playhead frame", "Add the frame the viewer shows", async () => {
+          try {
+            addWriterPicture(await viewerPicture(), "Frame at " + timecode(state.playhead));
+          } catch (error) {
+            toast(error.message, true);
+          }
+        }),
+      ] : []),
+    );
+    hint.textContent = (cast.length ? "The cast's pictures always go with it. " : "")
+      + "Drop, paste or add a picture of a place, a product or a frame, and the model writes from what it shows.";
+  };
+  writing.draw();
+  dropTarget(box, (file) => addWriterPicture(file, file.name), "a picture for the model");
+  box.append(head, thumbs, hint);
+  return box;
+}
+
+$("writer").addEventListener("paste", (event) => {
+  const file = [...(event.clipboardData?.files || [])].find((f) => f.type.startsWith("image/"));
+  if (!file || !writing.draw) return;
+  event.preventDefault();
+  addWriterPicture(file, "Pasted picture");
+});
 
 // A labelled input for a dialog. Unlike field(), it changes nothing in the project.
 function plainField(label, value, { area = false, type = "text", placeholder = "" } = {}) {
@@ -4951,7 +5200,9 @@ function openWriter(job) {
     openWriterSetup(() => openWriter(job));
   });
   using.append(named, change);
-  $("writerAsk").replaceChildren(...job.fields, using);
+  for (const added of writing.added) URL.revokeObjectURL(added.thumb);
+  writing.added = [];
+  $("writerAsk").replaceChildren(...job.fields, picturesStrip(), using);
   $("writerPreview").replaceChildren();
   $("writerGo").textContent = job.go;
   $("writerUse").textContent = job.use(null);
@@ -4965,14 +5216,18 @@ function openWriter(job) {
     writerNote("Writing. A local model can take a minute.");
     const folder = state.folder;
     try {
-      const made = await job.run();
+      const pictures = await writerPictures();
+      if (pictures.length) writerNote("Writing, with " + pictures.length + (pictures.length === 1 ? " picture" : " pictures") + ". A local model can take a minute.");
+      const made = await job.run(pictures);
       if (folder !== state.folder || !$("writer").open) return;
       writing.made = made;
       $("writerPreview").replaceChildren(...job.show(made));
       $("writerUse").textContent = job.use(made);
       $("writerUse").disabled = false;
       $("writerGo").textContent = "Write again";
-      writerNote("Read it before you use it. Nothing has changed yet.");
+      const seen = writer.lastSeen();
+      writerNote("Read it before you use it. Nothing has changed yet."
+        + (seen.blind ? " This model takes no pictures, so it wrote from the text alone." : seen.pictures ? " It saw " + seen.pictures + (seen.pictures === 1 ? " picture." : " pictures.") : ""));
     } catch (error) {
       writerNote(error.message, true);
     } finally {
@@ -5016,7 +5271,7 @@ function openRewrite(clip) {
     fields: [directions.wrap],
     go: empty ? "Write" : "Rewrite",
     use: () => "Use it",
-    run: () => writer.rewrite({ project: state.project, clip, ...neighbours(clip), directions: directions.input.value }),
+    run: (pictures) => writer.rewrite({ project: state.project, clip, ...neighbours(clip), directions: directions.input.value, pictures }),
     show: (made) => [shotCard(made)],
     apply: (made) => {
       const live = clipOf(clip.id);
@@ -5052,9 +5307,9 @@ function openWriteShots() {
     fields: [brief.wrap, numbers],
     go: "Write shots",
     use: (made) => (made ? "Add " + made.length + (made.length === 1 ? " clip" : " clips") : "Add clips"),
-    run: async () => {
+    run: async (pictures) => {
       if (!brief.input.value.trim()) throw new Error("Describe the video first.");
-      return writer.writeShots({ project: state.project, brief: brief.input.value, count: count.input.value, seconds: each.input.value });
+      return writer.writeShots({ project: state.project, brief: brief.input.value, count: count.input.value, seconds: each.input.value, pictures });
     },
     show: (made) => made.map((shot) => shotCard(shot, shot.name)),
     apply: (made) => {
@@ -5110,7 +5365,10 @@ function writingSection() {
   hint.className = "hint";
   hint.textContent = set ? "Writing uses " + given.model + (writer.provider(given.type).local ? ", run by this ComfyUI." : " on " + writer.provider(given.type).title + ", from this browser.")
     : "A language model can write a video's shots, or rewrite one clip: a text model run by this ComfyUI, or any OpenAI-compatible endpoint, Anthropic, Gemini or Ollama.";
-  return section("Writing", [shots, setup, hint]);
+  const pair = document.createElement("div");
+  pair.className = "pair buttons";
+  pair.append(shots, setup);
+  return section("Writing", [pair, hint]);
 }
 
 $("writerClose").addEventListener("click", () => $("writer").close());
@@ -5254,6 +5512,182 @@ function removeSelected() {
   showFrame();
 }
 
+/* Context menus: a right click on a clip, a block of the timeline, a VFX clip, a sound, a cast member or the viewer
+   selects it and offers what can be done to it, the same actions as the buttons and keys. An action that cannot be
+   done right now stays in the list, greyed, with the reason in its tip. */
+
+// One row: a label, an optional key, and what it does. "-" is a separator.
+const act = (label, run, { key = "", off = "", danger = false } = {}) => ({ label, run, key, off, danger });
+
+function itemActions(item) {
+  const clip = clipOf(item.clip);
+  const rendered = Boolean(activeTake(clip));
+  const busy = Boolean(jobFor(clip.id));
+  const next = followingItem(item);
+  const holdable = rendered && itemLength(item) >= HOLD;
+  const inside = state.playhead > item.start && state.playhead < itemEnd(item);
+  return [
+    act("Render draft", () => renderClip(clip, "draft"), { off: busy ? clip.name + " is rendering" : "" }),
+    act("Render final", () => renderClip(clip, "final"), { off: busy ? clip.name + " is rendering" : "" }),
+    "-",
+    act(String(clip.action || "").trim() ? "Rewrite with a language model" : "Write with a language model", () => openRewrite(clip)),
+    "-",
+    act("Extend forward", () => addLinked("extend_after"), { off: holdable ? "" : "Render it first; it needs " + HOLD + " frames to carry on from" }),
+    act("Extend back", () => addLinked("extend_before"), { off: holdable ? "" : "Render it first; it needs " + HOLD + " frames to carry on from" }),
+    act("Bridge to next", () => addLinked("bridge"), { off: bridgeable(item, next) ? "" : "Needs a rendered clip after it" }),
+    act("Merge with next", mergeWithNext, { off: next && activeTake(clipOf(next.clip)) && next.start === itemEnd(item) ? "" : "Needs a rendered clip right after it" }),
+    "-",
+    act("Split at the playhead", splitAtPlayhead, { key: "S", off: inside ? "" : "Move the playhead over this clip" }),
+    act("Show its takes", () => { state.tab = "takes"; renderAll(); }, { off: clip.takes.length ? "" : "Not rendered yet" }),
+    "-",
+    act("Remove from the timeline", removeSelected, { key: "Delete" }),
+    act("Ripple delete", rippleDelete, { key: "Shift+Delete", danger: true }),
+  ];
+}
+
+function clipActions(clip) {
+  const busy = Boolean(jobFor(clip.id));
+  return [
+    act("Render draft", () => renderClip(clip, "draft"), { off: busy ? clip.name + " is rendering" : "" }),
+    act("Render final", () => renderClip(clip, "final"), { off: busy ? clip.name + " is rendering" : "" }),
+    "-",
+    act(String(clip.action || "").trim() ? "Rewrite with a language model" : "Write with a language model", () => openRewrite(clip)),
+    act("Add to the end of the cut", () => {
+      checkpoint();
+      placeOnTimeline(clip, sceneEnd());
+      state.item = state.project.timeline.at(-1).id;
+      save();
+      renderAll();
+    }),
+    "-",
+    act("Delete clip", () => deleteClip(clip), { danger: true }),
+  ];
+}
+
+function viewerActions() {
+  const clip = clipOf(state.clip);
+  const shown = viewing() ? activeTake(viewing()) : activeTake(clipOf(itemAt(state.playhead)?.clip));
+  const off = !clip ? "Select the clip to give it this frame" : !shown ? "The viewer shows no rendered frame" : "";
+  const rows = [];
+  for (const [side, label] of [["first", "First frame"], ["last", "Last frame"]]) {
+    rows.push(act("Use as the " + label.toLowerCase() + (clip ? " of " + clip.name : ""), () => grabFrame(clip, side),
+      { off: off || (frameUsable(clip, side) ? "" : clip.name + " carries on from another clip there") }));
+  }
+  rows.push("-", act("Note on this frame", startNote, { key: "N", off: shown ? "" : "The viewer shows no rendered frame" }));
+  return rows;
+}
+
+// What a right click landed on: the actions for it, after selecting it as a left click would.
+function actionsAt(target) {
+  const block = target.closest("#laneV .block[data-item]");
+  if (block) {
+    const item = state.project.timeline.find((i) => i.id === block.dataset.item);
+    if (!item) return null;
+    selectClip(item.clip, item.id);
+    return { title: clipOf(item.clip).name, rows: itemActions(item) };
+  }
+  const row = target.closest("#clips .clip[data-clip]");
+  if (row) {
+    const clip = clipOf(row.dataset.clip);
+    if (!clip) return null;
+    selectClip(clip.id);
+    return { title: clip.name, rows: clipActions(clip) };
+  }
+  const effectBlock = target.closest("#laneX [data-effect]");
+  if (effectBlock) {
+    const effect = effectOf(effectBlock.dataset.effect);
+    if (!effect) return null;
+    selectEffect(effect.id);
+    return { title: effect.name, rows: [act("Render", () => renderEffectTake(effect.id), { off: fx.rendering ? "A VFX clip is rendering" : "" }), "-",
+      act("Remove from the VFX lane", () => removeEffect(effect.id), { key: "Delete" })] };
+  }
+  const sound = target.closest("[data-sound]");
+  if (sound) {
+    const found = (state.project.sounds || []).find((s) => s.id === sound.dataset.sound);
+    if (!found) return null;
+    selectSound(found.id);
+    return { title: found.name || "Sound", rows: [act("Remove from the sound lane", () => removeSound(found.id), { key: "Delete" })] };
+  }
+  const member = target.closest("#cast [data-person]");
+  if (member) {
+    const person = (state.project.cast || []).find((p) => p.id === member.dataset.person);
+    if (!person) return null;
+    member.click();
+    return { title: person.name, rows: [act("Use the voice of the clip under the playhead", () => grabVoice(person)), "-",
+      act("Remove from the cast", () => removePerson(person), { danger: true })] };
+  }
+  if (target.closest("#screen")) return { title: "Viewer", rows: viewerActions() };
+  return null;
+}
+
+function openContextMenu(found, x, y, keyboard = false) {
+  const menu = $("contextMenu");
+  const head = document.createElement("p");
+  head.className = "context-title";
+  head.textContent = found.title;
+  menu.replaceChildren(head, ...found.rows.map((row) => {
+    if (row === "-") return Object.assign(document.createElement("hr"), { className: "context-rule" });
+    const button = document.createElement("button");
+    button.setAttribute("role", "menuitem");
+    button.className = "context-row" + (row.danger ? " danger" : "");
+    const label = document.createElement("span");
+    label.textContent = row.label;
+    button.append(label);
+    if (row.key) {
+      const key = document.createElement("kbd");
+      key.textContent = row.key;
+      button.append(key);
+    }
+    if (row.off) {
+      button.setAttribute("aria-disabled", "true");
+      button.title = row.off;
+    }
+    button.addEventListener("click", () => {
+      if (row.off) return toast(row.off + ".");
+      menu.hidePopover();
+      row.run();
+    });
+    return button;
+  }));
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  menu.showPopover();
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8)) + "px";
+  // From the keyboard the first action takes the focus; from the mouse the menu does, so arrows still work.
+  if (keyboard) menu.querySelector(".context-row:not([aria-disabled])")?.focus();
+  else menu.focus();
+}
+
+document.addEventListener("contextmenu", (event) => {
+  if (!state.project || event.target.closest("dialog, input, textarea, select, [contenteditable], #contextMenu")) return;
+  const found = actionsAt(event.target);
+  if (!found) return;
+  event.preventDefault();
+  openContextMenu(found, event.clientX, event.clientY);
+});
+
+// The keyboard's menu key, or Shift+F10, opens the same menu for what has the focus.
+document.addEventListener("keydown", (event) => {
+  if (!(event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey))) return;
+  const focused = document.activeElement;
+  if (!focused || !state.project || focused.closest("dialog, input, textarea, select")) return;
+  const found = actionsAt(focused);
+  if (!found) return;
+  event.preventDefault();
+  const at = focused.getBoundingClientRect();
+  openContextMenu(found, at.left + 12, at.bottom - 4, true);
+});
+
+$("contextMenu").addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  event.preventDefault();
+  const rows = [...$("contextMenu").querySelectorAll(".context-row")];
+  const at = rows.indexOf(document.activeElement);
+  const step = event.key === "ArrowDown" ? 1 : -1;
+  rows[at < 0 ? (step > 0 ? 0 : rows.length - 1) : (at + step + rows.length) % rows.length]?.focus();
+});
+
 /* Player */
 
 let front = $("videoA");
@@ -5276,6 +5710,7 @@ function sourceOf(item) {
 function load(video, url) {
   if (video.dataset.url !== url) {
     video.dataset.url = url;
+    video.classList.remove("under");
     video.src = url;
     video.addEventListener("loadeddata", () => {
       if (!state.playing) showFrame();
@@ -5467,6 +5902,8 @@ function showPicture() {
   const job = state.running || jobFor(item?.clip || state.clip);
   const slate = $("slate");
   clearMix();
+  front.classList.remove("under");
+  back.classList.remove("under");
   if (url) {
     place(front, item, frame);
     front.classList.add("show");
@@ -5485,6 +5922,18 @@ function showPicture() {
   }
   showLive(job);
   placePlayhead();
+}
+
+// At a cut the next clip's video may still be seeking to its first frame, with nothing drawn yet, and the
+// screen would show black for a moment. The clip that just ended stays underneath on its last frame until
+// the next one has drawn a frame of its own.
+function cover(outgoing, coming) {
+  const lift = () => outgoing.classList.remove("under");
+  if (coming.readyState >= 2 && !coming.seeking) return;
+  outgoing.classList.add("under");
+  if (coming.requestVideoFrameCallback) coming.requestVideoFrameCallback(lift);
+  else coming.addEventListener("seeked", lift, { once: true });
+  setTimeout(lift, 500);                                   // never left behind if the next clip fails to load
 }
 
 function swap() {
@@ -5548,7 +5997,8 @@ function tick(now) {
     applyMix(coming, state.playhead);
   } else {
     const following = item ? sorted().find((i) => i.start >= itemEnd(item) - (i.transition?.frames || 0) && i !== item) : nextItem(state.playhead);
-    if (following && sourceOf(following) && back.paused) {
+    // The clip that just ended may still be covering the cut: it gets the next source once it is free.
+    if (following && sourceOf(following) && back.paused && !back.classList.contains("under")) {
       load(back, sourceOf(following));
       // A video takes a moment to start, which would be a hole in the sound at every cut. So the
       // next clip waits a little before its in-point and starts early and silent, to be running
@@ -5556,7 +6006,7 @@ function tick(now) {
       const rate = speedOf(following);
       const parked = Math.max(0, following.in / FPS - PREROLL * rate);
       const lead = (following.start - state.playhead) / FPS;
-      if (lead > 0 && lead * rate <= following.in / FPS - parked && back.readyState >= 3 && !back.seeking) {
+      if (lead > 0 && lead * rate <= following.in / FPS - parked && back.readyState >= 2 && !back.seeking) {
         back.volume = 0;
         back.playbackRate = rate;
         back.play().catch(() => {});
@@ -5580,9 +6030,11 @@ function tick(now) {
   const current = leading(state.playhead);
   if (current !== item) {
     if (current && sourceOf(current)) {
+      const before = front;
       if (back.dataset.url === sourceOf(current)) swap();
       place(front, current, state.playhead, 0.08);
       front.classList.add("show");
+      if (before !== front) cover(before, front);
       front.volume = 1;
       front.play().catch(() => {});
       if (!incoming(state.playhead)) back.pause();

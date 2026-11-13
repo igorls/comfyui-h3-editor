@@ -47,6 +47,7 @@ import numpy as np
 W, H, N, FPS = 96, 54, 5, 24
 STRAY = 3           # a shot of this many frames or fewer is a stray frame, not a shot
 SPAN = 12           # a fade is looked for across this many frames
+BLEND = 0.5         # a dissolve's middle frame is a mix of its ends: it strays from their average by less than this part of their difference
 POP = 0.12          # a step under this is a blink, a gesture or a ripple, not a change of picture
 FROZEN = 0.0005     # a frame that changes less than this from the one before repeats it
 FROZEN_RUN = 3      # this many repeated frames in a row are reported as frozen
@@ -200,6 +201,12 @@ def likeness(a, b):
     return float((da * db).sum() / spread) if spread > 1e-9 else 1.0
 
 
+def blended(a, middle, b):
+    """Whether the middle picture is close to a mix of a and b, as the middle of a dissolve is."""
+    spread = float(np.abs(a - b).mean())
+    return spread > 1e-6 and float(np.abs(middle - (a + b) / 2).mean()) < BLEND * spread / 2
+
+
 def find_inside(pictures):
     """Where a run of frames that should be one shot changes picture: [{"at", "kind", "score", "notes"}].
 
@@ -222,7 +229,9 @@ def find_inside(pictures):
             k += 1
             continue
         dims = light[k] < 0.6 * light[k - SPAN] and light[k - SPAN] > 0.05
-        other = likeness(y[k], y[k - SPAN]) < 0.3
+        # Another picture through a dissolve passes through mixes of the two. A big move (a dance, a camera move)
+        # changes the layout as much, but its middle frame is a picture of its own, not a mix of the ends.
+        other = likeness(y[k], y[k - SPAN]) < 0.3 and blended(y[k - SPAN], y[k - SPAN // 2], y[k])
         if dims or other:
             start = k - SPAN
             if dims:                                   # where it starts to dim, not where it was last whole

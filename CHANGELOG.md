@@ -41,6 +41,46 @@ Each release is a tag on GitHub, `v` followed by the version.
   opens it, typing narrows it, the arrow keys and Enter pick, and the model in
   use is ticked. You can still type any name. Changing provider clears a model
   name that belongs to the other kind of provider.
+- **The writing model sees pictures.** Rewrite and Write shots now send the
+  cast's own pictures with every request, each named, so the model sees who
+  it writes about. The dialog shows them, and takes more: drop, paste or add a
+  picture of a place or a product, or the frame the viewer shows. It works with
+  every provider; ComfyUI's own Generate Text node takes them too. A model
+  that takes no pictures is asked again with the text alone, and the dialog
+  says so.
+- **A cleaner side panel.** Long explanations are hidden once you know the
+  editor: the **?** at the end of the panel's tabs shows them again, and
+  each one is also the tip of the setting it explains. Short lines that say
+  what is the case stay. Draft and Final size sit side by side, Models and
+  their settings is a link beside Model, and Write shots and Set up a
+  language model share a row. First and Last frame, and the takes in the
+  Takes tab, take the project's shape and show the whole picture, where a 9:16
+  picture used to be cropped to 16:9.
+  Fixed: a project with no notes printed "null"
+  in the Project tab; the VFX clip's Render and Remove buttons touched the
+  panel's edge; "frames" fell to a line of its own after Transition in; a
+  cast member clicked while a VFX clip was selected did not open.
+- **The viewer shows where the picture ends.** Around a picture of another
+  shape than the viewer, such as 9:16 in a wide window, the screen is hatched
+  instead of black, so black bars no longer look like part of the video.
+- **Drop a picture on First frame or Last frame** to use it, or to replace the
+  one there.
+- **Right-click menus.** A right click on a clip on the timeline, a clip in
+  the list, a VFX clip, a sound, a cast member or the viewer offers what can be
+  done to it: render, rewrite, extend, bridge, merge, split, show its takes,
+  remove, use the frame as a first or last frame, write a note. What cannot be
+  done right now stays in the menu, greyed, with the reason. The menu key or
+  Shift+F10 opens it for the focused clip.
+- **No black flash at a cut while playing.** At a cut, and at every extension,
+  the next clip's video could still be seeking to its first frame when it was
+  shown, and the viewer went black for a moment. The clip that ends now stays
+  on screen until the next one has drawn its first frame, the next clip starts
+  running ahead of the cut more reliably, and the clip after it is not loaded
+  into the video that is still covering the cut.
+- **Dancing is not a dissolve.** The check for a take that dissolves into
+  another picture marked big moves (a dance, a camera move) as dissolves.
+  It now also asks that the frames in between look like a mix of the two
+  pictures, as a dissolve's do. Fades to black are found as before.
 - **The live preview starts muted.** While a clip samples, its looping preview
   no longer plays sound until you turn it on with the speaker button in the
   corner of the viewer. The editor remembers the choice.

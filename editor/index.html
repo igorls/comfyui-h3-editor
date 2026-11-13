@@ -25,6 +25,7 @@
       <div id="checksList" class="checks-list"></div>
       <p class="checks-foot">Measured from the pictures as clips render: cuts, takes that cut, fade or stop inside, soft clips, drift, VFX edges and your ratings.</p>
     </div>
+    <div id="contextMenu" class="menu context-menu" popover role="menu" aria-label="Actions" tabindex="-1"></div>
     <div id="queue" class="queue"></div>
     <button id="renderAll" class="quiet">Render all drafts</button>
     <button id="export" class="primary">Export</button>
@@ -204,7 +205,7 @@
 <dialog id="writerSetup" class="keys exporter" aria-labelledby="writerSetupTitle">
   <div class="keys-head"><h2 id="writerSetupTitle">Writing with a language model</h2><button id="writerSetupClose" class="quiet">Close</button></div>
   <div class="exporter-body">
-    <p class="hint">Rewrite and Write shots send text to the model you choose: the project's look and language, the cast's names and descriptions, and the clips' text. No pictures and no sound. A model run by this ComfyUI keeps it on this machine; any other provider is called from this browser. These settings, any key included, stay in this browser and are never saved in a project.</p>
+    <p class="hint">Rewrite and Write shots send to the model you choose: the project's look and language, the cast's names, descriptions and pictures, the clips' text, and any picture you add. No sound. A model run by this ComfyUI keeps it on this machine; any other provider is called from this browser. These settings, any key included, stay in this browser and are never saved in a project.</p>
     <div id="writerSetupFields"></div>
     <p id="writerSetupResult" class="hint" aria-live="polite"></p>
   </div>

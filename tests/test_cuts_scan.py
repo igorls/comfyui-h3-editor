@@ -59,6 +59,24 @@ class ScanTest(unittest.TestCase):
     def test_one_shot_is_clean_inside(self):
         self.assertEqual(cuts.find_inside(np.stack(shot(1, 60)).astype(np.float32)), [])
 
+    def test_a_dissolve_to_another_picture_is_found(self):
+        a, b = picture(1), picture(2)
+        frames = shot(1, 30) + [a * (1 - n / 12.0) + b * (n / 12.0) for n in range(13)] + shot(2, 30)
+        found = cuts.find_inside(np.stack(frames).astype(np.float32))
+        self.assertEqual([r["kind"] for r in found], ["fade"])
+        self.assertIn("dissolves", found[0]["notes"][0])
+
+    def test_a_big_move_is_not_a_dissolve(self):
+        # A large bright shape crosses the frame, as a dancer or a camera move does: the layout changes as much as
+        # in a dissolve, but no frame is a mix of two pictures.
+        frames = []
+        for n in range(48):
+            frame = np.full((54, 96, 3), 0.25)
+            x = int(n * 1.5)
+            frame[8:46, x:x + 30] = 0.8
+            frames.append(frame)
+        self.assertEqual([r["kind"] for r in cuts.find_inside(np.stack(frames).astype(np.float32)) if r["kind"] == "fade"], [])
+
 
 def grainy(seed, count):
     """Frames of one picture with fresh grain on each: they change from frame to frame, as a quiet take does, but

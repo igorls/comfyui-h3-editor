@@ -2,8 +2,9 @@
 //
 // Calls go from this browser straight to the endpoint the user names, through universal-llm-client
 // (vendor/universal-llm-client.js), or to this ComfyUI, which runs a text model with its own Generate
-// Text node. Only text is sent: the project's look and language, the cast's names and descriptions, and
-// the clips' fields. The settings, key included, stay in this browser's storage, never in a project.
+// Text node. What is sent: the project's look and language, the cast's names, descriptions and pictures,
+// the clips' fields, and any picture the user adds. No sound. A model that takes no pictures is asked
+// again with the text alone. The settings, key included, stay in this browser's storage, never in a project.
 
 const STORE = "h3take.writer";
 const LIBRARY = "./vendor/universal-llm-client.js";
@@ -83,7 +84,18 @@ function explain(error, given) {
 // One answer from a text model run by this ComfyUI: a small graph of its own Generate Text node, put at the front
 // of the queue. The settings follow Comfy's own prompt-enhancer template, without its thinking: a 9B model asked
 // to rewrite a long shot can think through all of its tokens and answer nothing, and without it answers in seconds.
-async function askComfy(given, system, user) {
+async function uploadForComfy(picture, index) {
+  const form = new FormData();
+  form.append("image", picture.blob, "writer_" + Date.now().toString(36) + "_" + index + ".jpg");
+  form.append("subfolder", "h3take_writer");
+  form.append("overwrite", "true");
+  const reply = await fetch("/upload/image", { method: "POST", body: form });
+  if (!reply.ok) throw new Error("ComfyUI would not take a picture for the text model.");
+  const made = await reply.json();
+  return (made.subfolder ? made.subfolder + "/" : "") + made.name;
+}
+
+async function askComfy(given, system, user, pictures = []) {
   const graph = {
     "1": { class_type: "CLIPLoader", inputs: { clip_name: given.model.trim(), type: "minimax", device: "default" } },
     "2": { class_type: "PrimitiveStringMultiline", inputs: { value: system } },
@@ -94,6 +106,11 @@ async function askComfy(given, system, user) {
       thinking: false, use_default_template: true, mtp: "auto", system_prompt: ["2", 0] } },
     "4": { class_type: "PreviewAny", inputs: { source: ["3", 0] } },
   };
+  for (const [index, picture] of pictures.entries()) {
+    const id = String(10 + index);
+    graph[id] = { class_type: "LoadImage", inputs: { image: await uploadForComfy(picture, index) } };
+    graph["3"].inputs["images.image" + (index + 1)] = [id, 0];
+  }
   let reply;
   try {
     reply = await fetch("/prompt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: graph, front: true }) });
@@ -130,11 +147,33 @@ async function askComfy(given, system, user) {
   throw new Error("The text model had not answered after 15 minutes. ComfyUI may be busy with renders.");
 }
 
-async function ask(given, system, user) {
-  if (given.type === "comfyui") return askComfy(given, system, user);
+// What the last answer saw: how many pictures went with it, and whether the model had to do without them.
+let seen = { pictures: 0, blind: false };
+export const lastSeen = () => ({ ...seen });
+
+// One answer. With pictures, a model that cannot take them (a text-only model, or an endpoint that refuses
+// images) is asked once more with the text alone, and lastSeen() says so.
+async function ask(given, system, user, pictures = []) {
+  seen = { pictures: pictures.length, blind: false };
+  if (!pictures.length) return askOnce(given, system, user, []);
+  try {
+    return await askOnce(given, system, user, pictures);
+  } catch (error) {
+    const text = await askOnce(given, system, user.replace(/\n\nPictures with this message[\s\S]*?\n\n/, "\n\n"), []).catch(() => null);
+    if (text === null) throw error;
+    seen = { pictures: 0, blind: true };
+    return text;
+  }
+}
+
+async function askOnce(given, system, user, pictures) {
+  if (given.type === "comfyui") return askComfy(given, system, user, pictures);
   const model = await client(given);
   try {
-    const reply = await model.chat([{ role: "system", content: system }, { role: "user", content: user }]);
+    const message = pictures.length
+      ? [{ type: "text", text: user }, ...pictures.map((picture) => ({ type: "image_url", image_url: { url: picture.url } }))]
+      : user;
+    const reply = await model.chat([{ role: "system", content: system }, { role: "user", content: message }]);
     const content = reply?.message?.content;
     const text = typeof content === "string" ? content
       : Array.isArray(content) ? content.map((part) => (typeof part === "string" ? part : part?.text || "")).join("") : "";
@@ -199,6 +238,7 @@ Rules:
 - The project's look is added to every shot by the editor. Do not repeat it in action.
 - A cast member is placed by writing @Name in action, exactly as the name is given. When a cast member speaks, speaker starts with @Name. Never invent a cast name.
 - Text that must appear in the picture is spelled out, such as: a sign with the word OPEN in large white capital letters. Keep it to a few short words.
+- Pictures may come with the message, each named. A cast member's picture shows how @Name looks. H3 is given that picture too, so do not describe their face, hair or build in action; do keep their clothes and the place true to it unless asked to change them. A picture the user added shows something they want: H3 does not see it, so put what matters from it into words.
 - No shot lists, no numbered steps, no camera cuts, no markdown.
 - Answer with JSON only, with no words before or after it.`;
 
@@ -221,6 +261,12 @@ function about(project) {
   return lines.join("\n");
 }
 
+// The list of the pictures that go with a message, in the order they are attached.
+function picturesNote(pictures) {
+  if (!pictures.length) return "";
+  return "\n\nPictures with this message, in order:\n" + pictures.map((picture, index) => (index + 1) + ". " + clean(picture.label, 200)).join("\n") + "\n\n";
+}
+
 const shotOf = (clip) => Object.fromEntries(FIELDS.map((key) => [key, clean(clip[key])]));
 
 function fieldsFrom(value, seconds) {
@@ -236,8 +282,8 @@ function fieldsFrom(value, seconds) {
 }
 
 // One clip written again. before and after are the clips on either side of it in the cut, when there are any.
-export async function rewrite({ project, clip, before = null, after = null, directions = "" }, given = settings()) {
-  const parts = [about(project), ""];
+export async function rewrite({ project, clip, before = null, after = null, directions = "", pictures = [] }, given = settings()) {
+  const parts = [about(project) + picturesNote(pictures), ""];
   if (before && clean(before.action)) parts.push("The shot before this one: " + clean(before.action, 1200), "");
   if (after && clean(after.action)) parts.push("The shot after this one: " + clean(after.action, 1200), "");
   parts.push(
@@ -248,21 +294,21 @@ export async function rewrite({ project, clip, before = null, after = null, dire
     "",
     'Answer with one JSON object with exactly these keys: "action", "camera", "speaker", "dialogue", "sound", "music". Use "" for a field that stays empty.',
   );
-  return fieldsFrom(parseJson(await ask(given, RULES, parts.join("\n"))), 0);
+  return fieldsFrom(parseJson(await ask(given, RULES, parts.join("\n"), pictures)), 0);
 }
 
 // The shots of a video, from a description of it.
-export async function writeShots({ project, brief, count, seconds }, given = settings()) {
+export async function writeShots({ project, brief, count, seconds, pictures = [] }, given = settings()) {
   const shots = Math.max(LIMITS.shots[0], Math.min(LIMITS.shots[1], Math.round(Number(count)) || 4));
   const each = Math.max(LIMITS.seconds[0], Math.min(LIMITS.seconds[1], Number(seconds) || 5));
   const parts = [
-    about(project), "",
+    about(project) + picturesNote(pictures), "",
     "Write a video of " + shots + (shots === 1 ? " shot" : " shots") + ", each about " + each + " seconds, between " + LIMITS.seconds[0] + " and " + LIMITS.seconds[1] + ".",
     "Each shot is rendered by itself and knows nothing of the others. So each one describes its people and its place in full, in the same words every time, and never says \"the same\", \"again\" or \"as before\". Change the framing from one shot to the next.",
     "", "The video: " + clean(brief, 4000), "",
     'Answer with one JSON array of ' + shots + ' objects, each with exactly these keys: "name" (two or three words), "seconds" (a number), "action", "camera", "speaker", "dialogue", "sound", "music". Use "" for a field that stays empty.',
   ];
-  let rows = parseJson(await ask(given, RULES, parts.join("\n")));
+  let rows = parseJson(await ask(given, RULES, parts.join("\n"), pictures));
   if (rows && !Array.isArray(rows) && Array.isArray(rows.shots)) rows = rows.shots;
   if (!Array.isArray(rows) || !rows.length) throw new Error("The model did not answer with a list of shots. Try again, or another model.");
   return rows.slice(0, LIMITS.shots[1]).map((row, index) => ({ name: clean(row?.name, 60) || "Shot " + (index + 1), ...fieldsFrom(row, each) }));
