@@ -348,6 +348,8 @@ def sampling_choices():
         samplers, schedulers = list(comfy.samplers.KSampler.SAMPLERS), list(comfy.samplers.SCHEDULER_NAMES)
     except Exception:
         samplers, schedulers = ["euler", "res_multistep"], ["simple"]
+    if store.BETA57 not in schedulers:
+        schedulers.append(store.BETA57)      # the editor makes this one itself
     return {"checkpoints": sorted(files, key=str.lower), "samplers": samplers, "schedulers": schedulers}
 
 
@@ -435,7 +437,7 @@ async def projects(request):
     available = available_models()
     return web.json_response({"projects": names, "titles": project_titles(names), "profiles": store.profile_status(available),
                               "finals": store.finals_status(available),
-                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), "refmods": refmods_status(), "encoders": encoder_choices(available), "sizes": store.size_choices(), **sampling_choices()})
+                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), "refmods": refmods_status(), "encoders": encoder_choices(available), "sizes": store.size_choices(), "upscalers": store.upscaler_status(available), **sampling_choices()})
 
 
 async def create(request):
@@ -644,10 +646,50 @@ async def score_detail(data):
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
             return None
 
+    async def harsh(item, path):
+        try:
+            key = (path, os.path.getmtime(path), item["in"], item["out"], "texture")
+            if key not in FINE_SCORES:
+                async with gate:
+                    FINE_SCORES[key] = await asyncio.to_thread(finescore.clip_texture, path, item["in"], item["out"], media.command)
+            return FINE_SCORES[key]
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
+            return None
+
+    # A shot is a take and the clips that extend it, one after another. Each extension is held against the first.
+    first_item = {}
+    for item, _, _ in shown:
+        first_item.setdefault(item["clip"], item["id"])
+    roots = {item["id"]: first_item.get(shot_root(data, item["clip"])) for item, _, _ in shown}
+    chained = {key for key, root in roots.items() if root and root != key} | {root for key, root in roots.items() if root and root != key}
     values = await asyncio.gather(*[one(item, path) for item, path, _ in shown])
+    textures = await asyncio.gather(*[harsh(item, path) if item["id"] in chained else asyncio.sleep(0) for item, path, _ in shown])
     found = finescore.soft_clips([(item["id"], value, item["out"] - item["in"]) for (item, _, _), value in zip(shown, values)])
-    return {"level": found["level"], "size": [width, height],
-            "clips": [dict(row, item=row.pop("id"), at=item["start"]) for row, (item, _, _) in zip(found["clips"], shown)]}
+    moved = finescore.drifting([(item["id"], roots[item["id"]] if roots[item["id"]] != item["id"] else None, value)
+                                for (item, _, _), value in zip(shown, textures)])
+    clips = []
+    for row, (item, _, _) in zip(found["clips"], shown):
+        row = dict(row, item=row.pop("id"), at=item["start"])
+        if row["item"] in moved:
+            row["drift"] = dict(moved[row["item"]], limit=finescore.DRIFT)
+        clips.append(row)
+    return {"level": found["level"], "size": [width, height], "clips": clips}
+
+
+def shot_root(data, clip_id):
+    """The clip a chain of extensions started from: the clip itself when it extends nothing."""
+    seen = set()
+    while clip_id not in seen:
+        seen.add(clip_id)
+        try:
+            link = store.find_clip(data, clip_id).get("link") or {}
+        except KeyError:
+            break
+        source = (link.get("a") or {}).get("clip")
+        if link.get("mode") not in ("extend_after", "extend_before") or not source:
+            break
+        clip_id = source
+    return clip_id
 
 
 EFFECT_FRAME_LIMIT = 8 * 1024 * 1024     # one frame of a VFX render, as a JPEG
@@ -1037,8 +1079,8 @@ def comfy_queue():
     return {entry[1] for entry in running}, {entry[1] for entry in queued}
 
 
-async def start_render(data, folder, clip_id, quality, seed=None, client_id=None):
-    job, graph = store.plan_render(data, folder, clip_id, quality or "draft", seed, available_models())
+async def start_render(data, folder, clip_id, quality, seed=None, client_id=None, detail=None, upscaler=None):
+    job, graph = store.plan_render(data, folder, clip_id, quality or "draft", seed, available_models(), detail, upscaler)
     job["id"] = await queue_prompt(graph, client_id)
     store.add_pending(data, job)
     return job
@@ -1067,7 +1109,7 @@ async def render(request):
         data = read_project(folder)
         try:
             job = await start_render(data, folder, body.get("clip"), body.get("quality"), body.get("seed"),
-                                     body.get("client_id"))
+                                     body.get("client_id"), body.get("detail"), body.get("upscaler"))
         except (ValueError, KeyError) as error:
             return refused(plain(error))
         except Refused as error:
@@ -1109,7 +1151,7 @@ async def operations(request):
                 if kind == "render":
                     clip_id = store._resolve(op.get("clip"), names, "clip")
                     planned, _ = store.plan_render(copy.deepcopy(work), folder, clip_id, op.get("quality") or "draft",
-                                                   op.get("seed"), available_models())
+                                                   op.get("seed"), available_models(), op.get("detail"), op.get("upscaler"))
                     later.append((index, op, clip_id, planned.get("loads") or planned["models"]["unet"]))
                     results.append(None)
                 elif kind == "cancel":
@@ -1143,7 +1185,7 @@ async def operations(request):
         for index, op, clip_id, _ in arranged:
             try:
                 if op["op"] == "render":
-                    job = await start_render(work, folder, clip_id, op.get("quality"), op.get("seed"), op.get("client_id"))
+                    job = await start_render(work, folder, clip_id, op.get("quality"), op.get("seed"), op.get("client_id"), op.get("detail"), op.get("upscaler"))
                     results[index] = {"clip": clip_id, "job": job["id"], "take": job["take"]}
                 elif op["op"] == "make_refmod":
                     cast_id, name, graph = clip_id

@@ -27,7 +27,7 @@ made with it, shot by shot.
 - **Try fast, finish large.** Drafts are small and quick. Finals are refined at
   up to 1920 pixels, with a realism LoRA for natural skin.
 - **Pick the model, per project or per clip.** HyperFlow H3 Flash, MiniMax H3,
-  its Turbo LoRA, Singularity, DaSiWa and 10Eros Max are built in, and a clip
+  its Turbo LoRA, Singularity, DaSiWa, 10Eros Max and PRISM are built in, and a clip
   can render on a different one than the rest of the project. Any other H3
   checkpoint works too: pick its file, set its steps, sampler and scheduler,
   and save it as a preset for every project.

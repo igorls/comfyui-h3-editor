@@ -78,5 +78,27 @@ class DetailTest(unittest.TestCase):
         self.assertAlmostEqual(found["level"], 0.18)
 
 
+class DriftTest(unittest.TestCase):
+    def test_a_harsher_picture_has_more_texture(self):
+        rng = np.random.default_rng(3)
+        smooth = np.clip(0.5 + 0.02 * rng.standard_normal((120, 200)), 0, 1).astype(np.float32)
+        harsh = np.clip(0.5 + 0.06 * rng.standard_normal((120, 200)), 0, 1).astype(np.float32)
+        self.assertGreater(detail.texture(harsh), 2 * detail.texture(smooth))
+        self.assertAlmostEqual(detail.texture(np.full((40, 40), 0.3, dtype=np.float32)), 0.0, places=6)
+
+    def test_an_extension_is_held_against_the_take_its_shot_began_with(self):
+        rows = [("a", None, 0.0140), ("b", "a", 0.0150), ("c", "a", 0.0166), ("d", None, 0.0200), ("e", "d", 0.0170)]
+        found = detail.drifting(rows)
+        self.assertEqual(set(found), {"b", "c", "e"})
+        self.assertFalse(found["b"]["drifted"])
+        self.assertEqual((found["c"]["root"], found["c"]["drifted"]), ("a", True))
+        self.assertAlmostEqual(found["c"]["change"], 0.186, places=3)
+        self.assertTrue(found["e"]["drifted"])              # softer by as much counts too
+        self.assertLess(found["e"]["change"], 0)
+
+    def test_a_take_with_nothing_to_measure_is_not_judged(self):
+        self.assertEqual(detail.drifting([("a", None, None), ("b", "a", 0.02), ("c", "a", None)]), {})
+
+
 if __name__ == "__main__":
     unittest.main()

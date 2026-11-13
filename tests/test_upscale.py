@@ -42,6 +42,53 @@ class UpscaleTest(unittest.TestCase):
         self.assertEqual(take["models"]["profile"], source["models"]["profile"])
         self.assertEqual(len(clip["takes"]), 2)
 
+    def test_detail_is_half_unless_asked_and_is_kept_on_the_take(self):
+        project, clip = rendered()
+        job, graph = plan_render(project, "Test", clip["id"], "upscale", available=FILES)
+        self.assertEqual((graph["35"]["inputs"]["detail"], job["detail"]), (0.5, 0.5))
+        job, graph = plan_render(project, "Test", clip["id"], "upscale", available=FILES, detail=0.25)
+        self.assertEqual(graph["35"]["inputs"]["detail"], 0.25)
+        job["id"] = "prompt-2"
+        add_pending(project, job)
+        finish_render(project, "prompt-2", {"filename": "y.mp4", "subfolder": "s"}, {"frames": 124, "poster": "y.jpg"})
+        self.assertEqual(store.active_take(clip)["detail"], 0.25)
+
+    def test_detail_outside_0_to_1_is_refused(self):
+        project, clip = rendered()
+        with self.assertRaisesRegex(ValueError, "from 0 to 1"):
+            plan_render(project, "Test", clip["id"], "upscale", available=FILES, detail=2)
+
+    def test_seedvr2_is_used_when_asked_for_and_installed(self):
+        project, clip = rendered()
+        both = FILES | {"seedvr2_3b_int8_convrot.safetensors", "seedvr2_ema_vae_fp16.safetensors"}
+        job, graph = plan_render(project, "Test", clip["id"], "upscale", available=both, upscaler="seedvr2")
+        self.assertEqual(graph["31"]["inputs"]["unet_name"], "seedvr2_3b_int8_convrot.safetensors")
+        self.assertEqual(graph["40"]["inputs"]["resize_type.multiplier"], 2.0)
+        self.assertEqual(graph["18"]["inputs"]["images"], ["47", 0])
+        self.assertEqual((job["upscaler"], job["size"]), ("seedvr2", [3840, 2176]))
+        self.assertNotIn("detail", job)
+        self.assertNotIn("33", graph)
+
+    def test_the_first_installed_upscaler_is_the_default(self):
+        project, clip = rendered()
+        only = {"seedvr2_3b_int8_convrot.safetensors", "seedvr2_ema_vae_fp16.safetensors"}
+        job, _ = plan_render(project, "Test", clip["id"], "upscale", available=only)
+        self.assertEqual(job["upscaler"], "seedvr2")
+        job, _ = plan_render(project, "Test", clip["id"], "upscale", available=FILES | only)
+        self.assertEqual(job["upscaler"], "relayvsr")
+
+    def test_an_upscaler_that_is_not_installed_says_what_it_needs(self):
+        project, clip = rendered()
+        with self.assertRaisesRegex(ValueError, "SeedVR2 needs seedvr2_3b_int8_convrot.safetensors"):
+            plan_render(project, "Test", clip["id"], "upscale", available=FILES, upscaler="seedvr2")
+        with self.assertRaisesRegex(ValueError, "must be one of"):
+            plan_render(project, "Test", clip["id"], "upscale", available=FILES, upscaler="magic")
+
+    def test_the_status_lists_each_upscaler_and_what_is_missing(self):
+        rows = {row["id"]: row for row in store.upscaler_status(FILES)}
+        self.assertTrue(rows["relayvsr"]["installed"])
+        self.assertEqual((rows["seedvr2"]["installed"], len(rows["seedvr2"]["missing"])), (False, 2))
+
     def test_an_upscaled_take_is_not_upscaled_again(self):
         project, clip = rendered()
         job, _ = plan_render(project, "Test", clip["id"], "upscale", available=FILES)
@@ -70,7 +117,7 @@ class UpscaleTest(unittest.TestCase):
     def test_missing_files_are_named(self):
         project, clip = rendered()
         with self.assertRaisesRegex(ValueError, "relayvsr_flash_vae_x2_fp32.safetensors"):
-            plan_render(project, "Test", clip["id"], "upscale", available={"relayvsr_x2_lightx2v_int8_convrot.safetensors"})
+            plan_render(project, "Test", clip["id"], "upscale", available={"relayvsr_x2_lightx2v_int8_convrot.safetensors"}, upscaler="relayvsr")
 
     def test_files_in_the_models_root_are_found_too(self):
         project, clip = rendered()

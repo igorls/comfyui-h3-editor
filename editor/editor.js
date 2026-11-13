@@ -38,6 +38,7 @@ const state = {
   loras: [],
   realism: null,
   sizes: null,
+  upscalers: [],
   checkpoints: [],
   presets: [],
   refmods: { installed: false, files: [] },
@@ -2300,7 +2301,9 @@ function renderScene(panel, selected = false) {
 function sizeChoices() {
   const table = state.sizes?.[state.project.format || "16:9"];
   if (!table) return [];
-  const names = { small: "Small", medium: "Medium", large: "Large", full: "Full" };
+  const names = { small: "Small", medium: "Medium", large: "Large", full: "Full", sharp: "Sharp" };
+  // A sharp final goes through RelayVSR, so it is on offer only where that is installed.
+  const relay = (state.upscalers || []).find((row) => row.id === "relayvsr");
   const choice = (quality, title) => {
     const label = document.createElement("label");
     label.className = "choice";
@@ -2315,6 +2318,10 @@ function sizeChoices() {
       option.value = row.id;
       option.textContent = names[row.id] + ", " + row.out[0] + " × " + row.out[1];
       option.selected = row.id === current;
+      if (row.id === "sharp" && relay && !relay.installed) {
+        option.disabled = row.id !== current;
+        option.textContent += " (needs RelayVSR)";
+      }
       select.append(option);
     }
     select.addEventListener("change", () => {
@@ -2332,8 +2339,12 @@ function sizeChoices() {
   const hint = document.createElement("p");
   hint.className = "hint";
   const full = table.final.find((row) => row.id === "full");
+  const sharp = table.final.find((row) => row.id === "sharp");
   hint.textContent = "New renders use these sizes. A smaller one needs less GPU memory and renders faster."
     + (full ? " Full samples at " + full.width + " × " + full.height + ", then redraws its last steps at " + full.out[0] + " × " + full.out[1] + "." : "")
+    + (sharp ? " Sharp samples at the same size once, enlarges the picture two times with RelayVSR and scales it down to "
+      + sharp.out[0] + " × " + sharp.out[1] + ": quicker than Full, with crisper edges and the smoother skin of the sampled size."
+      + (relay && !relay.installed ? " It needs " + relay.missing.join(" and ") + " from " + relay.source + " on Hugging Face." : "") : "")
     + " Steps are set per model, in Models and their settings.";
   return [choice("draft", "Draft size"), choice("final", "Final size"), hint];
 }
@@ -2589,15 +2600,65 @@ function renderInspector() {
       actions.append(button);
     }
     const shown = activeTake(clip);
-    if (shown && shown.quality === "final" && !shown.upscaled) {
+    const upscalers = (state.upscalers || []).filter((row) => row.installed);
+    if (shown && shown.quality === "final" && !shown.upscaled && upscalers.length) {
       // A finished final can be enlarged two times: a new take of the same picture and sound, at twice the size.
+      // Which upscaler is the user's choice, among the installed ones: they do very different things to a picture.
       const shape = takeShape(shown);
+      const remembered = (key, fallback) => {
+        try {
+          return localStorage.getItem(key) || fallback;
+        } catch (_) {
+          return fallback;      // no storage: the choice lasts for this visit
+        }
+      };
+      const remember = (key, value) => {
+        try {
+          localStorage.setItem(key, value);
+        } catch (_) {
+          // Kept for this visit only.
+        }
+      };
+      const which = document.createElement("select");
+      which.setAttribute("aria-label", "Upscaler");
+      const chosen = remembered("h3.upscaler", upscalers[0].id);
+      for (const row of upscalers) {
+        const option = document.createElement("option");
+        option.value = row.id;
+        option.textContent = row.title;
+        option.selected = row.id === chosen;
+        which.append(option);
+      }
+      // RelayVSR only: how much of the detail it adds is kept. All of it sharpens most, and can age a face.
+      const detail = document.createElement("select");
+      detail.setAttribute("aria-label", "How much detail the upscale adds");
+      detail.title = "How much of the detail the upscaler adds is kept. More is sharper; on a face, all of it brings out pores and shine and can make it look older.";
+      const kept = remembered("h3.upscaleDetail", "0.5");
+      for (const [value, label] of [["0.25", "A little detail"], ["0.5", "Some detail"], ["0.75", "More detail"], ["1", "All detail"]]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === kept;
+        detail.append(option);
+      }
+      detail.addEventListener("change", () => remember("h3.upscaleDetail", detail.value));
       const button = document.createElement("button");
       button.className = "quiet";
       button.textContent = "Upscale 2x";
-      button.title = "Enlarge this final to " + 2 * shape[0] + " x " + 2 * shape[1] + " with RelayVSR. It becomes a new take; do it once the cut is settled.";
-      button.addEventListener("click", () => renderClip(clip, "upscale"));
-      actions.append(button);
+      const settle = () => {
+        const row = upscalers.find((r) => r.id === which.value) || upscalers[0];
+        detail.hidden = !row.detail;
+        which.title = row.about;
+        button.title = "Enlarge this final to " + 2 * shape[0] + " x " + 2 * shape[1] + " with " + row.title + ". " + row.about
+          + " It becomes a new take; do it once the cut is settled.";
+      };
+      which.addEventListener("change", () => {
+        remember("h3.upscaler", which.value);
+        settle();
+      });
+      settle();
+      button.addEventListener("click", () => renderClip(clip, "upscale", detail.hidden ? undefined : Number(detail.value), which.value));
+      actions.append(which, detail, button);
     }
   }
   foot.append(actions);
@@ -3493,6 +3554,29 @@ function renderTimeline() {
       state.item = cut.before.id;
       state.gap = null;
       seek(cut.after.start - 1);
+      renderAll();
+    });
+    blocks.push(mark);
+  }
+  for (const row of shownTakes()) {
+    // An extension whose picture has moved away from where its shot began.
+    const found = fineScores.get(row.key);
+    if (!found || !found.drift || !found.drift.drifted) continue;
+    const mark = document.createElement("button");
+    mark.className = "soft-mark drift-mark";
+    mark.style.left = px(row.item.start + (itemEnd(row.item) - row.item.start) / 2) + "px";
+    mark.textContent = "Drift";
+    const amount = Math.round(Math.abs(found.drift.change) * 100);
+    const first = state.project.timeline.find((item) => item.id === found.drift.root);
+    mark.title = clipOf(row.item.clip).name + " has drifted from " + (first ? clipOf(first.clip).name : "the take its shot began with")
+      + ": its picture is " + amount + "% " + (found.drift.change > 0 ? "harsher, which shows as shine and deeper lines on a face" : "softer")
+      + ". Each extension adds to it on this model. Render these lines as a clip of their own from a first frame, or render the shot on a model that holds it.";
+    mark.setAttribute("aria-label", mark.title);
+    mark.addEventListener("pointerdown", (event) => event.stopPropagation());
+    mark.addEventListener("click", () => {
+      state.clip = row.item.clip;
+      state.item = row.item.id;
+      state.gap = null;
       renderAll();
     });
     blocks.push(mark);
@@ -5261,7 +5345,7 @@ function updateQueue() {
 
 // Renders are queued by the server, which also attaches the finished take to the project.
 // The editor only shows progress, so closing it never loses a render.
-async function renderClip(clip, quality) {
+async function renderClip(clip, quality, detail, upscaler) {
   if (jobFor(clip.id)) return;
   if (!clip.action.trim()) {
     selectClip(clip.id);
@@ -5270,7 +5354,10 @@ async function renderClip(clip, quality) {
   }
   try {
     await flush();
-    const result = await postJson("/project/" + state.folder + "/render", { clip: clip.id, quality, client_id: clientId });
+    const body = { clip: clip.id, quality, client_id: clientId };
+    if (detail !== undefined) body.detail = detail;
+    if (upscaler) body.upscaler = upscaler;
+    const result = await postJson("/project/" + state.folder + "/render", body);
     state.jobs.set(result.job.id, { ...result.job, step: 0, max: 0, progress: 0 });
     if (!unsaved()) adopt(result.project);
     updateQueue();
@@ -5451,7 +5538,7 @@ async function openProject(folder) {
 }
 
 async function refreshProjects(selected) {
-  const { projects, titles, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets, refmods, encoders, sizes } = await api("/projects");
+  const { projects, titles, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets, refmods, encoders, sizes, upscalers } = await api("/projects");
   state.encoders = encoders || { text_encoders: [], vaes: [], auto: {}, missing: [] };
   state.presets = presets || [];
   state.refmods = refmods || { installed: false, files: [] };
@@ -5465,6 +5552,7 @@ async function refreshProjects(selected) {
   state.loras = loras || [];
   state.realism = realism || null;
   state.sizes = sizes || null;
+  state.upscalers = upscalers || [];
   $("project").replaceChildren(...projects.map((name) => {
     const option = document.createElement("option");
     option.value = name;

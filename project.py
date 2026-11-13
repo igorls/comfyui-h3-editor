@@ -35,14 +35,21 @@ FORMATS = {
 }
 # Sizes a project can ask for instead of the usual ones, for a GPU with less memory or for
 # speed. A draft is small unless the project asks for medium. A final is full unless it asks
-# for less: full renders large and is then enlarged to the refine size, and the others come
-# out as sampled.
+# for something else: full renders large and is then enlarged to the refine size by redrawing
+# its last steps there, sharp renders large and reaches the refine size through a video
+# upscaler instead, and the others come out as sampled.
 SIZES = {
     "16:9": {"small": (640, 352), "medium": (960, 544), "large": (1344, 768)},
     "9:16": {"small": (352, 640), "medium": (544, 960), "large": (768, 1344)},
     "1:1": {"small": (480, 480), "medium": (768, 768), "large": (1024, 1024)},
 }
-SIZE_CHOICES = {"draft": ("small", "medium"), "final": ("full", "large", "medium", "small")}
+SIZE_CHOICES = {"draft": ("small", "medium"), "final": ("full", "sharp", "large", "medium", "small")}
+# A sharp final is enlarged two times by this upscaler, keeping all the detail it adds, and
+# scaled down to the refine size. H3 is not asked to draw at a size it was not made for, so
+# skin stays as it is at H3's own size, and the edges come out crisper than a redraw gives.
+SHARP = "sharp"
+SHARP_UPSCALER = "relayvsr"
+SHARP_DETAIL = 1.0
 LANGUAGE = "English"
 # The range a recorded picture side must fall in before export trusts it.
 MIN_SIDE, MAX_SIDE = 16, 8192
@@ -61,13 +68,20 @@ def render_size(project, quality):
     """
     quality = "draft" if quality == "draft" else "final"
     shape = project.get("format") if project.get("format") in FORMATS else "16:9"
-    chosen = project.get("sizes")
-    name = chosen.get(quality) if isinstance(chosen, dict) else None
-    if name not in SIZE_CHOICES[quality]:
-        name = SIZE_CHOICES[quality][0]
+    name = size_name(project, quality)
     if name == "full":
         return FORMATS[shape]["final"] + (True,)
+    if name == SHARP:
+        return FORMATS[shape]["final"] + (False,)
     return SIZES[shape][name] + (False,)
+
+
+def size_name(project, quality):
+    """The name of the size a new render of this quality uses: the project's choice, or the usual one."""
+    quality = "draft" if quality == "draft" else "final"
+    chosen = project.get("sizes")
+    name = chosen.get(quality) if isinstance(chosen, dict) else None
+    return name if name in SIZE_CHOICES[quality] else SIZE_CHOICES[quality][0]
 
 
 def size_choices():
@@ -80,7 +94,7 @@ def size_choices():
             for name in names:
                 width, height, refined = render_size({"format": shape, "sizes": {quality: name}}, quality)
                 rows.append({"id": name, "width": width, "height": height,
-                             "out": list(FORMATS[shape]["refine"] if refined else (width, height))})
+                             "out": list(FORMATS[shape]["refine"] if refined or name == SHARP else (width, height))})
             table[shape][quality] = rows
     return table
 
@@ -193,8 +207,27 @@ PROFILES = {
         "unet": ["10Eros_Max_h3_8stepTURBO_beta7_fix1-native_int8_protected_edges_HQ.safetensors", "10Eros_Max_h3_8stepTURBO_beta7*"],
         "steps": {"draft": 6, "final": 8}, "sampler": "euler", "refine_sigmas": REFINE_TAIL,
     },
+    "prism": {
+        "title": "PRISM (Singularity x 10Eros Max)",
+        "hint": "A merge of two community H3 fine-tunes with its turbo built in, ref2va only. Crisp eyes and skin texture, "
+                "glossier skin. Extensions drift on it, so keep a shot to one take where you can. 6 steps for drafts, 8 for finals.",
+        "unet": ["PRISM_DMAD_PDMD_int8.safetensors", "PRISM_DMAD_PDMD*"],
+        "steps": {"draft": 6, "final": 8}, "sampler": "euler", "scheduler": "beta57", "refine_sigmas": REFINE_TAIL,
+    },
 }
 DEFAULT_PROFILE = "hyperflow"
+# A scheduler the editor makes itself: the beta schedule with these two numbers, which other packs add to ComfyUI
+# under this name. The editor builds it with ComfyUI's own node, so a checkpoint can ask for it on any install.
+BETA57 = "beta57"
+BETA57_SHAPE = (0.5, 0.7)
+
+
+def sigmas_node(scheduler, steps):
+    """The node that makes a render's sigmas for a scheduler by name."""
+    if scheduler == BETA57:
+        return {"class_type": "BetaSamplingScheduler", "inputs": {
+            "model": ["5", 0], "steps": steps, "alpha": BETA57_SHAPE[0], "beta": BETA57_SHAPE[1]}}
+    return {"class_type": "BasicScheduler", "inputs": {"model": ["5", 0], "scheduler": scheduler or "simple", "steps": steps, "denoise": 1.0}}
 # A project's own checkpoints: how many, the family one starts from, and the steps it may take.
 CHECKPOINT_LIMIT = 12
 # Checkpoints saved as presets are shared by every project. A project keeps its own copy of the ones it uses.
@@ -745,7 +778,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
         "9": {"class_type": "H3LivePreview", "inputs": {
             "model": ["5", 0], "audio_vae": ["4", 0], "folder": "%s/%s/preview" % (ROOT, folder)}},
         "11": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": profile["sampler"]}},
-        "12": {"class_type": "BasicScheduler", "inputs": {"model": ["5", 0], "scheduler": profile.get("scheduler") or "simple", "steps": size["steps"], "denoise": 1.0}},
+        "12": sigmas_node(profile.get("scheduler"), size["steps"]),
         "13": {"class_type": "BasicGuider", "inputs": {"model": ["9", 0], "conditioning": ["10", 0]}},
         "14": {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)}},
         "15": {"class_type": "SamplerCustomAdvanced", "inputs": {
@@ -840,6 +873,8 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
         # Without the latent upscaler a final stays at H3's own size.
         tail = profile.get("refine_sigmas") or profile["refine_from"]
         add_refine(graph, refine_size(project), tail, models["latent_upscaler"])
+    if quality != "draft" and size_name(project, quality) == SHARP:
+        add_sharp(graph, refine_size(project), available)
     mods = clip_refmods(project, clip, available)
     if mods:
         # Each chosen cast member's RefMod joins what H3 Take conditions on, in both passes of a final.
@@ -884,6 +919,27 @@ def add_refine(graph, size, tail, upscaler):
         "91": {"class_type": "VAEDecode", "inputs": {"samples": ["90", 0], "vae": ["3", 0]}},
     })
     graph["18"]["inputs"]["images"] = ["91", 0]
+
+
+def add_sharp(graph, size, available=None):
+    """Enlarge the decoded picture two times with a video upscaler, then scale it down to the final's size.
+
+    The picture is sampled once, at H3's own size. The sound is untouched.
+    """
+    _, files = pick_upscaler(SHARP_UPSCALER, available)
+    width, height = size
+    graph.update({
+        "31": {"class_type": "UNETLoader", "inputs": {"unet_name": files["model"], "weight_dtype": "default"}},
+        "32": {"class_type": "VAELoader", "inputs": {"vae_name": files["vae"]}},
+        "33": {"class_type": "RelayVSRConditioning", "inputs": {"model": ["31", 0], "images": ["16", 0]}},
+        "34": {"class_type": "KSampler", "inputs": {
+            "model": ["31", 0], "seed": 0, "steps": 1, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple",
+            "positive": ["33", 0], "negative": ["33", 0], "latent_image": ["33", 1], "denoise": 1.0}},
+        "35": {"class_type": "VSRDecode", "inputs": {"vae": ["32", 0], "samples": ["34", 0], "images": ["16", 0], "detail": SHARP_DETAIL}},
+        "36": {"class_type": "ImageScale", "inputs": {
+            "image": ["35", 0], "upscale_method": "lanczos", "width": width, "height": height, "crop": "disabled"}},
+    })
+    graph["18"]["inputs"]["images"] = ["36", 0]
 
 
 def active_take(clip):
@@ -2254,45 +2310,121 @@ def render_models(graph):
     return used
 
 
-# Upscaling. A finished final can be enlarged two times with RelayVSR, a video super-resolution model ComfyUI runs
-# natively: a large model writes reference latents for sparse keyframes and a small decoder carries them over every
-# frame. The result is a new take of the clip, at twice the size, with the same sound.
-UPSCALER = {"model": "relayvsr_x2_lightx2v_int8_convrot.safetensors", "vae": "relayvsr_flash_vae_x2_fp32.safetensors"}
+# Upscaling. A finished final can be enlarged two times by a video upscaler ComfyUI runs natively. The result is a
+# new take of the clip, at twice the size, with the same sound. Which upscaler is the user's choice, among the ones
+# whose files are installed: they differ a great deal in what they do to a picture and in what they cost.
+UPSCALERS = {
+    "relayvsr": {
+        "title": "RelayVSR",
+        "about": "Fast: seconds a clip, about 16 GB of GPU memory. Sharpens the edges that are there; it does not add new texture.",
+        "files": {"model": "relayvsr_x2_lightx2v_int8_convrot.safetensors", "vae": "relayvsr_flash_vae_x2_fp32.safetensors"},
+        "source": "Comfy-Org/RelayVSR", "detail": True,
+    },
+    "seedvr2": {
+        "title": "SeedVR2",
+        "about": "Slow: minutes a clip, and far more GPU memory. Redraws fine texture, so it looks like a larger picture; it can change a face a little.",
+        "files": {"model": "seedvr2_3b_int8_convrot.safetensors", "vae": "seedvr2_ema_vae_fp16.safetensors"},
+        "source": "Comfy-Org/SeedVR2", "detail": False,
+    },
+}
 UPSCALE_QUALITY = "upscale"
 UPSCALE_MOST = 240          # frames: the enlarged frames are all held in memory at once, about 100 MB each at 4K
+# RelayVSR only: how much of the detail it adds is kept, from 0 (a plain enlargement) to 1 (all of it). At 1 skin gets
+# pores and shine that can make a face look older, so the default keeps half.
+UPSCALE_DETAIL = 0.5
 
 
-def upscaler_files(available=None):
-    """The upscaler's two files as ComfyUI lists them (they may sit in a subfolder), or None for one that is missing."""
+def clean_detail(value):
+    if value in (None, ""):
+        return UPSCALE_DETAIL
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        raise ValueError("detail must be a number from 0 to 1")
+    return round(float(value), 2)
+
+
+def upscaler_files(name, available=None):
+    """An upscaler's two files as ComfyUI lists them (they may sit in a subfolder), or None for one that is missing."""
     found = {}
-    for kind, name in UPSCALER.items():
+    for kind, file in UPSCALERS[name]["files"].items():
         if available is None:
-            found[kind] = name
+            found[kind] = file
         else:
-            found[kind] = next((entry for entry in sorted(available) if entry.replace("\\", "/").split("/")[-1] == name), None)
+            found[kind] = next((entry for entry in sorted(available) if entry.replace("\\", "/").split("/")[-1] == file), None)
     return found
 
 
-def upscale_graph(folder, clip, take, source, files):
-    """The graph that enlarges one take of a clip two times and saves it as another take."""
+def upscaler_status(available=None):
+    """The upscalers on offer, each with whether its files are installed and what is missing."""
+    rows = []
+    for name, entry in UPSCALERS.items():
+        files = upscaler_files(name, available)
+        missing = [entry["files"][kind] for kind in ("model", "vae") if not files[kind]]
+        rows.append({"id": name, "title": entry["title"], "about": entry["about"], "detail": entry["detail"], "installed": not missing,
+                     "missing": missing, "source": entry["source"]})
+    return rows
+
+
+def pick_upscaler(name, available=None):
+    """The upscaler to use: the one asked for, or the first that is installed. Its files come back with it."""
+    if name in (None, ""):
+        name = next((row["id"] for row in upscaler_status(available) if row["installed"]), next(iter(UPSCALERS)))
+    if name not in UPSCALERS:
+        raise ValueError("upscaler must be one of %s" % ", ".join(UPSCALERS))
+    files = upscaler_files(name, available)
+    missing = [UPSCALERS[name]["files"][kind] for kind in ("model", "vae") if not files[kind]]
+    if missing:
+        raise ValueError("Upscaling with %s needs %s in ComfyUI's models folder (diffusion_models and vae), from %s on Hugging Face"
+                         % (UPSCALERS[name]["title"], " and ".join(missing), UPSCALERS[name]["source"]))
+    return name, files
+
+
+def upscale_graph(folder, clip, take, source, name, files, detail=UPSCALE_DETAIL):
+    """The graph that enlarges one take of a clip two times with the named upscaler and saves it as another take."""
     file = "%s/%s" % (source["subfolder"], source["file"]) if source.get("subfolder") else source["file"]
-    return {
+    graph = {
         "30": {"class_type": "H3LoadClip", "inputs": {"file": file, "first": 0, "last": 0}},
         "31": {"class_type": "UNETLoader", "inputs": {"unet_name": files["model"], "weight_dtype": "default"}},
         "32": {"class_type": "VAELoader", "inputs": {"vae_name": files["vae"]}},
-        "33": {"class_type": "RelayVSRConditioning", "inputs": {"model": ["31", 0], "images": ["30", 0]}},
-        "34": {"class_type": "KSampler", "inputs": {
-            "model": ["31", 0], "seed": 0, "steps": 1, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple",
-            "positive": ["33", 0], "negative": ["33", 0], "latent_image": ["33", 1], "denoise": 1.0}},
-        "35": {"class_type": "VSRDecode", "inputs": {"vae": ["32", 0], "samples": ["34", 0], "images": ["30", 0], "detail": 1.0}},
-        "18": {"class_type": "CreateVideo", "inputs": {"images": ["35", 0], "fps": float(FPS), "audio": ["30", 1]}},
         "19": {"class_type": "SaveVideo", "inputs": {
             "video": ["18", 0], "filename_prefix": "%s/%s/clips/%s_%s" % (ROOT, folder, clip["id"], take),
             "format": "auto", "codec": "auto"}},
     }
+    if name == "relayvsr":
+        # A large model writes reference latents for sparse keyframes and a small decoder carries them over every frame.
+        graph.update({
+            "33": {"class_type": "RelayVSRConditioning", "inputs": {"model": ["31", 0], "images": ["30", 0]}},
+            "34": {"class_type": "KSampler", "inputs": {
+                "model": ["31", 0], "seed": 0, "steps": 1, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple",
+                "positive": ["33", 0], "negative": ["33", 0], "latent_image": ["33", 1], "denoise": 1.0}},
+            "35": {"class_type": "VSRDecode", "inputs": {"vae": ["32", 0], "samples": ["34", 0], "images": ["30", 0], "detail": detail}},
+            "18": {"class_type": "CreateVideo", "inputs": {"images": ["35", 0], "fps": float(FPS), "audio": ["30", 1]}},
+        })
+    else:
+        # SeedVR2 redraws the plainly enlarged picture in one step. It is encoded and decoded in tiles and sampled in
+        # chunks of frames that fit the GPU, since a whole clip at this size does not.
+        graph.update({
+            "40": {"class_type": "ResizeImageMaskNode", "inputs": {
+                "input": ["30", 0], "resize_type": "scale by multiplier", "resize_type.multiplier": 2.0, "scale_method": "lanczos"}},
+            "41": {"class_type": "SeedVR2Preprocess", "inputs": {"resized_images": ["40", 0]}},
+            "42": {"class_type": "VAEEncodeTiled", "inputs": {
+                "pixels": ["41", 0], "vae": ["32", 0], "tile_size": 512, "overlap": 128, "temporal_size": 64, "temporal_overlap": 8}},
+            "43": {"class_type": "SeedVR2TemporalChunk", "inputs": {"latent": ["42", 0], "temporal_overlap": 2, "chunking_mode": "auto"}},
+            "44": {"class_type": "SeedVR2Conditioning", "inputs": {"model": ["31", 0], "vae_conditioning": ["43", 0]}},
+            "34": {"class_type": "KSampler", "inputs": {
+                "model": ["31", 0], "seed": 0, "steps": 1, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple",
+                "positive": ["44", 0], "negative": ["44", 1], "latent_image": ["43", 0], "denoise": 1.0}},
+            "45": {"class_type": "SeedVR2TemporalMerge", "inputs": {"latents": ["34", 0], "temporal_overlap": ["43", 1]}},
+            "46": {"class_type": "VAEDecodeTiled", "inputs": {
+                "samples": ["45", 0], "vae": ["32", 0], "tile_size": 512, "overlap": 128, "temporal_size": 64, "temporal_overlap": 8}},
+            # The colours are matched back to the take, so an upscaled clip sits beside its neighbours.
+            "47": {"class_type": "SeedVR2PostProcessing", "inputs": {
+                "images": ["46", 0], "original_resized_images": ["40", 0], "color_correction_method": "lab"}},
+            "18": {"class_type": "CreateVideo", "inputs": {"images": ["47", 0], "fps": float(FPS), "audio": ["30", 1]}},
+        })
+    return graph
 
 
-def plan_upscale(project, folder, clip_id, available=None):
+def plan_upscale(project, folder, clip_id, available=None, detail=None, upscaler=None):
     """The graph that enlarges a clip's active take two times, and the job that will make the result a take."""
     clip = find_clip(project, clip_id)
     if any(j["clip"] == clip_id for j in project.get("pending", [])):
@@ -2307,26 +2439,25 @@ def plan_upscale(project, folder, clip_id, available=None):
     if int(source.get("frames") or 0) > UPSCALE_MOST:
         raise ValueError("%s is %s frames. Upscaling holds every enlarged frame in memory, so it takes up to %s at a time"
                          % (clip["name"], source.get("frames"), UPSCALE_MOST))
-    files = upscaler_files(available)
-    missing = [UPSCALER[kind] for kind in ("model", "vae") if not files[kind]]
-    if missing:
-        raise ValueError("Upscaling needs %s in ComfyUI's models folder (diffusion_models and vae), from Comfy-Org/RelayVSR on Hugging Face"
-                         % " and ".join(missing))
+    name, files = pick_upscaler(upscaler, available)
     width, height = take_size(project, source)
     if not (2 * width <= MAX_SIDE and 2 * height <= MAX_SIDE):
         raise ValueError("%s is %sx%s: twice that is larger than the editor handles" % (clip["name"], width, height))
+    detail = clean_detail(detail)
     take = new_id("t")
     job = {"clip": clip_id, "take": take, "quality": "final", "seed": int(source.get("seed") or 0), "saved": copy.deepcopy(source.get("saved")),
-           "size": [2 * width, 2 * height], "upscaled": source["id"],
+           "size": [2 * width, 2 * height], "upscaled": source["id"], "upscaler": name,
            # The take keeps what made its picture, plus the upscaler. A batch groups it by the model it loads.
            "models": dict(source.get("models") or {}, video_upscaler=files["model"]), "loads": files["model"]}
-    return job, upscale_graph(folder, clip, take, source, files)
+    if UPSCALERS[name]["detail"]:
+        job["detail"] = detail
+    return job, upscale_graph(folder, clip, take, source, name, files, detail)
 
 
-def plan_render(project, folder, clip_id, quality, seed=None, available=None):
-    """The graph for a new take, and the job that will turn its file into a take."""
+def plan_render(project, folder, clip_id, quality, seed=None, available=None, detail=None, upscaler=None):
+    """The graph for a new take, and the job that will turn its file into a take. detail and upscaler are for an upscale only."""
     if quality == UPSCALE_QUALITY:
-        return plan_upscale(project, folder, clip_id, available)
+        return plan_upscale(project, folder, clip_id, available, detail, upscaler)
     clip = find_clip(project, clip_id)
     if clip.get("kind") == "footage":
         raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip["name"])
@@ -2346,6 +2477,11 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None):
                           steps=graph["12"]["inputs"]["steps"], sampler=graph["11"]["inputs"]["sampler_name"])}
     if "91" in graph:
         job["size"] = [graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]]
+    elif "36" in graph:
+        # A sharp final: the take records the upscaler that brought it to this size.
+        job["size"] = [graph["36"]["inputs"]["width"], graph["36"]["inputs"]["height"]]
+        job["upscaler"], job["detail"] = SHARP_UPSCALER, SHARP_DETAIL
+        job["models"]["video_upscaler"] = graph["31"]["inputs"]["unet_name"]
     elif tuple(render_size(project, quality)[:2]) != tuple(frame_size(project, quality)):
         # A size the project chose. A take that records none is at the usual size for its format.
         job["size"] = [graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]]
@@ -2379,7 +2515,7 @@ def finish_render(project, job_id, file, info):
     take = {"id": job["take"], "file": file["filename"], "subfolder": file.get("subfolder") or "",
             "poster": info["poster"], "frames": int(info["frames"]), "quality": job["quality"],
             "seed": job["seed"], "saved": job.get("saved")}
-    for key in ("models", "upscale", "size", "upscaled"):
+    for key in ("models", "upscale", "size", "upscaled", "upscaler", "detail"):
         if job.get(key):
             take[key] = job[key]
     if info.get("strip"):

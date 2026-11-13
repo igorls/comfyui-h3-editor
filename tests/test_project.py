@@ -156,7 +156,10 @@ class ProjectTest(unittest.TestCase):
                         self.assertEqual(sigmas["class_type"], "H3HyperFlowSigmas")
                     else:
                         self.assertEqual(graph["1"]["class_type"], "UNETLoader")
-                        self.assertEqual((sigmas["class_type"], sigmas["inputs"]["scheduler"]), ("BasicScheduler", "simple"))
+                        if profile.get("scheduler") == "beta57":
+                            self.assertEqual(sigmas["class_type"], "BetaSamplingScheduler")
+                        else:
+                            self.assertEqual((sigmas["class_type"], sigmas["inputs"]["scheduler"]), ("BasicScheduler", "simple"))
                     self.assertEqual(sigmas["inputs"]["steps"], profile["steps"][quality])
                     if profile.get("lora"):
                         self.assertEqual(graph["94"]["inputs"]["model"], ["1", 0])
@@ -372,6 +375,42 @@ class SizeTest(unittest.TestCase):
         self.assertNotIn("80", graph)
         self.assertNotIn("size", job)
 
+    def test_beta57_is_made_with_comfyuis_own_node(self):
+        project = new_project("x")
+        set_project(project, {"profile": "prism"})
+        made, _ = add_clip(project, {"action": "A keeper walks to the window."})
+        files = HYPERFLOW | FINALS | {"PRISM_DMAD_PDMD_int8.safetensors"}
+        job, graph = plan_render(project, "x", made["id"], "final", 3, files)
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], "PRISM_DMAD_PDMD_int8.safetensors")
+        self.assertEqual(graph["12"], {"class_type": "BetaSamplingScheduler", "inputs": {"model": ["5", 0], "steps": 8, "alpha": 0.5, "beta": 0.7}})
+        self.assertEqual(graph["11"]["inputs"]["sampler_name"], "euler")
+        self.assertEqual(job["models"]["steps"], 8)
+
+    def test_a_sharp_final_is_upscaled_two_times_and_scaled_down_to_the_full_size(self):
+        relay = {"relayvsr/relayvsr_x2_lightx2v_int8_convrot.safetensors", "relayvsr/relayvsr_flash_vae_x2_fp32.safetensors"}
+        project = new_project("x")
+        set_project(project, {"sizes": {"final": "sharp"}})
+        made, _ = add_clip(project, {"action": "A keeper walks to the window."})
+        job, graph = plan_render(project, "x", made["id"], "final", 3, HYPERFLOW | FINALS | relay)
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (1344, 768))
+        self.assertNotIn("80", graph)
+        self.assertEqual(graph["33"]["inputs"]["images"], ["16", 0])
+        self.assertEqual(graph["35"]["inputs"]["detail"], 1.0)
+        self.assertEqual((graph["36"]["inputs"]["width"], graph["36"]["inputs"]["height"]), (1920, 1088))
+        self.assertEqual(graph["18"]["inputs"]["images"], ["36", 0])
+        self.assertEqual((job["size"], job["upscaler"]), ([1920, 1088], "relayvsr"))
+        self.assertEqual(job["models"]["video_upscaler"], "relayvsr/relayvsr_x2_lightx2v_int8_convrot.safetensors")
+        # A draft of the same project is as any other draft.
+        _, draft = plan_render(project, "x", made["id"], "draft", 3, HYPERFLOW | FINALS | relay)
+        self.assertNotIn("36", draft)
+
+    def test_a_sharp_final_names_the_upscaler_files_it_is_missing(self):
+        project = new_project("x")
+        set_project(project, {"sizes": {"final": "sharp"}})
+        made, _ = add_clip(project, {"action": "A keeper walks to the window."})
+        with self.assertRaisesRegex(ValueError, "relayvsr_x2_lightx2v_int8_convrot.safetensors"):
+            plan_render(project, "x", made["id"], "final", 3, HYPERFLOW | FINALS)
+
     def test_a_medium_draft_records_its_size(self):
         _, (job, graph) = self.planned("draft", sizes={"draft": "medium"})
         self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (960, 544))
@@ -398,7 +437,8 @@ class SizeTest(unittest.TestCase):
 
     def test_the_editor_is_told_every_choice_with_the_size_it_comes_out_at(self):
         table = project_module.size_choices()
-        self.assertEqual([row["id"] for row in table["16:9"]["final"]], ["full", "large", "medium", "small"])
+        self.assertEqual([row["id"] for row in table["16:9"]["final"]], ["full", "sharp", "large", "medium", "small"])
+        self.assertEqual(table["16:9"]["final"][1], {"id": "sharp", "width": 1344, "height": 768, "out": [1920, 1088]})
         self.assertEqual(table["16:9"]["final"][0], {"id": "full", "width": 1344, "height": 768, "out": [1920, 1088]})
         self.assertEqual(table["1:1"]["draft"][1], {"id": "medium", "width": 768, "height": 768, "out": [768, 768]})
 

@@ -183,10 +183,12 @@ def main():
     p.add_argument("--final", action="store_true")
     p.add_argument("--upscale", action="store_true", help="Enlarge each clip's final two times (a new take), instead of rendering.")
     p.add_argument("--seed", type=int)
+    p.add_argument("--detail", type=float, help="With --upscale and RelayVSR: how much of the detail the upscaler adds is kept, 0 to 1. Default 0.5.")
+    p.add_argument("--upscaler", choices=["relayvsr", "seedvr2"], help="With --upscale: which upscaler. Default: the first one installed.")
     p = sub.add_parser("cuts", help="A score from 0 to 100 for every cut between two rendered clips, worst first.")
     p.add_argument("project")
     p.add_argument("--json", action="store_true", help="The raw scores as JSON.")
-    p = sub.add_parser("detail", help="How sharp each clip on the timeline is at the cut's size, and which are soft next to the rest.")
+    p = sub.add_parser("detail", help="How sharp each clip on the timeline is at the cut's size, which are soft next to the rest, and which extensions have drifted from their shot's first take.")
     p.add_argument("project")
     p.add_argument("--json", action="store_true", help="The raw numbers as JSON.")
     p = sub.add_parser("rate", help="Rate a range of the cut against a rubric with Gemini (needs the user's key set in the editor).")
@@ -269,9 +271,12 @@ def main():
             print(json.dumps(found, indent=1, ensure_ascii=False))
         else:
             for row in found["clips"]:
-                print("%-5s %-10s at frame %-6d fine %s  %s" % ("SOFT" if row["soft"] else "", row["item"], row["at"],
-                                                              "-" if row["fine"] is None else "%.3f" % row["fine"],
-                                                              "" if row["part"] is None else "%d%% of the cut's level" % round(100 * row["part"])))
+                drift = row.get("drift")
+                print("%-5s %-10s at frame %-6d fine %s  %s%s" % (
+                    "DRIFT" if drift and drift["drifted"] else "SOFT" if row["soft"] else "", row["item"], row["at"],
+                    "-" if row["fine"] is None else "%.3f" % row["fine"],
+                    "" if row["part"] is None else "%d%% of the cut's level" % round(100 * row["part"]),
+                    "" if not drift else "  | %+d%% texture against %s, where its shot began" % (round(100 * drift["change"]), drift["root"])))
             print("level: %s at %s" % (found["level"], "x".join(str(n) for n in found["size"] or [])))
     elif c == "rate":
         body = {"from": args.first}
@@ -302,6 +307,12 @@ def main():
         if args.seed is not None:
             for op in ops:
                 op["seed"] = args.seed
+        if args.detail is not None:
+            for op in ops:
+                op["detail"] = args.detail
+        if args.upscaler:
+            for op in ops:
+                op["upscaler"] = args.upscaler
         show(api("POST", project_path(args.project) + "/ops", {"ops": ops}, timeout=600)["results"])
     elif c == "wait":
         deadline = time.monotonic() + args.timeout

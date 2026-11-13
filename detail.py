@@ -18,6 +18,13 @@ The editor uses the same measure on a timeline: clip_fine() gives one number for
 the size of the cut, and soft_clips() says which clips sit well under the rest of the cut.
 GET /h3take/api/project/{name}/detail returns them.
 
+A shot made of a take and its extensions can also drift: on some models every extension comes out a little harsher
+than the frames it carried on from, with more shine and deeper lines on a face, and after two or three the shot no
+longer looks like where it began. texture() measures that harshness (how far a pixel sits from its nearest neighbours,
+on a small copy of the picture), clip_texture() gives it for the part of a take a clip shows, and drifting() compares
+every extension with the take its shot started from. In tests a model that holds a shot stayed within 5% over three
+takes, and one that drifts reached 7% on the first extension and 13 to 19% on the second.
+
 Usage: python detail.py film.mp4            prints each drop with its time, and the level of the file
        python detail.py --series film.mp4   also prints every sample
        python detail.py --json film.mp4
@@ -33,6 +40,8 @@ RATE = 2            # samples a second
 DROP = 0.5          # a drop is under this part of the file's level
 MIN = 1.0           # for at least this long, in seconds
 EMPTY = 0.02        # weaker edges than this (0..1 luma) is a picture with nothing to measure
+DRIFT = 0.10        # an extension has drifted when its texture is this much above or below its shot's first take
+TEXTURE_WIDTH = 480 # the width texture is measured at, so the number does not depend on the size of the cut
 
 
 def plain(args):
@@ -124,6 +133,48 @@ def clip_fine(path, first, last, width, height, command=plain, most=6, fps=24):
     frames = np.frombuffer(raw[:len(raw) - len(raw) % (width * height)], dtype=np.uint8).reshape(-1, height, width)
     values = [v for v in (fine(frame.astype(np.float32) / 255.0) for frame in frames) if v is not None]
     return float(np.median(values)) if values else None
+
+
+def texture(y):
+    """How harsh one luma frame (0..1 floats) is: the mean distance of a pixel from the middle of its 3 by 3 block."""
+    padded = np.pad(y, 1, mode="edge")
+    block = sum(padded[dy:dy + y.shape[0], dx:dx + y.shape[1]] for dy in range(3) for dx in range(3)) / 9.0
+    return float(np.abs(y - block).mean())
+
+
+def clip_texture(path, first, last, command=plain, most=8, fps=24):
+    """The texture of frames first..last of a file, on a copy TEXTURE_WIDTH wide: the median of up to most samples."""
+    first, last = max(0, int(first)), max(int(first) + 1, int(last))
+    seconds = (last - first) / float(fps)
+    count = max(1, min(int(most), int(seconds * 2)))
+    w, h = size(path, command)
+    width = TEXTURE_WIDTH
+    height = max(2, int(round(h * width / float(w) / 2)) * 2)
+    raw = subprocess.run(command(["ffmpeg", "-v", "error", "-ss", "%.4f" % (first / float(fps)), "-t", "%.4f" % seconds, "-i", str(path), "-an",
+                                  "-vf", "fps=%.5f,scale=%d:%d:flags=area,format=gray" % (count / seconds, width, height),
+                                  "-frames:v", str(count), "-f", "rawvideo", "-pix_fmt", "gray", "-"]), capture_output=True, check=True).stdout
+    frames = np.frombuffer(raw[:len(raw) - len(raw) % (width * height)], dtype=np.uint8).reshape(-1, height, width)
+    values = [texture(frame.astype(np.float32) / 255.0) for frame in frames]
+    return float(np.median(values)) if values else None
+
+
+def drifting(rows, limit=DRIFT):
+    """Which extensions have drifted from where their shot began. rows is [(id, root id or None, texture or None)].
+
+    root is the id of the row the shot started from, None for a row that extends nothing. Returns
+    {id: {"root", "change", "drifted"}} for the rows that extend one: change is the texture against the root's, less one.
+    """
+    known = {key: value for key, _, value in rows}
+    found = {}
+    for key, root, value in rows:
+        if root is None or root == key:
+            continue
+        start = known.get(root)
+        if not value or not start:
+            continue
+        change = value / start - 1.0
+        found[key] = {"root": root, "change": round(change, 3), "drifted": abs(change) >= limit}
+    return found
 
 
 def soft_clips(rows, drop=DROP):

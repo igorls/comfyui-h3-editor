@@ -30,12 +30,37 @@ Each release is a tag on GitHub, `v` followed by the version.
   finished file, and reports a few frames of another picture left between two
   cuts as a stray frame.
 - **Upscale a final two times.** **Upscale 2x**, on a clip whose take is a
-  final, enlarges it with RelayVSR, a video upscaler ComfyUI runs natively: a
-  1920 x 1088 final becomes 3840 x 2176, as a new take with the same sound. It
-  needs two files from Comfy-Org/RelayVSR in ComfyUI's models folder, and
-  about 16 GB of GPU memory for an eight-second clip. Clips of up to ten
-  seconds at a time. For agents: the `render` operation with
-  `"quality": "upscale"`.
+  final, enlarges it with a video upscaler ComfyUI runs natively: a
+  1920 x 1088 final becomes 3840 x 2176, as a new take with the same sound.
+  You choose the upscaler, among the ones whose two model files are in
+  ComfyUI's models folder. RelayVSR (from Comfy-Org/RelayVSR) takes seconds
+  and about 16 GB of GPU memory, and sharpens the edges that are there; a
+  second menu sets how much of that is kept, since all of it brings out pores
+  and shine that can make a face look older. SeedVR2 (from Comfy-Org/SeedVR2)
+  takes minutes and far more memory, and redraws fine texture. Clips of up to
+  ten seconds at a time. For agents: the `render` operation with
+  `"quality": "upscale"`, and optionally `"upscaler"` and `"detail"`.
+- **PRISM.** A new model in the Project tab: the PRISM merge of Singularity
+  v2 and 10Eros Max (`PRISM_DMAD_PDMD_int8.safetensors`, from
+  OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM on Hugging Face), 8
+  steps for finals on Euler with the Beta57 schedule. The editor makes that
+  schedule with ComfyUI's own node, so a project's own checkpoint can name
+  `beta57` as its scheduler on any install. Extensions drift on PRISM: in a
+  test the second extension of a shot was 13 to 19% harsher than its first
+  take, where HyperFlow stayed within 5%.
+- **Drift marks.** A shot made of a take and its extensions can drift: on
+  some models every extension comes out harsher than the frames it carried
+  on from, with more shine and deeper lines on a face. The editor now
+  measures each extension against the first take of its shot and puts a
+  `Drift` mark on the timeline when it has moved 10% or more, with what to do
+  about it. For agents: `drift` on each clip of `GET /project/{name}/detail`.
+- **Sharp finals.** A new **Final size**, Sharp, reaches the full size by
+  another route. The picture is sampled once at H3's own size, enlarged two
+  times with RelayVSR and scaled down to the full size (1920 x 1088 for 16:9).
+  It is quicker than Full, which redraws the last steps at the larger size.
+  Edges come out crisper, and skin keeps the smoother look of the sampled
+  size. It needs RelayVSR's two files. For agents: `set_project` with
+  `"sizes": {"final": "sharp"}`.
 - **Soft clips.** The editor measures how sharp each rendered clip is at the
   size of the cut, and marks a clip `Soft` on the timeline when it sits far
   under the rest: a draft left among finals, or footage smaller than the cut.

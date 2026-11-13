@@ -249,6 +249,11 @@ Renders queue on the user's GPU one at a time. Measured with the models loaded:
   smaller: `set_project` `sizes`, such as `{"final": "large"}` for finals that are not
   enlarged (the reference lists the choices). Ask before changing it: it changes what the
   cut looks like;
+- `{"final": "sharp"}` gives finals of the same size as the usual ones by another route: the
+  picture is sampled once at 1344x768, enlarged two times with RelayVSR and scaled down. It is
+  quicker (no second pass), edges such as lashes and hair come out crisper, and skin keeps the
+  smoother look of the sampled size, where the usual final adds pores. It needs RelayVSR's two
+  files. Which look is better is the user's taste: render one clip both ways and show them;
 - a project can render on another checkpoint family instead (`set_project` `profile`; the
   reference lists them). In tests a 2 second 9:16 final took 1.5 to 2.5 minutes on
   HyperFlow, MiniMax H3 Turbo and the 20-step MiniMax H3 alike. Keep HyperFlow unless the
@@ -294,12 +299,22 @@ ids, and each clip's state. Before you export, check:
   rubric (same person from start to end, match with the cast picture, sharp face, light, background, movement, attention, cuts). It is a second opinion on what frames
   alone cannot tell you, such as whether a stretch drags. It sends that part of the video to Google, so run it on the
   ranges the user cares about, not as a routine step;
+- no extension has drifted. On some models (the turbo merges, PRISM among them) each extension comes out harsher
+  than the frames it carried on from: more shine, deeper lines on a face, and by the second or third extension the
+  shot no longer looks like where it began. `python scripts/h3.py detail PROJECT` marks such a clip `DRIFT` with how
+  far its texture sits from its shot's first take (10% or more). Do not ship it: render those lines as a clip of their
+  own from a first frame, or render the whole shot on a model that holds it (HyperFlow stayed within 5% over three
+  takes). Look at a face in the first and the last take of every chained shot before calling a cut done;
 - no clip is soft. `python scripts/h3.py detail PROJECT` measures how sharp each clip is at the size of the cut and
   marks the ones far under the rest `SOFT`: a draft left among finals, or footage smaller than the cut. Render that
   clip as a final. For a finished file of any origin, `python detail.py FILE.mp4`, run from the H3 Editor pack's
   folder, lists the stretches that are much softer than the rest, with their times;
 - for a 4K delivery, upscale last: `python scripts/h3.py render PROJECT CLIP --upscale` enlarges a clip's final two
-  times (1920 x 1088 becomes 3840 x 2176) as a new take, in seconds. Do it once the cut is settled and every clip is
+  times (1920 x 1088 becomes 3840 x 2176) as a new take, in seconds. `--upscaler relayvsr` is fast and sharpens what is there; `--upscaler seedvr2`
+  is many times slower and redraws fine texture, which looks more like a larger picture and can change a face. Ask the
+  user which they want and show them one clip first. With RelayVSR, `--detail` (0 to 1, default 0.5) sets how much of
+  the detail it adds is kept: look at a face after the first one, since high values add pores and shine
+  that can make a person look older, and lower it if so. Do it once the cut is settled and every clip is
   a final: a clip that extends an upscaled clip would be generated from the enlarged picture. Upscale every clip of
   the cut: one left at the old size is enlarged plainly at export and looks softer than its neighbours (about 70% of
   their detail in `detail`, which is not low enough to be marked `SOFT`);
