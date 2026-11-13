@@ -15,9 +15,12 @@
     <div id="projectMenu" class="menu" popover role="menu" aria-label="This project">
       <button id="projectRename" role="menuitem"><b>Rename</b><span>Give this project another name</span></button>
       <button id="projectDuplicate" role="menuitem"><b>Duplicate</b><span>A copy with its clips, takes and pictures, to try another cut</span></button>
+      <button id="projectDownload" role="menuitem"><b>Download as zip</b><span>Take this project to another machine, with its takes</span></button>
+      <button id="projectOpen" role="menuitem"><b>Open a project zip</b><span>Carry on with a project downloaded here or elsewhere</span></button>
       <button id="projectDelete" role="menuitem"><b>Delete</b><span>Move this project to the trash folder</span></button>
     </div>
     <button id="newProject" class="quiet">New project</button>
+    <span class="release" title="The version of H3 Editor this is">H3 Editor __RELEASE__</span>
     <div class="spacer"></div>
     <button id="checks" class="checks-chip" aria-haspopup="true" popovertarget="checksPanel" hidden></button>
     <div id="checksPanel" class="menu checks-panel" popover aria-label="Checks">
@@ -46,6 +49,7 @@
       <div id="cast" class="cast"></div>
       <input id="castFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
       <input id="frameFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+      <input id="zipFile" type="file" accept=".zip,application/zip" hidden>
       <input id="importFile" type="file" accept="video/*,image/png,image/jpeg,image/webp" hidden>
       <input id="voiceFile" type="file" accept="audio/*" hidden>
       <input id="soundFile" type="file" accept="audio/*" hidden>
@@ -171,6 +175,25 @@
     <div class="exporter-foot"><span class="spacer"></span><button id="askerGo" class="primary" type="submit"></button></div>
   </form>
 </dialog>
+<dialog id="packer" class="keys exporter" aria-labelledby="packerTitle">
+  <div class="keys-head"><h2 id="packerTitle">Download the project</h2><button id="packerClose" class="quiet">Close</button></div>
+  <div class="exporter-body">
+    <p class="packer-lead">One zip to open this project again with <b>Open a project zip</b>, here or on another machine.</p>
+    <div id="packerLevels" class="packer-levels" role="radiogroup" aria-label="What the zip holds"></div>
+    <p id="packerResult" class="hint" aria-live="polite"></p>
+  </div>
+  <div class="exporter-foot"><span class="spacer"></span><button id="packerGo" class="primary">Download</button></div>
+</dialog>
+
+<dialog id="opener" class="keys exporter" aria-labelledby="openerTitle">
+  <div class="keys-head"><h2 id="openerTitle">Opening the project</h2><button id="openerCancel" class="quiet">Cancel</button></div>
+  <div class="exporter-body">
+    <p id="openerFile" class="exporter-summary"></p>
+    <div class="opener-bar" role="progressbar" aria-labelledby="openerTitle" aria-valuemin="0" aria-valuemax="100"><i id="openerFill"></i></div>
+    <p id="openerResult" class="hint" aria-live="polite"></p>
+  </div>
+</dialog>
+
 <dialog id="exporter" class="keys exporter" aria-labelledby="exporterTitle">
   <div class="keys-head"><h2 id="exporterTitle">Export the cut</h2><button id="exporterClose" class="quiet">Close</button></div>
   <div class="exporter-body">

@@ -243,6 +243,14 @@ def main():
     p = sub.add_parser("export", help="Join the timeline into one video in ComfyUI's output folder.")
     p.add_argument("project")
     p.add_argument("--out", help="Also download it here.")
+    p = sub.add_parser("pack", help="Download a project as one zip, to open on another machine with unpack or in the editor.")
+    p.add_argument("project")
+    p.add_argument("--keep", choices=["all", "cut", "text"], default="cut",
+                   help="all: every take and export. cut (default): the takes the timeline shows, footage, pictures and sounds. text: no renders.")
+    p.add_argument("--out", help="Where to save it. Default: <project>.h3project.zip here.")
+    p.add_argument("--sizes", action="store_true", help="Only print how big the zip is at each level.")
+    p = sub.add_parser("unpack", help="Open a project zip as a new project. Prints its folder name.")
+    p.add_argument("zip")
     p = sub.add_parser("history", help="Revisions, newest first.")
     p.add_argument("project")
     p = sub.add_parser("restore", help="Go back to a revision. Takes rendered since are kept.")
@@ -254,9 +262,10 @@ def main():
 
     c = args.command
     if c in ("check", "projects"):
-        projects = api("GET", "/projects")["projects"]
+        found = api("GET", "/projects")
+        projects = found["projects"]
         if c == "check":
-            print("The H3 Editor answers at %s." % URL)
+            print("H3 Editor %s answers at %s." % (found.get("release", "(an older release)"), URL))
         print("Projects: " + (", ".join(projects) if projects else "none yet"))
     elif c == "create":
         made = api("POST", "/projects", {"name": args.name})
@@ -425,6 +434,33 @@ def main():
         print("Exported to ComfyUI's output folder: %s/%s" % (made["subfolder"], made["filename"]))
         if args.out:
             print(download(made["filename"], made["subfolder"], args.out))
+    elif c == "pack":
+        if args.sizes:
+            found = api("GET", project_path(args.project) + "/archive")
+            for keep in ("all", "cut", "text"):
+                level = found["levels"][keep]
+                print("%-5s %8.1f MB  %d files%s" % (keep, level["bytes"] / 1e6, level["files"],
+                                                     "  (%d it uses are in another project)" % level["outside"] if level["outside"] else ""))
+        else:
+            target = os.path.abspath(args.out or args.project + ".h3project.zip")
+            # Streamed to the file as it comes: a project can be gigabytes.
+            req = urllib.request.Request(URL + "/h3take/api" + project_path(args.project) + "/archive?keep=" + args.keep)
+            try:
+                with urllib.request.urlopen(req, timeout=3600) as response, open(target, "wb") as f:
+                    shutil.copyfileobj(response, f, 1 << 20)
+            except urllib.error.HTTPError as error:
+                raise SystemExit("Refused: %s" % error.read().decode("utf-8", errors="replace")[:400])
+            print("%s (%.1f MB)" % (target, os.path.getsize(target) / 1e6))
+    elif c == "unpack":
+        size = os.path.getsize(args.zip)
+        with open(args.zip, "rb") as body:
+            made = request("POST", "/h3take/api/projects/open", body, timeout=3600,
+                           headers={"Content-Type": "application/zip", "Content-Length": str(size)})
+        print(made["folder"])
+        if made.get("missing_loras"):
+            print("Not on this machine: " + ", ".join(made["missing_loras"]))
+        if made.get("outside"):
+            print("Files it used from other projects, not in the zip: %d" % len(made["outside"]))
     elif c == "history":
         for r in api("GET", project_path(args.project) + "/history")["revisions"]:
             print("%5s  %s  %-8s %s clips, %s frames" % (r["revision"], time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["time"])),

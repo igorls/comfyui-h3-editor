@@ -16,6 +16,7 @@ from aiohttp import web
 
 import folder_paths
 
+from . import archive
 from . import cuts as cutscore
 from . import detail as finescore
 from . import media
@@ -230,11 +231,24 @@ async def sheet(request):
     return web.json_response({"sheet": os.path.basename(target), "picked": picked, "frames": frames})
 
 
+def pack_version():
+    """The pack's release, as pyproject.toml names it: shown in the editor, so a screenshot says which one it is."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyproject.toml"), encoding="utf-8") as f:
+            for line in f:
+                key, _, value = line.partition("=")
+                if key.strip() == "version":
+                    return value.strip().strip("\"'") or "unknown"
+    except OSError:
+        pass
+    return "unknown"
+
+
 async def page(request):
     """The page always comes fresh and names its files by version, so a browser never mixes old and new."""
     version = int(max(os.path.getmtime(os.path.join(PAGE, n)) for n in os.listdir(PAGE)))
     with open(os.path.join(PAGE, "index.html"), encoding="utf-8") as f:
-        html = f.read().replace("__VERSION__", str(version))
+        html = f.read().replace("__VERSION__", str(version)).replace("__RELEASE__", pack_version())
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
 
@@ -417,6 +431,100 @@ async def duplicate(request):
     return web.json_response({"folder": made, "project": read_project(made)})
 
 
+PACKING = ".packing"      # zips on their way in or out, beside the projects; never a project of its own
+
+
+def spool(suffix):
+    folder = os.path.join(root(), PACKING)
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, uuid.uuid4().hex + suffix)
+
+
+def zip_name(title):
+    """A file name for a project's zip that any browser and any system takes: letters, digits, spaces and - _ ."""
+    safe = "".join(ch if ch.isascii() and (ch.isalnum() or ch in " -_.") else "_" for ch in str(title)).strip(" ._")
+    return (safe or "project") + ".h3project.zip"
+
+
+async def archive_project(request):
+    """A project as one zip, to open on another machine with Open a project zip.
+
+    Without ?keep= it answers how big the zip is at each level (all, cut, text), for the editor to show before
+    anything is made. With ?keep= it makes the zip and sends it. See archive.py for what each level holds.
+    """
+    folder = store.slug(request.match_info["name"])
+    data = read_project(folder)
+    base = os.path.join(root(), folder)
+    keep = request.query.get("keep")
+    if not keep:
+        levels = await asyncio.to_thread(archive.measure, base, store.ROOT, folder, data)
+        return web.json_response({"name": data.get("name") or folder, "levels": levels, "release": pack_version()})
+    if keep not in archive.LEVELS:
+        return refused("keep is one of %s" % ", ".join(archive.LEVELS))
+    target = spool(".zip")
+    try:
+        # A project can be gigabytes: the zip is made on disk, off the server's loop, and sent in pieces.
+        await asyncio.to_thread(archive.pack, base, store.ROOT, folder, data, keep, target, pack_version())
+        response = web.StreamResponse(headers={
+            "Content-Type": "application/zip",
+            "Content-Disposition": 'attachment; filename="%s"' % zip_name(data.get("name") or folder),
+            "Content-Length": str(os.path.getsize(target)),
+        })
+        await response.prepare(request)
+        with open(target, "rb") as f:
+            while True:
+                chunk = await asyncio.to_thread(f.read, 1 << 20)
+                if not chunk:
+                    break
+                await response.write(chunk)
+        await response.write_eof()
+        return response
+    finally:
+        try:
+            os.remove(target)
+        except OSError:
+            pass
+
+
+async def open_project(request):
+    """Open a zip made by Download as zip as a new project. The zip is the request's body, sent as it is.
+
+    It is read from the stream onto the disk, so ComfyUI's limit on the size of an upload does not apply. The new
+    project takes the name it had, or that name with a number when a project has it already.
+    """
+    upload = spool(".upload.zip")
+    try:
+        size = 0
+        with open(upload, "wb") as f:
+            async for chunk in request.content.iter_chunked(1 << 20):
+                f.write(chunk)
+                size += len(chunk)
+        if not size:
+            return refused("send the project's zip as the body of the request")
+        try:
+            manifest, _ = await asyncio.to_thread(archive.read, upload)
+            title = archive.free_name(store.clean_title(manifest.get("name") or "Opened project"), project_folders(), store.slug)
+            made = store.slug(title)
+            manifest, data = await asyncio.to_thread(archive.unpack, upload, os.path.join(root(), made))
+        except (archive.ArchiveError, ValueError) as error:
+            return refused(plain(error))
+        opened = store.retarget(data, store.slug(manifest.get("folder") or made), made)
+        opened["name"] = title
+        opened["pending"] = []
+        opened.pop("revision", None)
+        async with lock(made):
+            commit(made, opened, "open", request.query.get("client"))
+        have = {name.lower() for name in lora_files()}
+        missing = [name for name in manifest.get("models", {}).get("loras", []) if name.lower() not in have]
+        return web.json_response({"folder": made, "name": title, "release": manifest.get("release"), "keep": manifest.get("keep"),
+                                  "missing_loras": missing, "outside": manifest.get("outside", []), "files": manifest.get("files", 0)})
+    finally:
+        try:
+            os.remove(upload)
+        except OSError:
+            pass
+
+
 async def remove(request):
     """Take a project out of the editor. Its folder moves to the trash folder beside the projects."""
     folder = store.slug(request.match_info["name"])
@@ -437,7 +545,7 @@ async def projects(request):
     available = available_models()
     return web.json_response({"projects": names, "titles": project_titles(names), "profiles": store.profile_status(available),
                               "finals": store.finals_status(available),
-                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), "refmods": refmods_status(), "encoders": encoder_choices(available), "sizes": store.size_choices(), "upscalers": store.upscaler_status(available), **sampling_choices()})
+                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), "refmods": refmods_status(), "encoders": encoder_choices(available), "sizes": store.size_choices(), "upscalers": store.upscaler_status(available), "release": pack_version(), **sampling_choices()})
 
 
 async def create(request):
@@ -1663,6 +1771,7 @@ ROUTES = (
     ("GET", "/h3take/editor", "page"),
     ("GET", "/h3take/api/projects", "projects"),
     ("POST", "/h3take/api/projects", "create"),
+    ("POST", "/h3take/api/projects/open", "open_project"),
     ("GET", "/h3take/api/presets", "presets"),
     ("PUT", "/h3take/api/presets", "save_presets"),
     ("GET", "/h3take/api/project/{name}", "load"),
@@ -1670,6 +1779,7 @@ ROUTES = (
     ("DELETE", "/h3take/api/project/{name}", "remove"),
     ("POST", "/h3take/api/project/{name}/rename", "rename"),
     ("POST", "/h3take/api/project/{name}/duplicate", "duplicate"),
+    ("GET", "/h3take/api/project/{name}/archive", "archive_project"),
     ("GET", "/h3take/api/project/{name}/summary", "summary"),
     ("GET", "/h3take/api/project/{name}/cuts", "cuts"),
     ("GET", "/h3take/api/project/{name}/detail", "detail"),

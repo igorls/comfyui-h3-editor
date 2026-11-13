@@ -5227,7 +5227,7 @@ function openWriter(job) {
       $("writerGo").textContent = "Write again";
       const seen = writer.lastSeen();
       writerNote("Read it before you use it. Nothing has changed yet."
-        + (seen.blind ? " This model takes no pictures, so it wrote from the text alone." : seen.pictures ? " It saw " + seen.pictures + (seen.pictures === 1 ? " picture." : " pictures.") : ""));
+        + (seen.blind ? " This model takes no pictures, so it wrote from the text alone." : seen.pictures ? " It was sent " + seen.pictures + (seen.pictures === 1 ? " picture" : " pictures") + "; a model that cannot see writes from the text." : ""));
     } catch (error) {
       writerNote(error.message, true);
     } finally {
@@ -6460,6 +6460,147 @@ $("projectDuplicate").addEventListener("click", async () => {
   } catch (error) {
     toast(error.message, true);
   }
+});
+
+// Project zips: Download as zip makes one to take the project to another machine, Open a project zip opens one as a
+// new project. The zip is made and opened by the server (archive.py); the editor picks the level and shows progress.
+const PACK_LEVELS = [
+  ["all", "Everything", "Every take, the exports, the pictures and sounds"],
+  ["cut", "What the cut uses", "The takes the timeline shows, footage, pictures and sounds"],
+  ["text", "No renders", "The shots, the cast and its pictures, sounds and footage. Render the clips again after opening"],
+];
+const sizeText = (bytes) => (bytes >= 1e9 ? (bytes / 1e9).toFixed(2) + " GB" : (bytes / 1e6).toFixed(1) + " MB");
+const OLD_SERVER = "This ComfyUI started before H3 Editor was updated: restart ComfyUI to use project zips.";
+
+$("projectDownload").addEventListener("click", async () => {
+  try {
+    await flush();
+  } catch (_) {}
+  const levels = $("packerLevels");
+  const result = $("packerResult");
+  $("packerTitle").textContent = "Download " + projectTitle();
+  result.textContent = "Measuring the project.";
+  result.classList.remove("bad");
+  levels.replaceChildren();
+  $("packerGo").disabled = true;
+  $("packer").showModal();
+  let sizes;
+  try {
+    sizes = (await api("/project/" + encodeURIComponent(state.folder) + "/archive")).levels;
+  } catch (error) {
+    result.textContent = /404|405|not found|method not allowed/i.test(error.message) ? OLD_SERVER : error.message;
+    result.classList.add("bad");
+    return;
+  }
+  let chosen = "cut";
+  try { chosen = localStorage.getItem("h3take.packLevel") || "cut"; } catch (_) {}
+  const say = (keep) => {
+    const outside = sizes[keep]?.outside || 0;
+    result.textContent = outside
+      ? outside + (outside === 1 ? " file it uses is" : " files it uses are") + " in another project, and the zip cannot carry " + (outside === 1 ? "it." : "them.")
+      : keep === "all" ? "Takes left out of the smaller zips can be rendered again: the shots, seeds and settings are in every zip." : "";
+  };
+  levels.replaceChildren(...PACK_LEVELS.map(([keep, title, about]) => {
+    const row = document.createElement("label");
+    row.className = "packer-level";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "packLevel";
+    input.value = keep;
+    input.checked = keep === chosen;
+    input.addEventListener("change", () => say(keep));
+    const text = document.createElement("span");
+    const name = document.createElement("b");
+    name.textContent = title;
+    const line = document.createElement("small");
+    line.textContent = about;
+    text.append(name, line);
+    const size = document.createElement("span");
+    size.className = "packer-size";
+    size.textContent = sizeText(sizes[keep]?.bytes || 0);
+    row.append(input, text, size);
+    return row;
+  }));
+  say(chosen);
+  $("packerGo").disabled = false;
+  $("packerGo").onclick = () => {
+    const keep = levels.querySelector("input:checked")?.value || "cut";
+    try { localStorage.setItem("h3take.packLevel", keep); } catch (_) {}
+    // The browser downloads it: the server makes the zip first, so a large project takes a moment to start.
+    const link = document.createElement("a");
+    link.href = "/h3take/api/project/" + encodeURIComponent(state.folder) + "/archive?keep=" + keep;
+    link.download = "";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    $("packer").close();
+    toast("Making the zip of " + projectTitle() + ", " + sizeText(sizes[keep]?.bytes || 0) + ". The download starts when it is ready.");
+  };
+});
+$("packerClose").addEventListener("click", () => $("packer").close());
+
+$("projectOpen").addEventListener("click", async () => {
+  const file = await pickFile($("zipFile"));
+  if (!file) return;
+  try {
+    await flush();
+  } catch (_) {}
+  const dialog = $("opener");
+  const bar = dialog.querySelector(".opener-bar");
+  const fill = $("openerFill");
+  const result = $("openerResult");
+  const cancel = $("openerCancel");
+  $("openerFile").textContent = file.name + ", " + sizeText(file.size);
+  bar.classList.remove("working");
+  fill.style.width = "0%";
+  result.textContent = "Uploading.";
+  result.classList.remove("bad");
+  cancel.textContent = "Cancel";
+  dialog.showModal();
+  const fail = (message) => {
+    bar.classList.remove("working");
+    result.textContent = message;
+    result.classList.add("bad");
+    cancel.textContent = "Close";
+    cancel.onclick = () => dialog.close();
+  };
+  // Sent as the body, as it is: the server writes it to disk as it arrives, whatever its size.
+  const request = new XMLHttpRequest();
+  request.open("POST", "/h3take/api/projects/open?client=" + encodeURIComponent(clientId));
+  request.setRequestHeader("Content-Type", "application/zip");
+  request.upload.onprogress = (event) => {
+    if (!event.lengthComputable) return;
+    const share = event.loaded / event.total;
+    fill.style.width = Math.round(share * 100) + "%";
+    bar.setAttribute("aria-valuenow", String(Math.round(share * 100)));
+    result.textContent = "Uploading, " + sizeText(event.loaded) + " of " + sizeText(event.total) + ".";
+  };
+  request.upload.onload = () => {
+    bar.classList.add("working");
+    result.textContent = "Unpacking the project.";
+  };
+  request.onerror = () => fail("The upload stopped. Is ComfyUI still running?");
+  request.onload = async () => {
+    let reply = {};
+    try { reply = JSON.parse(request.responseText); } catch (_) {}
+    if (request.status !== 200) {
+      const said = reply.error ? reply.error.charAt(0).toUpperCase() + reply.error.slice(1) + "." : "";
+      return fail(said || (request.status === 404 || request.status === 405 ? OLD_SERVER : "ComfyUI refused the zip (" + request.status + ")."));
+    }
+    dialog.close();
+    await refreshProjects(reply.folder);
+    await openProject(reply.folder);
+    const notes = [];
+    if (reply.missing_loras?.length) notes.push("Not on this machine: " + reply.missing_loras.join(", ") + ".");
+    if (reply.keep === "text") notes.push("It holds no renders: render its clips to see them.");
+    toast("Opened " + reply.name + "." + (notes.length ? " " + notes.join(" ") : ""));
+  };
+  cancel.onclick = () => {
+    request.abort();
+    dialog.close();
+    toast("Stopped opening " + file.name + ". Nothing was added.");
+  };
+  request.send(file);
 });
 
 $("projectDelete").addEventListener("click", async () => {

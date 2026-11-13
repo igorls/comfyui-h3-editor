@@ -32,10 +32,11 @@ made with it, shot by shot.
   checkpoint works too: pick its file, set its steps, sampler and scheduler,
   and save it as a preset for every project.
 - **Let a language model write.** Describe the video and it writes the shots as
-  clips, or rewrites one clip from what you ask for. It sees the cast's
-  pictures, and any picture you add, such as a place or a frame of the cut. It
-  uses the model you name: a text model run by ComfyUI itself, or any
-  OpenAI-compatible endpoint, Anthropic, Gemini or Ollama.
+  clips, or rewrites one clip from what you ask for. It is sent the cast's
+  pictures, and any picture you add, such as a place or a frame of the cut, so
+  a model that can see writes from them. It uses the model you name: a text
+  model run by ComfyUI itself, or any OpenAI-compatible endpoint, Anthropic,
+  Gemini or Ollama.
 - **Bring your LoRAs.** Add LoRAs trained on MiniMax H3 to a project, or to one
   clip, set each one's strength, and choose whether it runs on every step or
   only after the first ones have set the framing.
@@ -149,7 +150,7 @@ show. If a clip they join changes, they are marked: render them again. An empty
 space between two rendered clips shows a plus that generates the bridge.
 
 **First and last frames.** Give a clip an exact first or last frame by
-uploading a picture, or press **Use playhead frame**.
+dropping a picture on it, uploading one, or pressing **Use playhead frame**.
 
 **Picture to a track.** A clip can hold a recorded sound, and its picture is
 generated to it. Extend forward carries on with the next part of the same
@@ -170,6 +171,19 @@ on the ruler and in the Project tab, stay on their frame when clips move, and
 are how you tell an agent exactly what to fix: it reads each note with a
 picture of its frame.
 
+**Checks.** The editor measures every rendered cut from its pictures: jump
+cuts, takes that cut, fade, freeze or go still inside, clips that are soft
+next to the rest, and extensions that drift from where their shot began. Each
+finding is marked on the timeline, and the chip at the top counts them and
+lists them, worst first; click one to go to it.
+
+**Right-click.** A clip on the timeline or in the Clips panel, a VFX clip, a
+sound, a cast member and the viewer each have a menu of what can be done to
+them, such as render, rewrite, extend, split or use the frame as a first frame.
+
+**Help in the panel.** The **?** at the end of the panel's tabs shows the
+explanations under each setting; with it off, each one is the setting's tip.
+
 **The Clips panel.** Click a clip to play it on its own, whether or not it is on
 the timeline; click the timeline to go back to the cut. File clips in bins with
 the folder button and drag clips onto them. Delete a clip with the trash button
@@ -182,7 +196,10 @@ for this clip**. See [models and quality](docs/models.md).
 
 **Projects.** Projects live in `h3take_projects` in ComfyUI's output folder.
 The menu beside the project list renames, duplicates or deletes the open one; a
-deleted project is moved to a `.trash` folder there, never erased. Renders run
+deleted project is moved to a `.trash` folder there, never erased. **Download
+as zip** in the same menu packs a project into one file, with every take, only
+the takes the cut uses, or no renders, and **Open a project zip** opens it as a
+new project, here or on another machine such as a cloud GPU. Renders run
 on the server, so closing the editor never loses one. Every change is a
 revision you can go back to, and two editors, or an editor and an agent, can
 work on one project at once.

@@ -288,6 +288,18 @@ you pass `--out`. Keep downloads and batch files out of the skill's own folder.
 - Never delete a project, a clip with takes the user may want, or files in the output
   folder unless the user asks.
 
+## Moving a project to another machine
+
+A project goes to another ComfyUI (a cloud GPU, Colab, the user's other machine) as one zip:
+`python scripts/h3.py pack PROJECT --keep cut` saves `PROJECT.h3project.zip`, and on the
+other machine `python scripts/h3.py unpack FILE.zip` opens it as a new project and prints its
+folder (the old name, or that name with a number when it is taken). `--keep all` takes every
+take and export, `cut` (the default) the takes the timeline shows with footage, pictures and
+sounds, and `text` no renders at all, for clips to render again there. `pack --sizes` prints
+how big each would be. `unpack` names any LoRA the project uses that the machine lacks: tell
+the user before rendering. The user does the same with Download as zip and Open a project zip
+in the project menu.
+
 ## Notes from the user
 
 The user can point instead of describing: in the editor they stop on a frame, pin a

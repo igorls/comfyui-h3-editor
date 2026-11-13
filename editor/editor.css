@@ -72,6 +72,7 @@ button:disabled { opacity: 0.42; cursor: default; }
 .checks-empty { margin: 0; padding: 6px 10px 10px; color: var(--muted); }
 .checks-foot { margin: 4px 0 0; padding: 8px 10px 6px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 .queue { margin-right: 2px; }
+.release { margin-left: 4px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; user-select: text; }
 .queue-chip { display: flex; align-items: center; gap: 8px; padding: 5px 10px; background: transparent; border: 1px solid var(--line); color: var(--live); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .queue-chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
 .queue-chip:hover { background: var(--raised); }
@@ -566,6 +567,19 @@ label.lora-name { cursor: pointer; }
 .exporter .hint { margin: 0 0 12px; min-height: 19px; }
 .exporter .hint.bad { color: var(--danger); }
 .exporter-foot { display: flex; align-items: center; gap: 10px; padding: 12px 20px 16px; border-top: 1px solid var(--line); }
+.packer-lead { margin: 0 0 14px; color: var(--muted); }
+.packer-lead b { color: var(--text); font-weight: 600; }
+.packer-levels { display: grid; gap: 6px; margin-bottom: 12px; }
+.packer-level { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--room); cursor: pointer; }
+.packer-level:hover { border-color: var(--line-hi); }
+.packer-level:has(input:checked) { border-color: var(--tungsten); }
+.packer-level input { margin: 0; }
+.packer-level b { display: block; font-weight: 500; }
+.packer-level small { display: block; color: var(--muted); font-size: 12px; }
+.packer-size { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.opener-bar { height: 6px; margin: 4px 0 10px; border-radius: 3px; background: var(--raised); overflow: hidden; }
+.opener-bar i { display: block; width: 0; height: 100%; background: var(--tungsten); transition: width 0.2s ease-out; }
+.opener-bar.working i { width: 100% !important; background: var(--live); }
 a.button { display: inline-block; padding: 6px 12px; border-radius: var(--radius); color: inherit; text-decoration: none; }
 a.button[hidden] { display: none; }
 .picker { width: min(640px, calc(100vw - 32px)); }
