@@ -416,7 +416,9 @@ def main():
                 if take:
                     still = api("POST", project_path(args.project) + "/grab", {"file": take["file"], "subfolder": take["subfolder"], "frame": n["frame"]})
             if still:
-                print("  " + download(still["file"], still.get("subfolder"), os.path.join(out, n["note"] + ".png")))
+                # The id comes from the project file, so only its plain characters name the picture.
+                name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(n["note"]))[:64] or "note"
+                print("  " + download(still["file"], still.get("subfolder"), os.path.join(out, name + ".png")))
     elif c == "export":
         made = api("POST", project_path(args.project) + "/export", {}, timeout=1800)
         print("Exported to ComfyUI's output folder: %s/%s" % (made["subfolder"], made["filename"]))
