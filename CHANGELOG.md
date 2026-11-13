@@ -13,10 +13,14 @@ Each release is a tag on GitHub, `v` followed by the version.
   takes a description of the video and adds its shots as new clips. **Rewrite
   with a language model**, in a clip's Shot tab, writes that clip's text again
   from what you ask for. Both show what the model wrote before anything
-  changes. Set the model up once, in the Project tab: any OpenAI-compatible
-  endpoint, Anthropic, Gemini or Ollama. The calls go from the browser to that
-  endpoint and carry text only. The settings, the key included, stay in the
-  browser, never in a project.
+  changes. Set the model up once, in the Project tab. The usual choice is a
+  text model run by this ComfyUI with its own Generate Text node, so nothing
+  leaves the machine: Comfy recommends `qwen3.5_9b_w4a8_gptq.safetensors`
+  (6.8 GB, from Comfy-Org/MiniMax-H3-Image), which writes a shot in a few
+  seconds once it is loaded. Or any OpenAI-compatible endpoint, Anthropic, Gemini or Ollama,
+  called from the browser with text only. The settings, any key included,
+  stay in the browser, never in a project. H3's own text encoder cannot do
+  this: it keeps only the layers H3 reads, not the part that writes.
 - **Cut scores.** Where two rendered clips touch on the timeline, the editor
   measures the cut from the pictures on both sides and gives it a score from 0
   to 100. A cut that carries on smoothly or changes to a new shot scores high.

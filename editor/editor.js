@@ -2580,6 +2580,7 @@ function renderInspector() {
   foot.className = "inspector-foot";
   const actions = document.createElement("div");
   actions.className = "actions";
+  let upscale = null;
   if (job) {
     const progress = document.createElement("p");
     progress.className = "foot-status";
@@ -2658,10 +2659,16 @@ function renderInspector() {
       });
       settle();
       button.addEventListener("click", () => renderClip(clip, "upscale", detail.hidden ? undefined : Number(detail.value), which.value));
-      actions.append(which, detail, button);
+      // Its own line under the render buttons: a choice made after a final, not a third way to render one.
+      upscale = document.createElement("div");
+      upscale.className = "actions upscale-row";
+      upscale.setAttribute("role", "group");
+      upscale.setAttribute("aria-label", "Upscale this final");
+      upscale.append(which, detail, button);
     }
   }
   foot.append(actions);
+  if (upscale) foot.append(upscale);
   parts.push(foot);
   panel.replaceChildren(...parts);
 }
@@ -4564,15 +4571,17 @@ function openWriterSetup(then = null) {
     types.addEventListener("change", () => {
       draft.type = types.value;
       draft.url = "";
+      if (writer.provider(draft.type).local && !draft.model) draft.model = writer.COMFY_MODEL;
       draw();
     });
     type.append(typeTitle, types);
     const hint = document.createElement("p");
     hint.className = "hint";
     hint.textContent = kind.hint;
+    if (kind.local && !draft.model) draft.model = writer.COMFY_MODEL;
     const address = plainField("Address", draft.url, { placeholder: kind.address || "Google's own address" });
     address.input.addEventListener("input", () => (draft.url = address.input.value));
-    const model = plainField("Model", draft.model, { placeholder: "The model's name, as the endpoint lists it" });
+    const model = plainField("Model", draft.model, { placeholder: kind.local ? "A file in models/text_encoders" : "The model's name, as the endpoint lists it" });
     const names = document.createElement("datalist");
     names.id = "writerModels";
     model.input.setAttribute("list", names.id);
@@ -4581,7 +4590,7 @@ function openWriterSetup(then = null) {
     list.className = "quiet";
     list.textContent = "List models";
     list.addEventListener("click", async () => {
-      note("Asking the endpoint for its models.");
+      note(kind.local ? "Asking ComfyUI for its text models." : "Asking the endpoint for its models.");
       try {
         const found = await writer.listModels(draft);
         names.replaceChildren(...found.map((name) => Object.assign(document.createElement("option"), { value: name })));
@@ -4596,7 +4605,8 @@ function openWriterSetup(then = null) {
     modelRow.append(model.wrap, list);
     const key = plainField(kind.key ? "API key" : "API key, if the endpoint asks for one", draft.key, { type: "password", placeholder: "Paste your key" });
     key.input.addEventListener("input", () => (draft.key = key.input.value));
-    $("writerSetupFields").replaceChildren(type, hint, address.wrap, modelRow, names, key.wrap);
+    // A model run by this ComfyUI has no address and needs no key.
+    $("writerSetupFields").replaceChildren(...(kind.local ? [type, hint, modelRow, names] : [type, hint, address.wrap, modelRow, names, key.wrap]));
   };
   draw();
   note("");
@@ -4653,13 +4663,28 @@ function openWriter(job) {
   if (!writer.ready()) return openWriterSetup(() => openWriter(job));
   writing.made = null;
   $("writerTitle").textContent = job.title;
-  $("writerAsk").replaceChildren(...job.fields);
+  // Which model writes, with a way to choose another without leaving for the Project tab.
+  const given = writer.settings();
+  const using = document.createElement("div");
+  using.className = "writer-using";
+  const named = document.createElement("span");
+  named.textContent = "Uses " + given.model + (writer.provider(given.type).local ? ", run by this ComfyUI." : " on " + writer.provider(given.type).title + ".");
+  const change = document.createElement("button");
+  change.className = "quiet small";
+  change.textContent = "Change";
+  change.title = "Choose another model or provider";
+  change.addEventListener("click", () => {
+    if (writing.busy) return;
+    $("writer").close();
+    openWriterSetup(() => openWriter(job));
+  });
+  using.append(named, change);
+  $("writerAsk").replaceChildren(...job.fields, using);
   $("writerPreview").replaceChildren();
   $("writerGo").textContent = job.go;
   $("writerUse").textContent = job.use(null);
   $("writerUse").disabled = true;
-  const given = writer.settings();
-  writerNote("Uses " + given.model + " on " + writer.provider(given.type).title + ".");
+  writerNote("");
   $("writerGo").onclick = async () => {
     if (writing.busy) return;
     writing.busy = true;
@@ -4811,8 +4836,8 @@ function writingSection() {
   setup.addEventListener("click", () => openWriterSetup());
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = set ? "Writing uses " + given.model + " on " + writer.provider(given.type).title + ", from this browser."
-    : "A language model can write a video's shots, or rewrite one clip. It works with any OpenAI-compatible endpoint, Anthropic, Gemini or Ollama.";
+  hint.textContent = set ? "Writing uses " + given.model + (writer.provider(given.type).local ? ", run by this ComfyUI." : " on " + writer.provider(given.type).title + ", from this browser.")
+    : "A language model can write a video's shots, or rewrite one clip: a text model run by this ComfyUI, or any OpenAI-compatible endpoint, Anthropic, Gemini or Ollama.";
   return section("Writing", [shots, setup, hint]);
 }
 

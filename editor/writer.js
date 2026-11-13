@@ -1,15 +1,23 @@
 // Writing with a language model: rewrite one clip, or write the shots of a video from a description.
 //
 // Calls go from this browser straight to the endpoint the user names, through universal-llm-client
-// (vendor/universal-llm-client.js). Only text is sent: the project's look and language, the cast's
-// names and descriptions, and the clips' fields. The settings, key included, stay in this browser's
-// storage. They are never saved in a project or sent to ComfyUI.
+// (vendor/universal-llm-client.js), or to this ComfyUI, which runs a text model with its own Generate
+// Text node. Only text is sent: the project's look and language, the cast's names and descriptions, and
+// the clips' fields. The settings, key included, stay in this browser's storage, never in a project.
 
 const STORE = "h3take.writer";
 const LIBRARY = "./vendor/universal-llm-client.js";
 
-// The four wire protocols the client speaks. An empty address takes the client's own default.
+// The text model Comfy recommends for writing prompts for MiniMax H3, and where it comes from.
+export const COMFY_MODEL = "qwen3.5_9b_w4a8_gptq.safetensors";
+const COMFY_SOURCE = "Comfy-Org/MiniMax-H3-Image";
+
+// Where a rewrite can be asked for: this ComfyUI, or one of the four wire protocols the client speaks.
+// An empty address takes the client's own default.
 export const PROVIDERS = [
+  { id: "comfyui", title: "This ComfyUI", address: "", key: false, local: true,
+    hint: "Runs a text model here, with ComfyUI's Generate Text node: nothing leaves this machine, and no key is needed. Comfy recommends "
+      + COMFY_MODEL + " (6.8 GB, from " + COMFY_SOURCE + " on Hugging Face, in models/text_encoders). A shot takes seconds once the model is loaded; it waits for a render that is running." },
   { id: "openai", title: "OpenAI-compatible", address: "https://api.openai.com/v1", key: true,
     hint: "Any endpoint that speaks OpenAI Chat Completions: OpenAI, OpenRouter, LM Studio, vLLM, a llama.cpp server." },
   { id: "anthropic", title: "Anthropic", address: "https://api.anthropic.com", key: true, hint: "Anthropic's Messages API." },
@@ -27,7 +35,7 @@ export function settings() {
   try {
     saved = JSON.parse(localStorage.getItem(STORE) || "{}") || {};
   } catch (_) {}
-  const type = PROVIDERS.some((p) => p.id === saved.type) ? saved.type : "openai";
+  const type = PROVIDERS.some((p) => p.id === saved.type) ? saved.type : "comfyui";
   return { type, url: String(saved.url || ""), model: String(saved.model || ""), key: String(saved.key || "") };
 }
 
@@ -72,7 +80,58 @@ function explain(error, given) {
   return text.length > 400 ? text.slice(0, 400) + "..." : text;
 }
 
+// One answer from a text model run by this ComfyUI: a small graph of its own Generate Text node, put at the front
+// of the queue. The settings follow Comfy's own prompt-enhancer template, without its thinking: a 9B model asked
+// to rewrite a long shot can think through all of its tokens and answer nothing, and without it answers in seconds.
+async function askComfy(given, system, user) {
+  const graph = {
+    "1": { class_type: "CLIPLoader", inputs: { clip_name: given.model.trim(), type: "minimax", device: "default" } },
+    "2": { class_type: "PrimitiveStringMultiline", inputs: { value: system } },
+    "3": { class_type: "TextGenerateV2", inputs: {
+      clip: ["1", 0], prompt: user, max_length: 4096, sampling_mode: "on",
+      "sampling_mode.temperature": 0.7, "sampling_mode.top_k": 20, "sampling_mode.top_p": 0.95, "sampling_mode.min_p": 0,
+      "sampling_mode.repetition_penalty": 1, "sampling_mode.presence_penalty": 0, "sampling_mode.seed": Math.floor(Math.random() * 2 ** 31),
+      thinking: false, use_default_template: true, mtp: "auto", system_prompt: ["2", 0] } },
+    "4": { class_type: "PreviewAny", inputs: { source: ["3", 0] } },
+  };
+  let reply;
+  try {
+    reply = await fetch("/prompt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: graph, front: true }) });
+  } catch (_) {
+    throw new Error("ComfyUI did not answer. Is it still running?");
+  }
+  const sent = await reply.json().catch(() => ({}));
+  if (!reply.ok || !sent.prompt_id) {
+    const said = JSON.stringify(sent.node_errors || sent.error || sent);
+    if (/TextGenerateV2|PrimitiveStringMultiline|PreviewAny/.test(said) && /not found|does not exist|invalid prompt/i.test(said)) {
+      throw new Error("This ComfyUI has no Generate Text node. Update ComfyUI, or choose another provider.");
+    }
+    if (/clip_name|value_not_in_list/i.test(said)) {
+      throw new Error(given.model.trim() + " is not in ComfyUI's models/text_encoders. Comfy recommends " + COMFY_MODEL + ", from " + COMFY_SOURCE + " on Hugging Face.");
+    }
+    throw new Error("ComfyUI refused the request: " + said.slice(0, 300));
+  }
+  const until = Date.now() + 15 * 60 * 1000;
+  while (Date.now() < until) {
+    await new Promise((done) => setTimeout(done, 1000));
+    const history = await fetch("/history/" + sent.prompt_id).then((r) => r.json()).catch(() => ({}));
+    const entry = history[sent.prompt_id];
+    if (!entry) continue;
+    if (entry.status?.status_str === "error") {
+      const last = (entry.status.messages || []).find((row) => row[0] === "execution_error")?.[1];
+      throw new Error("The text model failed in ComfyUI: " + String(last?.exception_message || "see ComfyUI's log").slice(0, 300));
+    }
+    const text = entry.outputs?.["4"]?.text?.[0];
+    if (typeof text === "string") {
+      if (!text.trim()) throw new Error("The model answered with nothing. Try again, or another model.");
+      return text;
+    }
+  }
+  throw new Error("The text model had not answered after 15 minutes. ComfyUI may be busy with renders.");
+}
+
 async function ask(given, system, user) {
+  if (given.type === "comfyui") return askComfy(given, system, user);
   const model = await client(given);
   try {
     const reply = await model.chat([{ role: "system", content: system }, { role: "user", content: user }]);
@@ -90,6 +149,12 @@ async function ask(given, system, user) {
 
 // The models an endpoint lists, for the Model field. Not every endpoint lists any.
 export async function listModels(given) {
+  if (given.type === "comfyui") {
+    // ComfyUI's text encoders, the recommended one first. Many are encoders only and cannot write.
+    const found = await fetch("/models/text_encoders").then((r) => r.json()).catch(() => null);
+    if (!Array.isArray(found)) throw new Error("ComfyUI did not list its text encoders.");
+    return found.filter((name) => typeof name === "string").sort((a, b) => (b === COMFY_MODEL) - (a === COMFY_MODEL) || a.localeCompare(b));
+  }
   const model = await client(given);
   try {
     return (await model.getModels()).filter((name) => typeof name === "string" && name).sort();

@@ -33,7 +33,8 @@ made with it, shot by shot.
   and save it as a preset for every project.
 - **Let a language model write.** Describe the video and it writes the shots as
   clips, or rewrites one clip from what you ask for. It uses the model you
-  name: any OpenAI-compatible endpoint, Anthropic, Gemini or Ollama.
+  name: a text model run by ComfyUI itself, or any OpenAI-compatible endpoint,
+  Anthropic, Gemini or Ollama.
 - **Bring your LoRAs.** Add LoRAs trained on MiniMax H3 to a project, or to one
   clip, set each one's strength, and choose whether it runs on every step or
   only after the first ones have set the framing.

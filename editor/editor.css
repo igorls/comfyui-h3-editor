@@ -212,6 +212,14 @@ details.section > summary .filled { margin-left: auto; color: var(--muted); font
 .actions { display: flex; gap: 10px; }
 .actions button { flex: 1; }
 .actions button.icon { flex: none; }
+.actions button { white-space: nowrap; }
+.inspector-foot .upscale-row { margin-top: 8px; gap: 8px; }
+.upscale-row select { flex: 1 1 0; min-width: 0; padding: 5px 28px 5px 9px; background-color: var(--room); border: 1px solid var(--line); border-radius: var(--radius); text-overflow: ellipsis; }
+.upscale-row select:hover { border-color: var(--line-hi); }
+.upscale-row button { flex: none; }
+.writer-using { display: flex; align-items: center; gap: 10px; margin: 2px 0 4px; color: var(--muted); font-size: 12px; }
+.writer-using span { min-width: 0; overflow-wrap: anywhere; }
+.writer-using button { flex: none; margin-left: auto; padding: 4px 10px; font-size: 12px; }
 .notice { margin: 12px 16px 0; padding: 10px 12px; border-radius: var(--radius); background: var(--raised); color: var(--danger); }
 .hint { margin: -4px 0 12px; color: var(--muted); font-size: 12px; }
 
