@@ -99,9 +99,29 @@ the Project tab. A smaller size needs less GPU memory and renders faster.
 | Medium | 960x544 | 544x960 | 768x768 | Drafts and finals |
 | Large | 1344x768 | 768x1344 | 1024x1024 | Finals, without the enlarging pass |
 | Full | 1920x1088 | 1088x1920 | 1440x1440 | Finals, as usual |
+| Sharp | 1920x1088 | 1088x1920 | 1440x1440 | Finals, enlarged with RelayVSR instead |
 
-A final below Full is not enlarged, so it loads no upscaler and samples once.
-The Realism Slider still runs on it. Takes already rendered keep their size.
+A final at Large, Medium or Small is not enlarged, so it loads no upscaler and
+samples once. The Realism Slider still runs on it. Takes already rendered keep
+their size.
+
+A Sharp final samples once at Large, is enlarged two times by RelayVSR (see
+below) and is scaled down to the Full size. It skips the second sampling pass,
+so it is quicker, edges come out crisper and skin keeps the smoother look of
+the sampled size. It holds every enlarged frame in system memory, so a long
+clip needs a lot of it: an eight-second clip can need more than 48 GB.
+
+## Upscalers
+
+**Upscale 2x**, on a clip whose take is a final, makes a new take at twice its
+size. You pick the upscaler among the ones whose two files are installed:
+
+| Upscaler | Files | Folder | Where to get them | What it does |
+|---|---|---|---|---|
+| RelayVSR | `relayvsr_x2_lightx2v_int8_convrot.safetensors`, `relayvsr_flash_vae_x2_fp32.safetensors` | `models/diffusion_models`, `models/vae` | [Comfy-Org/RelayVSR](https://huggingface.co/Comfy-Org/RelayVSR) | Seconds a clip, about 16 GB of GPU memory. Sharpens the edges that are there. Also what a Sharp final uses |
+| SeedVR2 | `seedvr2_3b_int8_convrot.safetensors`, `seedvr2_ema_vae_fp16.safetensors` | `models/diffusion_models`, `models/vae` | [Comfy-Org/SeedVR2](https://huggingface.co/Comfy-Org/SeedVR2) | Minutes a clip and far more GPU memory. Redraws fine texture, and can change a face a little |
+
+Files in a subfolder of those folders are found too.
 
 Steps belong to the model, not the project: to render with other steps, add a
 checkpoint with the same file under [your own checkpoints](#your-own-checkpoints).

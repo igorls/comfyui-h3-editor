@@ -5,7 +5,7 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
-## Unreleased
+## 0.5.0, 2026-11-12
 
 ### Added
 
@@ -99,6 +99,9 @@ Each release is a tag on GitHub, `v` followed by the version.
   `add_effect`, `update_effect`, `remove_effect` and `render_effect`. The
   code runs in a browser, so a render an agent asks for is done by an open
   editor page, and waits until there is one.
+- **A Colab notebook.** `colab/h3_editor.ipynb` installs ComfyUI and the
+  editor on a Colab GPU, downloads the models from Hugging Face, brings a
+  project in and takes it home again, for finals a smaller GPU cannot fit.
 - **Slip.** A clip that shows only part of its take can show another part
   without moving or changing length, so a shot cut to a music cue can be
   auditioned against a longer take with the rest of the edit untouched.
@@ -132,6 +135,13 @@ Each release is a tag on GitHub, `v` followed by the version.
   the two sizes have slightly different proportions (640x352 and 1920x1088).
   The viewer now shows the cut in one shape, the one the export uses, and
   every clip fills it.
+
+### Upgrading
+
+Restart ComfyUI after updating: this release adds routes that are registered
+at startup. Projects made with 0.4.1 open as they are and render as before.
+Upscaling and Sharp finals need RelayVSR's two files (or SeedVR2's for that
+upscaler), and PRISM its own file; docs/models.md says where each comes from.
 
 ## 0.4.1, 2026-11-11
 
