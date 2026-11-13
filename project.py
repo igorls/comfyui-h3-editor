@@ -209,8 +209,9 @@ PROFILES = {
     },
     "prism": {
         "title": "PRISM (Singularity x 10Eros Max)",
-        "hint": "A merge of two community H3 fine-tunes with its turbo built in, ref2va only. Crisp eyes and skin texture, "
-                "glossier skin. Extensions drift on it, so keep a shot to one take where you can. 6 steps for drafts, 8 for finals.",
+        "hint": "A merge of two community H3 fine-tunes with its turbo built in, ref2va only. For short single shots: "
+                "sharp and glossy, with more movement, but speech is less exact than on HyperFlow and extensions drift. "
+                "6 steps for drafts, 8 for finals.",
         "unet": ["PRISM_DMAD_PDMD_int8.safetensors", "PRISM_DMAD_PDMD*"],
         "steps": {"draft": 6, "final": 8}, "sampler": "euler", "scheduler": "beta57", "refine_sigmas": REFINE_TAIL,
     },

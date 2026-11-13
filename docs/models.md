@@ -34,7 +34,7 @@ is loaded once.
 | DaSiWa Hybrid v4 Turbo | its turbo int8 ref2va file from the same model | 8 and 8, euler |
 | DaSiWa GXS v5 Turbo | `dasiwa_minimax_h3_ref2va_v5xs_pruned_graviton_turbo_int8_row-wise_convrot_runtime_mixed.safetensors`, or another file of the same release | 6 and 8, euler |
 | 10Eros Max beta 7 | `10Eros_Max_h3_8stepTURBO_beta7_fix1-native_int8_protected_edges_HQ.safetensors` from [TenStrip/10Eros-Max](https://huggingface.co/TenStrip/10Eros-Max), or another beta 7 file | 6 and 8, euler |
-| PRISM (Singularity x 10Eros Max) | `PRISM_DMAD_PDMD_int8.safetensors` (18.9 GiB) from [OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM](https://huggingface.co/OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM), or another `PRISM_DMAD_PDMD` file | 6 and 8, euler on the Beta57 schedule |
+| PRISM (Singularity x 10Eros Max), for short single shots; speech and extensions hold better on HyperFlow | `PRISM_DMAD_PDMD_int8.safetensors` (18.9 GiB) from [OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM](https://huggingface.co/OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM), or another `PRISM_DMAD_PDMD` file | 6 and 8, euler on the Beta57 schedule |
 
 H3 comes in two kinds. A family with an fl2va model renders prompt-only clips
 on it and everything else on its ref2va model. A family with only ref2va renders

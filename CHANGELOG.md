@@ -5,7 +5,7 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
-## 0.5.0, 2026-11-12
+## 0.5.0, 2026-11-13
 
 ### Added
 
@@ -45,9 +45,11 @@ Each release is a tag on GitHub, `v` followed by the version.
   OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM on Hugging Face), 8
   steps for finals on Euler with the Beta57 schedule. The editor makes that
   schedule with ComfyUI's own node, so a project's own checkpoint can name
-  `beta57` as its scheduler on any install. Extensions drift on PRISM: in a
-  test the second extension of a shot was 13 to 19% harsher than its first
-  take, where HyperFlow stayed within 5%.
+  `beta57` as its scheduler on any install. PRISM is for short single shots:
+  in tests a speaking presenter's mouth followed the words less exactly than
+  on HyperFlow, some areas came out over-sharpened, and extensions drifted
+  (the second extension of a shot was 13 to 19% harsher than its first take,
+  where HyperFlow stayed within 5%). HyperFlow stays the default.
 - **Drift marks.** A shot made of a take and its extensions can drift: on
   some models every extension comes out harsher than the frames it carried
   on from, with more shine and deeper lines on a face. The editor now
