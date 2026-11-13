@@ -7,6 +7,7 @@
     python h3.py wait Morning_teaser
     python h3.py summary Morning_teaser
     python h3.py look Morning_teaser <clip id>
+    python h3.py notes Morning_teaser
 
 The editor lives in the user's ComfyUI. Set H3_EDITOR_URL, or pass --url, when it is
 not at http://127.0.0.1:8188. Run any command with -h for its options.
@@ -138,6 +139,13 @@ def text_summary(s):
             lines.append("Failed: %s %s: %s" % (c["id"], c["name"], c["error"]))
         if c["state"] == "source changed":
             lines.append("Source changed: %s %s joins a clip that moved or changed. Render it again." % (c["id"], c["name"]))
+    waiting = [n for n in s.get("notes") or [] if n["status"] == "open"]
+    if waiting:
+        lines.append("Open notes (python h3.py notes <project> shows each one's picture):")
+        for n in waiting:
+            lines.append("  %-10s %s  clip %-10s %-22s %s%s" % (
+                n["note"], n["at"] or "off the timeline", n["clip"], n["name"][:22], n["text"][:90],
+                "  (on an earlier take)" if n.get("earlier_take") else ""))
     if s["rendering"]:
         lines.append("Rendering: " + ", ".join("%s (%s)" % (r["clip"], r["quality"]) for r in s["rendering"]))
     return "\n".join(lines)
@@ -228,6 +236,10 @@ def main():
     p.add_argument("--last", type=int, help="Stop before this frame of the take.")
     p.add_argument("--count", type=int, help="How many frames, 1 to 24.")
     p.add_argument("--out", help="Folder. Default: h3-look/<project> in the system's temporary folder.")
+    p = sub.add_parser("notes", help="The notes a reviewer pinned to frames: each one's text, where it is, and its picture with the drawing on it.")
+    p.add_argument("project")
+    p.add_argument("--all", action="store_true", help="Resolved notes too.")
+    p.add_argument("--out", help="Folder for the pictures. Default: h3-notes/<project> in the system's temporary folder.")
     p = sub.add_parser("export", help="Join the timeline into one video in ComfyUI's output folder.")
     p.add_argument("project")
     p.add_argument("--out", help="Also download it here.")
@@ -381,6 +393,30 @@ def main():
                 take["frames"], ", ".join(str(n) for n in made["picked"])))
             if args.clip:
                 print("  video: %s/view?%s" % (URL, urllib.parse.urlencode({"filename": take["file"], "subfolder": take["subfolder"], "type": "output"})))
+    elif c == "notes":
+        found = api("GET", project_path(args.project) + "/summary").get("notes") or []
+        rows = [n for n in found if args.all or n["status"] == "open"]
+        if not rows:
+            print("No open notes." if not args.all else "No notes.")
+        out = args.out or os.path.join(tempfile.gettempdir(), "h3-notes", args.project)
+        project = api("GET", project_path(args.project)) if rows else None
+        for n in rows:
+            span = ("frames %s to %s" % (n["range"]["from"], n["range"]["to"])) if n.get("range") else "frame %s" % n["frame"]
+            print("%s  %s  %s %s, take %s, %s of the take; on the timeline at %s%s" % (
+                n["note"], n["status"], n["clip"], n["name"], n["take"], span, n["at"] or "nothing (that frame is not in the cut)",
+                ". Written on an earlier take than the clip shows now" if n.get("earlier_take") else ""))
+            print("  " + n["text"].replace("\n", "\n  "))
+            print("  Points at " + n["where"] + (", by " + n["author"] if n.get("author") else ""))
+            if n.get("resolution"):
+                print("  Resolved: " + n["resolution"])
+            still = n.get("still")
+            if not still:
+                # A note an agent wrote has no picture: the frame itself, without a drawing.
+                take = next((t for c in project["clips"] if c["id"] == n["clip"] for t in c.get("takes") or [] if t["id"] == n["take"]), None)
+                if take:
+                    still = api("POST", project_path(args.project) + "/grab", {"file": take["file"], "subfolder": take["subfolder"], "frame": n["frame"]})
+            if still:
+                print("  " + download(still["file"], still.get("subfolder"), os.path.join(out, n["note"] + ".png")))
     elif c == "export":
         made = api("POST", project_path(args.project) + "/export", {}, timeout=1800)
         print("Exported to ComfyUI's output folder: %s/%s" % (made["subfolder"], made["filename"]))

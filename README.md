@@ -162,6 +162,13 @@ the cut at the playhead, on a lane of its own. Drag it to move it, up or down to
 change its lane, and drag its ends to trim it; its volume is in the panel on
 the right. The export mixes it under the clips' own sound.
 
+**Notes on frames.** Stop on a frame and press **N**, or **Note** under the
+viewer. Pin a spot, drag a box or draw on the picture, and write what should
+change. With a range marked by I and O, the note covers the range. Notes show
+on the ruler and in the Project tab, stay on their frame when clips move, and
+are how you tell an agent exactly what to fix: it reads each note with a
+picture of its frame.
+
 **The Clips panel.** Click a clip to play it on its own, whether or not it is on
 the timeline; click the timeline to go back to the cut. File clips in bins with
 the folder button and drag clips onto them. Delete a clip with the trash button

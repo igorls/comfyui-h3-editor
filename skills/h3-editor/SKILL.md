@@ -288,6 +288,25 @@ you pass `--out`. Keep downloads and batch files out of the skill's own folder.
 - Never delete a project, a clip with takes the user may want, or files in the output
   folder unless the user asks.
 
+## Notes from the user
+
+The user can point instead of describing: in the editor they stop on a frame, pin a
+spot, box or draw on the picture, and write a note. The summary lists the open notes.
+`python scripts/h3.py notes PROJECT` prints each one (clip, take, frame or range, where
+it points, the text) and saves its frame with the drawing burned in. Open every picture:
+the drawing is part of the note. Then:
+
+1. fix the clip the note names, for example rewrite its action and render it again;
+2. look at the new take at the same frame;
+3. close the note with a line on what you changed:
+   `{"op": "resolve_note", "note": "n1a2b3c4", "resolution": "Low sun through the awning now."}`.
+   The user sees it in the editor.
+
+A note marked as written on an earlier take means the clip has been rendered since: check
+the new take before acting on it. A note you disagree with or cannot do stays open; say why
+in chat instead of resolving it. You can also leave a note for the user with `add_note`,
+for example on a shot you could not judge.
+
 ## Checking the cut
 
 `python scripts/h3.py summary PROJECT` shows the timeline with timecodes, item and clip

@@ -141,6 +141,37 @@ button:disabled { opacity: 0.42; cursor: default; }
 .screen > .live-sound[hidden] { display: none; }
 .live-sound[aria-pressed="false"] .on, .live-sound[aria-pressed="true"] .off { display: none; }
 .live-sound[data-tip]::after { top: auto; bottom: calc(100% + 6px); left: auto; right: 0; }
+.note-layer { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none; }
+.note-layer.drawing { pointer-events: auto; cursor: crosshair; }
+.screen > .note-tag { z-index: 5; position: absolute; top: 14px; right: 14px; display: grid; gap: 4px; max-width: min(360px, 60%); }
+.screen > .note-tag[hidden] { display: none; }
+.note-line { padding: 6px 10px; border-radius: var(--radius); background: rgba(20, 24, 28, 0.88); color: var(--text); border-left: 3px solid var(--tungsten); text-align: left; font-size: 13px; line-height: 1.4; }
+.note-line.done { color: var(--muted); border-left-color: var(--muted); }
+.screen > .note-box { z-index: 6; position: absolute; top: 14px; right: 14px; width: min(320px, calc(100% - 28px)); padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); }
+.screen > .note-box[hidden] { display: none; }
+.screen > .note-box.aside { right: auto; left: 14px; }
+.screen > .note-box.moved { right: auto; }
+.note-box .note-head { cursor: move; user-select: none; touch-action: none; }
+.note-head { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.note-tools { display: flex; gap: 4px; margin-bottom: 8px; }
+.note-tools button { padding: 4px 10px; font-size: 12px; }
+.note-tools button[aria-pressed="true"] { background: var(--tungsten); color: var(--tungsten-ink); }
+.note-tools #noteClear { margin-left: auto; }
+.note-box textarea { width: 100%; padding: 6px 9px; background: var(--room); border: 1px solid var(--line); border-radius: var(--radius); resize: vertical; line-height: 1.45; }
+.note-box .hint { margin: 6px 0 8px; }
+.note-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.note-button { margin-left: 14px; padding: 4px 12px; }
+.ruler .note-mark { position: absolute; top: 0; bottom: 0; min-width: 6px; margin-left: -3px; padding: 0; border: 0; border-left: 2px solid var(--tungsten); border-radius: 2px; background: color-mix(in srgb, var(--tungsten) 55%, transparent); z-index: 2; cursor: pointer; }
+.ruler .note-mark.done { background: color-mix(in srgb, var(--muted) 30%, transparent); border-left-color: var(--muted); }
+.note-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: start; padding: 8px 0; border-top: 1px solid var(--line); }
+.note-row.on .note-text { color: var(--tungsten); }
+.note-jump { display: grid; gap: 3px; padding: 0; background: transparent; text-align: left; color: var(--text); }
+.note-where { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.note-text { font-size: 13px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-answer { color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+.note-row.done .note-text { color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 60%, transparent); }
+.note-row .quiet { padding: 4px 10px; font-size: 12px; }
+.clip .meta .notes { color: var(--tungsten); }
 /* A clip played on its own, outside the cut. */
 .screen > .source-tag { z-index: 4; position: absolute; left: 14px; top: 14px; right: 14px; display: flex; align-items: center; gap: 12px; width: max-content; max-width: calc(100% - 28px); padding: 4px 4px 4px 12px; border-radius: var(--radius); background: rgba(20, 24, 28, 0.84); }
 .screen > .source-tag[hidden] { display: none; }

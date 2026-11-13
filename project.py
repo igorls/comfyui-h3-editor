@@ -8,6 +8,7 @@ import json
 import math
 import random
 import re
+import time
 import uuid
 
 try:
@@ -1736,6 +1737,8 @@ def remove_clip(project, clip_id):
     find_clip(project, clip_id)
     project["clips"] = [c for c in project["clips"] if c["id"] != clip_id]
     project["timeline"] = [i for i in project.get("timeline", []) if i["clip"] != clip_id]
+    if project.get("notes"):
+        project["notes"] = [n for n in project["notes"] if not (isinstance(n, dict) and n.get("clip") == clip_id)]
 
 
 def clean_bin_name(value, fallback):
@@ -2610,6 +2613,168 @@ def merge(base, mine, theirs, key=None):
     return _copy(theirs if key in THEIRS_ON_CONFLICT else mine)
 
 
+# Notes a reviewer pins to a frame of a take: what should change there, with a pin, a box or a
+# drawing on the picture. A note belongs to the clip and the take it was written on, and counts
+# frames inside that take, so it stays on its frame when the clip moves on the timeline or is trimmed.
+
+NOTE_FIELDS = ("clip", "take", "frame", "range", "shape", "text", "author", "still")
+NOTE_TEXT = 2000
+NOTE_PATHS, NOTE_POINTS = 40, 2000
+
+
+def _fraction(value, what):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= float(value) <= 1:
+        raise ValueError("%s is a fraction of the frame, from 0 to 1" % what)
+    return round(float(value), 5)
+
+
+def clean_shape(value):
+    """Where on the picture a note points: a pin, a box or freehand strokes, in fractions of the frame from its top left."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.get("type") not in ("pin", "rect", "stroke"):
+        raise ValueError('shape is {"type": "pin", "x", "y"}, {"type": "rect", "x", "y", "w", "h"} or {"type": "stroke", "paths"}')
+    if value["type"] == "pin":
+        return {"type": "pin", "x": _fraction(value.get("x"), "x"), "y": _fraction(value.get("y"), "y")}
+    if value["type"] == "rect":
+        shape = {"type": "rect"}
+        for key in ("x", "y", "w", "h"):
+            shape[key] = _fraction(value.get(key), key)
+        if shape["x"] + shape["w"] > 1.00001 or shape["y"] + shape["h"] > 1.00001:
+            raise ValueError("the box runs past the edge of the frame")
+        return shape
+    paths = value.get("paths")
+    if not isinstance(paths, list) or not paths or len(paths) > NOTE_PATHS:
+        raise ValueError("a stroke shape has 1 to %s paths" % NOTE_PATHS)
+    made = []
+    for path in paths:
+        if not isinstance(path, list) or not path or len(path) > NOTE_POINTS:
+            raise ValueError("each path has 1 to %s points" % NOTE_POINTS)
+        made.append([[_fraction(p[0], "x"), _fraction(p[1], "y")] for p in path
+                     if isinstance(p, (list, tuple)) and len(p) == 2])
+    return {"type": "stroke", "paths": made}
+
+
+def find_note(project, note_id):
+    for note in project.get("notes") or []:
+        if isinstance(note, dict) and note.get("id") == note_id:
+            return note
+    raise KeyError("no note %s" % note_id)
+
+
+def add_note(project, fields):
+    """A note on a frame of a clip's take. The take is the clip's active one unless named."""
+    check_fields(fields, NOTE_FIELDS)
+    clip = find_clip(project, fields.get("clip"))
+    takes = {t["id"]: t for t in clip.get("takes") or []}
+    take = takes.get(fields.get("take")) if fields.get("take") else active_take(clip)
+    if take is None:
+        raise ValueError("%s has no take %s" % (clip["name"], fields["take"]) if fields.get("take")
+                         else "%s has no render yet, so it has no frames to write a note on" % clip["name"])
+    last = max(0, int(take.get("frames") or 1) - 1)
+
+    def frame_of(value, what):
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= last:
+            raise ValueError("%s is a frame of the take, from 0 to %s" % (what, last))
+        return value
+
+    text = str(fields.get("text") or "").strip()
+    if not text:
+        raise ValueError("a note needs text: what should change at that frame")
+    note = {"id": new_id("n"), "clip": clip["id"], "take": take["id"], "frame": frame_of(fields.get("frame"), "frame"),
+            "range": None, "shape": clean_shape(fields.get("shape")), "text": text[:NOTE_TEXT], "status": "open",
+            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    span = fields.get("range")
+    if span is not None:
+        if not isinstance(span, dict):
+            raise ValueError('range is {"from", "to"}, frames of the take')
+        start, end = frame_of(span.get("from"), "range from"), frame_of(span.get("to"), "range to")
+        if end < start:
+            raise ValueError("a range ends after it starts")
+        note["range"] = {"from": start, "to": end}
+        note["frame"] = start
+    if fields.get("author"):
+        note["author"] = str(fields["author"]).strip()[:60]
+    if isinstance(fields.get("still"), dict) and fields["still"].get("file"):
+        note["still"] = {"file": str(fields["still"]["file"]), "subfolder": str(fields["still"].get("subfolder") or "")}
+    project.setdefault("notes", []).append(note)
+    return note
+
+
+def resolve_note(project, note_id, resolution=""):
+    """Close a note, with a line on what was done about it."""
+    note = find_note(project, note_id)
+    note["status"] = "resolved"
+    note["resolved"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if str(resolution or "").strip():
+        note["resolution"] = str(resolution).strip()[:NOTE_TEXT]
+    return note
+
+
+def reopen_note(project, note_id):
+    note = find_note(project, note_id)
+    note["status"] = "open"
+    note.pop("resolved", None)
+    return note
+
+
+def remove_note(project, note_id):
+    find_note(project, note_id)
+    project["notes"] = [n for n in project.get("notes") or [] if not (isinstance(n, dict) and n.get("id") == note_id)]
+
+
+def note_place(project, note):
+    """The timeline frame where a note's frame is on screen now, or None when its frame is not on the timeline."""
+    frame = note.get("frame")
+    if not isinstance(frame, int):
+        return None
+    for item in ordered(project):
+        if item.get("clip") == note.get("clip") and item["in"] <= frame < item["out"]:
+            return int(round(item["start"] + (frame - item["in"]) / clean_speed(item.get("speed"))))
+    return None
+
+
+def shape_words(shape):
+    """A note's shape in words, for a reader with no picture."""
+    if not isinstance(shape, dict):
+        return "the whole frame"
+    pct = lambda v: "%d%%" % round(v * 100)
+    if shape.get("type") == "pin":
+        return "a pin at %s across, %s down" % (pct(shape["x"]), pct(shape["y"]))
+    if shape.get("type") == "rect":
+        return "a box from %s to %s across and %s to %s down" % (
+            pct(shape["x"]), pct(shape["x"] + shape["w"]), pct(shape["y"]), pct(shape["y"] + shape["h"]))
+    points = [p for path in shape.get("paths") or [] for p in path]
+    if not points:
+        return "a drawing"
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    return "a drawing within %s to %s across and %s to %s down" % (pct(min(xs)), pct(max(xs)), pct(min(ys)), pct(max(ys)))
+
+
+def describe_notes(project):
+    """Every note, open ones first, each with where it is on the timeline now."""
+    clips = {c["id"]: c for c in project.get("clips", [])}
+    rows = []
+    for note in project.get("notes") or []:
+        if not isinstance(note, dict) or note.get("clip") not in clips or not note.get("id"):
+            continue
+        clip = clips[note["clip"]]
+        place = note_place(project, note)
+        active = active_take(clip)
+        row = {"note": note["id"], "status": note.get("status") or "open", "clip": clip["id"], "name": clip["name"],
+               "take": note.get("take"), "frame": note.get("frame"), "range": note.get("range"),
+               "at": timecode(place) if place is not None else None, "timeline_frame": place,
+               "text": note.get("text", ""), "where": shape_words(note.get("shape"))}
+        if active is not None and note.get("take") != active["id"]:
+            row["earlier_take"] = True
+        for key in ("author", "created", "resolved", "resolution", "still"):
+            if note.get(key):
+                row[key] = note[key]
+        rows.append(row)
+    rows.sort(key=lambda r: (r["status"] != "open", r["timeline_frame"] is None, r["timeline_frame"] or 0))
+    return rows
+
+
 # A short account of a project, for agents and for checking work.
 
 def clip_state(project, clip):
@@ -2699,7 +2864,7 @@ def describe(project):
                  for p in project.get("cast", [])],
         "bins": [{"id": b["id"], "name": b["name"], "clips": sum(1 for c in project.get("clips", []) if c.get("bin") == b["id"])}
                  for b in project.get("bins", [])],
-        "clips": clips, "timeline": timeline, "gaps": gaps,
+        "clips": clips, "timeline": timeline, "gaps": gaps, "notes": describe_notes(project),
         "rendering": [{"job": j.get("id"), "clip": j["clip"], "quality": j["quality"]} for j in project.get("pending", [])],
     }
 
@@ -2791,6 +2956,23 @@ def apply_op(project, op, names):
         sound_id = _resolve(op.get("sound"), names, "sound")
         remove_sound(project, sound_id)
         result = {"sound": sound_id}
+    elif kind == "add_note":
+        fields = dict(op.get("fields") or {})
+        if "clip" in fields:
+            fields["clip"] = _resolve(fields["clip"], names, "clip")
+        result = {"note": add_note(project, fields)["id"]}
+    elif kind == "resolve_note":
+        note_id = _resolve(op.get("note"), names, "note")
+        resolve_note(project, note_id, op.get("resolution") or "")
+        result = {"note": note_id}
+    elif kind == "reopen_note":
+        note_id = _resolve(op.get("note"), names, "note")
+        reopen_note(project, note_id)
+        result = {"note": note_id}
+    elif kind == "remove_note":
+        note_id = _resolve(op.get("note"), names, "note")
+        remove_note(project, note_id)
+        result = {"note": note_id}
     elif kind == "add_effect":
         result = {"effect": add_effect(project, op.get("fields") or {})["id"]}
     elif kind == "update_effect":

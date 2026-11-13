@@ -1319,6 +1319,7 @@ function deleteClip(clip) {
   const placed = state.project.timeline.some((i) => i.clip === clip.id);
   state.project.clips = state.project.clips.filter((c) => c !== clip);
   state.project.timeline = state.project.timeline.filter((i) => i.clip !== clip.id);
+  if (state.project.notes) state.project.notes = state.project.notes.filter((n) => n.clip !== clip.id);
   if (state.clip === clip.id) state.clip = null;
   if (!state.project.timeline.some((i) => i.id === state.item)) state.item = null;
   save();
@@ -1434,6 +1435,13 @@ function clipRow(clip) {
   state_.dataset.status = clip.id;
   state_.textContent = status.text;
   meta.append(length, state_);
+  const open = notesOf().filter((n) => n.clip === clip.id && n.status !== "resolved").length;
+  if (open) {
+    const count = document.createElement("span");
+    count.className = "notes";
+    count.textContent = open === 1 ? "1 note" : open + " notes";
+    meta.append(count);
+  }
   text.append(title, meta);
   button.append(thumb, text);
   return button;
@@ -2292,6 +2300,7 @@ function renderScene(panel, selected = false) {
     ]),
     loraSection(),
     writingSection(),
+    notesSection(),
     section("Overview", [facts]),
   );
 }
@@ -3406,7 +3415,7 @@ function renderRuler(width) {
     half.style.left = px((s + step / 2) * FPS) + "px";
     ticks.push(half);
   }
-  ruler.replaceChildren(...ticks);
+  ruler.replaceChildren(...ticks, ...noteMarks());
 }
 
 function renderTimeline() {
@@ -4857,6 +4866,7 @@ function updateClock() {
   frames.textContent = now.slice(5);
   $("time").replaceChildren(now.slice(0, 5), frames);
   $("total").textContent = "of " + timecode(viewEnd());
+  drawNotes();
 }
 
 function snapPoints(skip) {
@@ -5988,6 +5998,11 @@ $("laneV").addEventListener("pointerdown", (event) => {
 });
 
 window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && noting.active) {
+    closeNote();
+    drawNotes();
+    return;
+  }
   if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
   if (document.querySelector("dialog[open], [popover]:popover-open")) return;
   const tab = event.target.closest?.("#inspTabs .insp-tab");
@@ -6038,6 +6053,11 @@ window.addEventListener("keydown", (event) => {
     else removeSelected();
   }
   else if (event.key.toLowerCase() === "s" && !event.ctrlKey && !event.metaKey) splitAtPlayhead();
+  else if (event.key.toLowerCase() === "n" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    // Kept from the note's text box, which takes focus as the key goes down.
+    event.preventDefault();
+    startNote();
+  }
   else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
     event.preventDefault();
     if (event.shiftKey) restore(redo, undo);
@@ -6056,5 +6076,437 @@ window.addEventListener("resize", () => {
   setTimelineHeight(tall || $("timeline").getBoundingClientRect().height - (parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--tl-extra")) || 0));
   if (state.project) renderTimeline();
 });
+
+/* Notes pinned to frames. A reviewer stops on a moment, points at it with a pin, a box or a
+   drawing, and writes what should change. A note keeps the clip, the take and the frame inside
+   that take, so it stays on its picture when the clip moves on the timeline. Agents read the
+   notes, with a still of each frame and the drawing on it, through the summary and h3.py notes. */
+const noting = { active: null, selected: null };
+const NOTE_INK = "#ffb547";
+
+const notesOf = () => (state.project?.notes || []).filter((n) => n && n.id && clipOf(n.clip));
+
+// The clip, the take and the frame inside it that the viewer shows now, or null where there is no picture.
+function noteTarget() {
+  const alone = viewing();
+  if (alone) {
+    const take = activeTake(alone);
+    return take ? { clip: alone, take, frame: Math.max(0, Math.min(take.frames - 1, Math.round(state.sourceFrame))), item: null } : null;
+  }
+  const end = sceneEnd();
+  const at = end && state.playhead >= end ? end - 1 : state.playhead;
+  const item = leading(at);
+  const clip = item && clipOf(item.clip);
+  const take = clip && activeTake(clip);
+  if (!take) return null;
+  const frame = Math.max(0, Math.min(take.frames - 1, Math.round(item.in + (at - item.start) * speedOf(item))));
+  return { clip, take, frame, item };
+}
+
+// Where a note's frame is on the timeline now, or null when the cut does not show that frame.
+function notePlace(note) {
+  for (const item of sorted()) {
+    if (item.clip === note.clip && note.frame >= item.in && note.frame < item.out) return Math.round(item.start + (note.frame - item.in) / speedOf(item));
+  }
+  return null;
+}
+
+function notesHere(target = noteTarget()) {
+  if (!target) return [];
+  return notesOf().filter((n) => n.clip === target.clip.id
+    && (n.range ? target.frame >= n.range.from && target.frame <= n.range.to : target.frame === n.frame));
+}
+
+// The picture's own rectangle inside the viewer, as the video element draws it.
+function frameRect() {
+  const video = front;
+  if (!video.classList.contains("show") || !video.videoWidth) return null;
+  const screen = $("screen").getBoundingClientRect();
+  const box = video.getBoundingClientRect();
+  const scale = Math.min(box.width / video.videoWidth, box.height / video.videoHeight);
+  const width = video.videoWidth * scale, height = video.videoHeight * scale;
+  return { left: box.left - screen.left + (box.width - width) / 2, top: box.top - screen.top + (box.height - height) / 2, width, height };
+}
+
+function drawShape(ctx, shape, rect, scale, faint = false) {
+  if (!shape) return;
+  const x = (v) => rect.left + v * rect.width, y = (v) => rect.top + v * rect.height;
+  ctx.save();
+  ctx.lineJoin = ctx.lineCap = "round";
+  for (const [color, width] of [["rgba(0, 0, 0, 0.55)", 5 * scale], [NOTE_INK, 2.5 * scale]]) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.globalAlpha = faint ? 0.55 : 1;
+    ctx.beginPath();
+    if (shape.type === "pin") {
+      ctx.arc(x(shape.x), y(shape.y), 11 * scale, 0, Math.PI * 2);
+      ctx.moveTo(x(shape.x) + 2 * scale, y(shape.y));
+      ctx.arc(x(shape.x), y(shape.y), 2 * scale, 0, Math.PI * 2);
+    } else if (shape.type === "rect") {
+      ctx.rect(x(shape.x), y(shape.y), shape.w * rect.width, shape.h * rect.height);
+    } else {
+      for (const path of shape.paths || []) {
+        path.forEach(([px_, py], index) => (index ? ctx.lineTo(x(px_), y(py)) : ctx.moveTo(x(px_), y(py))));
+      }
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// Called with every new frame in the viewer: the notes on this frame, and the one being written.
+function drawNotes() {
+  const layer = $("noteLayer");
+  if (!layer || !state.project) return;
+  const screen = $("screen");
+  const ratio = window.devicePixelRatio || 1;
+  const width = screen.clientWidth, height = screen.clientHeight;
+  if (layer.width !== Math.round(width * ratio) || layer.height !== Math.round(height * ratio)) {
+    layer.width = Math.round(width * ratio);
+    layer.height = Math.round(height * ratio);
+  }
+  const ctx = layer.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  const target = noteTarget();
+  const writing = noting.active;
+  if (writing && (!target || target.clip.id !== writing.clip || target.frame !== writing.frame)) closeNote();
+  const rect = frameRect();
+  const here = writing ? [] : notesHere(target);
+  if (rect) {
+    for (const note of here) drawShape(ctx, note.shape, rect, 1, note.status === "resolved");
+    if (noting.active?.shape) drawShape(ctx, noting.active.shape, rect, 1);
+  }
+  // The box steps aside when the drawing reaches under it.
+  const box = $("noteBox");
+  const shape = noting.active?.shape;
+  if (shape && rect && !box.hidden && !box.classList.contains("moved")) {
+    const points = shape.type === "stroke" ? shape.paths.flat() : shape.type === "rect" ? [[shape.x, shape.y], [shape.x + shape.w, shape.y + shape.h]] : [[shape.x, shape.y]];
+    const right = rect.left + Math.max(...points.map((p) => p[0])) * rect.width;
+    const top = rect.top + Math.min(...points.map((p) => p[1])) * rect.height;
+    if (right > screen.clientWidth - box.offsetWidth - 28 && top < box.offsetHeight + 28) box.classList.add("aside");
+  } else if (!noting.active) box.classList.remove("aside");
+  const tag = $("noteTag");
+  tag.hidden = !here.length;
+  tag.replaceChildren(...here.slice(0, 3).map((note) => {
+    const line = document.createElement("button");
+    line.className = "note-line" + (note.status === "resolved" ? " done" : "");
+    line.textContent = note.text;
+    line.title = (note.status === "resolved" ? "Resolved. " : "") + "Show this note in the Project tab";
+    line.addEventListener("click", () => showNoteInList(note.id));
+    return line;
+  }));
+}
+
+function startNote() {
+  if (state.playing) setPlaying(false);
+  const target = noteTarget();
+  if (!target) {
+    toast("Stop on a rendered frame to write a note there.");
+    return;
+  }
+  if (!frameRect()) {
+    toast("Wait for the picture to load, then press N again.");
+    return;
+  }
+  let range = null;
+  const span = state.range;
+  if (!viewing() && span && target.item && state.playhead >= span.a && state.playhead < span.b) {
+    // A marked range on the timeline becomes a range of the same take, kept inside the clip under the playhead.
+    const item = target.item, speed = speedOf(item);
+    const take = (frame) => Math.max(item.in, Math.min(item.out - 1, Math.round(item.in + (frame - item.start) * speed)));
+    range = { from: take(Math.max(span.a, item.start)), to: take(Math.min(span.b, itemEnd(item)) - 1) };
+    if (range.to <= range.from) range = null;
+  }
+  noting.active = { clip: target.clip.id, take: target.take.id, frame: range ? range.from : target.frame, range, tool: "rect", shape: null, drawing: null };
+  if (range) {
+    // The note opens on its first frame, so the still shows where the range starts.
+    seek(viewing() ? range.from : notePlace({ clip: target.clip.id, frame: range.from }) ?? state.playhead);
+    noting.active.frame = noteTarget()?.frame ?? range.from;
+  }
+  const box = $("noteBox");
+  $("noteWhere").textContent = target.clip.name + ", " + (range ? "frames " + range.from + " to " + range.to : "frame " + noting.active.frame) + " of take " + (target.clip.takes.indexOf(target.take) + 1);
+  $("noteText").value = "";
+  setNoteTool("rect");
+  box.classList.remove("aside", "moved");
+  box.style.left = box.style.top = "";
+  box.hidden = false;
+  $("noteLayer").classList.add("drawing");
+  $("noteText").focus();
+  drawNotes();
+}
+
+function setNoteTool(tool) {
+  if (!noting.active) return;
+  noting.active.tool = tool;
+  for (const button of document.querySelectorAll("#noteTools button")) button.setAttribute("aria-pressed", String(button.dataset.tool === tool));
+  $("noteHint").textContent = tool === "stroke" ? "Draw on the picture. Each stroke adds to the drawing."
+    : tool === "pin" ? "Click the picture to pin the spot." : "Drag a box on the picture, or click to pin a spot.";
+}
+
+function closeNote() {
+  noting.active = null;
+  $("noteBox").hidden = true;
+  $("noteLayer").classList.remove("drawing");
+}
+
+// The frame as the viewer shows it, with the note's drawing on it, as a PNG.
+function noteStill(shape) {
+  const video = front;
+  if (!video.videoWidth) return Promise.resolve(null);
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext("2d");
+  try {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    drawShape(ctx, shape, { left: 0, top: 0, width: canvas.width, height: canvas.height }, Math.max(1, canvas.width / 900));
+    return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), "image/png"));
+  } catch (_) {
+    return Promise.resolve(null);
+  }
+}
+
+async function saveNote() {
+  const writing = noting.active;
+  if (!writing) return;
+  const text = $("noteText").value.trim();
+  if (!text) {
+    $("noteHint").textContent = "Write what should change here, then press Enter.";
+    $("noteText").focus();
+    return;
+  }
+  const still = noteStill(writing.shape);
+  const note = { id: uid("n"), clip: writing.clip, take: writing.take, frame: writing.frame, range: writing.range,
+    shape: writing.shape, text, status: "open", created: new Date().toISOString() };
+  checkpoint();
+  state.project.notes = [...(state.project.notes || []), note];
+  closeNote();
+  save();
+  renderTimeline();
+  renderInspector();
+  renderBin();
+  drawNotes();
+  toast("Note saved. Agents see it in the summary and with h3.py notes.");
+  const folder = state.folder;
+  try {
+    const blob = await still;
+    if (!blob) return;
+    const asset = await uploadPicture(new File([blob], note.id + ".png", { type: "image/png" }));
+    const live = folder === state.folder && (state.project.notes || []).find((n) => n.id === note.id);
+    if (live) {
+      live.still = { file: asset.file, subfolder: asset.subfolder };
+      save();
+    }
+  } catch (_) {
+    // The note stands without its picture. An agent then takes the frame without the drawing.
+  }
+}
+
+function goToNote(note) {
+  noting.selected = note.id;
+  const clip = clipOf(note.clip);
+  const place = notePlace(note);
+  if (place === null) {
+    // Its frame is not in the cut: show it in the clip on its own.
+    setSource(note.clip);
+    selectClip(note.clip);
+    seek(note.frame);
+  } else {
+    if (viewing()) setSource(null);
+    const item = sorted().find((i) => i.clip === note.clip && note.frame >= i.in && note.frame < i.out);
+    selectClip(clip.id, item?.id || null);
+    seek(place);
+  }
+}
+
+function setNoteStatus(note, open) {
+  checkpoint();
+  note.status = open ? "open" : "resolved";
+  if (open) delete note.resolved;
+  else note.resolved = new Date().toISOString();
+  save();
+  renderTimeline();
+  renderInspector();
+  renderBin();
+  drawNotes();
+}
+
+function removeNote(note) {
+  checkpoint();
+  state.project.notes = (state.project.notes || []).filter((n) => n.id !== note.id);
+  save();
+  renderTimeline();
+  renderInspector();
+  renderBin();
+  drawNotes();
+  toast("Deleted the note.", false, undoAction);
+}
+
+function showNoteInList(id) {
+  noting.selected = id;
+  showTab("project");
+  requestAnimationFrame(() => document.querySelector('.note-row[data-note="' + CSS.escape(id) + '"]')?.scrollIntoView({ block: "nearest" }));
+}
+
+function notesSection() {
+  const notes = notesOf();
+  if (!notes.length) return null;
+  const open = notes.filter((n) => n.status !== "resolved");
+  const order = (n) => [n.status === "resolved" ? 1 : 0, notePlace(n) ?? 1e9];
+  const rows = [...notes].sort((a, b) => order(a)[0] - order(b)[0] || order(a)[1] - order(b)[1]).map((note) => {
+    const clip = clipOf(note.clip);
+    const place = notePlace(note);
+    const row = document.createElement("div");
+    row.className = "note-row" + (note.status === "resolved" ? " done" : "") + (noting.selected === note.id ? " on" : "");
+    row.dataset.note = note.id;
+    const jump = document.createElement("button");
+    jump.className = "note-jump";
+    jump.title = "Go to this frame";
+    const where = document.createElement("span");
+    where.className = "note-where";
+    const older = activeTake(clip)?.id !== note.take;
+    where.textContent = clip.name + ", " + (place === null ? "not in the cut" : timecode(place)) + (note.range ? ", a range" : "") + (older ? ", on an earlier take" : "");
+    const text = document.createElement("span");
+    text.className = "note-text";
+    text.textContent = note.text;
+    jump.append(where, text);
+    if (note.resolution) {
+      const answer = document.createElement("span");
+      answer.className = "note-answer";
+      answer.textContent = note.resolution;
+      jump.append(answer);
+    }
+    jump.addEventListener("click", () => goToNote(note));
+    const done = document.createElement("button");
+    done.className = "quiet";
+    done.textContent = note.status === "resolved" ? "Reopen" : "Resolve";
+    done.addEventListener("click", () => setNoteStatus(note, note.status === "resolved"));
+    row.append(jump, done, trashButton("Delete this note", () => removeNote(note)));
+    return row;
+  });
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Stop on a frame and press N to write a note. Agents read them with h3.py notes, each with a picture of its frame.";
+  return section("Notes" + (open.length ? ", " + open.length + " open" : ""), [...rows, hint]);
+}
+
+// Marks on the ruler where each note's frame is in the cut.
+function noteMarks() {
+  return notesOf().map((note) => {
+    const place = notePlace(note);
+    if (place === null) return null;
+    const mark = document.createElement("button");
+    mark.className = "note-mark" + (note.status === "resolved" ? " done" : "");
+    mark.style.left = px(place) + "px";
+    if (note.range) {
+      const end = notePlace({ clip: note.clip, frame: note.range.to });
+      if (end !== null && end > place) mark.style.width = Math.max(6, px(end - place)) + "px";
+    }
+    mark.title = (note.status === "resolved" ? "Resolved: " : "Note: ") + note.text;
+    mark.setAttribute("aria-label", mark.title);
+    mark.addEventListener("pointerdown", (event) => event.stopPropagation());
+    mark.addEventListener("click", (event) => {
+      event.stopPropagation();
+      goToNote(note);
+    });
+    return mark;
+  }).filter(Boolean);
+}
+
+function bindNoteLayer() {
+  const layer = $("noteLayer");
+  const point = (event) => {
+    const rect = frameRect();
+    if (!rect) return null;
+    const screen = $("screen").getBoundingClientRect();
+    const clamp = (v) => Math.round(Math.max(0, Math.min(1, v)) * 10000) / 10000;
+    return [clamp((event.clientX - screen.left - rect.left) / rect.width), clamp((event.clientY - screen.top - rect.top) / rect.height)];
+  };
+  layer.addEventListener("pointerdown", (event) => {
+    const writing = noting.active;
+    const at = writing && point(event);
+    if (!at) return;
+    event.preventDefault();
+    layer.setPointerCapture(event.pointerId);
+    writing.drawing = { start: at, path: [at] };
+    if (writing.tool === "stroke") {
+      const paths = writing.shape?.type === "stroke" ? writing.shape.paths : [];
+      writing.shape = { type: "stroke", paths: [...paths, writing.drawing.path] };
+    } else writing.shape = { type: "pin", x: at[0], y: at[1] };
+    drawNotes();
+  });
+  layer.addEventListener("pointermove", (event) => {
+    const writing = noting.active;
+    if (!writing?.drawing) return;
+    const at = point(event);
+    if (!at) return;
+    const [x0, y0] = writing.drawing.start;
+    if (writing.tool === "stroke") {
+      const last = writing.drawing.path.at(-1);
+      if (Math.hypot(at[0] - last[0], at[1] - last[1]) > 0.002 && writing.drawing.path.length < 1900) writing.drawing.path.push(at);
+    } else if (writing.tool === "rect" && Math.hypot(at[0] - x0, at[1] - y0) > 0.01) {
+      writing.shape = { type: "rect", x: Math.min(x0, at[0]), y: Math.min(y0, at[1]), w: Math.abs(at[0] - x0), h: Math.abs(at[1] - y0) };
+    }
+    drawNotes();
+  });
+  const finish = () => {
+    if (!noting.active?.drawing) return;
+    noting.active.drawing = null;
+    if (noting.active.shape?.type === "stroke") noting.active.shape.paths = noting.active.shape.paths.filter((p) => p.length);
+    $("noteText").focus();
+    drawNotes();
+  };
+  layer.addEventListener("pointerup", finish);
+  layer.addEventListener("pointercancel", finish);
+  for (const button of document.querySelectorAll("#noteTools button")) button.addEventListener("click", () => setNoteTool(button.dataset.tool));
+  $("noteClear").addEventListener("click", () => {
+    if (!noting.active) return;
+    noting.active.shape = null;
+    drawNotes();
+    $("noteText").focus();
+  });
+  $("noteSave").addEventListener("click", saveNote);
+  $("noteCancel").addEventListener("click", () => {
+    closeNote();
+    drawNotes();
+  });
+  $("noteText").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      saveNote();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeNote();
+      drawNotes();
+    }
+  });
+  $("addNote").addEventListener("click", startNote);
+  // The box moves by its header, off whatever part of the picture it covers.
+  $("noteWhere").addEventListener("pointerdown", (event) => {
+    const box = $("noteBox");
+    const screen = $("screen");
+    const from = { x: event.clientX, y: event.clientY, left: box.offsetLeft, top: box.offsetTop };
+    event.preventDefault();
+    $("noteWhere").setPointerCapture(event.pointerId);
+    const move = (moved) => {
+      const left = Math.max(0, Math.min(screen.clientWidth - box.offsetWidth, from.left + moved.clientX - from.x));
+      const top = Math.max(0, Math.min(screen.clientHeight - box.offsetHeight, from.top + moved.clientY - from.y));
+      box.classList.add("moved");
+      box.style.left = left + "px";
+      box.style.top = top + "px";
+    };
+    const stop = () => {
+      $("noteWhere").removeEventListener("pointermove", move);
+      $("noteWhere").removeEventListener("pointerup", stop);
+      $("noteText").focus();
+    };
+    $("noteWhere").addEventListener("pointermove", move);
+    $("noteWhere").addEventListener("pointerup", stop);
+  });
+  new ResizeObserver(() => drawNotes()).observe($("screen"));
+  for (const video of [$("videoA"), $("videoB")]) video.addEventListener("seeked", () => drawNotes());
+}
+bindNoteLayer();
 
 start().catch((error) => toast(error.message, true));

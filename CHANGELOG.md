@@ -7,6 +7,18 @@ Each release is a tag on GitHub, `v` followed by the version.
 
 ## Unreleased
 
+### Added
+
+- **Notes on frames.** Stop on a frame and press **N**, or **Note** under the
+  viewer, then pin a spot, drag a box or draw on the picture and write what
+  should change. With a range marked by I and O, the note covers the range.
+  A note stays on its frame when the clip moves or is trimmed, and says when
+  the clip has a newer take than the one it was written on. Notes are marked
+  on the ruler and listed in the Project tab, where they are resolved,
+  reopened or deleted. For agents: the summary lists them, `h3.py notes`
+  saves each one's frame with the drawing on it, and the operations
+  `add_note`, `resolve_note`, `reopen_note` and `remove_note` work with them.
+
 ### Changed
 
 - **The live preview starts muted.** While a clip samples, its looping preview

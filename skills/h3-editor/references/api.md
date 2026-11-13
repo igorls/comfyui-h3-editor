@@ -339,6 +339,22 @@ they sound for a voice. A cast member without a picture is never placed in the s
 their description stands in for them in the prompt. Write `"@Name, off-screen"` as the
 speaker when they should not be seen.
 
+### Notes
+
+Notes are what a reviewer pinned to a frame. Each one belongs to a clip and the take it was
+written on, and counts frames inside that take, so it stays on its picture when the clip moves.
+
+- `add_note`: `fields`: `clip`, `frame` (a frame of the take), `text`, optional `take` (the
+  active one by default), `range` (`{"from", "to"}`, frames of the take; the note then starts
+  at `from`), `shape`, `author`. `shape` is `{"type": "pin", "x", "y"}`,
+  `{"type": "rect", "x", "y", "w", "h"}` or `{"type": "stroke", "paths": [[[x, y], ...], ...]}`,
+  in fractions of the frame from its top left. Returns `{"note"}`.
+- `resolve_note`: `note`, optional `resolution`, a line on what was done. `reopen_note` and
+  `remove_note` take `note`.
+
+The editor saves a still of each note it writes, the frame with the drawing on it, under
+`still` (`{"file", "subfolder"}` in the output folder).
+
 ### Renders
 
 `render`: `clip`, optional `quality` (`draft`, the default, or `final`), optional `seed`.
@@ -401,6 +417,10 @@ left as rendered. In the summary such a clip shows `"track": {"file", "from"}`.
  "timeline": [{"item": "i1", "clip": "c1", "name": "Desk", "start": 0, "end": 90,
                "at": "00:00:00", "in": 0, "out": 90, "speed": 2, "transition": {...}}],
  "gaps": [{"start": 90, "end": 96}],
+ "notes": [{"note": "n1", "status": "open", "clip": "c1", "name": "Desk", "take": "t9", "frame": 40,
+            "range": null, "at": "00:01:16", "timeline_frame": 40, "text": "...",
+            "where": "a box from 10% to 40% across and 20% to 60% down", "earlier_take": true,
+            "still": {"file", "subfolder"}, "resolution": "..."}],
  "rendering": [{"job": "...", "clip": "c2", "quality": "draft"}]
 }
 ```

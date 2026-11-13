@@ -1,3 +1,4 @@
+import copy
 import re
 import unittest
 
@@ -441,6 +442,84 @@ class SizeTest(unittest.TestCase):
         self.assertEqual(table["16:9"]["final"][1], {"id": "sharp", "width": 1344, "height": 768, "out": [1920, 1088]})
         self.assertEqual(table["16:9"]["final"][0], {"id": "full", "width": 1344, "height": 768, "out": [1920, 1088]})
         self.assertEqual(table["1:1"]["draft"][1], {"id": "medium", "width": 768, "height": 768, "out": [768, 768]})
+
+
+class NoteTest(unittest.TestCase):
+    """Notes pinned to a frame of a take, as the editor and agents write them."""
+
+    def setUp(self):
+        self.project = new_project("x")
+        made, item = add_clip(self.project, {"action": "A keeper walks to the window.", "seconds": 4})
+        self.clip = made
+        made["takes"] = [{"id": "t1", "frames": 90, "quality": "draft"}]
+        made["active"] = "t1"
+        item = self.project["timeline"][0]
+        item.update({"start": 24, "in": 10, "out": 80})
+
+    def test_a_note_keeps_its_take_frame_and_finds_its_place_on_the_timeline(self):
+        names = {}
+        made = apply_op(self.project, {"op": "add_note", "as": "n", "fields": {
+            "clip": self.clip["id"], "frame": 40, "text": "The hand is blurred.",
+            "shape": {"type": "rect", "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}}}, names)
+        note = project_module.find_note(self.project, made["note"])
+        self.assertEqual((note["take"], note["frame"], note["status"]), ("t1", 40, "open"))
+        row = describe(self.project)["notes"][0]
+        self.assertEqual(row["timeline_frame"], 24 + 30)
+        self.assertEqual(row["where"], "a box from 10% to 40% across and 20% to 60% down")
+        self.project["timeline"][0]["start"] = 100
+        self.assertEqual(describe(self.project)["notes"][0]["timeline_frame"], 130)
+        self.project["timeline"][0]["speed"] = 2
+        self.assertEqual(describe(self.project)["notes"][0]["timeline_frame"], 115)
+        self.project["timeline"][0]["in"] = 50
+        self.assertIsNone(describe(self.project)["notes"][0]["timeline_frame"])
+
+    def test_a_range_note_starts_at_its_first_frame_and_a_new_take_is_flagged(self):
+        made = apply_op(self.project, {"op": "add_note", "fields": {
+            "clip": self.clip["id"], "frame": 5, "range": {"from": 12, "to": 30}, "text": "The line is late."}}, {})
+        note = project_module.find_note(self.project, made["note"])
+        self.assertEqual((note["frame"], note["range"]), (12, {"from": 12, "to": 30}))
+        self.clip["takes"].append({"id": "t2", "frames": 90})
+        self.clip["active"] = "t2"
+        self.assertTrue(describe(self.project)["notes"][0]["earlier_take"])
+
+    def test_resolving_reopening_and_removing(self):
+        made = apply_op(self.project, {"op": "add_note", "fields": {"clip": self.clip["id"], "frame": 0, "text": "Too dark."}}, {})
+        apply_op(self.project, {"op": "resolve_note", "note": made["note"], "resolution": "Brighter light in the action."}, {})
+        row = describe(self.project)["notes"][0]
+        self.assertEqual((row["status"], row["resolution"]), ("resolved", "Brighter light in the action."))
+        apply_op(self.project, {"op": "reopen_note", "note": made["note"]}, {})
+        self.assertEqual(describe(self.project)["notes"][0]["status"], "open")
+        apply_op(self.project, {"op": "remove_note", "note": made["note"]}, {})
+        self.assertEqual(describe(self.project)["notes"], [])
+
+    def test_open_notes_come_first_and_notes_go_with_their_clip(self):
+        first = apply_op(self.project, {"op": "add_note", "fields": {"clip": self.clip["id"], "frame": 60, "text": "B"}}, {})
+        apply_op(self.project, {"op": "add_note", "fields": {"clip": self.clip["id"], "frame": 20, "text": "A"}}, {})
+        apply_op(self.project, {"op": "resolve_note", "note": first["note"]}, {})
+        self.assertEqual([r["text"] for r in describe(self.project)["notes"]], ["A", "B"])
+        apply_op(self.project, {"op": "remove_clip", "clip": self.clip["id"]}, {})
+        self.assertEqual(self.project["notes"], [])
+
+    def test_notes_that_cannot_be_placed_are_refused(self):
+        for fields in ({"clip": self.clip["id"], "frame": 90, "text": "x"},
+                       {"clip": self.clip["id"], "frame": 3, "text": "  "},
+                       {"clip": self.clip["id"], "frame": 3, "text": "x", "range": {"from": 9, "to": 2}},
+                       {"clip": self.clip["id"], "frame": 3, "text": "x", "shape": {"type": "pin", "x": 1.5, "y": 0}},
+                       {"clip": self.clip["id"], "frame": 3, "text": "x", "shape": {"type": "rect", "x": 0.8, "y": 0, "w": 0.5, "h": 0.1}},
+                       {"clip": self.clip["id"], "take": "t9", "frame": 3, "text": "x"}):
+            with self.assertRaises(ValueError, msg=str(fields)):
+                apply_op(self.project, {"op": "add_note", "fields": fields}, {})
+        bare, _ = add_clip(self.project, {"action": "Not rendered."})
+        with self.assertRaises(ValueError):
+            apply_op(self.project, {"op": "add_note", "fields": {"clip": bare["id"], "frame": 0, "text": "x"}}, {})
+
+    def test_notes_merge_like_other_lists(self):
+        base = copy.deepcopy(self.project)
+        mine, theirs = copy.deepcopy(base), copy.deepcopy(base)
+        apply_op(mine, {"op": "add_note", "fields": {"clip": self.clip["id"], "frame": 1, "text": "From the editor."}}, {})
+        apply_op(theirs, {"op": "add_note", "fields": {"clip": self.clip["id"], "frame": 2, "text": "From an agent."}}, {})
+        merged = project_module.merge(base, mine, theirs)
+        self.assertEqual(sorted(n["text"] for n in merged["notes"]), ["From an agent.", "From the editor."])
 
 
 class LoraTest(unittest.TestCase):
