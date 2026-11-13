@@ -344,6 +344,13 @@ ids, and each clip's state. Before you export, check:
   sometimes ends a take that way): trim the clip to end before that frame, or render it again with another seed. A
   low score `into the start` or `out of the end` of a VFX clip means its first or last frame does not match the
   picture under it: render the VFX clip again if the clip under it changed, or move its edge to a cut;
+- no take stops moving. The same list marks `inside: frozen` (the same frame held for a few frames or more: a stalled
+  take) and `inside: still` (almost nothing moves for a second and a half or more), each with how long. A frozen
+  stretch always needs fixing: trim the clip to end before it, or render it again with another seed. A still one
+  is a mistake when the shot should move, such as someone talking; a shot meant to be still can stay. Takes made
+  by the editor do not do this in normal use, so a mark here is worth a look. For a finished file of any origin,
+  `python cuts.py --still FILE.mp4`, run from the H3 Editor pack's folder, lists the stretches that do not move;
+  run it on your own edits too, since holding a clip on its last frame to fill a gap shows as frozen;
 - no cut scores low. `python scripts/h3.py cuts PROJECT` scores each place where two
   rendered clips touch, 0 to 100, from the pictures. A `jump` (the same shot, the
   subject pops) under 60 needs fixing: extend the first clip and let the second

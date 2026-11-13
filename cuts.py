@@ -24,7 +24,9 @@ two cuts as a stray frame (score 0): a frame of another picture left in by mista
 a little on every frame, so it is not a cut and is not reported.
 
 inside() looks into one generated take, which should be one shot: a cut in it, or a fade to another picture (the
-model sometimes ends a take by dissolving into a different room), is reported with the frame where it starts.
+model sometimes ends a take by dissolving into a different room), is reported with the frame where it starts. It also
+reports where the take stops moving (find_still): frozen, the same picture held for a few frames, or still, almost
+nothing moving for a second and a half or more.
 
 Usage: python cuts.py a.mp4 b.mp4 [c.mp4 ...]      scores each cut between neighbours, prints a table
        python cuts.py --json a.mp4 b.mp4
@@ -32,7 +34,8 @@ Usage: python cuts.py a.mp4 b.mp4 [c.mp4 ...]      scores each cut between neigh
        python cuts.py --scan film.mp4 --at 113,234,355   only the cuts at these frames: where the edit put them.
                                                   A screen recording or an animation changes abruptly inside one
                                                   shot, and a scan without --at reports each of those as a cut
-       python cuts.py --inside take.mp4           where a take that should be one shot changes picture
+       python cuts.py --inside take.mp4           where a take that should be one shot changes picture or stops moving
+       python cuts.py --still film.mp4            where a finished file holds a frozen or still picture
 Needs ffmpeg and numpy.
 """
 import json
@@ -45,6 +48,11 @@ W, H, N, FPS = 96, 54, 5, 24
 STRAY = 3           # a shot of this many frames or fewer is a stray frame, not a shot
 SPAN = 12           # a fade is looked for across this many frames
 POP = 0.12          # a step under this is a blink, a gesture or a ripple, not a change of picture
+FROZEN = 0.0005     # a frame that changes less than this from the one before repeats it
+FROZEN_RUN = 3      # this many repeated frames in a row are reported as frozen
+STILL = 0.003       # a frame that changes less than this from the frame LAG before barely moves
+LAG = 6             # still is measured over a quarter of a second: grain and noise do not add up, motion does
+STILL_RUN = 36      # this many such frames in a row (1.5 s) are reported as still
 
 
 def plain(args):
@@ -227,9 +235,60 @@ def find_inside(pictures):
     return sorted(found, key=lambda row: row["at"])
 
 
+def find_still(pictures):
+    """Where a run of frames stops moving: [{"at", "kind", "frames", "score", "notes"}], at being the first frame of
+    the stretch and frames how many it holds.
+
+    frozen  FROZEN_RUN or more frames in a row that each change less than FROZEN from the one before: a held or
+            stalled picture. After encoding a held frame still changes about 0.0001; the quietest frames of 75
+            rendered takes changed 0.0006 or more.
+    still   STILL_RUN frames or more that each change less than STILL from the frame LAG before: a take gone dead,
+            or a picture with only grain on it. Frame to frame, grain changes as much as a quiet real take, but it
+            does not add up over a quarter of a second: a still picture with grain stayed under 0.002 there, and
+            no rendered take of the 75 went under 0.003 for more than 3 frames in a row.
+    A stretch that is frozen is not also reported as still.
+    """
+    y = [luma(p.astype(np.float64)) for p in pictures]
+
+    def runs(changes, limit, least, apart):
+        """Stretches where changes stay under limit: (first frame, frames). changes[i] compares frame i with frame
+        i + apart. With apart 1 the stretch is the frames that repeat the one before; otherwise all it spans."""
+        found, start = [], None
+        for k, change in enumerate(list(changes) + [1.0]):
+            if change < limit and start is None:
+                start = k
+            elif change >= limit and start is not None:
+                first, count = (start + 1, k - start) if apart == 1 else (start, k - start + apart)
+                if count >= least:
+                    found.append((first, count))
+                start = None
+        return found
+
+    steps = [local(a, b) for a, b in zip(y[:-1], y[1:])]
+    lagged = [local(y[k - LAG], y[k]) for k in range(LAG, len(y))]
+    rows = []
+    frozen = runs(steps, FROZEN, FROZEN_RUN, 1)
+    for at, count in frozen:
+        rows.append({"at": at, "kind": "frozen", "frames": count, "score": 10,
+                     "notes": ["the picture stops for %d frame%s (%.2f s): a held or stalled frame" % (count, "" if count == 1 else "s", count / float(FPS))]})
+    for at, count in runs(lagged, STILL, STILL_RUN, LAG):
+        held = sum(max(0, min(at + count, a + c) - max(at, a)) for a, c in frozen)
+        if count - held >= STILL_RUN:
+            rows.append({"at": at, "kind": "still", "frames": count, "score": 55,
+                         "notes": ["almost nothing moves for %.1f s" % (count / float(FPS))]})
+    return sorted(rows, key=lambda row: row["at"])
+
+
 def inside(path, command=plain):
-    """Where one take changes picture, each with its time in seconds."""
-    return [dict(row, time=round(row["at"] / float(FPS), 3)) for row in find_inside(whole(path, command))]
+    """Where one take changes picture or stops moving, each with its time in seconds."""
+    pictures = whole(path, command)
+    rows = sorted(find_inside(pictures) + find_still(pictures), key=lambda row: row["at"])
+    return [dict(row, time=round(row["at"] / float(FPS), 3)) for row in rows]
+
+
+def stills(path, command=plain):
+    """Every stretch of one file where the picture stops moving, each with its time in seconds."""
+    return [dict(row, time=round(row["at"] / float(FPS), 3)) for row in find_still(whole(path, command))]
 
 
 def scan(path, command=plain):
@@ -240,16 +299,16 @@ def scan(path, command=plain):
 def main(argv):
     as_json = "--json" in argv
     files = [f for f in argv if not f.startswith("--")]
-    if "--inside" in argv:
+    if "--inside" in argv or "--still" in argv:
         if len(files) != 1:
             raise SystemExit(__doc__)
-        rows = inside(files[0])
+        rows = inside(files[0]) if "--inside" in argv else stills(files[0])
         if as_json:
             print(json.dumps(rows, indent=1))
             return
         for r in rows:
-            print("%3d  %-5s %d:%05.2f  frame %-6d %s" % (r["score"], r["kind"], int(r["time"]) // 60, r["time"] % 60, r["at"], "; ".join(r["notes"])))
-        print("one shot, nothing found" if not rows else "%d found" % len(rows))
+            print("%3d  %-6s %d:%05.2f  frame %-6d %s" % (r["score"], r["kind"], int(r["time"]) // 60, r["time"] % 60, r["at"], "; ".join(r["notes"])))
+        print(("one shot, nothing found" if "--inside" in argv else "it moves all through") if not rows else "%d found" % len(rows))
         return
     if "--scan" in argv:
         marks = None

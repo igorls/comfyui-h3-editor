@@ -578,7 +578,8 @@ INSIDE_SCORES = {}
 
 async def score_inside(data):
     """Where a generated take on the timeline changes picture within the part its clip shows: a cut inside it, or a
-    fade to another picture. Imported footage is left alone: it may hold cuts of its own."""
+    fade to another picture. And where it stops moving: a frozen stretch (a held frame) or a still one, with frames and
+    length (on the timeline) saying how long. Imported footage is left alone: it may hold cuts and stills of its own."""
     gate = asyncio.Semaphore(3)
 
     async def one(item):
@@ -597,9 +598,21 @@ async def score_inside(data):
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, web.HTTPException):
             return []
         speed = store.clean_speed(item.get("speed"))
-        return [{"item": item["id"], "take": take["id"], "frame": row["at"], "at": item["start"] + int(round((row["at"] - item["in"]) / speed)),
-                 "kind": row["kind"], "score": row["score"], "notes": row["notes"]}
-                for row in INSIDE_SCORES[key] if item["in"] <= row["at"] < item["out"]]
+        found = []
+        for row in INSIDE_SCORES[key]:
+            if "frames" in row:
+                # A frozen or still stretch: the part of it the clip shows, if that part is still long enough to report.
+                first, last = max(row["at"], item["in"]), min(row["at"] + row["frames"], item["out"])
+                least = cutscore.FROZEN_RUN if row["kind"] == "frozen" else cutscore.STILL_RUN
+                if last - first < least:
+                    continue
+                found.append({"item": item["id"], "take": take["id"], "frame": first, "frames": last - first,
+                              "at": item["start"] + int(round((first - item["in"]) / speed)), "length": max(1, int(round((last - first) / speed))),
+                              "kind": row["kind"], "score": row["score"], "notes": row["notes"]})
+            elif item["in"] <= row["at"] < item["out"]:
+                found.append({"item": item["id"], "take": take["id"], "frame": row["at"], "at": item["start"] + int(round((row["at"] - item["in"]) / speed)),
+                              "kind": row["kind"], "score": row["score"], "notes": row["notes"]})
+        return found
 
     return [row for rows in await asyncio.gather(*[one(item) for item in store.ordered(data)]) for row in rows]
 

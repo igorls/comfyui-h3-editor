@@ -18,9 +18,29 @@ Each release is a tag on GitHub, `v` followed by the version.
   reopened or deleted. For agents: the summary lists them, `h3.py notes`
   saves each one's frame with the drawing on it, and the operations
   `add_note`, `resolve_note`, `reopen_note` and `remove_note` work with them.
+- **Frozen and Still marks.** The cut now checks where a take stops moving. A
+  red **Frozen** mark sits on a stretch where the same frame is held (a take
+  that stalls), and an amber **Still** mark where almost nothing moves for a
+  second and a half or more. A bar under the clip shows how long each lasts;
+  clicking the mark goes to it. Measured on 75 rendered takes, none was marked,
+  while a held frame is found to the frame. For agents, `h3.py cuts` lists
+  them as `inside: frozen` and `inside: still`, and `python cuts.py --still
+  FILE.mp4` checks any finished file, where a clip held on its last frame to
+  fill a gap shows as frozen.
+- **Checks in the header.** Everything the checks find is listed in one place:
+  a chip at the top says how many things there are to fix and to check, and
+  opens a list of them, worst first. It holds low cut scores, takes that cut,
+  fade, freeze or go still inside, Soft and Drift clips, VFX clips that pop in
+  or out, and your ratings under 70%. Each entry wears the same badge as its
+  mark on the timeline, says where it is, and goes there when clicked.
 
 ### Changed
 
+- **A real model picker for writing.** In Writing with a language model, the
+  Model field opens a list in the editor's own style: List models fills and
+  opens it, typing narrows it, the arrow keys and Enter pick, and the model in
+  use is ticked. You can still type any name. Changing provider clears a model
+  name that belongs to the other kind of provider.
 - **The live preview starts muted.** While a clip samples, its looping preview
   no longer plays sound until you turn it on with the speaker button in the
   corner of the viewer. The editor remembers the choice.

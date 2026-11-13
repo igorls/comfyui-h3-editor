@@ -60,5 +60,40 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(cuts.find_inside(np.stack(shot(1, 60)).astype(np.float32)), [])
 
 
+def grainy(seed, count):
+    """Frames of one picture with fresh grain on each: they change from frame to frame, as a quiet take does, but
+    the change does not add up over time, so nothing in them moves."""
+    base = picture(seed) * 0.8 + 0.1
+    rng = np.random.default_rng(seed + 100)
+    return [np.clip(base + np.kron(rng.normal(0, 0.0004, (9, 16, 1)), np.ones((6, 6, 1))), 0, 1) for _ in range(count)]
+
+
+@unittest.skipIf(np is None, "numpy is not installed")
+class StillTest(unittest.TestCase):
+    def test_a_held_frame_is_frozen_from_the_first_copy(self):
+        frames = shot(1, 20)
+        frames += [frames[-1]] * 10 + shot(2, 20)
+        found = cuts.find_still(np.stack(frames).astype(np.float32))
+        self.assertEqual([(r["kind"], r["at"], r["frames"]) for r in found], [("frozen", 20, 10)])
+        self.assertLess(found[0]["score"], 40)
+
+    def test_a_shot_that_moves_has_nothing_still(self):
+        self.assertEqual(cuts.find_still(np.stack(shot(1, 80)).astype(np.float32)), [])
+
+    def test_a_picture_with_only_grain_on_it_is_still_and_not_frozen(self):
+        found = cuts.find_still(np.stack(shot(1, 20) + grainy(2, 48) + shot(3, 20)).astype(np.float32))
+        self.assertEqual([r["kind"] for r in found], ["still"])
+        self.assertTrue(18 <= found[0]["at"] <= 22 and 44 <= found[0]["frames"] <= 52, found[0])
+
+    def test_a_short_pause_is_not_still(self):
+        frames = shot(1, 20) + grainy(2, 24) + shot(3, 20)
+        self.assertEqual([r["kind"] for r in cuts.find_still(np.stack(frames).astype(np.float32))], [])
+
+    def test_a_long_hold_is_frozen_and_not_also_still(self):
+        frames = shot(1, 10)
+        frames += [frames[-1]] * 50
+        self.assertEqual([r["kind"] for r in cuts.find_still(np.stack(frames).astype(np.float32))], ["frozen"])
+
+
 if __name__ == "__main__":
     unittest.main()

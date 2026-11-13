@@ -3631,6 +3631,10 @@ function renderTimeline() {
     const item = state.project.timeline.find((i) => i.id === row.item);
     if (!item || activeTake(clipOf(item.clip))?.id !== row.take || row.frame < item.in || row.frame >= item.out) continue;
     const at = item.start + Math.round((row.frame - item.in) / speedOf(item));
+    if (row.frames) {
+      blocks.push(...stillMarks(item, row, at));
+      continue;
+    }
     const why = clipOf(item.clip).name + " changes picture inside the take: " + row.notes.join(", ")
       + ". Trim the clip to end before it, or render it again with another seed.";
     blocks.push(cutMark(at, row.score, why, () => {
@@ -3660,6 +3664,7 @@ function renderTimeline() {
   if (focused) $("laneV").querySelector('[data-item="' + CSS.escape(focused) + '"]')?.focus();
   placePlayhead();
   updateTools();
+  renderChecks();
 }
 
 // Cut scores: the server measures each cut between two rendered clips that touch, from their pictures alone.
@@ -3683,6 +3688,154 @@ function cutMark(frame, score, title, act) {
   mark.addEventListener("pointerdown", (event) => event.stopPropagation());
   mark.addEventListener("click", act);
   return mark;
+}
+
+// Checks: every finding the timeline marks, in one list for the header. Each has a severity (bad: fix it; warn: look
+// at it), the badge its mark wears on the timeline, what it is, where, and what a click on it does.
+const RATING_LOOK = 70;
+
+function findings() {
+  const found = [];
+  const jumpTo = (item, frame) => () => {
+    state.clip = item.clip;
+    state.item = item.id;
+    state.gap = null;
+    seek(frame);
+    renderAll();
+  };
+  for (const cut of touchingCuts()) {
+    const row = cutScores.get(cut.key);
+    if (!row || row.score === null || row.score >= CUT_FINE) continue;
+    found.push({ sev: row.score < CUT_BAD ? "bad" : "warn", badge: String(row.score), frame: cut.after.start,
+      title: (row.kind === "jump" ? "Jump cut, " : "Cut, ") + clipOf(cut.before.clip).name + " to " + clipOf(cut.after.clip).name,
+      detail: row.notes.join(", ") || row.kind, act: () => { jumpTo(cut.before, cut.after.start - 1)(); } });
+  }
+  for (const row of cutExtras.effects) {
+    const effect = effectOf(row.effect);
+    if (!effect || activeTake(effect)?.id !== row.take || row.score === null || row.score >= CUT_FINE) continue;
+    const at = row.edge === "start" ? effect.start : effect.start + effect.frames;
+    found.push({ sev: row.score < CUT_BAD ? "bad" : "warn", badge: String(row.score), frame: at,
+      title: (row.edge === "start" ? "Cut into " : "Cut out of ") + effect.name, detail: row.notes.join(", ") || row.kind,
+      act: () => selectEffect(effect.id) });
+  }
+  for (const row of cutExtras.inside) {
+    const item = state.project.timeline.find((i) => i.id === row.item);
+    if (!item || activeTake(clipOf(item.clip))?.id !== row.take || row.frame < item.in || row.frame >= item.out) continue;
+    const at = item.start + Math.round((row.frame - item.in) / speedOf(item));
+    const name = clipOf(item.clip).name;
+    const still = { frozen: "Frozen", still: "Still" }[row.kind];
+    const long = row.length ? (row.length / FPS).toFixed(row.length < FPS ? 2 : 1) + " s" : "";
+    found.push({ sev: row.kind === "still" ? "warn" : "bad", badge: still || String(row.score), word: Boolean(still), frame: at,
+      title: still ? name + (row.kind === "frozen" ? " stops on one frame" : " barely moves")
+        : name + (row.kind === "fade" ? " fades inside its take" : " cuts inside its take"),
+      detail: row.kind === "frozen" ? "Held for " + long + ", " + row.length + " frames. Trim before it or render another seed"
+        : row.kind === "still" ? "For " + long + ". Fine if the shot should be still"
+        : row.notes.join(", "), act: jumpTo(item, at) });
+  }
+  for (const row of shownTakes()) {
+    const fine = fineScores.get(row.key);
+    if (!fine) continue;
+    const name = clipOf(row.item.clip).name;
+    if (fine.drift && fine.drift.drifted) {
+      found.push({ sev: "bad", badge: "Drift", word: true, frame: row.item.start, title: name + " has drifted",
+        detail: Math.round(Math.abs(fine.drift.change) * 100) + "% " + (fine.drift.change > 0 ? "harsher" : "softer") + " than where its shot began",
+        act: jumpTo(row.item, row.item.start) });
+    }
+    if (fine.soft) {
+      found.push({ sev: "warn", badge: "Soft", word: true, frame: row.item.start, title: name + " is soft",
+        detail: Math.round(fine.part * 100) + "% of the cut's detail" + (row.take.quality === "draft" ? ", a draft among finals" : ""),
+        act: jumpTo(row.item, row.item.start) });
+    }
+  }
+  for (const rating of state.project.ratings || []) {
+    const mean = ratingMean(rating);
+    if (mean === null || mean >= RATING_LOOK) continue;
+    const low = (rating.rows || []).filter((r) => !r.error).sort((a, b) => a.part - b.part)[0];
+    found.push({ sev: "warn", badge: mean + "%", frame: rating.from, title: "Rated " + timecode(rating.from) + " to " + timecode(rating.to),
+      detail: (low ? "Lowest: " + low.title + ", " + Math.round(low.part * 100) + "%. " : "") + "Rated " + String(rating.at || "").replace("T", " ").slice(0, 16),
+      act: () => { seek(rating.from); renderAll(); } });
+  }
+  for (const f of found) f.detail = f.detail.charAt(0).toUpperCase() + f.detail.slice(1);
+  return found.sort((a, b) => (a.sev === b.sev ? a.frame - b.frame : a.sev === "bad" ? -1 : 1));
+}
+
+// Whether the cut's scores have answered for this project yet: until then the header says it is checking, not clear.
+let checksFor = null;
+const checked = () => checksFor === state.folder;
+
+function renderChecks() {
+  const chip = $("checks");
+  if (!state.project || !state.project.timeline.some((item) => activeTake(clipOf(item.clip)))) {
+    chip.hidden = true;
+    return;
+  }
+  const found = findings();
+  const bad = found.filter((f) => f.sev === "bad").length;
+  const warn = found.length - bad;
+  chip.hidden = false;
+  chip.className = "checks-chip" + (bad ? " bad" : warn ? " warn" : found.length || !checked() ? "" : " clear");
+  const parts = [];
+  if (bad) parts.push(bad + " to fix");
+  if (warn) parts.push(warn + " to check");
+  chip.textContent = parts.length ? parts.join(", ") + (checked() ? "" : ", checking") : checked() ? "Checks clear" : "Checking";
+  chip.title = found.length ? "What the checks found in this cut" : "Cuts, soft clips, drift and takes that stop moving are checked as clips render";
+  $("checksSummary").textContent = found.length ? found.length + " found" : "";
+  if (!$("checksPanel").matches(":popover-open")) return;
+  $("checksList").replaceChildren(...(found.length ? found.map(checkRow) : [Object.assign(document.createElement("p"), {
+    className: "checks-empty", textContent: checked() ? "Nothing to look at. Every rendered cut scores well and no take stops, drifts or goes soft." : "The cut is still being measured." })]));
+}
+
+function checkRow(f) {
+  const row = document.createElement("button");
+  row.className = "check-row";
+  const badge = document.createElement("span");
+  badge.className = "check-badge " + f.sev + (f.word ? " word" : "");
+  badge.textContent = f.badge;
+  const text = document.createElement("span");
+  text.className = "check-text";
+  const title = document.createElement("b");
+  title.textContent = f.title;
+  const detail = document.createElement("span");
+  detail.textContent = f.detail;
+  text.append(title, detail);
+  const when = document.createElement("span");
+  when.className = "check-time";
+  when.textContent = timecode(f.frame);
+  row.append(badge, text, when);
+  row.addEventListener("click", () => {
+    $("checksPanel").hidePopover();
+    f.act();
+  });
+  return row;
+}
+
+// A stretch of a take where the picture stops: frozen (the same frame held) or still (almost nothing moves).
+// A bar under the stretch shows how long it lasts, and a mark in its middle says what it is.
+function stillMarks(item, row, at) {
+  const shown = Math.max(1, Math.min(Math.round((row.frames || 1) / speedOf(item)), itemEnd(item) - at));
+  const frozen = row.kind === "frozen";
+  const seconds = (shown / FPS).toFixed(shown < FPS ? 2 : 1);
+  const bar = document.createElement("div");
+  bar.className = "still-span" + (frozen ? " frozen" : "");
+  bar.style.left = px(at) + "px";
+  bar.style.width = Math.max(2, px(shown)) + "px";
+  const mark = document.createElement("button");
+  mark.className = "soft-mark still-mark" + (frozen ? " frozen" : "");
+  mark.style.left = px(at + shown / 2) + "px";
+  mark.textContent = frozen ? "Frozen" : "Still";
+  mark.title = clipOf(item.clip).name + (frozen
+    ? ": the picture stops for " + seconds + " s, the same frame held. Trim the clip to end before it, or render it again with another seed."
+    : ": almost nothing moves for " + seconds + " s. If it should move, render it again with another seed, or trim it shorter.");
+  mark.setAttribute("aria-label", mark.title);
+  mark.addEventListener("pointerdown", (event) => event.stopPropagation());
+  mark.addEventListener("click", () => {
+    state.clip = item.clip;
+    state.item = item.id;
+    state.gap = null;
+    seek(at);
+    renderAll();
+  });
+  return [bar, mark];
 }
 
 function touchingCuts() {
@@ -3720,6 +3873,7 @@ function refreshCutScores() {
       }
       cutExtras.effects = reply.effects || [];
       cutExtras.inside = reply.inside || [];
+      checksFor = folder;
       renderTimeline();
     } catch (_) {
       // An older server has no cut scores; the timeline works without them.
@@ -4555,6 +4709,111 @@ function plainField(label, value, { area = false, type = "text", placeholder = "
   return { wrap, input };
 }
 
+// The models the endpoint listed last, for the model picker. A new provider starts with none.
+let writerModels = [];
+
+// A text field that also offers a list to pick from: typing still takes any value, the chevron (or Down) opens the
+// list, which narrows to what is typed and marks the value in use. The list is a popover inside the field, so it
+// works inside a modal dialog. names() gives the choices; pick(name) is told what was picked.
+function comboBox(field, names, pick) {
+  const box = document.createElement("div");
+  box.className = "combo";
+  field.input.replaceWith(box);
+  const input = field.input;
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-expanded", "false");
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "combo-toggle";
+  toggle.setAttribute("aria-label", "Show the listed models");
+  toggle.tabIndex = -1;
+  toggle.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg>';
+  const list = document.createElement("div");
+  list.className = "menu combo-list";
+  list.id = "combo" + Math.random().toString(16).slice(2, 8);
+  list.setAttribute("popover", "");
+  list.setAttribute("role", "listbox");
+  input.setAttribute("aria-controls", list.id);
+  box.append(input, toggle, list);
+
+  const options = () => [...list.querySelectorAll(".combo-option")];
+  const choose = (name) => {
+    input.value = name;
+    pick(name);
+    list.hidePopover();
+    input.focus();
+  };
+  const fill = (all) => {
+    const typed = input.value.trim().toLowerCase();
+    const shown = all || !typed ? names() : names().filter((name) => name.toLowerCase().includes(typed));
+    const rows = shown.map((name) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "combo-option";
+      row.setAttribute("role", "option");
+      const current = name === input.value.trim();
+      row.setAttribute("aria-selected", String(current));
+      row.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+      const label = document.createElement("span");
+      label.textContent = name;
+      row.append(label);
+      row.addEventListener("click", () => choose(name));
+      return row;
+    });
+    list.replaceChildren(...(rows.length ? rows : [Object.assign(document.createElement("p"), { className: "combo-empty",
+      textContent: names().length ? "No listed model has that in its name. Keep typing to use your own." : "Nothing listed yet. Press List models, or type a name." })]));
+  };
+  const place = () => {
+    const at = input.getBoundingClientRect();
+    list.style.width = at.width + "px";
+    list.style.left = at.left + "px";
+    const below = at.bottom + 4 + list.offsetHeight <= window.innerHeight - 8;
+    list.style.top = (below ? at.bottom + 4 : at.top - 4 - list.offsetHeight) + "px";
+  };
+  const open = (all = false) => {
+    fill(all);
+    if (!list.matches(":popover-open")) list.showPopover();
+    place();
+    (options().find((row) => row.getAttribute("aria-selected") === "true") || options()[0])?.scrollIntoView({ block: "nearest" });
+  };
+  list.addEventListener("toggle", (event) => input.setAttribute("aria-expanded", String(event.newState === "open")));
+  toggle.addEventListener("pointerdown", (event) => event.preventDefault());       // keep the caret in the field
+  toggle.addEventListener("click", () => (list.matches(":popover-open") ? list.hidePopover() : (input.focus(), open(true))));
+  input.addEventListener("input", () => {
+    if (names().length) open();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" && names().length) {
+      event.preventDefault();
+      if (!list.matches(":popover-open")) open(true);
+      options()[0]?.focus();
+    } else if (event.key === "Escape" && list.matches(":popover-open")) {
+      event.preventDefault();
+      event.stopPropagation();                                                      // close the list, not the dialog
+      list.hidePopover();
+    }
+  });
+  list.addEventListener("keydown", (event) => {
+    const rows = options();
+    const at = rows.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const next = at + (event.key === "ArrowDown" ? 1 : -1);
+      if (next < 0) input.focus();
+      else rows[Math.min(next, rows.length - 1)]?.focus();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      list.hidePopover();
+      input.focus();
+    } else if (event.key.length === 1 || event.key === "Backspace") {
+      input.focus();                                                                // typing goes on in the field
+    }
+  });
+  return { open };
+}
+
 function writerNote(text, bad = false, target = "writerResult") {
   $(target).textContent = text;
   $(target).classList.toggle("bad", bad);
@@ -4578,8 +4837,12 @@ function openWriterSetup(then = null) {
       types.append(option);
     }
     types.addEventListener("change", () => {
+      // A model name belongs to its provider: a ComfyUI file means nothing to an endpoint, and the other way round.
+      if (writer.provider(draft.type).local !== writer.provider(types.value).local) draft.model = "";
       draft.type = types.value;
       draft.url = "";
+      writerModels = [];
+      note("");
       if (writer.provider(draft.type).local && !draft.model) draft.model = writer.COMFY_MODEL;
       draw();
     });
@@ -4591,23 +4854,23 @@ function openWriterSetup(then = null) {
     const address = plainField("Address", draft.url, { placeholder: kind.address || "Google's own address" });
     address.input.addEventListener("input", () => (draft.url = address.input.value));
     const model = plainField("Model", draft.model, { placeholder: kind.local ? "A file in models/text_encoders" : "The model's name, as the endpoint lists it" });
-    const names = document.createElement("datalist");
-    names.id = "writerModels";
-    model.input.setAttribute("list", names.id);
+    const picker = comboBox(model, () => writerModels, (name) => (draft.model = name));
     model.input.addEventListener("input", () => (draft.model = model.input.value));
     const list = document.createElement("button");
     list.className = "quiet";
     list.textContent = "List models";
     list.addEventListener("click", async () => {
       note(kind.local ? "Asking ComfyUI for its text models." : "Asking the endpoint for its models.");
+      list.disabled = true;
       try {
-        const found = await writer.listModels(draft);
-        names.replaceChildren(...found.map((name) => Object.assign(document.createElement("option"), { value: name })));
-        note(found.length ? found.length + " models. Type in Model to choose one." : "The endpoint lists no models. Type the name.");
-        model.input.focus();
+        writerModels = await writer.listModels(draft);
+        note(writerModels.length ? writerModels.length + (writerModels.length === 1 ? " model" : " models") + ". Pick one, or type another name."
+          : "The endpoint lists no models. Type the model's name.");
+        if (writerModels.length) picker.open(true);
       } catch (error) {
         note(error.message, true);
       }
+      list.disabled = false;
     });
     const modelRow = document.createElement("div");
     modelRow.className = "writer-model";
@@ -4615,7 +4878,7 @@ function openWriterSetup(then = null) {
     const key = plainField(kind.key ? "API key" : "API key, if the endpoint asks for one", draft.key, { type: "password", placeholder: "Paste your key" });
     key.input.addEventListener("input", () => (draft.key = key.input.value));
     // A model run by this ComfyUI has no address and needs no key.
-    $("writerSetupFields").replaceChildren(...(kind.local ? [type, hint, modelRow, names] : [type, hint, address.wrap, modelRow, names, key.wrap]));
+    $("writerSetupFields").replaceChildren(...(kind.local ? [type, hint, modelRow] : [type, hint, address.wrap, modelRow, key.wrap]));
   };
   draw();
   note("");
@@ -5943,6 +6206,17 @@ for (const [button, id] of [["generate", "generateMenu"], ["castAdd", "castMenu"
     if (event.target.closest("button")) menu.hidePopover();
   });
 }
+// The checks open under their chip, lined up with its right edge, and list what is found as it is.
+$("checksPanel").addEventListener("toggle", (event) => {
+  if (event.newState !== "open") return;
+  const panel = $("checksPanel");
+  panel.style.left = "0px";
+  panel.style.top = "0px";
+  renderChecks();
+  const at = $("checks").getBoundingClientRect();
+  panel.style.left = Math.max(8, Math.min(at.right - panel.offsetWidth, window.innerWidth - panel.offsetWidth - 8)) + "px";
+  panel.style.top = at.bottom + 6 + "px";
+});
 $("remove").addEventListener("click", removeSelected);
 $("zoom").addEventListener("input", (event) => setZoom(Number(event.target.value)));
 $("tlScroll").addEventListener("wheel", (event) => {

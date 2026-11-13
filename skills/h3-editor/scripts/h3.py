@@ -274,8 +274,9 @@ def main():
                                                                          "into the start" if cut["edge"] == "start" else "out of the end",
                                                                          cut["effect"], "; ".join(cut["notes"])))
             for row in found.get("inside") or []:
-                print("%4s  %-12s at frame %-6d inside %s, frame %d of its take  %s" % (row["score"], "inside: " + row["kind"], row["at"], row["item"],
-                                                                                    row["frame"], "; ".join(row["notes"])))
+                span = " for %d frames" % row["length"] if row.get("length") else ""
+                print("%4s  %-14s at frame %-6d inside %s, frame %d of its take%s  %s" % (row["score"], "inside: " + row["kind"], row["at"], row["item"],
+                                                                                        row["frame"], span, "; ".join(row["notes"])))
             print("worst: %s" % found["worst"])
     elif c == "detail":
         found = api("GET", project_path(args.project) + "/detail")

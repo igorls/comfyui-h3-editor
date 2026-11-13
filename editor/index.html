@@ -19,6 +19,12 @@
     </div>
     <button id="newProject" class="quiet">New project</button>
     <div class="spacer"></div>
+    <button id="checks" class="checks-chip" aria-haspopup="true" popovertarget="checksPanel" hidden></button>
+    <div id="checksPanel" class="menu checks-panel" popover aria-label="Checks">
+      <div class="checks-head"><h2>Checks</h2><span id="checksSummary" class="checks-summary"></span></div>
+      <div id="checksList" class="checks-list"></div>
+      <p class="checks-foot">Measured from the pictures as clips render: cuts, takes that cut, fade or stop inside, soft clips, drift, VFX edges and your ratings.</p>
+    </div>
     <div id="queue" class="queue"></div>
     <button id="renderAll" class="quiet">Render all drafts</button>
     <button id="export" class="primary">Export</button>
