@@ -5,6 +5,15 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## 0.6.1, 2026-11-13
+
+### Fixed
+
+- **Opening a project zip cannot fill the disk.** The upload is refused
+  before it starts when its size will not fit twice (the zip and the project
+  it opens into) with 2 GB to spare, and stops at that size when the browser
+  does not say how big it is. The answer says how much room there is.
+
 ## 0.6.0, 2026-11-13
 
 ### Added

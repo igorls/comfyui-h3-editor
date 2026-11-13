@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-h3-editor"
 description = "A timeline video editor for MiniMax H3 inside ComfyUI: write shots, render them, and cut them together with sound. With H3 Take, a node for one shot with pinned frames, references and held video or sound."
-version = "0.6.0"
+version = "0.6.1"
 license = { file = "LICENSE" }
 dependencies = ["imageio-ffmpeg>=0.5", "gguf>=0.13.0"]
 

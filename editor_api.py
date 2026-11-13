@@ -432,6 +432,7 @@ async def duplicate(request):
 
 
 PACKING = ".packing"      # zips on their way in or out, beside the projects; never a project of its own
+KEEP_FREE = 2 * 1024 ** 3  # an opened project never leaves the disk with less than this free
 
 
 def spool(suffix):
@@ -492,13 +493,22 @@ async def open_project(request):
     It is read from the stream onto the disk, so ComfyUI's limit on the size of an upload does not apply. The new
     project takes the name it had, or that name with a number when a project has it already.
     """
+    # The zip and the project it opens into both need room: an upload stops before the disk would fill.
+    free = shutil.disk_usage(root()).free
+    most = max(0, (free - KEEP_FREE) // 2)
+    declared = request.content_length
+    if declared is not None and declared > most:
+        return refused("the zip is %.1f GB, and this disk has room to open %.1f GB (%.1f GB free)"
+                       % (declared / 1e9, most / 1e9, free / 1e9), 413)
     upload = spool(".upload.zip")
     try:
         size = 0
         with open(upload, "wb") as f:
             async for chunk in request.content.iter_chunked(1 << 20):
-                f.write(chunk)
                 size += len(chunk)
+                if size > most:
+                    return refused("the zip is larger than this disk has room to open (%.1f GB free)" % (free / 1e9), 413)
+                f.write(chunk)
         if not size:
             return refused("send the project's zip as the body of the request")
         try:
