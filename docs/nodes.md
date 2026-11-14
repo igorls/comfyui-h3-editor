@@ -15,6 +15,7 @@ below. You can use them in your own workflows too.
 | H3 Refine Latent | Prepares an upscaled H3 latent for a few more steps, keeping held frames and the sound |
 | H3 HyperFlow Loader | Loads a HyperFlow H3 Flash checkpoint: a GGUF file in any quantization, or an INT8 safetensors file |
 | H3 HyperFlow Sigmas | The 4, 6 or 8-step schedule a HyperFlow checkpoint samples, for euler without CFG |
+| H3 Small Text Encoder | A Qwen3-VL 4B or 8B in place of H3's 32B text encoder, through a ClipProj projection; see [models](models.md#a-smaller-text-encoder) |
 
 ## Templates
 

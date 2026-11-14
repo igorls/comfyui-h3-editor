@@ -95,7 +95,9 @@ repository: `qwen3vl_32b_minimax_h3_int8_convrot.safetensors` (25 GB) and
 `qwen3vl_32b_minimax_h3_bf16.safetensors` (48 GB), and
 `minimax_h3_video_vae_int8_convrot.safetensors` (2.6 GB). Any one of each is
 enough: the editor renders with what it finds, and with more than one installed
-you pick in the Project tab.
+you pick in the Project tab. A Qwen3-VL 4B or 8B can also stand in for the 32B text
+encoder, in about a third of the memory: see
+[a smaller text encoder](docs/models.md#a-smaller-text-encoder).
 
 These are optional, and worth having:
 
@@ -244,7 +246,7 @@ Press ? in the editor for this list.
 | "HyperFlow H3 Flash GGUF files need the gguf Python package" | The same |
 | Finals come out at 768x1344 or 1344x768 | Add the latent upscaler. The Model hint says so too |
 | The live preview is a still | Add `taeh3.safetensors` |
-| ComfyUI runs out of memory | Pick a smaller **Final size** in the Project tab, try one of HyperFlow's GGUF files, which come in smaller sizes, or render the finals on a Colab GPU with `colab/h3_editor.ipynb`. So far the editor has been tested on one 96 GB GPU only |
+| ComfyUI runs out of memory | Pick a smaller **Final size** in the Project tab, try one of HyperFlow's GGUF files, which come in smaller sizes, use [a smaller text encoder](docs/models.md#a-smaller-text-encoder), or render the finals on a Colab GPU with `colab/h3_editor.ipynb`. So far the editor has been tested on one 96 GB GPU only |
 
 ## Develop
 

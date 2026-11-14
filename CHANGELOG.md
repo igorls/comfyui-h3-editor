@@ -5,6 +5,20 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## Unreleased
+
+### Added
+
+- **A smaller text encoder.** A Qwen3-VL 4B or 8B can stand in for H3's 32B
+  text encoder through a projection from ClipProj, built into the pack: about
+  4.6 GB instead of 15.7 GB with the 4B. Put the encoder in
+  `models/text_encoders` and its projection in `models/clip_projections`, then
+  pick it under **Text encoder** in the Project tab, and under **Projection**
+  when more than one fits it. It knows less than the
+  32B, mostly about named people and speech in languages other than English.
+  The **H3 Small Text Encoder** node does the same in your own workflows. See
+  [models and quality](docs/models.md#a-smaller-text-encoder).
+
 ## 0.6.1, 2026-11-13
 
 ### Fixed

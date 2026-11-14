@@ -280,8 +280,18 @@ def encoder_choices(available):
         made = sorted((f for f in found if "minimax_h3" in f.lower().replace("-", "_")), key=str.lower)
         return made or sorted(found, key=str.lower)
 
+    def text_encoders():
+        # The 32B ones, then the 4B and 8B ones a projection is installed for (clipproj.py).
+        small = set()
+        for kind in ("text_encoders", "clip"):
+            if kind in folder_paths.folder_names_and_paths:
+                small.update(f for f in folder_paths.get_filename_list(kind) if store.projection_for(f, available))
+        return listed("text_encoders", "clip") + sorted(small, key=str.lower)
+
     status = store.encoder_status(available)
-    return {"text_encoders": listed("text_encoders", "clip"),
+    encoders = text_encoders()
+    return {"text_encoders": encoders,
+            "projections": {f: store.projections_for(f, available) for f in encoders if store.projections_for(f, available)},
             "vaes": video_vaes(listed("vae")), "auto": status["auto"], "missing": status["missing"]}
 
 
@@ -305,6 +315,8 @@ def available_models():
         if kind in folder_paths.folder_names_and_paths:
             names.update(folder_paths.get_filename_list(kind))
     names.update(store.REFMOD_PREFIX + name for name in refmod_files() or [])
+    if store.PROJECTION_FOLDER in folder_paths.folder_names_and_paths:
+        names.update(store.PROJECTION_PREFIX + name for name in folder_paths.get_filename_list(store.PROJECTION_FOLDER))
     return names
 
 

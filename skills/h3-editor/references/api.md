@@ -288,7 +288,12 @@ named file that is not installed gives way to an installed one. `GET /projects` 
 `encoders` as `{"text_encoders": [file, ...], "vaes": [file, ...], "auto": {"text_encoder",
 "vae", "audio_vae"}, "missing": [note, ...]}`: `auto` is what a render takes by itself, and
 `missing` says which of the three no file was found for. A take records `text_encoder` and
-`vae` in `models`.
+`vae` in `models`. `text_encoders` also lists any Qwen3-VL 4B or 8B that has a projection
+in `models/clip_projections`: it renders through that projection with about a third of the
+32B's memory, and knows less (named people, speech in languages other than English). Use it
+only when the user asks, or when the 32B does not fit. `encoders.projections` maps each such
+encoder to the projections that fit it, the default first; `set_project` `text_projection`
+picks one (a file name, or `null` for the default), and a take records it as `text_projection`.
 
 Checkpoints the user saved as presets are shared by every project. `GET /presets` returns
 `{"checkpoints": [...]}` in the same shape, and `GET /projects` carries them as `presets`.

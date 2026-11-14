@@ -30,6 +30,16 @@ ComfyUI-GGUF
   its ops.py and the GGUFModelPatcher class from its nodes.py. Their headers say
   what was changed.
 
+ComfyUI-ClipProj
+  Author: nicolab28
+  Source: https://github.com/nicolab28/ComfyUI-ClipProj (version 0.1.13, commit c01ba8f)
+  License: MIT, in LICENSES/ClipProj-MIT.txt
+  Used in: clipproj.py, adapted from its clipproj_projection.py and
+  clipproj_nodes.py (the projection file format, the wrapper that makes a
+  Qwen3-VL 4B or 8B encode like MiniMax H3's 32B, its video-block, int8 vision
+  and attention-sink handling). Its loaders, GPU pinning and text generation
+  are left out. clipproj.py's header says what was changed.
+
 universal-llm-client
   Author: Igor Lins e Silva
   Source: https://github.com/igorls/universal-llm-client (version 4.6.0, from npm)

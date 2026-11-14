@@ -5,7 +5,7 @@ import unittest
 import project as project_module
 
 from policy import bridge_spans, legal_length, video_span
-from project import (add_sound, remove_sound, update_sound, MODELS, PRESET_LIMIT, PROFILES, REALISM_LORAS, REFINE_TAIL, active_take, add_cast, add_clip, apply_op, cast_pictures, clean_checkpoints,
+from project import (projection_for, projections_for, small_encoder_size, add_sound, remove_sound, update_sound, MODELS, PRESET_LIMIT, PROFILES, REALISM_LORAS, REFINE_TAIL, active_take, add_cast, add_clip, apply_op, cast_pictures, clean_checkpoints,
                      clip_prompt, describe, encoder_status, update_cast, export_command, export_plan, finals_status,
                      frame_of, installed_profile, is_hyperflow, item_length, linked_length, lora_status, new_project, pick_file,
                      plan_render, profile_status, project_models, refmod_graph, render_graph, render_models, set_project, slug, update_clip,
@@ -679,6 +679,36 @@ class EncoderTest(unittest.TestCase):
         for bad in (3, "", ["a"]):
             with self.assertRaises(ValueError):
                 set_project(project, {"vae": bad})
+
+    def test_a_small_text_encoder_renders_through_its_projection(self):
+        small = "qwen3vl_4b_int8_convrot.safetensors"
+        projections = {"clip_projections:mmh3-4b-ClipProj-v3-mlp.safetensors", "clip_projections:mmh3-4b-ClipProj-v3.1.safetensors",
+                       "clip_projections:mmh3-8b-ClipProj-v3.1.safetensors"}
+        installed = HYPERFLOW | self.INT8 | {small, "qwen3vl_8b_nvfp4.safetensors", "qwen_3_4b.safetensors"} | projections
+        self.assertEqual([small_encoder_size(n) for n in (small, "qwen3_vl_4b_nvfp4_full.safetensors", "qwen3vl_8b_nvfp4.safetensors",
+                                                          "qwen_3_4b.safetensors", MODELS["clip"], "p-h3-image_text_encoder_int8_convrot.safetensors")],
+                         ["4b", "4b", "8b", None, None, None])
+        self.assertEqual(projection_for(small, installed), "mmh3-4b-ClipProj-v3.1.safetensors")
+        self.assertEqual(projection_for("qwen3vl_8b_nvfp4.safetensors", installed), "mmh3-8b-ClipProj-v3.1.safetensors")
+        self.assertIsNone(projection_for(MODELS["clip"], installed))
+        project = new_project("x")
+        set_project(project, {"text_encoder": small})
+        job, graph = plan_render(project, "x", add_clip(project, {"action": "A keeper climbs."})[0]["id"], "draft", 3, installed)
+        self.assertEqual(graph["2"], {"class_type": "H3SmallTextEncoder", "inputs": {
+            "clip_name": small, "projection": "mmh3-4b-ClipProj-v3.1.safetensors"}})
+        self.assertEqual((job["models"]["text_encoder"], job["models"]["text_projection"]), (small, "mmh3-4b-ClipProj-v3.1.safetensors"))
+        # A project can pick another projection that fits; one for the other size gives way.
+        self.assertEqual(projections_for(small, installed), ["mmh3-4b-ClipProj-v3.1.safetensors", "mmh3-4b-ClipProj-v3-mlp.safetensors"])
+        set_project(project, {"text_projection": "mmh3-4b-ClipProj-v3-mlp.safetensors"})
+        self.assertEqual(render_graph(project, "x", clip(), "t1", "draft", 3, installed)["2"]["inputs"]["projection"], "mmh3-4b-ClipProj-v3-mlp.safetensors")
+        set_project(project, {"text_projection": "mmh3-8b-ClipProj-v3.1.safetensors"})
+        self.assertEqual(render_graph(project, "x", clip(), "t1", "draft", 3, installed)["2"]["inputs"]["projection"], "mmh3-4b-ClipProj-v3.1.safetensors")
+        set_project(project, {"text_projection": None})
+        self.assertNotIn("projection", project["models"])
+        # Without a projection for its size, the project's choice gives way to the 32B.
+        graph = render_graph(project, "x", clip(), "t1", "draft", 3, installed - projections)
+        self.assertEqual(graph["2"]["class_type"], "CLIPLoader")
+        self.assertEqual(graph["2"]["inputs"]["clip_name"], "qwen3vl_32b_minimax_h3_int8_convrot.safetensors")
 
 
 class ClipModelTest(unittest.TestCase):

@@ -14,10 +14,12 @@ from .latent_writer import carry_tail, encode_audio, encode_video, write_holds
 from . import h3lora
 from .twins import with_twins
 from . import hyperflow
+from . import clipproj
 from . import media
 
 # Why a HyperFlow .gguf cannot load here (the gguf package, which this pack's requirements install),
 # or None. The INT8 safetensors files load either way.
+clipproj.register_folder()
 HYPERFLOW_MISSING = hyperflow.gguf_missing()
 if HYPERFLOW_MISSING:
     logging.warning("H3 Editor: %s", HYPERFLOW_MISSING)
@@ -499,6 +501,35 @@ class H3Lora(io.ComfyNode):
         return io.NodeOutput(h3lora.apply(model, path, lora_name, strength, mode or "auto", start_sigma, end_sigma))
 
 
+class H3SmallTextEncoder(io.ComfyNode):
+    """A Qwen3-VL 4B or 8B in place of H3's 32B text encoder, through a ClipProj projection."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3SmallTextEncoder",
+            display_name="H3 Small Text Encoder",
+            category="minimax/h3",
+            description=(
+                "Load a Qwen3-VL 4B or 8B text encoder and project its output into what MiniMax H3 reads from its 32B "
+                "encoder, with a ClipProj projection from models/clip_projections. It takes about a third of the memory. "
+                "Connect it wherever the 32B's CLIP goes. It knows less than the 32B: named people and speech in "
+                "languages other than English suffer most."
+            ),
+            inputs=[
+                io.Combo.Input("clip_name", options=folder_paths.get_filename_list("text_encoders"),
+                               tooltip="A Qwen3-VL 4B or 8B, any precision. A text-only Qwen3 loads but ignores the prompt."),
+                io.Combo.Input("projection", options=clipproj.list_projections(),
+                               tooltip="mmh3-4b-... for a 4B, mmh3-8b-... for an 8B."),
+            ],
+            outputs=[io.Clip.Output(display_name="clip")],
+        )
+
+    @classmethod
+    def execute(cls, clip_name, projection) -> io.NodeOutput:
+        return io.NodeOutput(clipproj.load(clip_name, projection))
+
+
 class H3HyperFlowLoader(io.ComfyNode):
     """A HyperFlow H3 Flash checkpoint, read from its GGUF or its INT8 safetensors file."""
 
@@ -614,9 +645,9 @@ class H3RefineLatent(io.ComfyNode):
 
 NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3SaveHold": H3SaveHold, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
                        "H3Lora": H3Lora, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
-                       "H3HyperFlowSigmas": H3HyperFlowSigmas}
+                       "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3RefineLatent": "H3 Refine Latent",
-                              "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas"}
+                              "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas", "H3SmallTextEncoder": "H3 Small Text Encoder"}
 # The editor's graphs name each node's twin, an id no other pack registers (see twins.py).
 NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = with_twins(NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS)

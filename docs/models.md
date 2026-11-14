@@ -202,6 +202,46 @@ The checkpoint then appears in the **Model** menu, for the project or for one
 clip. It is stored in the project as `checkpoints`. A file with hyperflow in its
 name, and any `.gguf`, loads as HyperFlow and samples on HyperFlow's schedule.
 
+## A smaller text encoder
+
+H3's text encoder is a 32B Qwen3-VL, 15.7 GB in its smallest file. A Qwen3-VL 4B or 8B
+can stand in for it through a projection: a small file, fitted once against the 32B,
+that turns the small model's output into what H3 reads. The 4B with its projection
+takes about 4.6 GB. This is the method of
+[ComfyUI-ClipProj](https://github.com/nicolab28/ComfyUI-ClipProj), built into the pack,
+so that node is not needed.
+
+| File | Folder | Size | Where to get it |
+|---|---|---|---|
+| `qwen3vl_4b_int8_convrot.safetensors`, or another precision of the 4B | `models/text_encoders` | 4.5 GB | [Comfy-Org/Krea-2](https://huggingface.co/Comfy-Org/Krea-2), `text_encoders/` |
+| `mmh3-4b-ClipProj-v3.1.safetensors` | `models/clip_projections` | 26 MB | [NicoLab28/ClipProj-MiniMax-H3](https://huggingface.co/NicoLab28/ClipProj-MiniMax-H3) |
+
+For an 8B encoder, take `mmh3-8b-ClipProj-v3.1.safetensors` instead. Each projection
+works with its own size only. The encoder must be a Qwen3-VL: a text-only Qwen3 of
+the same size loads but ignores the prompt.
+
+With both installed, the 4B or 8B shows in the Project tab's **Text encoder** menu,
+marked as going through a projection. Pick it there. With more than one projection
+for its size, a **Projection** menu picks between them; by itself the render takes
+`v3.1`, then `v3.1-mlp`, then the older ones. The `-mlp` files (about 500 MB) add a
+small network on top of the matrix. Without a projection, a project that names a
+small encoder renders with the 32B.
+
+What it costs: the small model knows less than the 32B. Named people and speech in
+languages other than English suffer most; ClipProj's own measurements are in its
+README. In a test of two draft shots, a prompt alone and a cast member speaking, the
+4B followed the prompt and kept the face as the 32B did, but said "breakfast" not
+quite right where the 32B said it cleanly. The bf16 4B and the `v3.1-mlp` projection
+said it no better, so the small `v3.1` stays the default. Use the small encoder when
+the 32B does not fit, not to save time, and listen to every line it speaks.
+
+It saves memory only where the encoder is the problem. ComfyUI already moves the 32B
+off the card before sampling, so this helps most when the 32B does not fit at all, or
+when memory outside the card is short.
+
+The node behind it, **H3 Small Text Encoder**, works in your own workflows too:
+connect its `clip` wherever the 32B's goes.
+
 ## A project's own models
 
 A project can still name its own files under `models` in its project file, which
@@ -215,4 +255,6 @@ Any other model loads with ComfyUI's plain loader and scheduler.
 Model files come under their own licenses, which this pack's license does not
 change. Read each model's page before you use it. HyperFlow H3 Flash, for
 example, is a derivative of MiniMax H3 under the MiniMax H3 Community License
-Agreement, which limits where it may be used.
+Agreement, which limits where it may be used. ClipProj's projections are derived
+from the activations of both Qwen3-VL and MiniMax H3, and their author says their
+legal status is unclear.

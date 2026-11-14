@@ -417,6 +417,53 @@ MODEL_CHOICES = {
 }
 PROJECT_ENCODERS = {"text_encoder": "clip", "vae": "vae", "audio_vae": "audio_vae"}
 
+# A Qwen3-VL 4B or 8B can stand in for the 32B text encoder through a ClipProj projection in
+# models/clip_projections (see clipproj.py). The size comes from the file name here, where only
+# names are known; the node checks the file itself. The projection names its size the same way.
+PROJECTION_FOLDER = "clip_projections"
+PROJECTION_PREFIX = PROJECTION_FOLDER + ":"
+PROJECTION_ORDER = ["mmh3-{size}-ClipProj-v3.1.safetensors", "mmh3-{size}-ClipProj-v3.1-mlp.safetensors",
+                    "mmh3-{size}-ClipProj-v3-mlp.safetensors", "mmh3-{size}-ClipProj-v3.safetensors", "mmh3-{size}-*"]
+
+
+def small_encoder_size(name):
+    """The size of a Qwen3-VL 4B or 8B text encoder file, "4b" or "8b", else None. A text-only Qwen3 does not count."""
+    base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1].lower().replace("-", "_")
+    if "minimax" in base or not ("qwen3vl" in base or "qwen3_vl" in base):
+        return None
+    for size in ("4b", "8b"):
+        if "_%s" % size in base or "vl%s" % size in base:
+            return size
+    return None
+
+
+def projections_for(encoder, available):
+    """The installed projections for a small text encoder's size, the one a render takes by itself first."""
+    size = small_encoder_size(encoder)
+    if not size or available is None:
+        return []
+    found = sorted((name[len(PROJECTION_PREFIX):] for name in available if str(name).startswith(PROJECTION_PREFIX)), key=str.lower)
+    ordered = []
+    for pattern in PROJECTION_ORDER:
+        pattern = pattern.format(size=size).lower()
+        for name in found:
+            base = name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            if name not in ordered and (base == pattern or (pattern.endswith("*") and base.startswith(pattern[:-1]))):
+                ordered.append(name)
+    return ordered
+
+
+def projection_for(encoder, available, chosen=None):
+    """The projection a small text encoder renders through: the chosen one when it is installed and fits, else
+    the first installed for its size, or None when there is none."""
+    listed = projections_for(encoder, available)
+    if chosen:
+        same = [name for name in listed if name.replace("\\", "/") == str(chosen).replace("\\", "/")]
+        if same:
+            return same[0]
+    return listed[0] if listed else None
+
+
 
 def encoder_status(available):
     """What the editor needs to offer a text encoder and a video VAE: the one a render takes by itself, and what is missing."""
@@ -425,6 +472,14 @@ def encoder_status(available):
     missing = ["No MiniMax H3 %s is installed. Put %s in %s." % (name.replace("_", " "), MODEL_CHOICES[key][0], where[name])
                for name, key in PROJECT_ENCODERS.items() if found[name] is None]
     return {"auto": found, "missing": missing}
+
+
+def text_encoder_node(encoder, available, chosen=None):
+    """The graph node that loads the text encoder: ComfyUI's loader for the 32B, the pack's for a small one."""
+    projection = projection_for(encoder, available, chosen)
+    if projection:
+        return {"class_type": "H3SmallTextEncoder", "inputs": {"clip_name": encoder, "projection": projection}}
+    return {"class_type": "CLIPLoader", "inputs": {"clip_name": encoder, "type": "minimax", "device": "default"}}
 
 
 def project_models(project, available=None, clip=None):
@@ -443,7 +498,8 @@ def project_models(project, available=None, clip=None):
         # A text encoder or VAE the project names but this machine lacks gives way to an installed one.
         if key in named and isinstance(named[key], str) and available is not None:
             named[key] = pick_file([named[key].replace("\\", "/")], available)
-            if named[key] is None:
+            # A 4B or 8B encoder needs its projection; without one it gives way too.
+            if named[key] is None or (key == "clip" and small_encoder_size(named[key]) and not projection_for(named[key], available)):
                 del named[key]
     if "unet" in named and "unet_text" not in named:
         # A project that names its own model renders every clip on it.
@@ -767,7 +823,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None):
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
     graph = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
-        "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": models["clip"], "type": "minimax", "device": "default"}},
+        "2": text_encoder_node(models["clip"], available, models.get("projection")),
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": models["vae"]}},
         "4": {"class_type": "VAELoader", "inputs": {"vae_name": models["audio_vae"]}},
         "5": {"class_type": "MiniMaxH3SigmaShift", "inputs": {"model": ["1", 0], "shift_video": project.get("shift", 12.0), "shift_audio": 3.0}},
@@ -1490,7 +1546,10 @@ MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
                "first", "last", "language", "track", "bin", "profile", "loras")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
-PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "realism", "checkpoints", "text_encoder", "vae", "audio_vae", "sizes")
+PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "realism", "checkpoints", "text_encoder", "text_projection", "vae", "audio_vae", "sizes")
+# The model files set_project names, and their keys in the project's models. A projection only
+# applies to a 4B or 8B text encoder; one that does not fit it gives way to one that does.
+PROJECT_MODEL_FIELDS = {**PROJECT_ENCODERS, "text_projection": "projection"}
 # A project's own LoRAs: how many, how strong, and where their nodes start in a render graph.
 LORA_LIMIT = 8
 LORA_RANGE = (-2.0, 2.0)
@@ -2156,15 +2215,15 @@ def set_project(project, fields):
         if key == "loras":
             project["loras"] = clean_loras(value)
             continue
-        if key in PROJECT_ENCODERS:
+        if key in PROJECT_MODEL_FIELDS:
             # A file as ComfyUI lists it, or None for the first one installed.
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError("%s is a file name, or null to take the first one installed" % key)
             chosen = dict(project.get("models") or {})
             if value is None:
-                chosen.pop(PROJECT_ENCODERS[key], None)
+                chosen.pop(PROJECT_MODEL_FIELDS[key], None)
             else:
-                chosen[PROJECT_ENCODERS[key]] = value
+                chosen[PROJECT_MODEL_FIELDS[key]] = value
             if chosen:
                 project["models"] = chosen
             else:
@@ -2294,6 +2353,8 @@ def render_models(graph):
     """The models a render graph samples with, so a take records what made it."""
     used = {"unet": graph["1"]["inputs"]["unet_name"], "checkpoint": graph["10"]["inputs"]["checkpoint"],
             "text_encoder": graph["2"]["inputs"]["clip_name"], "vae": graph["3"]["inputs"]["vae_name"]}
+    if "projection" in graph["2"]["inputs"]:
+        used["text_projection"] = graph["2"]["inputs"]["projection"]
     if "72" in graph:
         slots = graph["72"]["inputs"]
         used["refmods"] = [{"file": slots["mod_%s" % n], "strength": slots["strength_%s" % n]}

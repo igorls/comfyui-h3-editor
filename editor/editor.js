@@ -42,7 +42,7 @@ const state = {
   checkpoints: [],
   presets: [],
   refmods: { installed: false, files: [] },
-  encoders: { text_encoders: [], vaes: [], auto: {}, missing: [] },
+  encoders: { text_encoders: [], projections: {}, vaes: [], auto: {}, missing: [] },
   samplers: [],
   schedulers: [],
   bin: null,
@@ -1645,7 +1645,7 @@ function encoderChoices() {
     const current = state.project.models?.[key] || "";
     // Nothing to choose between, and nothing chosen: no menu.
     if (files.length < 2 && !current) continue;
-    const options = [["", "Automatic" + (auto ? ": " + fileName(auto) : "")], ...files.map((f) => [f, fileName(f)])];
+    const options = [["", "Automatic" + (auto ? ": " + fileName(auto) : "")], ...files.map((f) => [f, fileName(f) + smallEncoderNote(key, f)])];
     if (current && !files.some((f) => sameFile(f, current))) options.push([current, fileName(current) + " (not installed)"]);
     out.push(choice(label, options, current, (value) => {
       const models = { ...(state.project.models || {}) };
@@ -1655,13 +1655,41 @@ function encoderChoices() {
       else delete state.project.models;
     }));
   }
+  // A 4B or 8B encoder renders through a projection: which one, when more than one fits it.
+  const encoder = state.project.models?.clip || state.encoders.auto.text_encoder;
+  const fits = Object.entries(state.encoders.projections || {}).find(([f]) => sameFile(f, encoder || ""))?.[1] || [];
+  const chosen = state.project.models?.projection || "";
+  if (fits.length > 1 || (chosen && fits.length)) {
+    const options = [["", "Automatic: " + fileName(fits[0])], ...fits.map((f) => [f, fileName(f)])];
+    if (chosen && !fits.some((f) => sameFile(f, chosen))) options.push([chosen, fileName(chosen) + " (does not fit this encoder)"]);
+    out.push(choice("Projection", options, chosen, (value) => {
+      const models = { ...(state.project.models || {}) };
+      if (value) models.projection = value;
+      else delete models.projection;
+      if (Object.keys(models).length) state.project.models = models;
+      else delete state.project.models;
+    }));
+  }
   if (out.length) {
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "The int8 and nvfp4 files are smaller and load faster; bf16 and fp16 are the full precision. New renders use the choice.";
+    hint.textContent = "The int8 and nvfp4 files are smaller and load faster; bf16 and fp16 are the full precision. "
+      + (state.encoders.text_encoders.some((f) => smallEncoderNote("clip", f))
+        ? "A 4B or 8B text encoder takes about a third of the 32B's memory, through a projection, and knows less: named people and speech in languages other than English suffer most. "
+        : "")
+      + "New renders use the choice.";
     out.push(hint);
   }
   return out;
+}
+
+// A Qwen3-VL 4B or 8B stands in for the 32B through a ClipProj projection: say so in the menu.
+function smallEncoderNote(key, file) {
+  if (key !== "clip") return "";
+  const name = fileName(file).toLowerCase().replace(/-/g, "_");
+  if (name.includes("minimax")) return "";
+  const size = name.match(/qwen3_?vl_?(4|8)b/);
+  return size ? " (" + size[1] + "B, through a projection)" : "";
 }
 
 // The checkpoint being edited in the Models dialog, or null while it shows the list.
