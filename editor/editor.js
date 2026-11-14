@@ -1466,6 +1466,7 @@ const ICONS = {
   grab: '<rect x="3.5" y="6.5" width="17" height="11" rx="1.5"/><path d="M12 3.5v17"/><path d="M9.5 3.5h5"/>',
   picture: '<rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.6"/><path d="M4.5 17l4.5-4.5 3.5 3.5 2.5-2.5 4.5 4.5"/>',
   close: '<path d="M7 7l10 10M17 7L7 17"/>',
+  chevron: '<path d="M7.5 10l4.5 4.5 4.5-4.5"/>',
   pin: '<path d="M9 4h6l-.9 5.2 3.4 3.3H6.5l3.4-3.3z"/><path d="M12 12.5V20"/>',
   restore: '<path d="M5 12a7 7 0 1 0 2.1-5"/><path d="M5 4.5v3.7h3.7"/>',
   settings: '<path d="M4.5 7.5H13M17 7.5h2.5M4.5 16.5H7M11 16.5h8.5"/><circle cx="15" cy="7.5" r="2"/><circle cx="9" cy="16.5" r="2"/>',
@@ -2191,6 +2192,87 @@ function strengthSlider(key, label, value, [min, max], usual, onChange) {
   return wrap;
 }
 
+// When a LoRA joins a render, drawn as the render itself: the bar runs from its first step on the
+// left to its last on the right, and the lit part is where the LoRA works. The number is the start
+// as the file stores it: 1 joins at once, lower joins later. Three chips set the usual starts.
+const LORA_STARTS = [[1, "At once"], [0.75, "After framing"], [0.4, "Details only"]];
+
+function startControl(id, name, value, onChange) {
+  const box = document.createElement("div");
+  box.className = "lora-start";
+  const chips = document.createElement("div");
+  chips.className = "start-chips";
+  chips.setAttribute("role", "group");
+  chips.setAttribute("aria-label", "When " + name + " joins the render");
+  const bar = document.createElement("div");
+  bar.className = "strength start-bar";
+  const range = document.createElement("input");
+  range.type = "range";
+  range.min = 0;
+  range.max = 1;
+  range.step = 0.05;
+  range.dataset.key = "LoRA " + id + " start";
+  range.setAttribute("aria-label", name + " joins the render this far in");
+  range.title = "Drag right to let the model set the framing before the LoRA joins. Double-click for at once";
+  const amount = document.createElement("input");
+  amount.type = "number";
+  amount.className = "amount";
+  amount.min = 0;
+  amount.max = 1;
+  amount.step = 0.05;
+  amount.dataset.key = "LoRA " + id + " start amount";
+  amount.setAttribute("aria-label", name + " start, 1 for at once, lower for later");
+  for (const input of [range, amount]) input.addEventListener("focus", () => checkpoint(), { once: true });
+  bar.append(range, amount);
+  const ends = document.createElement("div");
+  ends.className = "start-ends";
+  const first = document.createElement("span");
+  first.textContent = "First step";
+  const last = document.createElement("span");
+  last.textContent = "Last step";
+  ends.append(first, last);
+  const say = document.createElement("p");
+  say.className = "start-say";
+  const buttons = LORA_STARTS.map(([start, words]) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "start-chip";
+    chip.textContent = words;
+    chip.dataset.key = "LoRA " + id + " start " + start;
+    chip.addEventListener("click", () => {
+      checkpoint();
+      set(start, null);
+    });
+    chips.append(chip);
+    return [start, chip];
+  });
+  // The range runs the other way from the number: left is the start of the render, where 1 joins.
+  const show = (v, from) => {
+    if (from !== range) range.value = String(1 - v);
+    if (from !== amount) amount.value = v.toFixed(2);
+    range.style.setProperty("--from", String(1 - v));
+    range.style.setProperty("--to", "1");
+    for (const [start, chip] of buttons) chip.setAttribute("aria-pressed", String(Math.abs(start - v) < 0.001));
+    say.textContent = v >= 1 ? "Works on every step, from the first."
+      : v >= 0.6 ? "The model sets the framing and pose alone, then the LoRA joins."
+        : v > 0.05 ? "Joins only for the last steps: fine detail and texture."
+          : "Joins at the very end, so it does almost nothing.";
+  };
+  const set = (raw, from) => {
+    const v = Math.round(Math.min(1, Math.max(0, Number(raw) || 0)) * 100) / 100;
+    show(v, from);
+    onChange(v);
+    save();
+  };
+  show(value, null);
+  range.addEventListener("input", () => set(1 - Number(range.value), range));
+  range.addEventListener("dblclick", () => set(1, null));
+  amount.addEventListener("input", () => { if (amount.value !== "" && amount.validity.valid) set(amount.value, amount); });
+  amount.addEventListener("change", () => set(amount.value, null));
+  box.append(chips, bar, ends, say);
+  return box;
+}
+
 // A searchable list in a dialog, for folders that hold hundreds of files. Resolves to the file picked, or null.
 // Files the user starred in a picker, kept on this browser under the picker's own key.
 function starred(key) {
@@ -2391,15 +2473,18 @@ function loraSection(clip = null) {
       head.append(note);
     }
     // When it joins: on every step, or only after the first ones have set the composition.
+    // The Start slider shows when a start is set, and the button folds it away or brings it back.
     const start = typeof entry.start_sigma === "number" ? entry.start_sigma : 1;
-    const timed = start < 1 || loraTiming.has(entry.id);
+    const timed = (start < 1) !== loraTiming.has(entry.id);
     const when = document.createElement("button");
-    when.className = "quiet small";
+    when.className = "quiet small start-toggle";
     when.dataset.key = "LoRA " + entry.id + " timing";
-    when.textContent = start < 1 ? "From " + start.toFixed(2) : "All steps";
-    when.title = "When the LoRA joins the render. Click to " + (timed ? "hide" : "set") + " it";
+    const startWords = (v) => (v < 1 ? "Starts at " + v.toFixed(2) : "Starts at once");
+    const whenText = document.createElement("span");
+    whenText.textContent = startWords(start);
+    when.append(whenText, icon("chevron"));
+    when.title = (timed ? "Hide" : "Set") + " when the LoRA joins the render: at once, on every step, or later, once the first steps have set the framing";
     when.setAttribute("aria-expanded", String(timed));
-    when.disabled = start < 1;
     when.addEventListener("click", () => {
       if (loraTiming.has(entry.id)) loraTiming.delete(entry.id);
       else loraTiming.add(entry.id);
@@ -2413,18 +2498,11 @@ function loraSection(clip = null) {
     const strength = typeof entry.strength === "number" ? entry.strength : 1;
     row.append(head, strengthSlider("LoRA " + entry.id, loraName(entry.file) + " strength", strength, limits.lora_range, 1, (v) => (live().strength = v)));
     if (timed) {
-      const timing = document.createElement("div");
-      timing.className = "lora-start";
-      const label = document.createElement("span");
-      label.textContent = "Start";
-      label.title = "1 runs it on every step. Lower leaves the first steps alone, so the framing and pose stay as they would be without it. Try 0.75.";
-      timing.append(label, strengthSlider("LoRA " + entry.id + " start", loraName(entry.file) + " start, from 1 for every step down to 0", start, [0, 1], 1, (v) => {
+      row.append(startControl(entry.id, loraName(entry.file), start, (v) => {
         if (v < 1) live().start_sigma = v;
         else delete live().start_sigma;
-        when.textContent = v < 1 ? "From " + v.toFixed(2) : "All steps";
-        when.disabled = v < 1;
+        whenText.textContent = startWords(v);
       }));
-      row.append(timing);
     }
     list.append(row);
   }

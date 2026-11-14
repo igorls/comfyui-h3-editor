@@ -320,8 +320,18 @@ label.lora-name { cursor: pointer; }
 .lora-note.missing { color: var(--danger); }
 .lora .small { flex: none; padding: 4px 10px; font-size: 12px; }
 .lora.off .lora-name span, .lora.off .strength { opacity: 0.45; }
-.lora-start { display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; gap: 8px; margin-top: 4px; }
-.lora-start > span { color: var(--muted); font-size: 12px; }
+/* When a LoRA joins: chips for the usual starts, then the render as a bar, lit where the LoRA works. */
+.lora-start { display: grid; gap: 4px; margin: 8px 0 0; padding: 10px 10px 8px; border-radius: var(--radius); background: var(--room); }
+.start-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 2px; }
+.start-chip { padding: 3px 10px; border: 1px solid var(--line); border-radius: 12px; background: transparent; color: var(--muted); font-size: 12px; }
+.start-chip:hover { border-color: var(--line-hi); color: var(--text); }
+.start-chip[aria-pressed="true"] { border-color: var(--tungsten); color: var(--text); background: color-mix(in srgb, var(--tungsten) 14%, transparent); }
+.start-bar .amount { background: var(--panel); }
+.start-ends { display: flex; justify-content: space-between; margin-right: 80px; padding: 0 2px; color: var(--muted); font-size: 11px; }
+.start-say { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+.start-toggle { display: inline-flex; align-items: center; gap: 4px; }
+.start-toggle .ic { width: 14px; height: 14px; color: var(--muted); transition: rotate 0.15s ease-out; }
+.start-toggle[aria-expanded="true"] .ic { rotate: 180deg; }
 .strength { display: grid; grid-template-columns: minmax(0, 1fr) 68px; gap: 12px; align-items: center; }
 .strength input[type="range"] {
   --a: calc(8px + (100% - 16px) * var(--from, 0));

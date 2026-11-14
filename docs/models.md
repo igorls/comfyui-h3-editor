@@ -163,9 +163,14 @@ Every new render of the project samples with the ones that are ticked, in the
 order listed, on drafts and finals alike. The same section has the Realism
 Slider's strength on finals, from 0 to 3; it starts at 1.2.
 
-Each LoRA has a timing button, **All steps** by default. It opens a **Start**
-slider: at 1 the LoRA runs on every step, and lower values leave the first
-steps alone, so the framing and pose stay as they would be without it.
+Each LoRA has a button that says when it joins the render, **Starts at once** by
+default. It opens a bar that stands for the render, from its first step on the
+left to its last on the right, lit where the LoRA works. **At once** runs it on
+every step. **After framing** (0.75) leaves the first steps to the model alone,
+so the framing and pose stay as they would be without the LoRA. **Details
+only** (0.4) lets it join for the last steps. Drag the bar or type a start for
+anything between. The button then shows the start, for example **Starts at
+0.75**.
 
 A clip can have LoRAs of its own: in its Shot tab, open **Model and LoRAs** and
 press **Edit** beside LoRAs. Only that clip samples with them, after the project's. Adding one the
