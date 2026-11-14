@@ -167,8 +167,8 @@ Each LoRA has a timing button, **All steps** by default. It opens a **Start**
 slider: at 1 the LoRA runs on every step, and lower values leave the first
 steps alone, so the framing and pose stay as they would be without it.
 
-A clip can have LoRAs of its own, under **LoRAs for this clip** in its Shot
-tab. Only that clip samples with them, after the project's. Adding one the
+A clip can have LoRAs of its own: in its Shot tab, open **Model and LoRAs** and
+press **Edit** beside LoRAs. Only that clip samples with them, after the project's. Adding one the
 project also has gives it another strength in that clip, and unticking it
 there leaves it out of that clip.
 
@@ -220,8 +220,9 @@ For an 8B encoder, take `mmh3-8b-ClipProj-v3.1.safetensors` instead. Each projec
 works with its own size only. The encoder must be a Qwen3-VL: a text-only Qwen3 of
 the same size loads but ignores the prompt.
 
-With both installed, the 4B or 8B shows in the Project tab's **Text encoder** menu,
-marked as going through a projection. Pick it there. With more than one projection
+With both installed, the 4B or 8B shows in the **Text encoder** menu, marked as
+going through a projection: in the Project tab, press **Edit** beside Model files,
+or open Models and their settings. Pick it there. With more than one projection
 for its size, a **Projection** menu picks between them; by itself the render takes
 `v3.1`, then `v3.1-mlp`, then the older ones. The `-mlp` files (about 500 MB) add a
 small network on top of the matrix. Without a projection, a project that names a

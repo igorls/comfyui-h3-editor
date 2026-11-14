@@ -152,7 +152,8 @@ show. If a clip they join changes, they are marked: render them again. An empty
 space between two rendered clips shows a plus that generates the bridge.
 
 **First and last frames.** Give a clip an exact first or last frame by
-dropping a picture on it, uploading one, or pressing **Use playhead frame**.
+dropping a picture on it, uploading one, or using the frame at the playhead,
+with the buttons beside each frame in the Shot tab.
 
 **Picture to a track.** A clip can hold a recorded sound, and its picture is
 generated to it. Extend forward carries on with the next part of the same

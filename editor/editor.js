@@ -748,38 +748,40 @@ function frameUsable(clip, side) {
   return mode !== "bridge" && (side === "first") !== (mode === "extend_after");
 }
 
+// A frame the shot starts or ends on, in one compact row: a small picture, its name, and icon buttons.
+// A picture dropped anywhere on the row becomes the frame.
 function frameSlot(clip, side, label) {
   const slot = document.createElement("div");
-  slot.className = "slot";
-  const title = document.createElement("h3");
-  title.textContent = label;
+  slot.className = "slot" + (clip[side] ? " set" : "");
   const picture = document.createElement("div");
   picture.className = "picture";
   // The box takes the project's shape, so a frame shows whole.
   const [wide, tall] = String(state.project.format || "16:9").split(":").map(Number);
   if (wide > 0 && tall > 0) picture.style.setProperty("--frame", String(wide / tall));
+  const text = document.createElement("div");
+  text.className = "slot-text";
+  const title = document.createElement("span");
+  title.className = "slot-name";
+  title.textContent = label;
   const ways = document.createElement("div");
   ways.className = "ways";
-  const button = (text, run) => {
-    const element = document.createElement("button");
-    element.className = "quiet";
-    element.textContent = text;
-    element.addEventListener("click", run);
-    ways.append(element);
-  };
+  text.append(title, ways);
   if (clip[side]) {
     const image = document.createElement("img");
     image.alt = label;
     image.src = assetUrl(clip[side]);
     picture.append(image);
-    picture.title = "Drop a picture here to replace it";
-    button("Remove", () => setClipFrame(clip, side, null));
+    slot.title = "Drop a picture here to replace the " + label.toLowerCase();
+    ways.append(iconButton("close", "Remove the " + label.toLowerCase(), () => setClipFrame(clip, side, null)));
   } else {
-    picture.textContent = "Drop a picture here";
-    button("Use playhead frame", () => grabFrame(clip, side));
-    button("Upload", () => uploadFrame(clip, side));
+    picture.append(icon("picture"));
+    slot.title = "Drop a picture here to start or end the shot on it";
+    ways.append(
+      iconButton("grab", "Use the frame at the playhead as the " + label.toLowerCase(), () => grabFrame(clip, side)),
+      iconButton("upload", "Upload a picture as the " + label.toLowerCase(), () => uploadFrame(clip, side)),
+    );
   }
-  dropTarget(picture, async (file) => {
+  dropTarget(slot, async (file) => {
     try {
       setClipFrame(clip, side, await uploadPicture(file));
       toast(label + " of " + clip.name + " is " + file.name + ".");
@@ -787,7 +789,7 @@ function frameSlot(clip, side, label) {
       toast(error.message, true);
     }
   }, "a picture for the " + label.toLowerCase());
-  slot.append(title, picture, ways);
+  slot.append(picture, text);
   return slot;
 }
 
@@ -1063,29 +1065,71 @@ function renderPerson(panel, person) {
   const used = state.project.clips.filter((c) => (c.cast || []).includes(person.id)).length;
   line.textContent = has.join(", ") + (used ? ". In " + used + (used === 1 ? " clip" : " clips") : ". Not in a clip yet");
   head.append(row, line);
-  const parts = [head];
+  // The panel keeps who they are at a glance; their pictures, voice and RefMod are edited in a dialog.
+  const card = document.createElement("div");
+  card.className = "person-card";
   if (person.file) {
     const image = document.createElement("img");
-    image.className = "portrait";
     image.alt = person.name;
     image.src = assetUrl(person);
-    parts.push(section("Pictures", [image, morePictures(person)]));
+    card.append(image);
+  } else {
+    const mark = document.createElement("span");
+    mark.className = person.refmod ? "mod-mark" : "voice-mark";
+    if (person.refmod) mark.textContent = "RefMod";
+    card.append(mark);
   }
-  parts.push(
-    section("About", [
+  const words = document.createElement("p");
+  words.className = "person-words";
+  words.textContent = String(person.description || "").trim() || (person.file || person.refmod ? "No description yet." : "No description of the voice yet.");
+  card.append(words);
+  const edit = document.createElement("button");
+  edit.className = "quiet wide";
+  edit.dataset.key = "Edit cast member";
+  edit.append(icon("pen"), person.file ? "Pictures, voice and description" : "Voice and description");
+  edit.addEventListener("click", () => openPerson(person.id));
+  const name = field("Name", person.name, (v) => {
+    person.name = v.trim() || person.name;
+    title.textContent = person.name;
+    renderCast();
+  });
+  panel.replaceChildren(head, section("About", [card, name, edit], "person"));
+}
+
+// Everything about a cast member, in a dialog wide enough for their pictures and voice side by side.
+function openPerson(id) {
+  const live = () => (state.project.cast || []).find((c) => c.id === id);
+  openPanelDialog(() => live()?.name || "Cast member", () => {
+    const person = live();
+    if (!person) return null;
+    const left = [];
+    if (person.file) {
+      const image = document.createElement("img");
+      image.className = "portrait";
+      image.alt = person.name;
+      image.src = assetUrl(person);
+      left.push(section("Pictures", [image, morePictures(person)], "picture"));
+    }
+    left.push(section("About", [
       field("Name", person.name, (v) => {
         person.name = v.trim() || person.name;
-        title.textContent = person.name;
+        $("panelDialogTitle").textContent = person.name;
         renderCast();
       }),
       person.file || person.refmod
         ? field("What they look like", person.description, (v) => (person.description = v), { big: true })
         : field("How they sound", person.description, (v) => (person.description = v), { area: true, placeholder: "A warm, calm female narrator" }),
-    ]),
-    section("Voice", [voiceSection(person)]),
-  );
-  if (state.refmods.installed || person.refmod) parts.push(section("RefMod", refmodSection(person)));
-  panel.replaceChildren(...parts);
+    ], "person"));
+    const right = [section("Voice", [voiceSection(person)], "speech")];
+    if (state.refmods.installed || person.refmod) right.push(section("RefMod", refmodSection(person), "layers"));
+    const columns = [left, right].map((parts) => {
+      const column = document.createElement("div");
+      column.className = "panel-column";
+      column.append(...parts);
+      return column;
+    });
+    return columns;
+  }, true);
 }
 
 const MERGE_FRAMES = 63;
@@ -1402,6 +1446,107 @@ function trashButton(label, onClick) {
   return button;
 }
 
+// The panel's icons: drawn on a 24 grid in one line weight, in the colour of the text around them.
+const ICONS = {
+  shot: '<rect x="3.5" y="6.5" width="12" height="11" rx="1.5"/><path d="M15.5 10.5l5-3v9l-5-3"/>',
+  takes: '<rect x="3.5" y="8.5" width="13" height="11" rx="1.5"/><path d="M7.5 5h11.5a1.5 1.5 0 0 1 1.5 1.5V16"/>',
+  timeline: '<path d="M3.5 5.5h17M3.5 18.5h17"/><rect x="4.5" y="9" width="7" height="6" rx="1"/><rect x="13.5" y="9" width="6" height="6" rx="1"/>',
+  project: '<path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4.2l2 2.2H19a1.5 1.5 0 0 1 1.5 1.5v7.8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>',
+  person: '<circle cx="12" cy="8.8" r="3.6"/><path d="M5 19.5a7 7 0 0 1 14 0"/>',
+  look: '<path d="M12 4a8 8 0 1 0 0 16c1.3 0 1.9-.9 1.5-2-.4-1.2.4-2.2 1.6-2.2H17a3.5 3.5 0 0 0 3.5-3.5C20.5 7.6 16.7 4 12 4z"/><circle class="solid" cx="8" cy="11.5" r="1.1"/><circle class="solid" cx="10.6" cy="7.8" r="1.1"/><circle class="solid" cx="15" cy="8.2" r="1.1"/>',
+  format: '<rect x="3.5" y="6" width="17" height="12" rx="1.5"/><path d="M7 9.5v-1h2M17 14.5v1h-2"/>',
+  model: '<path d="M12 3.5l7.5 4.2v8.6L12 20.5l-7.5-4.2V7.7z"/><path d="M4.8 7.9L12 12l7.2-4.1M12 12v8.3"/>',
+  layers: '<path d="M12 4l8 4-8 4-8-4z"/><path d="M4 12l8 4 8-4M4 16l8 4 8-4"/>',
+  speech: '<path d="M5 5.5h14A1.5 1.5 0 0 1 20.5 7v7.5A1.5 1.5 0 0 1 19 16h-7.5l-4.5 3.5V16H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5z"/>',
+  wave: '<path d="M4 10.5v3M8 7.5v9M12 4.5v15M16 8.5v7M20 10.5v3"/>',
+  pen: '<path d="M4.5 19.5l3.9-.9L18.7 8.3a1.9 1.9 0 0 0-2.7-2.7L5.4 15.6z"/><path d="M14.5 7.2l2.3 2.3"/>',
+  sparkle: '<path d="M11 4l1.7 4.6L17.3 10.3l-4.6 1.7L11 16.6l-1.7-4.6-4.6-1.7 4.6-1.7z"/><path d="M18 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
+  note: '<path d="M6 4.5h8.5L18.5 8.5v11H6z"/><path d="M9 12h6.5M9 15.5h6.5"/>',
+  upload: '<path d="M12 15V4.5M7.5 9L12 4.5 16.5 9"/><path d="M4.5 15v3A1.5 1.5 0 0 0 6 19.5h12a1.5 1.5 0 0 0 1.5-1.5v-3"/>',
+  grab: '<rect x="3.5" y="6.5" width="17" height="11" rx="1.5"/><path d="M12 3.5v17"/><path d="M9.5 3.5h5"/>',
+  picture: '<rect x="4" y="5" width="16" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.6"/><path d="M4.5 17l4.5-4.5 3.5 3.5 2.5-2.5 4.5 4.5"/>',
+  close: '<path d="M7 7l10 10M17 7L7 17"/>',
+  pin: '<path d="M9 4h6l-.9 5.2 3.4 3.3H6.5l3.4-3.3z"/><path d="M12 12.5V20"/>',
+  restore: '<path d="M5 12a7 7 0 1 0 2.1-5"/><path d="M5 4.5v3.7h3.7"/>',
+  settings: '<path d="M4.5 7.5H13M17 7.5h2.5M4.5 16.5H7M11 16.5h8.5"/><circle cx="15" cy="7.5" r="2"/><circle cx="9" cy="16.5" r="2"/>',
+};
+
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("ic");
+  svg.innerHTML = ICONS[name] || "";
+  return svg;
+}
+
+// A small square button that is only an icon. Its name is its tip, and what a screen reader says.
+function iconButton(name, label, run, kind = "quiet") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "icon-btn " + kind;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.append(icon(name));
+  button.addEventListener("click", run);
+  return button;
+}
+
+// One line that names a setting kept in a dialog, says what it is now, and opens the dialog.
+function settingRow(iconName, label, value, run, action = "Edit") {
+  const row = document.createElement("div");
+  row.className = "setting-row";
+  const name = document.createElement("span");
+  name.className = "setting-name";
+  name.append(icon(iconName), label);
+  const now = document.createElement("span");
+  now.className = "setting-value";
+  now.textContent = value;
+  now.title = value;
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "quiet small";
+  open.textContent = action;
+  open.dataset.key = label + " " + action;
+  open.setAttribute("aria-label", action + " " + label.toLowerCase());
+  open.addEventListener("click", run);
+  row.append(name, now, open);
+  return row;
+}
+
+// A dialog for settings too roomy for the panel: a cast member, a clip's LoRAs. It is drawn again
+// whenever the panel is, so it always shows the project as it is.
+let panelDialog = null;
+
+function openPanelDialog(title, draw, wide = false) {
+  panelDialog = { title, draw };
+  const dialog = $("panelDialog");
+  dialog.classList.toggle("two-col", wide);
+  drawPanelDialog();
+  if (!dialog.open) dialog.showModal();
+}
+
+function drawPanelDialog() {
+  const dialog = $("panelDialog");
+  if (!panelDialog) return;
+  const parts = panelDialog.draw();
+  if (!parts) {
+    dialog.close();
+    return;
+  }
+  $("panelDialogTitle").textContent = typeof panelDialog.title === "function" ? panelDialog.title() : panelDialog.title;
+  // Sections bring their own padding; anything else gets the dialog's.
+  const framed = parts.every((part) => part.matches?.(".section, .panel-column"));
+  if (framed) $("panelDialogBody").replaceChildren(...parts);
+  else {
+    const pad = document.createElement("div");
+    pad.className = "panel-pad";
+    pad.append(...parts);
+    $("panelDialogBody").replaceChildren(pad);
+  }
+  tidyHints($("panelDialogBody"));
+}
+
 function renderBin() {
   const list = $("clips");
   const clips = state.project.clips;
@@ -1543,21 +1688,33 @@ function field(label, value, onInput, { big = false, area = false, type = "text"
   return wrap;
 }
 
-function section(title, children) {
+function section(title, children, iconName = "") {
   const box = document.createElement("section");
   box.className = "section";
   const head = document.createElement("h3");
-  head.textContent = title;
+  if (iconName) head.append(icon(iconName));
+  head.append(title);
   box.append(head, ...children);
   return box;
 }
 
-function disclosure(title, open, note, children) {
+// Which folding sections the user opened or closed, by name, kept in this browser. A section the
+// user has not touched opens when it holds something.
+let opened = {};
+try { opened = JSON.parse(localStorage.getItem("h3take.opened") || "{}") || {}; } catch (_) {}
+
+function disclosure(title, open, note, children, iconName = "") {
   const box = document.createElement("details");
   box.className = "section";
-  box.open = open;
+  box.open = title in opened ? Boolean(opened[title]) : open;
   const summary = document.createElement("summary");
-  summary.textContent = title;
+  summary.addEventListener("click", () => {
+    // The click comes before the section folds or opens.
+    opened[title] = !box.open;
+    try { localStorage.setItem("h3take.opened", JSON.stringify(opened)); } catch (_) {}
+  });
+  if (iconName) summary.append(icon(iconName));
+  summary.append(title);
   if (note) {
     const filled = document.createElement("span");
     filled.className = "filled";
@@ -1920,6 +2077,14 @@ function renderModels() {
   const groups = [group("Built in", builtIn)];
   if (mine.length) groups.push(group("In this project", mine));
   if (spare.length) groups.push(group("Your presets", spare, "Kept for every project. Adding one copies it into this project."));
+  // The text encoder, video VAE and projection, which every model of this project renders with.
+  const files = encoderChoices();
+  if (files.length) {
+    const box = group("Model files", []);
+    box.classList.add("model-files");
+    box.append(...files);
+    groups.push(box);
+  }
   body.replaceChildren(...groups);
 
   const add = button("Add a checkpoint", async () => {
@@ -1943,7 +2108,7 @@ function clipModel(clip) {
   const wrap = document.createElement("label");
   wrap.className = "choice";
   const title = document.createElement("span");
-  title.textContent = "This clip renders with";
+  title.textContent = "Model";
   const select = document.createElement("select");
   select.dataset.key = "Clip model";
   const own = profileOf(clip.profile);
@@ -2133,6 +2298,13 @@ const sameFile = (a, b) => a.replaceAll("\\", "/") === b.replaceAll("\\", "/");
 const loraTiming = new Set();
 
 // The project's LoRAs, which every render samples with, or one clip's own, each at its own strength.
+// A clip's LoRAs in a few words: their names and strengths, the switched-off ones left out.
+function loraSummary(clip) {
+  const rows = (clip.loras || []).filter((row) => row && typeof row.file === "string" && row.on !== false);
+  if (!rows.length) return (clip.loras || []).length ? "All off" : "None";
+  return rows.map((row) => loraName(row.file) + " " + (typeof row.strength === "number" ? row.strength : 1).toFixed(2)).join(", ");
+}
+
 function loraSection(clip = null) {
   // A save swaps the project for the server's copy, so the list is found again each time it is changed.
   const owner = () => (clip ? clipOf(clip.id) : state.project) || {};
@@ -2285,7 +2457,7 @@ function loraSection(clip = null) {
     ? "Every new render samples with these, drafts and finals alike. They only work if they were trained on MiniMax H3."
     : "Put LoRAs trained on MiniMax H3 in models/loras, then reload this page to add them here.";
   children.push(hint);
-  return clip ? children : section("LoRAs", children);
+  return clip ? children : section("LoRAs", children, "layers");
 }
 
 function renderScene(panel, selected = false) {
@@ -2293,25 +2465,22 @@ function renderScene(panel, selected = false) {
   head.className = "inspector-head";
   const title = document.createElement("h2");
   title.textContent = "Project";
+  // What the project holds, in one line at the top, where it used to be a section at the bottom.
+  const rendered = state.project.clips.filter((c) => c.takes.length).length;
+  const clips = state.project.clips.length;
+  const cast = (state.project.cast || []).length;
   const line = document.createElement("p");
   line.className = "status";
-  line.textContent = selected ? "Settings for every clip in this project." : "Select a clip to edit it. Press ? for shortcuts.";
-  head.append(title, line);
-  const rendered = state.project.clips.filter((c) => c.takes.length).length;
-  const facts = document.createElement("dl");
-  facts.className = "facts";
-  for (const [name, value] of [
-    ["Length", timecode(sceneEnd())],
-    ["Clips", String(state.project.clips.length)],
-    ["Rendered", rendered + " of " + state.project.clips.length],
-    ["Cast", String((state.project.cast || []).length)],
-  ]) {
-    const dt = document.createElement("dt");
-    dt.textContent = name;
-    const dd = document.createElement("dd");
-    dd.textContent = value;
-    facts.append(dt, dd);
-  }
+  line.textContent = [
+    timecode(sceneEnd()),
+    clips === 1 ? "1 clip" : clips + " clips",
+    clips ? rendered + " of " + clips + " rendered" : "",
+    cast ? (cast === 1 ? "1 in the cast" : cast + " in the cast") : "",
+  ].filter(Boolean).join(", ");
+  const about = document.createElement("p");
+  about.className = "status";
+  about.textContent = selected ? "Settings for every clip in this project." : "Select a clip to edit it. Press ? for shortcuts.";
+  head.append(title, line, about);
   const shape = document.createElement("label");
   shape.className = "choice";
   const shapeTitle = document.createElement("span");
@@ -2383,22 +2552,33 @@ function renderScene(panel, selected = false) {
   });
   modelTitle.classList.add("label-row");
   modelTitle.append(manageModels);
+  // Format and language side by side: the two things a project is made in.
+  const made = document.createElement("div");
+  made.className = "pair";
+  made.append(shape, field("Language", state.project.language || "", (v) => {
+    if (v.trim()) state.project.language = v.trim();
+    else delete state.project.language;
+  }, { placeholder: "English" }));
+  // The text encoder, video VAE and projection are set once, if ever: they live in the Models dialog,
+  // and the panel says what renders.
+  const files = state.profiles.length && encoderChoices().length ? [settingRow("settings", "Model files", modelFilesSummary(), () => {
+    openModels(null);
+    $("modelsBody").querySelector(".model-files")?.scrollIntoView({ block: "start" });
+  })] : [];
   panel.replaceChildren(
     head,
-    section("Look", [field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true })]),
-    section("Format and model", [
-      shape,
-      formatHint,
-      ...sizeChoices(),
-      ...(state.profiles.length ? [model, modelHint] : []),
-      ...encoderChoices(),
-      field("Language people speak", state.project.language || "", (v) => {
-        if (v.trim()) state.project.language = v.trim();
-        else delete state.project.language;
-      }, { placeholder: "English" }),
-    ]),
-    ...[loraSection(), writingSection(), notesSection(), section("Overview", [facts])].filter(Boolean),
+    section("Look", [field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true })], "look"),
+    section("Format", [made, formatHint, ...sizeChoices()], "format"),
+    ...(state.profiles.length ? [section("Model", [model, modelHint, ...files], "model")] : []),
+    ...[loraSection(), writingSection(), notesSection()].filter(Boolean),
   );
+}
+
+// The model files a project renders with, in a few words: automatic, or the ones it names.
+function modelFilesSummary() {
+  const chosen = state.project.models || {};
+  const named = ["clip", "vae", "projection"].filter((k) => chosen[k]).map((k) => fileName(chosen[k]));
+  return named.length ? named.join(", ") : "Automatic";
 }
 
 // The sizes drafts and finals render at. The first of each list is the usual one, and a project
@@ -2507,7 +2687,16 @@ function renderTabs(tabs) {
     tab.setAttribute("role", "tab");
     tab.setAttribute("aria-selected", String(state.tab === id));
     tab.tabIndex = state.tab === id ? 0 : -1;
-    tab.textContent = label;
+    const mark = { Shot: "shot", Footage: "shot", Takes: "takes", Timeline: "timeline", Project: "project",
+      "Cast member": "person", Bin: "project", Sound: "wave", VFX: "sparkle" }[label];
+    if (mark) tab.append(icon(mark));
+    const words = document.createElement("span");
+    words.className = "insp-label";
+    words.textContent = label;
+    tab.append(words);
+    // In a narrow panel the words hide, so the tab keeps its name for screen readers and as a tip.
+    tab.title = label;
+    tab.setAttribute("aria-label", count ? label + ", " + count : label);
     if (count) {
       const number = document.createElement("span");
       number.className = "insp-count";
@@ -2566,6 +2755,7 @@ function renderInspector() {
   tidyHints($("inspBody"));
   $("inspTabs").querySelector(".insp-help")?.remove();
   $("inspTabs").append(helpToggle());
+  if ($("panelDialog").open) drawPanelDialog();
 }
 
 function drawInspector() {
@@ -2588,7 +2778,10 @@ function drawInspector() {
   const clip = person ? null : clipOf(state.clip);
   const bin = !clip && !person ? selectedBin() : null;
   const sound = !clip && !person && !bin ? soundOf(state.sound) : null;
-  const placed = clip ? state.project.timeline.find((i) => i.id === state.item) : null;
+  // The Timeline tab shows wherever the clip is on the timeline, however it was selected: the place
+  // selected there, or else its first place.
+  const placed = clip ? state.project.timeline.find((i) => i.id === state.item && i.clip === clip.id)
+    || sorted().find((i) => i.clip === clip.id) || null : null;
   const tabs = [];
   if (person) tabs.push(["shot", "Cast member"]);
   else if (bin) tabs.push(["shot", "Bin"]);
@@ -2683,13 +2876,16 @@ function drawInspector() {
       resizePlanned(clip);
     }, { type: "number" }),
   );
+  const happens = field("What happens", clip.action, (v) => (clip.action = v), { big: true, placeholder: "Describe what we see and hear, in the order it happens." });
+  const happensLabel = happens.querySelector("span");
+  happensLabel.classList.add("label-row");
+  happensLabel.append(rewriteButton(clip));
   if (state.tab === "shot") parts.push(section("Shot", [
-    field("What happens", clip.action, (v) => (clip.action = v), { big: true, placeholder: "Describe what we see and hear, in the order it happens." }),
-    rewriteButton(clip),
+    happens,
     timing,
-    ...framesFor(clip),
     ...(state.project.cast?.some((p) => p.file || p.refmod) ? castPicker(clip) : []),
-  ]));
+    ...framesFor(clip),
+  ], "shot"));
 
   const voiced = ["speaker", "dialogue", "sound", "music"].filter((k) => String(clip[k] || "").trim()).length;
   if (state.tab === "shot") parts.push(disclosure("Dialogue and sound", voiced > 0, voiced ? voiced + " set" : "", [
@@ -2697,24 +2893,32 @@ function drawInspector() {
       placeholder: (state.project.cast || []).some((p) => p.voice) ? "@" + state.project.cast.find((p) => p.voice).name + " uses their voice" : "The old keeper, low and gravelly",
     }),
     field("What they say", clip.dialogue, (v) => (clip.dialogue = v), { area: true }),
-    field("Language of the lines", clip.language || "", (v) => {
+    field("Language", clip.language || "", (v) => {
       if (v.trim()) clip.language = v.trim();
       else delete clip.language;
     }, { placeholder: state.project.language || "English" }),
     field("Sound", clip.sound, (v) => (clip.sound = v), { area: true, placeholder: "Rain on glass, distant thunder" }),
     field("Music", clip.music, (v) => (clip.music = v), { placeholder: "None" }),
-  ]));
+  ], "speech"));
 
   if (state.tab === "shot") {
-    parts.push(disclosure("Picture to a track", Boolean(clip.track), clip.track ? "Set" : "", trackSection(clip)));
-    parts.push(disclosure("Model", Boolean(profileOf(clip.profile)), profileOf(clip.profile)?.title || "", clipModel(clip)));
+    parts.push(disclosure("Picture to a track", Boolean(clip.track), clip.track ? "Set" : "", trackSection(clip), "wave"));
+    // The clip's own model and LoRAs. The LoRAs, with their strengths and timing, are set in a dialog.
     const own = (clip.loras || []).length;
-    if (state.loras.length || own) parts.push(disclosure("LoRAs for this clip", own > 0, own ? own + " set" : "", loraSection(clip)));
+    const loras = state.loras.length || own
+      ? [settingRow("layers", "LoRAs", loraSummary(clip), () => openPanelDialog(
+        () => "LoRAs for " + (clipOf(clip.id)?.name || "this clip"),
+        () => (clipOf(clip.id) ? loraSection(clipOf(clip.id)) : null)))]
+      : [];
+    const custom = Boolean(profileOf(clip.profile));
+    parts.push(disclosure("Model and LoRAs", custom || own > 0,
+      [custom ? profileOf(clip.profile).title : "", own ? (own === 1 ? "1 LoRA" : own + " LoRAs") : ""].filter(Boolean).join(", "),
+      [...clipModel(clip), ...loras], "model"));
   }
 
-  const seed = field("Seed. Leave empty for a new one each render", clip.seed ?? "", (v) => {
+  const seed = field("Seed", clip.seed ?? "", (v) => {
     clip.seed = v.trim() === "" ? null : Number(v);
-  }, { type: "number" });
+  }, { type: "number", placeholder: "A new one each render" });
   if (state.tab !== "takes") {
     // Only the Takes tab lists them.
   } else if (clip.takes.length) {
@@ -2872,30 +3076,37 @@ function versions(clip) {
   });
   const tools = document.createElement("div");
   tools.className = "take-tools";
-  const button = (text, run, disabled = false) => {
+  const button = (text, run, disabled = false, mark = "", tip = "") => {
     const element = document.createElement("button");
     element.className = "quiet";
-    element.textContent = text;
+    if (mark) element.append(icon(mark));
+    element.append(text);
+    if (tip) element.title = tip;
     element.disabled = disabled;
     element.addEventListener("click", run);
     tools.append(element);
+    return element;
   };
-  button("Keep this seed", () => {
+  button("Keep seed", () => {
     checkpoint();
     clip.seed = current.seed;
     save();
     renderInspector();
     toast("Renders of this clip now use seed " + current.seed + ".");
-  });
-  button("Restore its prompt", () => {
+  }, false, "pin", "Render this clip again with the seed of the take shown");
+  button("Restore prompt", () => {
     checkpoint();
     for (const name of SAVED_FIELDS) {
       if (current.saved && name in current.saved) clip[name] = current.saved[name];
     }
     save();
     renderInspector();
-  }, !current.saved);
-  button("Delete take", () => {
+  }, !current.saved, "restore", "Put back the text this take was rendered from");
+  // Deleting sits apart from the safe actions, at the end of the row.
+  const spacer = document.createElement("span");
+  spacer.className = "spacer";
+  tools.append(spacer);
+  const remove = trashButton("Delete take " + (clip.takes.indexOf(current) + 1), () => {
     checkpoint();
     const number = clip.takes.indexOf(current) + 1;
     clip.takes = clip.takes.filter((t) => t !== current);
@@ -2903,7 +3114,9 @@ function versions(clip) {
     save();
     renderAll();
     toast("Deleted take " + number + " of " + clip.name + ".", false, undoAction);
-  }, clip.takes.length < 2);
+  });
+  remove.disabled = clip.takes.length < 2;
+  tools.append(remove);
   return [takes, tools];
 }
 
@@ -5365,13 +5578,20 @@ function openWriteShots() {
   });
 }
 
+// It sits in the label of What happens, as a small button with its name beside the icon.
 function rewriteButton(clip) {
   const button = document.createElement("button");
-  button.className = "quiet wide";
+  button.type = "button";
+  button.className = "label-tool";
   button.dataset.key = "Rewrite";
-  button.textContent = String(clip.action || "").trim() ? "Rewrite with a language model" : "Write with a language model";
+  const words = document.createElement("span");
+  words.textContent = String(clip.action || "").trim() ? "Rewrite" : "Write";
+  button.append(icon("sparkle"), words);
   button.title = "A language model writes this shot's text, for you to read before it replaces anything";
-  button.addEventListener("click", () => openRewrite(clip));
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    openRewrite(clip);
+  });
   return button;
 }
 
@@ -5396,9 +5616,14 @@ function writingSection() {
   const pair = document.createElement("div");
   pair.className = "pair buttons";
   pair.append(shots, setup);
-  return section("Writing", [pair, hint]);
+  return section("Writing", [pair, hint], "pen");
 }
 
+$("panelDialogClose").addEventListener("click", () => $("panelDialog").close());
+$("panelDialog").addEventListener("close", () => {
+  panelDialog = null;
+  $("panelDialogBody").replaceChildren();
+});
 $("writerClose").addEventListener("click", () => $("writer").close());
 $("writerSetupClose").addEventListener("click", () => $("writerSetup").close());
 $("raterClose").addEventListener("click", () => $("rater").close());
@@ -6299,13 +6524,14 @@ function renderAll() {
 // A re-render must not take the caret away from someone typing in the inspector.
 function rememberFocus() {
   const el = document.activeElement;
-  if (!el || !$("inspector").contains(el) || !el.dataset.key) return null;
-  return { key: el.dataset.key, start: el.selectionStart, end: el.selectionEnd };
+  const root = el?.closest?.("#inspector, #panelDialog");
+  if (!root || !el.dataset.key) return null;
+  return { root: root.id, key: el.dataset.key, start: el.selectionStart, end: el.selectionEnd };
 }
 
 function restoreFocus(focus) {
   if (!focus) return;
-  const el = $("inspector").querySelector('[data-key="' + CSS.escape(focus.key) + '"]');
+  const el = $(focus.root).querySelector('[data-key="' + CSS.escape(focus.key) + '"]');
   if (!el) return;
   state.quiet = true;
   el.focus();
@@ -7283,7 +7509,7 @@ function notesSection() {
   const hint = document.createElement("p");
   hint.className = "hint";
   hint.textContent = "Stop on a frame and press N to write a note. Agents read them with h3.py notes, each with a picture of its frame.";
-  return section("Notes" + (open.length ? ", " + open.length + " open" : ""), [...rows, hint]);
+  return section("Notes" + (open.length ? ", " + open.length + " open" : ""), [...rows, hint], "note");
 }
 
 // Marks on the ruler where each note's frame is in the cut.

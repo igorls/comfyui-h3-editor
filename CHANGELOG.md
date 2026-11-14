@@ -13,11 +13,29 @@ Each release is a tag on GitHub, `v` followed by the version.
   text encoder through a projection from ClipProj, built into the pack: about
   4.6 GB instead of 15.7 GB with the 4B. Put the encoder in
   `models/text_encoders` and its projection in `models/clip_projections`, then
-  pick it under **Text encoder** in the Project tab, and under **Projection**
-  when more than one fits it. It knows less than the
+  pick it under **Text encoder** in the Models dialog (**Model files** in the
+  Project tab), and under **Projection** when more than one fits it. It knows less than the
   32B, mostly about named people and speech in languages other than English.
   The **H3 Small Text Encoder** node does the same in your own workflows. See
   [models and quality](docs/models.md#a-smaller-text-encoder).
+
+### Changed
+
+- **A shorter side panel.** The Project tab starts with a line on what the
+  project holds, then Look, Format (with Language beside it and both sizes on
+  one row) and Model. The text encoder, video VAE and projection moved into the
+  Models dialog, and the panel says which files render. In the Shot tab, Camera
+  and Seconds sit right under What happens, Rewrite is a small button in its
+  label, and the first and last frames take one row of small pictures with
+  icon buttons. A clip's model and LoRAs share one section, and its LoRAs are
+  set in a dialog. A cast member's pictures, voice and RefMod are edited in a
+  dialog, with the panel keeping the picture, the description and the name.
+- **Labels beside short fields,** icons on the tabs, sections and small
+  actions, and the tabs drop their words in a narrow panel.
+- **Sections stay as you left them.** A folding section you open or close
+  stays that way in this browser, and the Timeline tab shows whenever the clip
+  is on the timeline, however it was selected. Delete take is now a trash
+  button at the end of the Takes row.
 
 ## 0.6.1, 2026-11-13
 
