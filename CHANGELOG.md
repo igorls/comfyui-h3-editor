@@ -5,7 +5,7 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
-## Unreleased
+## 0.7.0, 2026-11-13
 
 ### Added
 
@@ -36,6 +36,10 @@ Each release is a tag on GitHub, `v` followed by the version.
   stays that way in this browser, and the Timeline tab shows whenever the clip
   is on the timeline, however it was selected. Delete take is now a trash
   button at the end of the Takes row.
+- **A LoRA's start reads as a timeline.** The bar runs from the render's first
+  step to its last, lit where the LoRA works, with **At once**, **After
+  framing** and **Details only** for the usual starts. The button that opens
+  it says **Starts at once** or the start, instead of **All steps**.
 
 ## 0.6.1, 2026-11-13
 
