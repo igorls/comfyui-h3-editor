@@ -341,6 +341,27 @@ that name already exists and is not this member's, unless `"replace": true` is s
 `description`, `voice` (`null` removes it, unless it is all they have). `remove_cast`:
 `cast`, which also takes them out of every clip.
 
+**The cast catalog.** Cast members can be kept once per ComfyUI install, for any project to
+bring in. `GET /projects` gives `catalog`, a list of entries: `id`, `version`, `name`,
+`description`, and the picture, `pictures`, `voice` and `refmod` as a cast member has them,
+pointing at the catalog's own copies. A project's copy carries `catalog`: `{"id", "version",
+"synced"}`, and the summary's `cast` rows show the `catalog` id.
+
+- `save_cast_to_catalog`: `cast`. Copies the member's files into the catalog and adds an
+  entry, or, for a member that came from the catalog, writes over its entry and raises its
+  version. Returns `{"cast", "catalog", "version"}`.
+- `add_cast_from_catalog`: `catalog`, the entry's id, and `as` to name the new member for
+  later operations of the batch. Copies the entry's files into the project. Returns the same.
+- `update_cast_from_catalog`: `cast`. Brings a linked member up to the catalog's version,
+  replacing changes made to it in the project.
+- `POST /cast-catalog/spread` with `{"id"}` brings every project's copy of an entry up to
+  date, except copies changed in their project; it returns `updated` and `kept`.
+  `POST /cast-catalog/remove` with `{"id"}` takes an entry and its files out of the catalog;
+  projects keep their copies. `GET /cast-catalog` lists the entries.
+
+Change a catalog member only when the user asks: a newer catalog version changes what the
+project renders next, and the user may have changed the copy on purpose.
+
 The description is how H3 knows them. Describe a face and clothes for a picture, and how
 they sound for a voice. A cast member without a picture is never placed in the shot, and
 their description stands in for them in the prompt. Write `"@Name, off-screen"` as the

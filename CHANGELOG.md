@@ -5,6 +5,24 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## Unreleased
+
+### Added
+
+- **The cast catalog.** Save a cast member with **Save** beside **Catalog**, and
+  bring them into any project with **Add**, **From the catalog**. A project gets
+  its own copy of their pictures and voice, linked to the catalog. After a
+  change is saved to the catalog, other projects show **Newer in the
+  catalog** and an **Update** button, and the catalog can update every project
+  at once, leaving alone copies changed in their project. Agents use
+  `save_cast_to_catalog`, `add_cast_from_catalog` and
+  `update_cast_from_catalog`.
+
+### Fixed
+
+- The side panel's tabs no longer make the panel scroll sideways at its usual
+  width.
+
 ## 0.7.0, 2026-11-13
 
 ### Added

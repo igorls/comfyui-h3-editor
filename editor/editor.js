@@ -1093,7 +1093,7 @@ function renderPerson(panel, person) {
     title.textContent = person.name;
     renderCast();
   });
-  panel.replaceChildren(head, section("About", [card, name, edit], "person"));
+  panel.replaceChildren(head, section("About", [card, name, edit, catalogRow(person)], "person"));
 }
 
 // Everything about a cast member, in a dialog wide enough for their pictures and voice side by side.
@@ -1494,7 +1494,7 @@ function iconButton(name, label, run, kind = "quiet") {
 }
 
 // One line that names a setting kept in a dialog, says what it is now, and opens the dialog.
-function settingRow(iconName, label, value, run, action = "Edit") {
+function settingRow(iconName, label, value, run, action = "Edit", tip = "") {
   const row = document.createElement("div");
   row.className = "setting-row";
   const name = document.createElement("span");
@@ -1509,10 +1509,203 @@ function settingRow(iconName, label, value, run, action = "Edit") {
   open.className = "quiet small";
   open.textContent = action;
   open.dataset.key = label + " " + action;
-  open.setAttribute("aria-label", action + " " + label.toLowerCase());
+  open.setAttribute("aria-label", tip || action + " " + label.toLowerCase());
+  if (tip) open.title = tip;
   open.addEventListener("click", run);
   row.append(name, now, open);
   return row;
+}
+
+/* The cast catalog: cast members kept once per ComfyUI install. A project takes a linked copy, and the
+   link says whether the catalog has changed since, or the project has. */
+
+const CATALOG_KEEP = ["name", "description", "file", "subfolder", "pictures", "voice", "refmod"];
+
+function castSnapshot(person) {
+  const out = {};
+  for (const key of CATALOG_KEEP) {
+    const value = person[key];
+    if (value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+// JSON with its keys in one order, to compare two snapshots whatever order their keys came in.
+function stable(value) {
+  if (Array.isArray(value)) return "[" + value.map(stable).join(",") + "]";
+  if (value && typeof value === "object") return "{" + Object.keys(value).sort().map((k) => JSON.stringify(k) + ":" + stable(value[k])).join(",") + "}";
+  return JSON.stringify(value);
+}
+
+// Mirrors catalog_state and cast_edited in project.py.
+const castEdited = (person) => Boolean(person.catalog?.synced) && stable(person.catalog.synced) !== stable(castSnapshot(person));
+
+function catalogState(person) {
+  const link = person.catalog;
+  if (!link?.id) return null;
+  const entry = (state.catalog || []).find((e) => e.id === link.id);
+  if (!entry) return "missing";
+  if ((entry.version || 1) > (link.version || 0)) return "newer";
+  return castEdited(person) ? "changed" : "current";
+}
+
+async function loadCatalog() {
+  try {
+    state.catalog = (await api("/cast-catalog")).cast || [];
+  } catch (_) {
+    // Kept as the project list last sent it.
+  }
+}
+
+// Catalog operations copy files on the server, so they go through it and the project is read back.
+async function catalogOps(ops, done) {
+  try {
+    await flush();
+    checkpoint();
+    const reply = await postJson("/project/" + state.folder + "/ops", { ops, client: clientId });
+    adopt(await api("/project/" + state.folder));
+    await loadCatalog();
+    renderAll();
+    toast(done(reply.results));
+    return reply.results;
+  } catch (error) {
+    toast(error.message, true);
+    return null;
+  }
+}
+
+// The cast member's line about the catalog, and the one thing to do about it.
+function catalogRow(person) {
+  const save = (words) => () => catalogOps([{ op: "save_cast_to_catalog", cast: person.id }], () => words);
+  const update = () => catalogOps([{ op: "update_cast_from_catalog", cast: person.id }],
+    () => person.name + " now matches the catalog.");
+  switch (catalogState(person)) {
+    case "current":
+      return settingRow("layers", "Catalog", "Up to date", () => openCatalog(), "Open", "Open the catalog");
+    case "changed":
+      return settingRow("layers", "Catalog", "Changed here", save("Saved the changes to the catalog. Other projects can update " + person.name + " now."),
+        "Save", "Save these changes to the catalog, for other projects to take");
+    case "newer":
+      return settingRow("layers", "Catalog", castEdited(person) ? "Newer there, and changed here" : "Newer in the catalog", update, "Update",
+        castEdited(person) ? "Take the catalog's version. It replaces the changes made here; undo brings them back" : "Take the catalog's version");
+    case "missing":
+      return settingRow("layers", "Catalog", "Removed from it", save("Saved " + person.name + " to the catalog again."), "Save", "Save to the catalog again");
+    default:
+      return settingRow("layers", "Catalog", "Not in it", save("Saved " + person.name + " to the catalog. Any project can bring them in from Cast, Add."),
+        "Save", "Save to the catalog, for any project to bring in");
+  }
+}
+
+// Everyone in the catalog, to bring into this project, to bring up to date everywhere, or to remove.
+function openCatalog() {
+  let removing = null;
+  openPanelDialog("Cast catalog", () => {
+    const rows = state.catalog || [];
+    if (!rows.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "No one in the catalog yet. Select a cast member, then press Save beside Catalog, and any project can bring them in.";
+      return [empty];
+    }
+    const grid = document.createElement("div");
+    grid.className = "catalog-grid";
+    for (const entry of rows) {
+      const card = document.createElement("div");
+      card.className = "catalog-card";
+      let picture;
+      if (entry.file) {
+        picture = document.createElement("img");
+        picture.alt = "";
+        picture.src = assetUrl(entry);
+      } else {
+        picture = document.createElement("span");
+        picture.className = entry.refmod ? "mod-mark" : "voice-mark";
+        if (entry.refmod) picture.textContent = "RefMod";
+      }
+      const text = document.createElement("div");
+      text.className = "catalog-text";
+      const name = document.createElement("b");
+      name.textContent = entry.name;
+      const has = [];
+      const pictures = (entry.file ? 1 : 0) + (entry.pictures || []).length;
+      if (pictures) has.push(pictures === 1 ? "1 picture" : pictures + " pictures");
+      if (entry.voice) has.push("a voice");
+      if (entry.refmod) has.push("a RefMod");
+      const facts = document.createElement("span");
+      facts.className = "catalog-facts";
+      facts.textContent = has.join(", ") + (entry.version > 1 ? ". Version " + entry.version : "");
+      const about = document.createElement("p");
+      about.className = "person-words";
+      about.textContent = entry.description || "";
+      text.append(name, facts, about);
+      const tools = document.createElement("div");
+      tools.className = "catalog-tools";
+      const here = (state.project.cast || []).find((p) => p.catalog?.id === entry.id);
+      const add = document.createElement("button");
+      add.className = here ? "quiet small" : "primary small";
+      add.textContent = here ? "In this project" : "Add to project";
+      add.disabled = Boolean(here);
+      add.addEventListener("click", async () => {
+        const done = await catalogOps([{ op: "add_cast_from_catalog", catalog: entry.id }], () => entry.name + " is in the cast.");
+        const id = done?.[0]?.cast;
+        if (id) {
+          $("panelDialog").close();
+          state.person = id;
+          state.clip = null;
+          state.item = null;
+          renderAll();
+        }
+      });
+      const spread = document.createElement("button");
+      spread.className = "quiet small";
+      spread.textContent = "Update every project";
+      spread.title = "Bring every project's copy of " + entry.name + " up to this version. Copies changed in their project are left alone";
+      spread.addEventListener("click", async () => {
+        try {
+          await flush();
+          const reply = await postJson("/cast-catalog/spread", { id: entry.id, client: clientId });
+          adopt(await api("/project/" + state.folder));
+          renderAll();
+          const n = reply.updated.length;
+          const kept = reply.kept.length;
+          toast((n ? "Updated " + entry.name + " in " + n + (n === 1 ? " project." : " projects.") : "Every project already has this version of " + entry.name + ".")
+            + (kept ? " " + kept + (kept === 1 ? " copy was" : " copies were") + " changed in its project, so it was left alone." : ""));
+        } catch (error) {
+          toast(error.message, true);
+        }
+      });
+      const remove = document.createElement("button");
+      remove.className = removing === entry.id ? "primary danger small" : "icon delete";
+      if (removing === entry.id) remove.textContent = "Remove for good";
+      else remove.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15"/><path d="M9.5 7V4.8h5V7"/><path d="M6.5 7l.8 11.6a1.6 1.6 0 0 0 1.6 1.4h6.2a1.6 1.6 0 0 0 1.6-1.4L17.5 7"/><path d="M10.2 10.8v5.6M13.8 10.8v5.6"/></svg>';
+      const removeWords = "Remove " + entry.name + " from the catalog. Projects keep their own copies";
+      remove.setAttribute("aria-label", removeWords);
+      remove.title = removeWords;
+      remove.addEventListener("click", async () => {
+        // The first press asks, the second removes: the catalog's own files go with it.
+        if (removing !== entry.id) {
+          removing = entry.id;
+          drawPanelDialog();
+          return;
+        }
+        try {
+          state.catalog = (await postJson("/cast-catalog/remove", { id: entry.id })).cast || [];
+          removing = null;
+          renderInspector();
+          toast("Removed " + entry.name + " from the catalog. Projects keep their own copies.");
+        } catch (error) {
+          toast(error.message, true);
+        }
+      });
+      tools.append(add, spread, remove);
+      card.append(picture, text, tools);
+      grid.append(card);
+    }
+    return [grid];
+  }, false);
+  $("panelDialog").classList.add("catalog");
+  loadCatalog().then(() => $("panelDialog").open && drawPanelDialog());
 }
 
 // A dialog for settings too roomy for the panel: a cast member, a clip's LoRAs. It is drawn again
@@ -1523,6 +1716,7 @@ function openPanelDialog(title, draw, wide = false) {
   panelDialog = { title, draw };
   const dialog = $("panelDialog");
   dialog.classList.toggle("two-col", wide);
+  dialog.classList.remove("catalog");
   drawPanelDialog();
   if (!dialog.open) dialog.showModal();
 }
@@ -6639,7 +6833,7 @@ async function openProject(folder) {
 }
 
 async function refreshProjects(selected) {
-  const { projects, titles, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets, refmods, encoders, sizes, upscalers } = await api("/projects");
+  const { projects, titles, profiles, finals, loras, realism, checkpoints, samplers, schedulers, presets, refmods, encoders, sizes, upscalers, catalog } = await api("/projects");
   state.encoders = encoders || { text_encoders: [], vaes: [], auto: {}, missing: [] };
   state.presets = presets || [];
   state.refmods = refmods || { installed: false, files: [] };
@@ -6654,6 +6848,7 @@ async function refreshProjects(selected) {
   state.realism = realism || null;
   state.sizes = sizes || null;
   state.upscalers = upscalers || [];
+  state.catalog = catalog || [];
   $("project").replaceChildren(...projects.map((name) => {
     const option = document.createElement("option");
     option.value = name;
@@ -6956,6 +7151,10 @@ $("newClip").addEventListener("click", addClip);
 $("addEffect").addEventListener("click", addEffect);
 $("addCast").addEventListener("click", addCastMember);
 $("addVoice").addEventListener("click", addVoiceMember);
+$("addFromCatalog").addEventListener("click", () => {
+  $("castMenu").hidePopover?.();
+  openCatalog();
+});
 $("addRefmod").addEventListener("click", addRefmodMember);
 $("importClip").addEventListener("click", importFootage);
 $("newBin").addEventListener("click", addBin);

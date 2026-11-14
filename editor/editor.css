@@ -405,6 +405,19 @@ label.lora-name { cursor: pointer; }
 .panel-column > .section:last-child { border-bottom: 0; }
 @media (max-width: 720px) { .panel-dialog.two-col .panel-dialog-body { grid-template-columns: minmax(0, 1fr); } }
 .models .model-files { padding-top: 6px; }
+
+/* The cast catalog: one row per cast member, with what it holds and what to do with it. */
+.panel-dialog.catalog { width: min(720px, calc(100vw - 32px)); }
+.catalog-grid { display: grid; gap: 8px; }
+.catalog-card { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius); }
+.catalog-card img, .catalog-card .mod-mark, .catalog-card .voice-mark { width: 64px; height: 64px; object-fit: cover; border-radius: 4px; }
+.catalog-text { display: grid; gap: 2px; min-width: 0; }
+.catalog-text b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-facts { color: var(--muted); font-size: 12px; }
+.catalog-text .person-words { -webkit-line-clamp: 2; }
+.catalog-tools { display: flex; align-items: center; gap: 6px; }
+.catalog-tools .small { padding: 5px 10px; font-size: 12px; white-space: nowrap; }
+@media (max-width: 640px) { .catalog-card { grid-template-columns: 48px minmax(0, 1fr); } .catalog-tools { grid-column: 1 / -1; } }
 .picks { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .pick { display: flex; align-items: center; gap: 8px; padding: 3px 12px 3px 3px; background: var(--raised); border: 1px solid transparent; border-radius: 20px; }
 .pick:hover { background: var(--hover); }

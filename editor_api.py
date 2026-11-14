@@ -360,6 +360,158 @@ async def save_presets(request):
     return web.json_response({"checkpoints": rows})
 
 
+# The cast catalog: cast members kept once per install, beside the projects in a folder of its own that
+# holds its own copies of their pictures and voices, so deleting a project never breaks it.
+
+CATALOG = "_cast"
+
+
+def catalog_folder():
+    return os.path.join(root(), CATALOG)
+
+
+def catalog_file():
+    return os.path.join(catalog_folder(), "catalog.json")
+
+
+def read_catalog():
+    """The catalog's entries. A file that cannot be read counts as none."""
+    try:
+        with open(catalog_file(), encoding="utf-8") as f:
+            rows = json.load(f)["cast"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    return [r for r in rows if isinstance(r, dict) and isinstance(r.get("id"), str)]
+
+
+def write_catalog(rows):
+    """Write the catalog, then delete its files that no entry uses any more, such as an earlier version's
+    pictures. Projects keep their own copies, so nothing outside the catalog points at them."""
+    write_json(catalog_file(), {"cast": rows})
+    used = {os.path.basename(name) for entry in rows for _, name in store.cast_assets(entry)}
+    files, _ = catalog_files_folder()
+    try:
+        names = os.listdir(files)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(files, name)
+        if name not in used:
+            try:
+                # A file copied in the last few minutes may belong to a batch that has not written the catalog yet.
+                if time.time() - os.path.getmtime(path) < 600:
+                    continue
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def copy_assets(found, folder, subfolder):
+    """Copy each file, given as (subfolder, file) under the output folder, into folder under a new name.
+    Returns {(subfolder, file): {"file", "subfolder"}} for the copies."""
+    os.makedirs(folder, exist_ok=True)
+    moved = {}
+    for source_folder, name in found:
+        if (source_folder, name) in moved:
+            continue
+        source = output_path(source_folder, name)
+        if not os.path.isfile(source):
+            raise ValueError("the file %s of this cast member is missing" % name)
+        new = uuid.uuid4().hex[:12] + os.path.splitext(name)[1].lower()
+        shutil.copyfile(source, os.path.join(folder, new))
+        moved[(source_folder, name)] = {"file": new, "subfolder": subfolder}
+    return moved
+
+
+def catalog_files_folder():
+    return os.path.join(catalog_folder(), "files"), "%s/%s/files" % (store.ROOT, CATALOG)
+
+
+def project_assets_folder(folder):
+    return os.path.join(root(), folder, "assets"), "%s/%s/assets" % (store.ROOT, folder)
+
+
+def catalog_op(work, folder, op, names, catalog):
+    """The catalog's project operations: they copy files, so they run here rather than in project.py."""
+    kind = op["op"]
+    if kind == "save_cast_to_catalog":
+        cast_id = store._resolve(op.get("cast"), names, "cast")
+        person = store.find_cast(work, cast_id)
+        if store.catalog_state(person, catalog) == "current":
+            # Nothing changed since it matched the catalog: no new version for other projects to take.
+            entry = store.find_catalog(catalog, person["catalog"]["id"])
+            return {"cast": cast_id, "catalog": entry["id"], "version": entry["version"]}
+        target, sub = catalog_files_folder()
+        entry = store.save_to_catalog(catalog, person, copy_assets(store.cast_assets(person), target, sub))
+        return {"cast": cast_id, "catalog": entry["id"], "version": entry["version"]}
+    if kind == "add_cast_from_catalog":
+        entry = store.find_catalog(catalog, op.get("catalog"))
+        target, sub = project_assets_folder(folder)
+        person = store.cast_from_catalog(work, entry, copy_assets(store.cast_assets(entry), target, sub))
+        result = {"cast": person["id"], "catalog": entry["id"], "version": entry["version"]}
+        if op.get("as"):
+            names[op["as"]] = result
+        return result
+    if kind == "update_cast_from_catalog":
+        cast_id = store._resolve(op.get("cast"), names, "cast")
+        link = store.find_cast(work, cast_id).get("catalog") or {}
+        entry = store.find_catalog(catalog, link.get("id"))
+        target, sub = project_assets_folder(folder)
+        store.cast_from_catalog(work, entry, copy_assets(store.cast_assets(entry), target, sub), cast_id)
+        return {"cast": cast_id, "catalog": entry["id"], "version": entry["version"]}
+    raise ValueError("unknown operation %s" % kind)
+
+
+CATALOG_OPS = ("save_cast_to_catalog", "add_cast_from_catalog", "update_cast_from_catalog")
+
+
+async def cast_catalog(request):
+    return web.json_response({"cast": read_catalog()})
+
+
+async def remove_from_catalog(request):
+    """Take an entry out of the catalog, with its files. Projects keep their own copies."""
+    body = await request.json()
+    async with lock(CATALOG):
+        rows = read_catalog()
+        try:
+            entry = store.find_catalog(rows, body.get("id"))
+        except KeyError as error:
+            return refused(plain(error), 404)
+        rows = [r for r in rows if r is not entry]
+        write_catalog(rows)
+    return web.json_response({"cast": rows})
+
+
+async def spread_catalog(request):
+    """Bring every project's copy of a catalog entry up to date, except copies changed in their project."""
+    body = await request.json()
+    catalog = read_catalog()
+    try:
+        entry = store.find_catalog(catalog, body.get("id"))
+    except KeyError as error:
+        return refused(plain(error), 404)
+    updated, kept = [], []
+    for folder in project_folders():
+        async with lock(folder):
+            data = read_project(folder)
+            changed = False
+            for person in data.get("cast", []):
+                if (person.get("catalog") or {}).get("id") != entry["id"]:
+                    continue
+                state = store.catalog_state(person, catalog)
+                if state in ("changed", "newer") and store.cast_edited(person):
+                    kept.append({"project": folder, "cast": person["id"], "name": person["name"]})
+                elif state == "newer":
+                    target, sub = project_assets_folder(folder)
+                    store.cast_from_catalog(data, entry, copy_assets(store.cast_assets(entry), target, sub), person["id"])
+                    updated.append({"project": folder, "cast": person["id"]})
+                    changed = True
+            if changed:
+                commit(folder, data, "catalog", body.get("client"))
+    return web.json_response({"updated": updated, "kept": kept})
+
+
 def sampling_choices():
     """The checkpoint files, samplers and schedulers ComfyUI offers, for a project's own checkpoints."""
     import folder_paths
@@ -567,7 +719,7 @@ async def projects(request):
     available = available_models()
     return web.json_response({"projects": names, "titles": project_titles(names), "profiles": store.profile_status(available),
                               "finals": store.finals_status(available),
-                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), "refmods": refmods_status(), "encoders": encoder_choices(available), "sizes": store.size_choices(), "upscalers": store.upscaler_status(available), "release": pack_version(), **sampling_choices()})
+                              "loras": lora_files(), "realism": store.lora_status(available), "presets": read_presets(), "catalog": read_catalog(), "refmods": refmods_status(), "encoders": encoder_choices(available), "sizes": store.size_choices(), "upscalers": store.upscaler_status(available), "release": pack_version(), **sampling_choices()})
 
 
 async def create(request):
@@ -1288,10 +1440,14 @@ async def operations(request):
             return refused("the project changed since revision %s" % body["revision"], 409, revision=data.get("revision", 0))
         work = copy.deepcopy(data)
         names, results, later = {}, [], []
+        catalog = read_catalog() if any(isinstance(op, dict) and op.get("op") in CATALOG_OPS for op in ops) else None
+        catalog_before = copy.deepcopy(catalog)
         for index, op in enumerate(ops):
             kind = op.get("op") if isinstance(op, dict) else None
             try:
-                if kind == "render":
+                if kind in CATALOG_OPS:
+                    results.append(catalog_op(work, folder, op, names, catalog))
+                elif kind == "render":
                     clip_id = store._resolve(op.get("clip"), names, "clip")
                     planned, _ = store.plan_render(copy.deepcopy(work), folder, clip_id, op.get("quality") or "draft",
                                                    op.get("seed"), available_models(), op.get("detail"), op.get("upscaler"))
@@ -1315,6 +1471,13 @@ async def operations(request):
                     results.append(store.apply_op(work, op, names))
             except (ValueError, KeyError, TypeError) as error:
                 return refused("operation %s (%s): %s" % (index + 1, kind, plain(error)), index=index)
+        # The catalog changes only once every edit of the batch has gone through.
+        if catalog is not None and catalog != catalog_before:
+            async with lock(CATALOG):
+                fresh = {r["id"]: r for r in read_catalog()}
+                for row in catalog:
+                    fresh[row["id"]] = row
+                write_catalog(list(fresh.values()))
         # Renders that share a model run one after another, so a mixed batch loads each model once.
         # They trade places only with each other: a cancel stays where it was asked for.
         slots = [n for n, entry in enumerate(later) if entry[1]["op"] == "render"]
@@ -1796,6 +1959,9 @@ ROUTES = (
     ("POST", "/h3take/api/projects/open", "open_project"),
     ("GET", "/h3take/api/presets", "presets"),
     ("PUT", "/h3take/api/presets", "save_presets"),
+    ("GET", "/h3take/api/cast-catalog", "cast_catalog"),
+    ("POST", "/h3take/api/cast-catalog/remove", "remove_from_catalog"),
+    ("POST", "/h3take/api/cast-catalog/spread", "spread_catalog"),
     ("GET", "/h3take/api/project/{name}", "load"),
     ("PUT", "/h3take/api/project/{name}", "save"),
     ("DELETE", "/h3take/api/project/{name}", "remove"),

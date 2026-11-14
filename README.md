@@ -143,6 +143,13 @@ voice. Choose who is in each clip, and write @Name in **What happens** to place
 them, or drag their card into the text. Write @Name in **Who speaks** to use
 their voice. A voice can be uploaded, or taken from a clip on the timeline.
 
+**The cast catalog.** Press **Save** beside **Catalog** on a cast member to keep
+them for every project, with their pictures and voice. In another project,
+**Add**, **From the catalog** brings in a copy. When you change someone and save
+them to the catalog again, the other projects show **Newer in the catalog**
+with an **Update** button, or you can bring every project up to date at once from
+the catalog. A copy you changed in its project is never overwritten without you.
+
 **Joining shots.** Select a clip on the timeline, open **Generate** and choose **Extend forward** or
 **Extend back** to generate what happens next or before. **Bridge to next**
 generates what connects it to the following clip, and **Merge with next**

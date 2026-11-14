@@ -2339,6 +2339,111 @@ def add_footage(project, name, take, start=None, place=True, bin_id=None):
     return clip, item
 
 
+# The cast catalog: cast members kept once per ComfyUI install, for any project to bring in. A project
+# takes its own copy, linked to the catalog's entry by id and version. The link also keeps what the copy
+# was when it last matched the catalog, so the editor can tell a newer catalog entry from a change made
+# in the project.
+
+CATALOG_KEEP = ("name", "description", "file", "subfolder", "pictures", "voice", "refmod")
+CATALOG_LIMIT = 500
+
+
+def cast_snapshot(person):
+    """What a cast member is, without its id, its link or anything a project adds."""
+    return {k: copy.deepcopy(person[k]) for k in CATALOG_KEEP if person.get(k) not in (None, "", [])}
+
+
+def find_catalog(catalog, entry_id):
+    for entry in catalog:
+        if entry.get("id") == entry_id:
+            return entry
+    raise KeyError("no cast member %s in the catalog" % entry_id)
+
+
+def catalog_state(person, catalog):
+    """How a project's cast member stands against the catalog: None when it is not from it, else
+    current, newer (the catalog changed since), changed (the project changed it since) or missing."""
+    link = person.get("catalog")
+    if not isinstance(link, dict) or not link.get("id"):
+        return None
+    entry = next((e for e in catalog if e.get("id") == link["id"]), None)
+    if entry is None:
+        return "missing"
+    if int(entry.get("version", 1)) > int(link.get("version", 0)):
+        return "newer"
+    return "changed" if cast_edited(person) else "current"
+
+
+def cast_edited(person):
+    """Whether a linked cast member was changed in its project since it last matched the catalog."""
+    link = person.get("catalog")
+    return isinstance(link, dict) and link.get("synced") is not None and link["synced"] != cast_snapshot(person)
+
+
+def save_to_catalog(catalog, person, assets):
+    """Put a cast member in the catalog, or write it over the entry it came from. assets maps each of its
+    pictures and voice, as (subfolder, file), to the catalog's own copy. Returns the entry."""
+    snapshot = moved_assets(cast_snapshot(person), assets)
+    link = person.get("catalog") if isinstance(person.get("catalog"), dict) else {}
+    entry = next((e for e in catalog if e.get("id") == link.get("id")), None)
+    if entry is None:
+        if len(catalog) >= CATALOG_LIMIT:
+            raise ValueError("the catalog holds up to %s cast members" % CATALOG_LIMIT)
+        entry = {"id": new_id("k"), "version": 0}
+        catalog.append(entry)
+    for key in CATALOG_KEEP:
+        entry.pop(key, None)
+    entry.update(snapshot)
+    entry["version"] = int(entry.get("version", 0)) + 1
+    person["catalog"] = {"id": entry["id"], "version": entry["version"], "synced": cast_snapshot(person)}
+    return entry
+
+
+def cast_from_catalog(project, entry, assets, cast_id=None):
+    """Bring a catalog entry into a project as a linked copy, or bring a linked member up to date with it.
+    assets maps the catalog's files to the project's own copies."""
+    fields = moved_assets({k: copy.deepcopy(entry[k]) for k in CATALOG_KEEP if k in entry}, assets)
+    if cast_id is None:
+        person = add_cast(project, {k: v for k, v in fields.items()})
+    else:
+        person = find_cast(project, cast_id)
+        name = person.get("name")
+        for key in CATALOG_KEEP:
+            person.pop(key, None)
+        person.update(fields)
+        person.setdefault("name", name)
+        person.setdefault("description", "")
+    person["catalog"] = {"id": entry["id"], "version": int(entry.get("version", 1)), "synced": cast_snapshot(person)}
+    return person
+
+
+def cast_assets(fields):
+    """Every file a cast member uses, as (subfolder, file)."""
+    found = []
+    if fields.get("file"):
+        found.append((fields.get("subfolder") or "", fields["file"]))
+    for asset in (fields.get("pictures") or []) + ([fields["voice"]] if fields.get("voice") else []):
+        if isinstance(asset, dict) and asset.get("file"):
+            found.append((asset.get("subfolder") or "", asset["file"]))
+    return found
+
+
+def moved_assets(fields, assets):
+    """The same fields, with each file swapped for its copy in assets."""
+    def move(asset):
+        new = assets.get((asset.get("subfolder") or "", asset["file"]))
+        return dict(asset, **new) if new else asset
+    out = dict(fields)
+    if out.get("file"):
+        moved = move({"file": out["file"], "subfolder": out.get("subfolder") or ""})
+        out["file"], out["subfolder"] = moved["file"], moved["subfolder"]
+    if out.get("pictures"):
+        out["pictures"] = [move(p) for p in out["pictures"]]
+    if out.get("voice"):
+        out["voice"] = move(out["voice"])
+    return out
+
+
 def remove_cast(project, cast_id):
     find_cast(project, cast_id)
     project["cast"] = [c for c in project["cast"] if c["id"] != cast_id]
@@ -2921,7 +3026,8 @@ def describe(project):
         "frames": scene_end(project), "length": timecode(scene_end(project)), "fps": FPS,
         "cast": [{"id": p["id"], "name": p["name"], "description": p.get("description", ""),
                   "picture": bool(p.get("file")), "pictures": len(member_pictures(p)), "voice": bool(p.get("voice")),
-                  **({"refmod": p["refmod"]["file"]} if isinstance(p.get("refmod"), dict) and p["refmod"].get("file") else {})}
+                  **({"refmod": p["refmod"]["file"]} if isinstance(p.get("refmod"), dict) and p["refmod"].get("file") else {}),
+                  **({"catalog": p["catalog"]["id"]} if isinstance(p.get("catalog"), dict) and p["catalog"].get("id") else {})}
                  for p in project.get("cast", [])],
         "bins": [{"id": b["id"], "name": b["name"], "clips": sum(1 for c in project.get("clips", []) if c.get("bin") == b["id"])}
                  for b in project.get("bins", [])],
