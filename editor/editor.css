@@ -245,6 +245,10 @@ button:disabled { opacity: 0.42; cursor: default; }
 .play:hover { background: var(--hover); }
 .play .i-pause, .play.playing .i-play { display: none; }
 .play.playing .i-pause { display: block; }
+.monitor { display: flex; align-items: center; gap: 2px; margin-left: 10px; }
+.monitor input[type="range"] { width: 84px; height: 4px; margin: 0; accent-color: var(--tungsten); cursor: pointer; }
+.clip-volume { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; align-items: center; }
+.clip-volume > span { color: var(--muted); font-size: 12px; }
 .clock { display: flex; align-items: baseline; gap: 8px; margin-left: 14px; }
 .time { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
 .time .frames-part { color: var(--muted); font-size: 15px; font-weight: 500; }

@@ -79,7 +79,13 @@ the first pass's, and held frames stay as they are.
 
 Finals also run the MMH3 Realism Slider LoRA at 1.2 (`start_sigma = 0.93`) on
 both passes, for natural, un-airbrushed skin without drifting early composition
-steps: with HyperFlow's six steps it leaves the first two to the model alone. Both extras are optional:
+steps: with HyperFlow's six steps it leaves the first two to the model alone.
+Extensions, bridges and merges run it at half that strength, 0.6: they hold
+frames of a final that went through it already and carry that look on. At full
+strength on top, a chorus sung as a head clip and four extensions came out 46%
+harsher by the fifth clip, with deeper lines on the face each time; with none,
+the skin turned glossy and waxy along the chain. Half keeps its texture without
+piling it up. Both extras are optional:
 
 | File | Folder | Size | Where to get it | Without it |
 |---|---|---|---|---|
@@ -311,6 +317,82 @@ wins over its profile: `unet` for the ref2va file and `unet_text` for the fl2va
 one. A project that names only `unet` renders every clip on it. A `.gguf` model,
 or a `.safetensors` one with `hyperflow` in its file name, loads as HyperFlow.
 Any other model loads with ComfyUI's plain loader and scheduler.
+
+## Lip sync check
+
+The editor can say whether the lips of a clip follow its sound: every clip with
+words or a track, over the part the timeline shows. It uses SyncNet, the
+network lip-sync research measures with, and lists a clip under **Checks** when
+its lips run ahead of the sound, behind it, or do not follow it at all. It needs
+two files in `models/syncnet`, which the pack does not download for you:
+
+| File | Size | Where to get it | Terms |
+|---|---|---|---|
+| `syncnet_v2.model` | 54 MB | `https://www.robots.ox.ac.uk/~vgg/software/lipsync/data/syncnet_v2.model`, from the Visual Geometry Group, University of Oxford | Offered for research purposes under Creative Commons Attribution 4.0 |
+| `face_detection_yunet_2023mar.onnx` | 0.2 MB | [opencv_zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) | MIT |
+
+Without them nothing is measured and nothing is listed. It runs on the CPU, one
+clip at a time, so the GPU stays free for renders, and each take is measured
+once.
+
+What it reports, per clip: the offset in frames between the lips and the sound
+(negative when the lips come first), and how clearly they match. Talking video
+of real people reads about 6 to 9. In tests, every HyperFlow take of a singer
+held to a song read in sync, at 2 to 5; a cut whose picture and sound had slipped
+apart by a third of a second read 8 frames early. Within a frame or two is in
+sync. When a clip is listed, render it again on another seed and keep the take
+that reads in sync; if a whole run of clips is off by the same amount, look at
+how they were cut together before you render anything. The measure is a judge,
+not a fix: it sees the face, not what the words are. A face turned away, a
+microphone over the mouth, or a face too small in the frame gives a low
+confidence too.
+
+## Place check
+
+A generated clip can hold the face and still lose the room: a keyboard behind the
+singer turns into a monitor, a wall into a window. The editor checks the
+background of every generated clip on the timeline, the person taken out, and
+lists under **Checks** a clip where it changes, with the moment. An extension is
+also held against the first frame of the shot it continues, so a chain that has
+drifted into another room is caught where it shows. It needs one file in
+`models/matting`, which the pack does not download for you:
+
+| File | Size | Where to get it | Terms |
+|---|---|---|---|
+| `modnet.onnx` | 26 MB | `onnx/model.onnx` from [Xenova/modnet](https://huggingface.co/Xenova/modnet) on Hugging Face, saved as `modnet.onnx`. MODNet is by Ke et al., [ZHKKKe/MODNet](https://github.com/ZHKKKe/MODNet) | Apache 2.0 |
+
+Without it nothing is measured and nothing is listed. OpenCV runs it on the CPU,
+one clip at a time; a 20 s take takes about 4 s.
+
+How it works: every second, the background two seconds earlier and at the start
+of the shot is compared with the background now, at the scale of objects rather
+than grain. The camera's move is solved on the background alone, so a pan or a
+push is followed rather than counted as change. What it reports is the share of
+the background that is no longer what it was. In tests, a held camera on an
+unchanged room read 0% over 20 and 30 s, and so did a slow push from a wide
+shot into a close-up; a 20 s take sampled in independent windows, whose room
+changed under the singer, read 50%. 20% and more is listed.
+
+What it cannot see: anything on the person, such as clothes that change, and
+too little background (an extreme close-up, or a face that fills the frame) is
+not judged. While the camera zooms in or out, a moment is compared only with
+frames framed within 8% of it, so a shot that pushes and pulls all the way
+through is barely judged. A camera that travels far, such as walking through a
+house, shows a new background by design, and may be listed.
+
+## Long takes
+
+A shot that has to stay one continuous moment, such as a singer through a whole
+chorus, is best made as one clip up to about 20 s rather than a clip and
+extensions. Nothing in it is conditioned on a finished clip, so nothing piles up:
+in tests a 20.75 s take held the room, the skin and the lips from first frame to
+last, where a chain of the same length drifted (see Place check). The first pass
+draws the whole shot at once. A final longer than 10.4 s refines in context
+windows of 124 frames that share 39, which holds the picture the first pass made:
+on a 20.75 s take at 1088 x 1920 the result matched a whole-take refine to the
+pore, and the final took 15 minutes instead of 23. Refined whole, that take held
+50 GB of GPU memory at its peak. This needs ComfyUI's `MiniMaxH3ContextWindows` node; a
+ComfyUI without it refines the whole take at once.
 
 ## Licenses
 

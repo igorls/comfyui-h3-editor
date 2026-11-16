@@ -308,19 +308,32 @@ def audio_window(mode, span, length, audio_seconds, align="video"):
     return {"mode": mode, "first": first, "ticks": ticks, "total": total, "source_second": source_second}
 
 
-def hold_curve(total, first, count, base=0.0, feather=0):
+def hold_curve(total, first, count, base=0.0, feather=0, context_noise=0.0):
     """Mask values along one axis. 1 generates, `base` holds.
 
     An edge that meets generated material ramps from `base` up toward 1 over
     `feather` entries inside the hold, on a half cosine. An edge at the start
     or end of the take has nothing to blend into and stays hard.
+
+    context_noise lets the held entries far from that edge be partly redrawn: the mask rises from `base` at the
+    entry that meets the new material to `context_noise` at the far end of the hold, in a straight line. The new
+    material then leans less on the oldest held frames, and a chain of extensions does not inherit every small
+    shift of colour and texture from the one before. The entries next to the join stay held, so the cut into the
+    new take is as exact as without it. A hold with new material on both sides has no far end and is left as is.
     """
     total, first, count = int(total), int(first), int(count)
     if first < 0 or count < 1 or first + count > total:
         raise ValueError("hold %s+%s does not fit in %s" % (first, count, total))
+    if not 0.0 <= float(context_noise) <= 1.0:
+        raise ValueError("context_noise must be from 0 to 1")
     values = [1.0] * total
+    starts, ends = first == 0, first + count == total
     for i in range(first, first + count):
         values[i] = float(base)
+        if context_noise > base and count > 1 and starts != ends:
+            # How far this entry is from the join: 0 at the join, 1 at the far end.
+            away = (first + count - 1 - i) / float(count - 1) if starts else (i - first) / float(count - 1)
+            values[i] = float(base) + (float(context_noise) - float(base)) * away
     width = max(0, min(int(feather), count // 2))
     for d in range(width):
         ramp = 0.5 + 0.5 * math.cos(math.pi * (d + 1) / (width + 1))

@@ -19,6 +19,8 @@ import folder_paths
 from . import archive
 from . import cuts as cutscore
 from . import listen as soundscore
+from . import lips as lipscore
+from . import scene as scenescore
 from . import detail as finescore
 from . import media
 from . import patches as patching
@@ -840,13 +842,16 @@ async def cuts(request):
     The numbers come from the pictures alone (see cuts.py), so the same takes and the same trims give the same scores.
     """
     data = read_project(request.match_info["name"])
-    found, edges, inside, heard, arrivals = await asyncio.gather(
-        score_cuts(data), score_effect_cuts(data), score_inside(data), score_sound_inside(data), score_arrivals(data))
-    scored = [c["score"] for c in found + edges + inside + heard + arrivals if c["score"] is not None]
+    found, edges, inside, heard, arrivals, lips, places = await asyncio.gather(
+        score_cuts(data), score_effect_cuts(data), score_inside(data), score_sound_inside(data), score_arrivals(data),
+        score_lips(data), score_scene(data))
+    scored = [c["score"] for c in found + edges + inside + heard + arrivals + lips + places if c["score"] is not None]
     scored += [c["sound"]["score"] for c in found if c.get("sound")]
     scored += [c["movement"]["score"] for c in found if c.get("movement") and c["movement"]["score"] is not None]
     scored += [c["parts"]["score"] for c in found if c.get("parts") and c["parts"]["score"] is not None]
     return web.json_response({"cuts": found, "effects": edges, "inside": inside, "sound_inside": heard, "arrivals": arrivals,
+                              "lips": lips, "lips_missing": lipscore.missing(),
+                              "scene": places, "scene_missing": scenescore.missing(),
                               "worst": min(scored) if scored else None, "revision": data.get("revision", 0)})
 
 
@@ -884,6 +889,90 @@ async def score_sound_inside(data):
                 for row in rows if row["kind"] in ("swell", "fade") or item["in"] <= row["at"] < item["out"]]
 
     return [row for rows in await asyncio.gather(*[one(item) for item in store.ordered(data)]) for row in rows]
+
+
+LIP_GATE = None
+
+
+async def score_lips(data):
+    """Whether the lips of each generated clip with words or a track follow its sound, over the part the timeline shows
+    (see lips.py). Nothing when SyncNet's files are not installed. One clip at a time: it runs on the CPU."""
+    global LIP_GATE
+    if lipscore.missing():
+        return []
+    LIP_GATE = LIP_GATE or asyncio.Semaphore(1)
+
+    async def one(item):
+        clip = store.find_clip(data, item["clip"]) or {}
+        take = store.active_take(clip)
+        if not take or clip.get("kind") == "footage" or not (str(clip.get("dialogue") or "").strip() or clip.get("track")):
+            return None
+        try:
+            path = output_path(take.get("subfolder"), take["file"])
+            key = ("lips", path, os.path.getmtime(path), item["in"], item["out"])
+            async with LIP_GATE:
+                row = await cached(SOUND_SCORES, key, lipscore.score, path, item["in"], item["out"], media.command)
+        except FileNotFoundError:
+            return None                 # a take whose file is gone has nothing to check
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, web.HTTPException):
+            logging.exception("H3 Editor: the lip check could not read %s", take.get("file"))
+            return None
+        if not row:
+            return None
+        return dict(row, item=item["id"], take=take["id"], at=item["start"])
+
+    return [row for row in await asyncio.gather(*[one(item) for item in store.ordered(data)]) if row]
+
+
+SCENE_GATE = None
+
+
+async def score_scene(data):
+    """Whether the place behind the people holds in each generated clip on the timeline (see scene.py), over the part
+    the timeline shows. An extension is also held against the first frame its shot shows, so a chain that turns the
+    room into another is caught where it happens. Nothing when MODNet's file is not installed. One clip at a time."""
+    global SCENE_GATE
+    if scenescore.missing():
+        return []
+    SCENE_GATE = SCENE_GATE or asyncio.Semaphore(1)
+    shown = {}
+    for item in store.ordered(data):
+        clip = store.find_clip(data, item["clip"]) or {}
+        take = store.active_take(clip)
+        if not take or clip.get("kind") == "footage":
+            continue
+        try:
+            shown[item["id"]] = (item, output_path(take.get("subfolder"), take["file"]), take)
+        except (ValueError, web.HTTPException):
+            continue
+    first_item = {}
+    for item, _, _ in shown.values():
+        first_item.setdefault(item["clip"], item["id"])
+
+    async def one(item, path, take):
+        root = first_item.get(shot_root(data, item["clip"]))
+        anchor = None
+        if root and root != item["id"] and root in shown:
+            head, head_path, _ = shown[root]
+            anchor = (head_path, head["in"])
+        try:
+            key = ("scene", path, os.path.getmtime(path), item["in"], item["out"],
+                   anchor and (anchor[0], os.path.getmtime(anchor[0]), anchor[1]))
+            async with SCENE_GATE:
+                row = await cached(SOUND_SCORES, key, scenescore.score, path, item["in"], item["out"], media.command, anchor)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, web.HTTPException):
+            logging.exception("H3 Editor: the scene check could not read %s", take.get("file"))
+            return None
+        if not row:
+            return None
+        speed = store.clean_speed(item.get("speed"))
+        row = {k: v for k, v in row.items() if k != "seconds"}
+        return dict(row, item=item["id"], take=take["id"], since_shot=anchor is not None,
+                    at=item["start"] + int(round((max(row["frame"], item["in"]) - item["in"]) / speed)))
+
+    return [row for row in await asyncio.gather(*[one(*entry) for entry in shown.values()]) if row]
 
 
 async def score_arrivals(data):
@@ -1414,6 +1503,10 @@ async def graph(request):
                                    available_models(), installed_patches())
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error))
+    import nodes as comfy_nodes
+    if store.CONTEXT_WINDOWS not in comfy_nodes.NODE_CLASS_MAPPINGS:
+        # A ComfyUI from before context windows refines a long take whole, which needs far more memory.
+        built = store.without_nodes(built, {store.CONTEXT_WINDOWS})
     return web.json_response({"graph": own_nodes(built)})
 
 

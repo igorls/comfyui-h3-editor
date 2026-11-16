@@ -24,6 +24,9 @@ made with it, shot by shot.
   pictures, and export one video.
 - **Add music and narration.** Lay sound files under the cut on lanes of their
   own, trim them and set their volume. The export mixes them in.
+- **Set how loud each clip is.** A clip on the timeline has its own volume,
+  from silent to twice as loud, and the export applies it. The viewer has a
+  volume of its own beside the play controls, which changes only what you hear.
 - **Try fast, finish large.** Drafts are small and quick. Finals are refined at
   up to 1920 pixels, with a realism LoRA for natural skin.
 - **Pick the model, per project or per clip.** HyperFlow H3 Flash, MiniMax H3,

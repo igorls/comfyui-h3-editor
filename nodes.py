@@ -112,6 +112,7 @@ class H3Take(io.ComfyNode):
                 io.Combo.Input("align", options=["av", "video"], default="av", tooltip="av snaps holds to 39, 90, 141, so picture and sound share a boundary."),
                 io.Mask.Input("region", optional=True, tooltip="White areas of the held video regenerate. One mask or one per frame."),
                 io.Int.Input("video_feather", default=0, min=0, max=20, tooltip="Latent steps of soft edge where held video meets generated video."),
+                io.Float.Input("context_noise", default=0.0, min=0.0, max=1.0, step=0.001, optional=True, tooltip="Lets the held frames far from the join be partly redrawn, rising from nothing at the join to this mask value at the far end of the hold, so a chain of extensions does not pile up small shifts of colour and texture. The frames at the join stay held. 0 holds every frame as it is."),
                 io.Combo.Input("audio_hold", options=list(AUDIO_HOLDS), default="off", tooltip="span holds the source audio across the held video. full lays it along the whole take."),
                 io.Audio.Input("source_audio", optional=True),
                 io.Int.Input("audio_feather", default=8, min=0, max=80, tooltip="Audio ticks of soft edge. 40 ticks is one second."),
@@ -144,7 +145,8 @@ class H3Take(io.ComfyNode):
                 hold_frames, strength, keep, align, video_feather, audio_hold, audio_feather, ref_image_size,
                 audio_vae=None, start_image=None, end_image=None, mid_images=None, source_video=None, end_video=None,
                 end_audio=None, carry=None, region=None, source_audio=None, ref_images=None, ref_videos=None, ref_video_audios=None,
-                ref_audios=None, audio_align="video", source_hold=None, end_hold=None, end_hold_frames=0) -> io.NodeOutput:
+                ref_audios=None, audio_align="video", source_hold=None, end_hold=None, end_hold_frames=0,
+                context_noise=0.0) -> io.NodeOutput:
         keep = resolve_keep(strength, keep)
         second = None
         if video_mode == "bridge":
@@ -241,7 +243,7 @@ class H3Take(io.ComfyNode):
             if second is not None:
                 pieces.append(second)
             latent = cls.hold(latent, vae, audio_vae, pieces, length, width, height,
-                              video_feather, audio_feather, region, carry)
+                              video_feather, audio_feather, region, carry, context_noise or 0.0)
 
         card = "; ".join(decided["labels"])
         if decided["length_note"] == "short":
@@ -249,7 +251,8 @@ class H3Take(io.ComfyNode):
         return io.NodeOutput(positive, latent, card)
 
     @staticmethod
-    def hold(latent, vae, audio_vae, pieces, length, width, height, video_feather, audio_feather, region, carry=None):
+    def hold(latent, vae, audio_vae, pieces, length, width, height, video_feather, audio_feather, region, carry=None,
+             context_noise=0.0):
         total_steps = video_steps(length)
         video_curve = None
         audio_curve = None
@@ -274,7 +277,8 @@ class H3Take(io.ComfyNode):
                         start = span["source_start"]
                         video_latent = encode_video(vae, frames[start:start + span["hold"]], width, height, steps)
                 video_curve = merge_curves(
-                    video_curve, hold_curve(total_steps, video_first, steps, base=span["keep"], feather=video_feather)
+                    video_curve, hold_curve(total_steps, video_first, steps, base=span["keep"], feather=video_feather,
+                               context_noise=context_noise)
                 )
             if window is not None:
                 audio_first = window["first"]

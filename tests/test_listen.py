@@ -116,6 +116,18 @@ class InsideTest(unittest.TestCase):
         rows = listen.find_inside(np.concatenate([noise(2), np.zeros(listen.RATE), noise(2, seed=2)]))
         self.assertEqual(rows[0]["kind"], "dropout")
 
+    def test_a_sound_that_runs_out_before_the_take_ends_is_said_so(self):
+        # A song that dies away and then nothing: the track ran out before the picture did.
+        decay = np.exp(-np.arange(int(0.6 * listen.RATE)) / (0.15 * listen.RATE))
+        wave = np.concatenate([noise(3, 0.2), noise(0.6, 0.2, seed=2) * decay, np.zeros(int(1.2 * listen.RATE))])
+        rows = listen.find_inside(wave)
+        self.assertEqual([r["kind"] for r in rows], ["ends silent"])
+        self.assertTrue(abs(rows[0]["at"] - 3.6 * 24) <= 12, rows)
+        self.assertRegex(rows[0]["notes"][0], r"the sound stops 1\.[0-9] s before the take ends")
+
+    def test_a_short_silence_at_the_very_end_is_left_alone(self):
+        self.assertEqual(listen.find_inside(np.concatenate([noise(4), np.zeros(int(0.2 * listen.RATE))])), [])
+
     def test_a_take_that_ends_far_louder_than_it_began_is_a_swell(self):
         ramp = np.linspace(0.003, 0.3, 6 * listen.RATE)
         rows = listen.find_inside(np.random.default_rng(3).standard_normal(6 * listen.RATE) * ramp)

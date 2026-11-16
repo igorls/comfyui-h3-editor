@@ -226,6 +226,27 @@ class PolicyTest(unittest.TestCase):
         self.assertLess(values[5], 1.0)
         self.assertEqual(values[6], 1.0)
 
+    def test_context_noise_rises_away_from_the_join(self):
+        # A hold at the start of the take meets new material at its end: that entry stays held, the first one is
+        # the noisiest.
+        values = hold_curve(10, 0, 5, context_noise=0.8)
+        self.assertEqual(values[4], 0.0)
+        self.assertAlmostEqual(values[0], 0.8)
+        self.assertTrue(values[0] > values[1] > values[2] > values[3] > values[4])
+        self.assertEqual(values[5:], [1.0] * 5)
+        # A hold at the end, as extending back or a bridge's arrival, mirrors it.
+        values = hold_curve(10, 5, 5, context_noise=0.8)
+        self.assertEqual(values[5], 0.0)
+        self.assertAlmostEqual(values[9], 0.8)
+
+    def test_context_noise_leaves_a_hold_between_new_material_alone(self):
+        self.assertEqual(hold_curve(10, 3, 4, context_noise=0.8), hold_curve(10, 3, 4))
+
+    def test_no_context_noise_holds_as_before(self):
+        self.assertEqual(hold_curve(10, 0, 5, context_noise=0.0), hold_curve(10, 0, 5))
+        with self.assertRaises(ValueError):
+            hold_curve(10, 0, 5, context_noise=1.5)
+
     def test_hold_curve_respects_a_partial_keep(self):
         self.assertEqual(hold_curve(4, 1, 2, base=0.5), [1.0, 0.5, 0.5, 1.0])
 

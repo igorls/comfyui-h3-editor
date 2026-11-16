@@ -104,6 +104,10 @@
         </button>
         <span class="clock" title="Minutes, seconds and frames"><span id="time" class="time">00:00:00</span><span id="total" class="total"></span></span>
         <button id="addNote" class="quiet note-button" title="Write a note on this frame (N)">Note</button>
+        <span class="monitor">
+          <button id="mute" class="icon live-sound" aria-pressed="true" aria-label="Sound of the viewer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path class="on" d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/><path class="off" d="M16 9.5l5 5M21 9.5l-5 5"/></svg></button>
+          <input id="volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Viewer volume">
+        </span>
       </div>
     </section>
 

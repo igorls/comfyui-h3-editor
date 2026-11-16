@@ -933,7 +933,12 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         graph["94"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": models["profile_lora"],
                                                           "strength": profile["lora"][1]}}
         model = ["94", 0]
-    realism = realism_strength(project, size)
+    # A linked clip holds frames of a final that already went through the Realism Slider, and carries their look
+    # on. At full strength the slider adds its texture on top of that texture, and a chain of extensions grows
+    # harsher with each one: on a chorus sung as a head and four extensions, 5, 18, 33 and 46% harsher than the
+    # head. With none, and the held frames' far end redrawn (CONTEXT_NOISE), the skin turned glossy and waxy over
+    # the chain. At half: +1% by the third clip and +12% by the fifth, with the skin's texture kept.
+    realism = realism_strength(project, size) * (LINKED_REALISM if clip.get("link") else 1.0)
     if realism and models.get("lora") and installed(models["lora"], available):
         # The Realism Slider, on the model both passes sample with. Without it a final still renders.
         lora_inputs = {"model": model, "lora_name": models["lora"], "strength": realism}
@@ -985,6 +990,8 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         take_inputs.update({
             "video_mode": link["mode"], "hold_frames": hold, "audio_hold": "span",
             "source_video": ["6", 0], "source_audio": ["6", 1], "source_hold": ["6", 2],
+            # The held frames far from the join are partly redrawn, so a chain does not pile up small shifts.
+            "context_noise": CONTEXT_NOISE,
         })
         if arrives_on_pin(link):
             # The take carries on from the first clip as an extension does, and ends on the next clip's first
@@ -1017,6 +1024,8 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         # Without the latent upscaler a final stays at H3's own size.
         tail = profile.get("refine_sigmas") or profile["refine_from"]
         add_refine(graph, refine_size(project), tail, models["latent_upscaler"])
+        if length > LONG_TAKE:
+            add_refine_windows(graph)
     if quality != "draft" and size_name(project, quality) == SHARP:
         add_sharp(graph, refine_size(project), available)
     mods = clip_refmods(project, clip, available)
@@ -1035,6 +1044,17 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
                 "curve_direction": "constant", "scramble_seed": -1, "curve_shape": "linear", "curve_value": 1.0}}
             graph[key]["inputs"]["conditioning"] = [node, 0]
     return graph
+
+
+# How far the held frames furthest from a join are redrawn, as a mask value, falling to nothing at the join (see
+# policy.hold_curve). A take that holds every frame frozen copies them as they are and adds its own small lean on
+# top, and over a chain the leans add up: on HyperFlow, a head clip and four extensions at final size came out 4, 16,
+# 28 and 31% harsher than the head, with shinier, more orange skin. At 0.95: -3, 3, 6 and 3%, with the joins
+# scoring the same. 0.99 let more drift through, 0.8 about as much as 0.95.
+CONTEXT_NOISE = 0.95
+# The share of the Realism Slider's strength an extension, bridge or merge runs (see render_graph): 0.6 at the
+# usual 1.2.
+LINKED_REALISM = 0.5
 
 
 def add_refine(graph, size, tail, upscaler):
@@ -1066,6 +1086,39 @@ def add_refine(graph, size, tail, upscaler):
     graph["18"]["inputs"]["images"] = ["91", 0]
     # The refined picture is saved with the take as well: a clip that extends this one holds it in its own refine.
     graph["20"]["inputs"]["final"] = ["90", 0]
+
+
+# A long take is one generation, not a chain: nothing is ever conditioned on a finished clip, so nothing piles up,
+# and the place stays one place. Its first pass draws the whole shot at once. Sampled in context windows instead, each
+# window drew its own room and the windows dissolved into one another (a 20.75 s chorus: 44% of the background changed).
+# Its refine redraws only the last steps of a settled picture, so it can go in windows: on a 20.75 s take at
+# 1088 x 1920 the refine's three steps took 22 minutes whole (50 GB of GPU memory in use at the peak) and the whole
+# final 15 minutes in windows of 124 frames, the same picture to the pore, the place, the skin and the lips held.
+LONG_TAKE = 249                 # frames (10.4 s): a refine longer than this goes in windows
+REFINE_WINDOW = (124, 39)       # frames each window and frames two windows share, both 17n + 5
+CONTEXT_WINDOWS = "MiniMaxH3ContextWindows"
+
+
+def add_refine_windows(graph):
+    """Put ComfyUI's context windows on the refine pass's model, and only there."""
+    length, overlap = REFINE_WINDOW
+    graph["99"] = {"class_type": CONTEXT_WINDOWS, "inputs": {
+        "model": graph["88"]["inputs"]["model"], "context_length": length, "context_overlap": overlap,
+        "fuse_method": "pyramid", "freenoise": True, "split_conds_to_windows": False}}
+    graph["88"]["inputs"]["model"] = ["99", 0]
+
+
+def without_nodes(graph, missing):
+    """The graph with each node of a class in missing taken out, its users given what it was given: for model patches
+    a ComfyUI too old to have does not need (context windows)."""
+    out = copy.deepcopy(graph)
+    for key in [k for k, node in out.items() if node.get("class_type") in missing]:
+        source = out.pop(key)["inputs"].get("model")
+        for node in out.values():
+            for name, value in node.get("inputs", {}).items():
+                if isinstance(value, list) and len(value) == 2 and value[0] == key:
+                    node["inputs"][name] = source
+    return out
 
 
 def add_sharp(graph, size, available=None):
@@ -1136,6 +1189,20 @@ def clean_speed(value):
     if not math.isfinite(speed) or not MIN_SPEED <= speed <= MAX_SPEED:
         raise ValueError("speed must be between %s and %s" % (MIN_SPEED, MAX_SPEED))
     return speed
+
+
+# How loud a clip plays where it sits on the timeline: 1 is as rendered, 0 is silent, and
+# above 1 it is louder in the export. The same range as an added sound's.
+ITEM_GAIN = (0.0, 2.0)
+
+
+def clean_gain(value):
+    """A timeline item's volume. The project file comes from the client, so anything else is refused."""
+    gain = 1.0 if value in (None, "") else value
+    if isinstance(gain, bool) or not isinstance(gain, (int, float)) or not math.isfinite(gain) \
+            or not ITEM_GAIN[0] <= gain <= ITEM_GAIN[1]:
+        raise ValueError("volume must be a number from %g to %g" % ITEM_GAIN)
+    return round(float(gain), 2)
 
 
 def item_length(item):
@@ -1263,8 +1330,10 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
         first, last = int(item["in"]), int(item["out"])
         chains.append("[%s:v]trim=start_frame=%s:end_frame=%s,setpts=(PTS-STARTPTS)/%.5f,%s[v%s]" % (index, first, last, speed, finish, index))
         tempo = tempo_chain(speed)
-        chains.append("[%s:a]atrim=start=%.5f:end=%.5f,asetpts=PTS-STARTPTS,%s%s[a%s]" % (
-            index, first / float(FPS), last / float(FPS), tempo + "," if tempo else "", sound, index))
+        gain = clean_gain(item.get("gain"))
+        chains.append("[%s:a]atrim=start=%.5f:end=%.5f,asetpts=PTS-STARTPTS,%s%s%s[a%s]" % (
+            index, first / float(FPS), last / float(FPS), tempo + "," if tempo else "",
+            "volume=%.3f," % gain if gain != 1 else "", sound, index))
 
         overlap = cursor - item["start"]
         transition = item.get("transition")
@@ -2041,8 +2110,14 @@ def set_transition(project, item_id, kind, frames=12):
 
 def update_item(project, item_id, fields, ripple=False):
     """Move or trim a timeline item. With ripple, later clips follow its new end."""
-    check_fields(fields, ("start", "in", "out", "speed", "transition"))
+    check_fields(fields, ("start", "in", "out", "speed", "transition", "gain"))
     item = find_item(project, item_id)
+    if "gain" in fields:
+        gain = clean_gain(fields["gain"])
+        if gain == 1:
+            item.pop("gain", None)
+        else:
+            item["gain"] = gain
     take = active_take(find_clip(project, item["clip"]))
     old_end = item_end(item)
     changed = {k: int(fields[k]) for k in ("start", "in", "out") if k in fields}
@@ -2088,6 +2163,8 @@ def split_item(project, item_id, frame):
     right = {"id": new_id("i"), "clip": item["clip"], "start": frame, "in": cut, "out": item["out"]}
     if item.get("speed"):
         right["speed"] = item["speed"]
+    if "gain" in item:
+        right["gain"] = item["gain"]
     item["out"] = cut
     project["timeline"].append(right)
     return right
@@ -2290,6 +2367,12 @@ def add_linked(project, item_id, mode, seconds=None, action="", arrive=None):
         clip["cast"] = list(source["cast"])
     if source.get("bin"):
         clip["bin"] = source["bin"]
+    # The new frames carry on the source's shot, so they are drawn by the same model with the same LoRAs. Left to
+    # the project's model, an extension of a clip on another model changes its look where it joins.
+    if source.get("profile"):
+        clip["profile"] = source["profile"]
+    if source.get("loras"):
+        clip["loras"] = copy.deepcopy(source["loras"])
     track = continued_track(source, item, link["mode"], linked_length(link, seconds), link["a"])
     if track:
         clip["track"] = track
@@ -3305,6 +3388,8 @@ def describe(project):
                  "in": item["in"], "out": item["out"]}
         if clean_speed(item.get("speed")) != 1:
             entry["speed"] = item["speed"]
+        if clean_gain(item.get("gain")) != 1:
+            entry["gain"] = item["gain"]
         if item.get("transition"):
             entry["transition"] = item["transition"]
         timeline.append(entry)

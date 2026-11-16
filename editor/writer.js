@@ -239,6 +239,7 @@ Rules:
 - A cast member is placed by writing @Name in action, exactly as the name is given. When a cast member speaks, speaker starts with @Name. Never invent a cast name.
 - Text that must appear in the picture is spelled out, such as: a sign with the word OPEN in large white capital letters. Keep it to a few short words.
 - Pictures may come with the message, each named. A cast member's picture shows how @Name looks. H3 is given that picture too, so do not describe their face, hair or build in action; do keep their clothes and the place true to it unless asked to change them. A picture the user added shows something they want: H3 does not see it, so put what matters from it into words.
+- When someone sings, the sung words go in dialogue only. Describe the singing in action, how they sing and move, without quoting the lyrics.
 - No shot lists, no numbered steps, no camera cuts, no markdown.
 - Answer with JSON only, with no words before or after it.`;
 

@@ -84,6 +84,21 @@ class TimelineTest(unittest.TestCase):
         right = split_item(project, item["id"], 50)
         self.assertEqual((item["in"], item["out"], right["start"], right["in"], right["out"]), (0, 50, 50, 50, 124))
 
+    def test_a_clip_gets_a_volume_where_it_sits_and_a_split_keeps_it(self):
+        project = scene(124)
+        item = project["timeline"][0]
+        apply_op(project, {"op": "update_item", "item": item["id"], "fields": {"gain": 0.4}}, {})
+        self.assertEqual(item["gain"], 0.4)
+        self.assertEqual(describe(project)["timeline"][0]["gain"], 0.4)
+        right = split_item(project, item["id"], 50)
+        self.assertEqual(right["gain"], 0.4)
+        # 1 is as rendered: nothing is kept for it.
+        apply_op(project, {"op": "update_item", "item": item["id"], "fields": {"gain": 1}}, {})
+        self.assertNotIn("gain", item)
+        self.assertNotIn("gain", describe(project)["timeline"][0])
+        with self.assertRaisesRegex(ValueError, "volume must be a number from 0 to 2"):
+            apply_op(project, {"op": "update_item", "item": item["id"], "fields": {"gain": 3}}, {})
+
     def test_speed_moves_the_clips_after(self):
         project = scene(124, 124)
         set_speed(project, store.ordered(project)[0]["id"], 2)
@@ -596,6 +611,25 @@ class TrackTest(unittest.TestCase):
         accept_take(project, clip["id"], take("t0", 124))
         after, _ = add_linked(project, item["id"], "extend_after")
         self.assertEqual(after["cast"], ["p1"])
+
+    def test_linked_clips_keep_the_model_and_loras_of_their_source(self):
+        # An extension carries on the same shot: drawn by another model, its look would change at the join.
+        project, clip, item = self.presenter()
+        loras = [{"file": "style.safetensors", "strength": 0.8}]
+        update_clip(project, clip["id"], {"profile": "h3_turbo", "loras": loras})
+        accept_take(project, clip["id"], take("t0", 124))
+        after, _ = add_linked(project, item["id"], "extend_after")
+        self.assertEqual(after["profile"], "h3_turbo")
+        self.assertEqual([row["file"] for row in after["loras"]], ["style.safetensors"])
+        after["loras"][0]["strength"] = 0.1
+        self.assertEqual(clip["loras"][0]["strength"], 0.8)
+
+    def test_a_linked_clip_of_a_clip_on_the_projects_model_names_none(self):
+        project, clip, item = self.presenter()
+        accept_take(project, clip["id"], take("t0", 124))
+        after, _ = add_linked(project, item["id"], "extend_after")
+        self.assertNotIn("profile", after)
+        self.assertNotIn("loras", after)
 
     def test_a_track_takes_the_place_of_a_voice(self):
         project, clip, _ = self.presenter()

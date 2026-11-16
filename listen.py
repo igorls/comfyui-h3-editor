@@ -184,6 +184,13 @@ def score_cut(a, a_out, b, b_in, command=plain):
     return dict(judge(m), **rounded(m))
 
 
+# A take's last stretch of digital silence this long or longer is said: its sound ran out before its picture.
+ENDS_SILENT = 0.5
+# Silence that only a file can hold, far below any room: what is left where a track or a sound has run out. A sound
+# that dies away by itself stays above it for longer than ENDS_SILENT.
+DIGITAL = -110.0
+
+
 def find_inside(samples):
     """Where one take's sound is chopped off or drops out: [{"at", "kind", "score", "notes", ...}], at being a frame.
 
@@ -210,6 +217,20 @@ def find_inside(samples):
                           "notes": ["the sound drops out" if silent else "the sound is cut off: %d dB quieter within a twentieth of a second" % round(fall)]})
             n += after
         n += 1
+    # A take whose sound runs out before its picture does: the end of a song or a voice it was made to, or a sound
+    # that dies away and never comes back. Said as that, not as a fade, since the cure is a shorter clip.
+    tail = 0
+    while tail < len(heard) and heard[len(heard) - 1 - tail] <= DIGITAL:
+        tail += 1
+    seconds = tail * hop / float(RATE)
+    if seconds >= ENDS_SILENT and heard.max() > SILENCE + 15 and tail < len(heard):
+        at = (len(heard) - tail) * hop / float(RATE)
+        # A drop into that silence is the same thing: nothing comes after it, so it is not a hole.
+        found = [row for row in found if not (row["kind"] == "dropout" and abs(row["at"] - at * FPS) <= FPS // 2)]
+        if not any(abs(row["at"] - at * FPS) <= FPS // 2 for row in found):
+            found.append({"at": int(round(at * FPS)), "kind": "ends silent", "score": 50, "step": None,
+                          "notes": ["the sound stops %.1f s before the take ends" % seconds]})
+        return found
     # A take that ends far louder or quieter than it began: a swell, or a fade. It will not sit against its neighbours.
     wide = int(SIDE * RATE)
     first, last = loudness(samples[:wide]), loudness(samples[-wide:])

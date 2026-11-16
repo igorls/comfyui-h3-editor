@@ -106,6 +106,17 @@ connect its `latent` output to the sampler. `video_feather` softens the edge
 where held video meets generated video. `audio_feather` does the same for
 sound, where 40 ticks are one second. Source video must be 24 fps.
 
+`context_noise` is for chains of extensions. A take that holds every frame
+frozen copies them as they are and adds its own small lean on top, and over a
+chain the leans add up: colour, contrast and skin texture creep a little
+further with each extension. With `context_noise` the held frames far from the
+join are partly redrawn, the mask rising in a straight line from nothing at
+the frame that meets the new material to this value at the far end, so the
+join itself stays as exact as before. The editor uses 0.95 on every
+extension, bridge and merge: on HyperFlow at final size, a head clip and four
+extensions came out 4, 16, 28 and 31% harsher than the head without it, and
+-3, 3, 6 and 3% with it. 0 holds every frame as it is.
+
 A pin is one still. Passing a clip to those sockets is not video-to-video:
 connect the clip as `source_video` and set `video_mode`.
 

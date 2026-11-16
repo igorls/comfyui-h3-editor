@@ -9,7 +9,7 @@ from project import (projection_for, projections_for, small_encoder_size, add_so
                      clip_prompt, describe, encoder_status, update_cast, export_command, export_plan, finals_status,
                      frame_of, installed_profile, is_hyperflow, item_length, linked_length, lora_status, new_project, pick_file,
                      plan_render, profile_status, project_models, refmod_graph, render_graph, render_models, set_project, slug, update_clip,
-                     snap_frames, tempo_chain)
+                     snap_frames, tempo_chain, without_nodes, CONTEXT_WINDOWS, REFINE_WINDOW)
 
 HYPERFLOW = set(PROFILES["hyperflow"]["unet"] + PROFILES["hyperflow"]["unet_text"])
 BASE_TURBO = set(PROFILES["h3_turbo"]["unet"] + PROFILES["h3_turbo"]["unet_text"] + [PROFILES["h3_turbo"]["lora"][0]])
@@ -96,6 +96,30 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(graph["13"]["inputs"]["model"], ["9", 0])
         self.assertEqual(graph["9"]["inputs"]["folder"], "h3take_projects/x/preview")
 
+    def test_a_long_final_refines_in_windows_and_draws_its_first_pass_whole(self):
+        project = new_project("x")
+        project["format"] = "9:16"
+        graph = render_graph(project, "x", clip(seconds=20.75), "t1", "final", 3)
+        self.assertEqual(graph["10"]["inputs"]["length"], 498)
+        windows = graph["99"]
+        self.assertEqual(windows["class_type"], CONTEXT_WINDOWS)
+        self.assertEqual((windows["inputs"]["context_length"], windows["inputs"]["context_overlap"]), REFINE_WINDOW)
+        self.assertEqual(windows["inputs"]["model"], ["9", 0])
+        self.assertEqual(graph["88"]["inputs"]["model"], ["99", 0])
+        self.assertEqual(graph["13"]["inputs"]["model"], ["9", 0])
+
+    def test_a_final_up_to_a_long_take_and_a_long_draft_have_no_windows(self):
+        project = new_project("x")
+        self.assertNotIn("99", render_graph(project, "x", clip(seconds=10.0), "t1", "final", 3))
+        self.assertNotIn("99", render_graph(project, "x", clip(seconds=20.75), "t1", "draft", 3))
+
+    def test_without_the_windows_node_a_long_final_refines_whole(self):
+        graph = render_graph(new_project("x"), "x", clip(seconds=20.75), "t1", "final", 3)
+        plain = without_nodes(graph, {CONTEXT_WINDOWS})
+        self.assertNotIn("99", plain)
+        self.assertEqual(plain["88"]["inputs"]["model"], ["9", 0])
+        self.assertIn("99", graph)
+
     def test_a_prompt_only_clip_renders_on_hyperflow_fl2va(self):
         graph = render_graph(new_project("x"), "x", clip(), "t1", "draft", 3)
         self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
@@ -136,6 +160,27 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(graph["5"]["inputs"]["model"], ["95", 0])
         used = render_models(graph)
         self.assertEqual((used["lora"], used["lora_strength"]), (MODELS["lora"], 1.2))
+
+    def test_a_linked_final_runs_the_realism_slider_at_half_strength(self):
+        # Its held frames went through the slider already: at full strength a chain of extensions grows harsher with
+        # each one, and with none the skin turns waxy. Half keeps the texture without piling it up.
+        project = new_project("x")
+        made, item = add_clip(project, {"action": "A keeper walks to the window.", "seconds": 5})
+        project_module.accept_take(project, made["id"], {"id": "t0", "file": "a.mp4", "subfolder": "s", "frames": 124,
+                                                         "quality": "final"})
+        after, _ = project_module.add_linked(project, item["id"], "extend_after", action="She opens it.")
+        graph = render_graph(project, "x", after, "t1", "final", 3)
+        self.assertAlmostEqual(graph["95"]["inputs"]["strength"], 0.6)
+        self.assertAlmostEqual(render_models(graph)["lora_strength"], 0.6)
+        # The clip it carries on from runs it at the project's strength.
+        self.assertAlmostEqual(render_graph(project, "x", made, "t2", "final", 3)["95"]["inputs"]["strength"], 1.2)
+        # The share follows the project's own setting, and a project that turns it off turns it off everywhere.
+        set_project(project, {"realism": 0.8})
+        self.assertAlmostEqual(render_graph(project, "x", after, "t1", "final", 3)["95"]["inputs"]["strength"], 0.4)
+        set_project(project, {"realism": 0})
+        self.assertNotIn("95", render_graph(project, "x", after, "t1", "final", 3))
+        # Drafts never run it.
+        self.assertNotIn("95", render_graph(project, "x", after, "t1", "draft", 3))
 
     def test_the_refine_take_holds_what_the_first_take_holds(self):
         track = {"file": "t.wav", "subfolder": "s", "from": 2.0}
@@ -1164,6 +1209,15 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(graph["80"]["inputs"]["source_hold"], ["6", 2])
         self.assertEqual((graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]), (1920, 1088))
 
+    def test_linked_clips_redraw_their_oldest_held_frames_a_little_in_both_passes(self):
+        # Frozen held frames are copied as they are and a chain piles up small shifts of colour and texture.
+        link = {"mode": "extend_after", "hold": 39, "a": self.side}
+        graph = render_graph(new_project("x"), "x", clip(link=link, seconds=2), "t1", "final", 3)
+        self.assertEqual(graph["10"]["inputs"]["context_noise"], project_module.CONTEXT_NOISE)
+        self.assertEqual(graph["80"]["inputs"]["context_noise"], project_module.CONTEXT_NOISE)
+        # A clip that holds nothing has nothing to redraw.
+        self.assertNotIn("context_noise", render_graph(new_project("x"), "x", clip(), "t1", "final", 3)["10"]["inputs"])
+
     def test_linked_clips_hold_the_saved_latents_of_their_sources(self):
         link = {"mode": "extend_after", "hold": 39, "a": self.side}
         graph = render_graph(new_project("x"), "x", clip(link=link, seconds=2), "t1", "draft", 3)
@@ -1256,6 +1310,21 @@ class ExportTest(unittest.TestCase):
         self.project["timeline"] = [{"clip": "a", "start": 0, "in": 0, "out": 48, "speed": -2}]
         with self.assertRaises(ValueError):
             export_command(self.project, {"a": "a.mp4"}, "o.mp4")
+
+    def test_a_clips_volume_is_applied_to_its_own_sound_in_the_export(self):
+        self.project["timeline"] = [{"clip": "a", "start": 0, "in": 0, "out": 48, "gain": 0.5},
+                                    {"clip": "b", "start": 48, "in": 0, "out": 48}]
+        text = self.filter_of(export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4"))
+        self.assertEqual(text.count("volume="), 1)
+        self.assertIn("[0:a]atrim=start=0.00000:end=2.00000,asetpts=PTS-STARTPTS,volume=0.500,", text)
+        self.project["timeline"][0]["gain"] = 1
+        self.assertNotIn("volume=", self.filter_of(export_command(self.project, {"a": "a.mp4", "b": "b.mp4"}, "o.mp4")))
+
+    def test_a_volume_out_of_range_is_refused(self):
+        for bad in (-0.1, 2.5, float("nan"), "loud", True):
+            self.project["timeline"] = [{"clip": "a", "start": 0, "in": 0, "out": 48, "gain": bad}]
+            with self.assertRaises(ValueError, msg=bad):
+                export_command(self.project, {"a": "a.mp4"}, "o.mp4")
 
     def test_large_speed_changes_chain_atempo(self):
         self.assertEqual(tempo_chain(1), "")

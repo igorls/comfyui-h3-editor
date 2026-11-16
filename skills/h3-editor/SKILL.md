@@ -7,7 +7,7 @@ description: Make videos with the H3 Editor, the timeline video editor for MiniM
 
 The H3 Editor is a timeline editor that lives inside the user's ComfyUI. Each clip is
 rendered by MiniMax H3 as a video with sound. The timeline only points at those
-renders, so moving, trimming, splitting, speed changes and transitions never render
+renders, so moving, trimming, splitting, speed changes, volume changes and transitions never render
 anything again. A new render of a clip becomes another take; the clip keeps all of them.
 
 You drive it over HTTP with `scripts/h3.py`, which needs only Python. The user can have
@@ -164,7 +164,11 @@ all.
    `from`, the second of the sound where this clip's first frame sits, usually 0. Add
    `dialogue` with the words spoken in that window, which helps the mouth, and
    `language`. Use `cast` for the presenter's identity, and `first` to start exactly on
-   an approved still. About 5 seconds per window works well.
+   an approved still. A shot that must stay one continuous moment, such as a singer through
+   a chorus, is best one clip of up to about 20 seconds (`seconds` up to 20.75) rather than a
+   clip and extensions: nothing in it is carried on from a finished take, so the room, the
+   skin and the lips hold to the end, where a chain of the same length drifts. Draft it at
+   that length too; it renders in one go. Extend only past that.
 3. Render it and look at it. Then `extend_after` from its timeline item. The new clip
    holds the next slice of the same track by itself, and keeps the cast. Give it an
    action and, in `fields`, the next words. Repeat until the track is covered. Each
@@ -179,6 +183,43 @@ rendered, the extension shows `source changed` and needs another render. A cast 
 ignored on a clip that holds a track, because the track already is the voice. To find the
 words for each window, use word timings if the user has them. A window starting at `from`
 covers about `from` to `from + seconds`.
+
+### A song
+
+When the lip check is installed, `h3.py cuts` lists a `lips:` line for each clip whose lips
+run ahead of or behind its sound, or do not follow it. Render that clip again on another
+seed and keep the take that reads `in sync`; the wording of the prompt barely moves it. If
+several clips in a row are off by the same amount, the picture and sound slipped apart where
+they were joined: check the cut before rendering anything.
+
+A singer follows a song the same way: the song is the track. What was learned from 45 test
+takes of one synth-pop chorus:
+
+- The held song drives the mouth. Whether the sung words were in `dialogue` only, also
+  quoted in `action`, or nowhere, the mouth moved the same way within a seed: open on each
+  word, shut through the pauses, opening about a quarter second before she sings again.
+  Seeds changed the shot far more than the wording did.
+- The model matters more than the wording. On three draft seeds, MiniMax H3 Turbo
+  (`profile` `h3_turbo` on the clip) opened the mouth wider and shaped the vowels more
+  clearly than HyperFlow H3 Flash, and followed the song more closely each time. As a
+  whole chorus of finals it did not: its lips followed slightly less well, and its skin
+  came out harsher and the face older. Try Turbo when a singer's mouth looks timid, look
+  at its finals, and keep one model for the whole song.
+- Put the words of each window in `dialogue` and describe the singing in `action` without
+  quoting them. Without a track, when H3 makes the singing itself, quoting the lyric in
+  `action` gave a looser lip sync in 5 of 6 seeds. It never changed the words she sang.
+- Keep the microphone off the mouth: "a microphone on a stand beside her, below her
+  chin, her whole face and mouth clear". A studio microphone with a pop filter, left to
+  H3, hid the mouth for a whole take.
+- Find where the words fall in the song itself, not in what made it. A music model's own
+  plan put the chorus 1.2 seconds late. With word timings, trust when a word starts; on a
+  held note the end a recogniser gives is often early, so the next word's start is the
+  better end.
+- Each extension holds the end of the shot before it and carries its movement on, so a
+  push-in keeps pushing in through the whole chain. Give extensions a camera of their own,
+  such as "Close-up, static, locked off", when the move should stop.
+- Stop the last window at the end of the song: past it the track is silent, and so is the
+  take.
 
 ## VFX clips: pictures drawn by code
 
@@ -390,6 +431,11 @@ ids, and each clip's state. Before you export, check:
   rendered clips touch, 0 to 100, from the pictures. A `jump` (the same shot, the
   subject pops) under 60 needs fixing: extend the first clip and let the second
   continue from its last frame, or give the second a different framing;
+- no clip changes place. The same `cuts` list has a `place: changes` line for a generated clip whose background,
+  the person left out, is no longer what it was (20% or more), with the frame: a room that turned into another under
+  the face. In one clip, render it again on another seed. On an extension (`since its shot began`) the chain has
+  drifted: make the shot one longer clip instead (see Picture to a recorded track), or start that part as a shot of
+  its own. It cannot see clothes that change, and a camera that travels far may be listed;
 - the total length matches the brief.
 
 ## Reporting

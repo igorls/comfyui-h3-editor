@@ -3,6 +3,14 @@ H3 Editor
 H3 Editor is licensed under the GNU General Public License v3.0, in LICENSE.
 This pack includes work from other projects, each under its own license.
 
+syncnet_python
+  Author: Joon Son Chung
+  Source: https://github.com/joonson/syncnet_python
+  License: MIT License (Copyright (c) 2016-present Joon Son Chung)
+  Used in: lips.py, the SyncNet network's layers and the way an offset and a
+  confidence are worked out from its embeddings, written out again. The
+  network's weights are not part of this pack; see docs/models.md.
+
 ComfyUI-MiniMax-H3-Turbo
   Author: Larryvrh
   Source: https://github.com/Larryvrh/ComfyUI-MiniMax-H3-Turbo (commit 4274783)

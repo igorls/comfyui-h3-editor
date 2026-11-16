@@ -5,6 +5,92 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## Unreleased
+
+### Added
+
+- **A volume for each clip.** The **Timeline** tab of a clip has a **Volume**
+  slider beside its speed and transition: 1 is as rendered, 0 is silent, and
+  up to 2 is louder. It belongs to the clip's place on the timeline, so the
+  same clip placed twice can differ, and both halves of a split keep it. The
+  export applies it; the timeline shows it next to the clip's name. Above 1 it
+  is louder in the export only, since the viewer tops out at 1. Agents send
+  `gain` in `update_item`.
+- **A volume for the viewer.** A speaker button and a slider beside the play
+  controls set how loud the editor plays: the cut, a clip on its own, added
+  sounds and the preview of a clip that is still rendering. It changes what
+  you hear and nothing in the export, and the editor remembers it.
+- **A take whose sound runs out is named.** When the sound of a take stops
+  half a second or more before its picture does, as when a clip runs past the
+  end of the song or voice it was made to, **Checks** says it runs on after
+  its sound ends, and from which frame. It used to call that a take that ends
+  much quieter than it begins.
+
+- **A lip sync check.** Every clip with words or a track gets a measure of
+  whether its lips follow its sound, over the part the timeline shows, and
+  **Checks** lists the clips whose lips run ahead of the sound, behind it, or
+  do not follow it at all, with the offset. It uses SyncNet, the network
+  lip-sync research measures with, written into the pack from its MIT code; its
+  weights and a small face detector go in `models/syncnet` and are not
+  downloaded for you (see the models page). On a sung chorus it agreed with
+  SyncNet's own code clip by clip, and found the cut where picture and sound
+  had slipped apart by a third of a second. Agents get `lips` in the cuts
+  report and a `lips:` line in `h3.py cuts`.
+- **A place check.** A generated clip can keep the face and lose the room: a
+  keyboard behind the singer becomes a monitor. Every generated clip's
+  background, the person taken out, is compared second by second with itself
+  two seconds earlier and with the start of its shot, following the camera's
+  move, and **Checks** lists a clip where 20% or more of it is no longer what
+  it was, with the moment. An extension is held against the first frame of its
+  shot, so a chain that has drifted into another room is caught too. It needs
+  MODNet's portrait matting file in `models/matting`, not downloaded for you
+  (see the models page). On held 20 and 30 s takes and on a slow push into a
+  close-up it read 0%; on a take whose room changed under the singer 50%.
+  While the camera zooms, it compares only frames framed alike. Agents get `scene` in the cuts report.
+
+### Changed
+
+- **Long finals refine in windows.** A final longer than 10.4 s draws its first
+  pass whole, as before, and redraws its last steps at the final size in
+  context windows of 124 frames, which holds the picture the first pass made.
+  A 20.75 s sung take came out the same as one refined whole, to the pore, in
+  15 minutes instead of 23 on the same GPU, with the room, skin and lips held
+  from first frame to last. A ComfyUI without the
+  core `MiniMaxH3ContextWindows` node refines the whole take as before.
+
+- **The writing model keeps sung words out of the action.** When someone
+  sings, the words go in the dialogue and the action describes the singing.
+  In tests where H3 made the singing itself, quoting the lyric in the action
+  gave a looser lip sync in 5 of 6 seeds.
+
+### Fixed
+
+- **Long shots made of extensions keep their look.** A take held its source's
+  frames frozen, copied them as they were and added its own small lean on top,
+  and over a chain the leans added up: colour, contrast and skin texture crept
+  further with each extension, shinier and more orange on a face. Extensions,
+  bridges and merges now let the held frames far from the join be partly
+  redrawn, falling to nothing at the join, so the cut into the new take is as
+  exact as before. On HyperFlow at final size, a head clip and four extensions
+  came out 4, 16, 28 and 31% harsher than the head; now -3, 3, 6 and 3%, with
+  the joins scoring the same. H3 Take has the setting as `context_noise`.
+- **A chain of final extensions no longer grows harsher with each one.** An
+  extension, bridge or merge held frames of a final that had been through the
+  Realism Slider, then ran the slider again, adding its texture on top. On a
+  chorus sung as a head clip and four extensions, the extensions came out 5,
+  18, 33 and 46% harsher than the head, with crazed skin and deeper lines on
+  the face by the end. Linked clips now run the slider at half the project's
+  strength (0.6 at the usual 1.2): with it off the skin turned glossy and waxy
+  along the chain, and at half it keeps its texture without piling it up. With
+  the held frames' far end redrawn as well (above), the same chain stays within
+  1% of the head by the third clip and 12% by the fifth. Holding the refined
+  latents in the refine pass, new in 0.8.0, was ruled out: encoding the source
+  video there instead gave the same drift.
+- **An extension, bridge or merge keeps its source clip's model and LoRAs.**
+  It used to take the project's, so extending a clip set to another model,
+  such as MiniMax H3 Turbo in a HyperFlow project, changed the look where the
+  two met. Clips made before keep what they have.
+
 ## 0.9.1, 2026-11-15
 
 ### Added

@@ -301,6 +301,18 @@ def main():
             for row in found.get("sound_inside") or []:
                 print("%4s  %-14s at frame %-6d inside %s, frame %d of its take  %s" % (row["score"], "sound: " + row["kind"], row["at"], row["item"],
                                                                                         row["frame"], "; ".join(row["notes"])))
+            for row in found.get("lips") or []:
+                print("%4s  %-14s at frame %-6d %s  offset %+d frames, confidence %.1f  %s" % (
+                    row["score"], "lips: " + row["kind"], row["at"], row["item"], row["offset"], row["conf"], "; ".join(row["notes"])))
+            if found.get("lips_missing"):
+                print("   -  lips: not measured; needs %s in models/syncnet" % " and ".join(found["lips_missing"]))
+            for row in found.get("scene") or []:
+                if row["kind"] != "holds":
+                    print("%4s  %-14s at frame %-6d %s  %d%% of the background changed%s  %s" % (
+                        row["score"], "place: " + row["kind"], row["at"], row["item"], round(row["share"] * 100),
+                        " since its shot began" if row.get("since_shot") else "", "; ".join(row["notes"])))
+            if found.get("scene_missing"):
+                print("   -  place: not measured; needs %s in models/matting" % " and ".join(found["scene_missing"]))
             for row in found.get("arrivals") or []:
                 if row["kind"] != "arrives":
                     print("%4s  %-14s at frame %-6d %s  %s" % (row["score"], "arrival", row["at"], row["item"], "; ".join(row["notes"])))

@@ -545,6 +545,9 @@ function addLinked(mode, arrive = "short") {
   };
   if (source.cast?.length) clip.cast = [...source.cast];
   if (binOf(source.bin)) clip.bin = source.bin;
+  // The new frames carry on the source's shot: the same model and LoRAs draw them, or the look changes at the join.
+  if (source.profile) clip.profile = source.profile;
+  if (source.loras?.length) clip.loras = structuredClone(source.loras);
   if (track) clip.track = track;
   state.project.clips.push(clip);
   const [first, last] = linkedRange(link, linkedFrames(link, seconds));
@@ -1259,6 +1262,9 @@ function mergeWithNext() {
   };
   if (source.cast?.length) clip.cast = [...source.cast];
   if (binOf(source.bin)) clip.bin = source.bin;
+  // The new frames carry on the source's shot: the same model and LoRAs draw them, or the look changes at the join.
+  if (source.profile) clip.profile = source.profile;
+  if (source.loras?.length) clip.loras = structuredClone(source.loras);
   if (track) clip.track = track;
   state.project.clips.push(clip);
   const [first, last] = linkedRange(clip.link, linkedFrames(clip.link, clip.seconds));
@@ -2725,6 +2731,8 @@ function loraSection(clip = null) {
     const note = document.createElement("span");
     note.className = "lora-note";
     note.textContent = on ? "Finals only" : "Off";
+    // Extensions, bridges and merges run half of it: the frames they carry on already have it.
+    note.title = "On finals. Extensions, bridges and merges run it at half this strength: they hold frames that already went through it, and at full strength a chain of them grows harsher with each one.";
     const reset = document.createElement("button");
     reset.className = "quiet small";
     reset.textContent = "Reset";
@@ -3953,7 +3961,18 @@ function timelineControls(item) {
   const unit = document.createElement("span");
   unit.textContent = "frames";
   row.append(name, kind, length, unit);
-  box.append(speeds, row);
+  const volume = document.createElement("div");
+  volume.className = "clip-volume";
+  const volumeTitle = document.createElement("span");
+  volumeTitle.textContent = "Volume";
+  volume.title = "How loud this clip plays here on the timeline: 1 is as rendered, 0 is silent. Above 1 it is louder in the export; the viewer tops out at 1.";
+  volume.append(volumeTitle, strengthSlider("Clip volume", (clipOf(item.clip)?.name || "Clip") + " volume", gainOf(item), [0, 2], 1, (v) => {
+    if (v === 1) delete item.gain;
+    else item.gain = v;
+    relevel();
+    renderTimeline();
+  }));
+  box.append(speeds, row, volume);
   const use = takeUse(item);
   if (use) box.append(use);
   return [box];
@@ -4375,7 +4394,7 @@ function syncSounds() {
       if (!player.paused) player.pause();
       continue;
     }
-    player.volume = Math.min(1, sound.gain);
+    player.volume = Math.min(1, sound.gain) * heard();
     const wanted = (sound.offset || 0) + at;
     if (player.paused) {
       player.currentTime = wanted;
@@ -4567,6 +4586,12 @@ function renderTimeline() {
       rate.className = "rate";
       rate.textContent = " " + Math.round(speedOf(item) * 100) + "%";
       name.append(rate);
+    }
+    if (gainOf(item) !== 1) {
+      const level = document.createElement("span");
+      level.className = "rate";
+      level.textContent = gainOf(item) === 0 ? " muted" : " vol " + Math.round(gainOf(item) * 100) + "%";
+      name.append(level);
     }
     block.append(film, name);
     if (take && clip.kind !== "footage" && px(itemLength(item)) >= 64) {
@@ -4767,7 +4792,7 @@ let cutsAsked = "";
 let cutsTimer = null;
 
 // What else the server's cut scores hold: the cuts into and out of VFX clips, and takes that change picture inside.
-const cutExtras = { effects: [], inside: [], soundInside: [], arrivals: [] };
+const cutExtras = { effects: [], inside: [], soundInside: [], arrivals: [], lips: [], scene: [] };
 
 function cutMark(frame, score, title, act) {
   const mark = document.createElement("button");
@@ -4824,11 +4849,34 @@ function findings() {
     if (!item || activeTake(clipOf(item.clip))?.id !== row.take) continue;
     const name = clipOf(item.clip).name;
     const title = { chop: " has its sound cut off", dropout: " loses its sound", swell: " ends much louder than it begins",
-      fade: " ends much quieter than it begins" }[row.kind];
+      fade: " ends much quieter than it begins", "ends silent": " runs on after its sound ends" }[row.kind];
     if (!title) continue;
+    // Its sound, or the track it was made to, ran out: the cure is to trim the clip there or make it shorter.
+    const notes = row.kind === "ends silent" ? [...row.notes, "trim the clip there, or make it shorter"] : row.notes;
     // A sound cut off is a guess from the level alone, so it asks for a listen. A hole in the sound is certain.
     found.push({ sev: row.kind === "dropout" ? "bad" : "warn", badge: "Sound", word: true, frame: row.at, title: name + title,
-      detail: row.notes.join(", "), act: jumpTo(item, row.at) });
+      detail: notes.join(", "), act: jumpTo(item, row.at) });
+  }
+  // Whether the lips of a clip with words or a track follow its sound (see lips.py). The seed decides it far more
+  // than any setting, so the cure is another render.
+  for (const row of cutExtras.lips) {
+    const item = state.project.timeline.find((i) => i.id === row.item);
+    if (!item || row.kind === "in sync" || activeTake(clipOf(item.clip))?.id !== row.take) continue;
+    const title = { "no match": " has lips that do not follow its sound", early: " has lips ahead of its sound",
+      late: " has lips behind its sound" }[row.kind];
+    if (!title) continue;
+    found.push({ sev: row.kind === "no match" ? "bad" : "warn", badge: "Lips", word: true, frame: row.at,
+      title: clipOf(item.clip).name + title, detail: row.notes.join(", "), act: jumpTo(item, row.at) });
+  }
+  // Whether the place behind the people stays the same place (see scene.py): a room that turns into another while
+  // the face holds. An extension is also held against the start of its shot, so a chain that drifts is caught too.
+  for (const row of cutExtras.scene) {
+    const item = state.project.timeline.find((i) => i.id === row.item);
+    if (!item || row.kind !== "changes" || activeTake(clipOf(item.clip))?.id !== row.take) continue;
+    found.push({ sev: "bad", badge: "Place", word: true, frame: row.at,
+      title: clipOf(item.clip).name + (row.since_shot ? " is not the place its shot began in" : " changes the place behind the person"),
+      detail: [...row.notes, ...(row.since_shot ? ["or make the shot one longer clip instead of a chain"] : [])].join(", "),
+      act: jumpTo(item, row.at) });
   }
   for (const cut of touchingCuts()) {
     const row = cutScores.get(cut.key);
@@ -5002,6 +5050,8 @@ function refreshCutScores() {
       cutExtras.inside = reply.inside || [];
       cutExtras.soundInside = reply.sound_inside || [];
       cutExtras.arrivals = reply.arrivals || [];
+      cutExtras.lips = reply.lips || [];
+      cutExtras.scene = reply.scene || [];
       checksFor = folder;
       renderTimeline();
     } catch (_) {
@@ -6505,7 +6555,7 @@ function splitAtPlayhead() {
   }
   checkpoint();
   const cut = Math.round(item.in + (state.playhead - item.start) * speedOf(item));
-  state.project.timeline.push({ id: uid("i"), clip: item.clip, start: state.playhead, in: cut, out: item.out, speed: item.speed });
+  state.project.timeline.push({ id: uid("i"), clip: item.clip, start: state.playhead, in: cut, out: item.out, speed: item.speed, ...(typeof item.gain === "number" ? { gain: item.gain } : {}) });
   item.out = cut;
   save();
   renderTimeline();
@@ -6743,6 +6793,55 @@ function load(video, url) {
   }
 }
 
+// The viewer's own volume: what is heard here, never what the export holds. Kept in this browser.
+let monitor = 1;
+let monitorMuted = false;
+try {
+  const kept = localStorage.getItem("h3take.volume");
+  if (kept !== null && Number(kept) >= 0 && Number(kept) <= 1) monitor = Number(kept);
+  monitorMuted = localStorage.getItem("h3take.muted") === "on";
+} catch (_) {}
+const heard = () => (monitorMuted ? 0 : monitor);
+// How loud a clip plays where it sits on the timeline: 1 is as rendered. The export applies it too.
+const gainOf = (item) => (typeof item?.gain === "number" ? item.gain : 1);
+
+// A video plays at its share of a transition, times its clip's volume, times the viewer's. The share is
+// kept beside the element, since a clip that runs silent before its cut is told by it and not by the
+// volume, which is also 0 when the viewer is muted. An element cannot play above 1: a clip set louder
+// than that is louder in the export only.
+function setMix(video, mix, item) {
+  video._mix = mix;
+  if (item !== undefined) video._gain = gainOf(item);
+  video.volume = Math.min(1, mix * (video._gain ?? 1)) * heard();
+}
+
+// After the viewer's volume or a clip's volume changed: everything that sounds takes its level again.
+function relevel() {
+  if (state.project && !viewing()) front._gain = gainOf(leading(state.playhead));
+  for (const video of [front, back]) setMix(video, video._mix ?? 1);
+  $("motion").volume = heard();
+  for (const [id, player] of soundPlayers) {
+    const sound = (state.project?.sounds || []).find((s) => s.id === id);
+    if (sound) player.volume = Math.min(1, sound.gain) * heard();
+  }
+}
+
+function setMonitor(level, muted) {
+  monitor = Math.min(1, Math.max(0, level));
+  monitorMuted = muted;
+  try {
+    localStorage.setItem("h3take.volume", String(monitor));
+    localStorage.setItem("h3take.muted", muted ? "on" : "off");
+  } catch (_) {}
+  const silent = muted || monitor === 0;
+  const button = $("mute");
+  button.setAttribute("aria-pressed", String(!silent));
+  button.dataset.tip = silent ? "Unmute the viewer" : "Mute the viewer";
+  $("volume").value = String(muted ? 0 : monitor);
+  $("volume").title = "Viewer volume, " + Math.round((muted ? 0 : monitor) * 100) + "%. The export is not changed";
+  relevel();
+}
+
 // The live preview loops a clip that is still being sampled, so its sound is off until asked for.
 let liveSound = false;
 try { liveSound = localStorage.getItem("h3take.liveSound") === "on"; } catch (_) {}
@@ -6789,6 +6888,13 @@ function showLive(job) {
 
 setLiveSound(liveSound);
 $("liveSound").addEventListener("click", () => setLiveSound(!liveSound));
+$("mute").addEventListener("click", () => {
+  // Unmuting a slider left at nothing would still be silent: it comes back at full.
+  if (monitorMuted || monitor === 0) setMonitor(monitor || 1, false);
+  else setMonitor(monitor, true);
+});
+$("volume").addEventListener("input", () => setMonitor(Number($("volume").value), false));
+setMonitor(monitor, monitorMuted);
 
 function speedOf(item) {
   return item?.speed || 1;
@@ -6817,7 +6923,7 @@ function clearMix() {
   for (const video of [front, back]) {
     video.style.opacity = "";
     video.style.clipPath = "";
-    video.volume = 1;
+    setMix(video, 1);
     video.muted = false;
   }
   front.style.zIndex = "1";
@@ -6831,8 +6937,8 @@ function applyMix(item, frame) {
   back.style.zIndex = "2";
   back.classList.add("show");
   back.muted = false;
-  front.volume = 1 - progress;
-  back.volume = progress;
+  setMix(front, 1 - progress);
+  setMix(back, progress, item);
   if (kind === "wipe") {
     back.style.opacity = "";
     back.style.clipPath = "inset(0 " + (100 - progress * 100) + "% 0 0)";
@@ -6979,6 +7085,8 @@ function setPlaying(on) {
     showFrame();
     return;
   }
+  // Whatever was shown while paused, the clip under the playhead starts at its own volume.
+  relevel();
   if (viewing()) {
     if (!sourceEnd()) {
       setPlaying(false);
@@ -6986,6 +7094,8 @@ function setPlaying(on) {
     }
     if (state.sourceFrame >= sourceEnd() - 1) state.sourceFrame = 0;
     showFrame();
+    // A clip on its own plays as rendered: its volume belongs to its place on the timeline.
+    setMix(front, 1, null);
     front.play().catch(() => {});
     requestAnimationFrame(tickSource);
     return;
@@ -7032,14 +7142,14 @@ function tick(now) {
       const parked = Math.max(0, following.in / FPS - PREROLL * rate);
       const lead = (following.start - state.playhead) / FPS;
       if (lead > 0 && lead * rate <= following.in / FPS - parked && back.readyState >= 2 && !back.seeking) {
-        back.volume = 0;
+        setMix(back, 0, following);
         back.playbackRate = rate;
         back.play().catch(() => {});
       } else if (!back.seeking && Math.abs(back.currentTime - parked) > 0.01) {
         // Once is enough. Seeking again on every frame keeps the next clip from being ready.
         back.currentTime = parked;
       }
-    } else if (following && back.volume === 0 && !back.paused && back.dataset.url === sourceOf(following)) {
+    } else if (following && back._mix === 0 && !back.paused && back.dataset.url === sourceOf(following)) {
       // While it runs silent, nudge its speed so it is on its in-point exactly when the cut comes:
       // early would skip a frame, late would show one from before the cut.
       // It settles at its own speed a little before the cut: a change of speed at the cut itself
@@ -7060,7 +7170,7 @@ function tick(now) {
       place(front, current, state.playhead, 0.08);
       front.classList.add("show");
       if (before !== front) cover(before, front);
-      front.volume = 1;
+      setMix(front, 1, current);
       front.play().catch(() => {});
       if (!incoming(state.playhead)) back.pause();
     } else {
