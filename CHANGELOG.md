@@ -90,6 +90,14 @@ Each release is a tag on GitHub, `v` followed by the version.
   It used to take the project's, so extending a clip set to another model,
   such as MiniMax H3 Turbo in a HyperFlow project, changed the look where the
   two met. Clips made before keep what they have.
+- **No more `Pin error.` warnings while HyperFlow streams from system
+  memory.** On a card too small for HyperFlow, ComfyUI keeps part of it in
+  system memory and asked to pin each of those layers, where they sat in
+  ComfyUI's read-only mapping of the model file. CUDA cannot pin that memory,
+  on Windows or Linux, so every layer printed the warning and was copied
+  unpinned anyway. HyperFlow now skips those attempts and pins the rest as
+  before. Each failed attempt also waited on the GPU, so steps can come out a
+  little faster ([#4](https://github.com/igorls/comfyui-h3-editor/issues/4)).
 
 ## 0.9.1, 2026-11-15
 

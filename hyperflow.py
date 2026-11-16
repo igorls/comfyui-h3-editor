@@ -40,6 +40,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 
 import comfy.ldm.minimax.model as packed_dit
+import comfy.model_patcher
 import comfy.sd
 import comfy.utils
 import folder_paths
@@ -590,6 +591,35 @@ def disk_patcher(base: type) -> type:
     return HyperFlowDiskPatcher
 
 
+def pinnable(weight) -> bool:
+    """False for a weight that still lives in ComfyUI's read-only mapping of the model file. CUDA cannot pin that memory,
+    on Windows and Linux alike, so trying prints ComfyUI's "Pin error." once per weight and waits on the GPU each time.
+    A quantized weight keeps its data in `_qdata`."""
+    data = getattr(weight, "_qdata", weight)
+    try:
+        return getattr(data.untyped_storage(), "_comfy_tensor_mmap_refs", None) is None
+    except (AttributeError, RuntimeError, TypeError):
+        return True
+
+
+@functools.cache
+def mapped_patcher(base: type) -> type:
+    """The static patcher HyperFlow's safetensors load through, without the pins that cannot work.
+
+    It loads with dynamic VRAM off, because its factorized blocks are put in place after ComfyUI builds the model. When
+    the model does not fit on the GPU, that patcher pins each offloaded weight where it sits, and with ComfyUI's
+    mapped loading (aimdo) that is the read-only file mapping, which nothing can pin. Those weights stream to the GPU
+    unpinned either way; weights made in RAM, such as the factorized blocks, are still pinned.
+    """
+
+    class HyperFlowMappedPatcher(base):
+        def pin_weight_to_device(self, key):
+            if pinnable(comfy.model_patcher.get_key_weight(self.model, key)[0]):
+                base.pin_weight_to_device(self, key)
+
+    return HyperFlowMappedPatcher
+
+
 def weights_on_disk(path: str, weights_in: str) -> bool:
     if weights_in != "auto":
         return weights_in == "disk"
@@ -652,6 +682,8 @@ def load_safetensors(path: str):
     chunked = limit_int8_rows(model)
     model.hyperflow_sigmas = sigmas.float().flatten().cpu()
     patcher.size = 0
+    # A clone keeps its class, so every copy of this patcher skips the same pins.
+    patcher.__class__ = mapped_patcher(type(patcher))
     logging.info(
         "HyperFlow: %s %s (layout %s), %d factorized blocks, %d fp32 tensors, %d row-chunked INT8 modules, "
         "%d-step schedule",

@@ -385,6 +385,73 @@ class SafetensorsTest(unittest.TestCase):
 
 
 @unittest.skipIf(hyperflow is None, "needs torch and ComfyUI")
+class PinTest(unittest.TestCase):
+    """HyperFlow's static patcher skips pinning weights that sit in ComfyUI's read-only mapping of the file."""
+
+    def mapped(self, tensor):
+        setattr(tensor.untyped_storage(), "_comfy_tensor_mmap_refs", ("mapping", "view"))
+        return tensor
+
+    def test_a_weight_in_the_file_mapping_is_not_pinnable_and_others_are(self):
+        self.assertTrue(hyperflow.pinnable(torch.zeros(4)))
+        self.assertFalse(hyperflow.pinnable(self.mapped(torch.zeros(4))))
+        self.assertFalse(hyperflow.pinnable(SimpleQuantized(self.mapped(torch.zeros(4, dtype=torch.int8)))))
+        self.assertTrue(hyperflow.pinnable(SimpleQuantized(torch.zeros(4, dtype=torch.int8))))
+
+    def test_the_patcher_pins_only_what_can_be_pinned(self):
+        class Base:
+            def __init__(self, model):
+                self.model = model
+                self.pinned = []
+
+            def pin_weight_to_device(self, key):
+                self.pinned.append(key)
+
+        model = nn.Module()
+        model.layer = nn.Linear(2, 2)
+        model.layer.weight = nn.Parameter(self.mapped(torch.zeros(2, 2)), requires_grad=False)
+        patcher = Base(model)
+        patcher.__class__ = hyperflow.mapped_patcher(Base)
+        patcher.pin_weight_to_device("layer.weight")
+        patcher.pin_weight_to_device("layer.bias")
+        self.assertEqual(patcher.pinned, ["layer.bias"])
+        self.assertIs(hyperflow.mapped_patcher(Base), type(patcher))
+
+    def test_comfyui_s_mapped_load_gives_weights_that_cuda_cannot_pin(self):
+        try:
+            import comfy.model_management
+            import comfy.utils
+            import comfy_aimdo.model_mmap  # noqa: F401
+        except ImportError:
+            self.skipTest("this ComfyUI has no mapped loading")
+        if not torch.cuda.is_available():
+            self.skipTest("needs CUDA")
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "probe.safetensors")
+            save_file({"w": torch.ones(1 << 20, dtype=torch.bfloat16)}, path)
+            try:
+                sd, _ = comfy.utils.load_safetensors(path)
+            except RuntimeError as error:
+                self.skipTest("ComfyUI's mapped loading is not set up outside a running ComfyUI: %s" % error)
+            weight = sd["w"]
+            self.assertFalse(hyperflow.pinnable(weight))
+            code = torch.cuda.cudart().cudaHostRegister(weight.data_ptr(), weight.nbytes, 1)
+            if code == 0:
+                torch.cuda.cudart().cudaHostUnregister(weight.data_ptr())
+            self.assertNotEqual(code, 0, "CUDA pinned a read-only file mapping: the skip may no longer be needed")
+            comfy.model_management.discard_cuda_async_error()
+            del sd, weight
+            gc.collect()
+
+
+class SimpleQuantized:
+    """Stands in for comfy_kitchen's QuantizedTensor, which keeps its data in `_qdata`."""
+
+    def __init__(self, data):
+        self._qdata = data
+
+
+@unittest.skipIf(hyperflow is None, "needs torch and ComfyUI")
 class TinyCheckpointTest(unittest.TestCase):
     """A synthetic INT8 checkpoint through ComfyUI's own loader, on the CPU."""
 
@@ -404,6 +471,14 @@ class TinyCheckpointTest(unittest.TestCase):
 
     def layer(self, name):
         return self.model.get_submodule(name)
+
+    def test_the_patcher_and_its_clones_skip_unpinnable_weights(self):
+        self.assertEqual(type(self.patcher).__name__, "HyperFlowMappedPatcher")
+        size = self.patcher.size
+        try:
+            self.assertIs(type(self.patcher.clone()), type(self.patcher))
+        finally:
+            self.patcher.size = size                 # a clone measures the model, which the other tests do not expect
 
     def test_the_blocks_are_rebuilt_as_the_file_stores_them(self):
         model = self.model
