@@ -73,11 +73,30 @@ _NET = {}
 
 
 def network():
-    """MODNet through OpenCV's DNN module, loaded once, on the CPU."""
+    """MODNet, loaded once, on the CPU: ("cv2", net) through OpenCV's DNN module, or ("ort", session) through
+    onnxruntime where OpenCV cannot read it (OpenCV 4.x fails on its graph; 5.0 reads it). RuntimeError when
+    neither can, and broken() then says why."""
     if "net" not in _NET:
-        import cv2
-        _NET["net"] = cv2.dnn.readNet(os.path.join(folder(), MODEL_FILE))
+        path = os.path.join(folder(), MODEL_FILE)
+        try:
+            import cv2
+            _NET["net"] = ("cv2", cv2.dnn.readNet(path))
+        except Exception as error:      # cv2.error is not a subclass of anything narrower
+            try:
+                import onnxruntime
+                _NET["net"] = ("ort", onnxruntime.InferenceSession(path, providers=["CPUExecutionProvider"]))
+            except Exception:
+                _NET["net"] = None
+                first = (str(error).strip().splitlines() or ["unknown error"])[0]
+                _NET["why"] = "this OpenCV cannot read %s and onnxruntime is not installed (%s)" % (MODEL_FILE, first[:160])
+    if _NET["net"] is None:
+        raise RuntimeError(_NET["why"])
     return _NET["net"]
+
+
+def broken():
+    """Why the matting network cannot run here, once loading it has failed; None otherwise."""
+    return _NET.get("why")
 
 
 def person(rgb):
@@ -86,9 +105,13 @@ def person(rgb):
 
     h, w = rgb.shape[:2]
     x = cv2.resize(rgb, (288, 512) if h >= w else (512, 288), interpolation=cv2.INTER_LINEAR).astype(np.float32)
-    net = network()
-    net.setInput((x / 127.5 - 1.0).transpose(2, 0, 1)[None])
-    matte = net.forward()[0, 0]
+    kind, net = network()
+    blob = np.ascontiguousarray((x / 127.5 - 1.0).transpose(2, 0, 1)[None], dtype=np.float32)
+    if kind == "cv2":
+        net.setInput(blob)
+        matte = net.forward()[0, 0]
+    else:
+        matte = net.run(None, {net.get_inputs()[0].name: blob})[0][0, 0]
     mask = cv2.resize((matte > 0.2).astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
     return cv2.dilate(mask, np.ones((9, 9), np.uint8)) > 0
 

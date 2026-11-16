@@ -104,6 +104,48 @@ class JudgeTest(unittest.TestCase):
 
 
 @unittest.skipIf(np is None, "needs numpy and OpenCV")
+class UnreadableTest(unittest.TestCase):
+    def setUp(self):
+        self.before = (os.environ.get("H3_MATTING_DIR"), dict(scene._NET))
+        scene._NET.clear()
+
+    def tearDown(self):
+        before, net = self.before
+        if before is None:
+            os.environ.pop("H3_MATTING_DIR", None)
+        else:
+            os.environ["H3_MATTING_DIR"] = before
+        scene._NET.clear()
+        scene._NET.update(net)
+
+    def test_a_file_nothing_can_read_turns_the_check_off_and_says_why(self):
+        import builtins
+        real = builtins.__import__
+
+        def no_onnxruntime(name, *args, **kwargs):
+            if name == "onnxruntime":
+                raise ImportError("not installed")
+            return real(name, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as folder:
+            os.environ["H3_MATTING_DIR"] = folder
+            with open(os.path.join(folder, scene.MODEL_FILE), "wb") as f:
+                f.write(b"not a network")
+            builtins.__import__ = no_onnxruntime
+            try:
+                with self.assertRaises(RuntimeError):
+                    scene.network()
+            finally:
+                builtins.__import__ = real
+            self.assertIn("cannot read", scene.broken())
+            with self.assertRaises(RuntimeError):     # and stays off, without trying again
+                scene.person(room())
+
+    def test_nothing_is_wrong_before_anything_is_loaded(self):
+        self.assertIsNone(scene.broken())
+
+
+@unittest.skipIf(np is None, "needs numpy and OpenCV")
 class InstalledTest(unittest.TestCase):
     def test_without_its_file_nothing_is_measured(self):
         before = os.environ.get("H3_MATTING_DIR")

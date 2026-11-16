@@ -851,7 +851,7 @@ async def cuts(request):
     scored += [c["parts"]["score"] for c in found if c.get("parts") and c["parts"]["score"] is not None]
     return web.json_response({"cuts": found, "effects": edges, "inside": inside, "sound_inside": heard, "arrivals": arrivals,
                               "lips": lips, "lips_missing": lipscore.missing(),
-                              "scene": places, "scene_missing": scenescore.missing(),
+                              "scene": places, "scene_missing": scenescore.missing(), "scene_off": scenescore.broken(),
                               "worst": min(scored) if scored else None, "revision": data.get("revision", 0)})
 
 
@@ -914,8 +914,8 @@ async def score_lips(data):
                 row = await cached(SOUND_SCORES, key, lipscore.score, path, item["in"], item["out"], media.command)
         except FileNotFoundError:
             return None                 # a take whose file is gone has nothing to check
-        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, web.HTTPException):
-            logging.exception("H3 Editor: the lip check could not read %s", take.get("file"))
+        except Exception as error:      # one check failing never takes the cuts report down with it
+            logging.warning("H3 Editor: the lip check could not read %s: %s", take.get("file"), error)
             return None
         if not row:
             return None
@@ -932,7 +932,7 @@ async def score_scene(data):
     the timeline shows. An extension is also held against the first frame its shot shows, so a chain that turns the
     room into another is caught where it happens. Nothing when MODNet's file is not installed. One clip at a time."""
     global SCENE_GATE
-    if scenescore.missing():
+    if scenescore.missing() or scenescore.broken():
         return []
     SCENE_GATE = SCENE_GATE or asyncio.Semaphore(1)
     shown = {}
@@ -962,8 +962,11 @@ async def score_scene(data):
                 row = await cached(SOUND_SCORES, key, scenescore.score, path, item["in"], item["out"], media.command, anchor)
         except FileNotFoundError:
             return None
-        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, web.HTTPException):
-            logging.exception("H3 Editor: the scene check could not read %s", take.get("file"))
+        except Exception as error:      # one check failing never takes the cuts report down with it
+            if scenescore.broken():
+                logging.warning("H3 Editor: the place check is off: %s", scenescore.broken())
+            else:
+                logging.warning("H3 Editor: the place check could not read %s: %s", take.get("file"), error)
             return None
         if not row:
             return None

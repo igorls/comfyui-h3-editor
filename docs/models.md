@@ -361,8 +361,11 @@ drifted into another room is caught where it shows. It needs one file in
 |---|---|---|---|
 | `modnet.onnx` | 26 MB | `onnx/model.onnx` from [Xenova/modnet](https://huggingface.co/Xenova/modnet) on Hugging Face, saved as `modnet.onnx`. MODNet is by Ke et al., [ZHKKKe/MODNet](https://github.com/ZHKKKe/MODNet) | Apache 2.0 |
 
-Without it nothing is measured and nothing is listed. OpenCV runs it on the CPU,
-one clip at a time; a 20 s take takes about 4 s.
+Without it nothing is measured and nothing is listed. OpenCV 5 runs it on the
+CPU, one clip at a time; a 20 s take takes about 4 s. OpenCV 4 cannot read
+this file: there the check uses `onnxruntime` when it is installed
+(`pip install onnxruntime` in ComfyUI's Python), and otherwise stays off and
+says so in the cuts report.
 
 How it works: every second, the background two seconds earlier and at the start
 of the shot is compared with the background now, at the scale of objects rather

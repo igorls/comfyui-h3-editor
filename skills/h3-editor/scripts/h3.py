@@ -313,6 +313,8 @@ def main():
                         " since its shot began" if row.get("since_shot") else "", "; ".join(row["notes"])))
             if found.get("scene_missing"):
                 print("   -  place: not measured; needs %s in models/matting" % " and ".join(found["scene_missing"]))
+            elif found.get("scene_off"):
+                print("   -  place: not measured; %s" % found["scene_off"])
             for row in found.get("arrivals") or []:
                 if row["kind"] != "arrives":
                     print("%4s  %-14s at frame %-6d %s  %s" % (row["score"], "arrival", row["at"], row["item"], "; ".join(row["notes"])))
