@@ -19,11 +19,11 @@ export const PROVIDERS = [
   { id: "comfyui", title: "This ComfyUI", address: "", key: false, local: true,
     hint: "Runs a text model here, with ComfyUI's Generate Text node: nothing leaves this machine, and no key is needed. Comfy recommends "
       + COMFY_MODEL + " (6.8 GB, from " + COMFY_SOURCE + " on Hugging Face, in models/text_encoders). A shot takes seconds once the model is loaded; it waits for a render that is running." },
-  { id: "openai", title: "OpenAI-compatible", address: "https://api.openai.com/v1", key: true,
+  { id: "openai", title: "OpenAI-compatible", address: "https://api.openai.com/v1", key: true, gpu: true,
     hint: "Any endpoint that speaks OpenAI Chat Completions: OpenAI, OpenRouter, LM Studio, vLLM, a llama.cpp server." },
   { id: "anthropic", title: "Anthropic", address: "https://api.anthropic.com", key: true, hint: "Anthropic's Messages API." },
   { id: "google", title: "Gemini", address: "", key: true, hint: "Google's Gemini API." },
-  { id: "ollama", title: "Ollama", address: "http://localhost:11434", key: false,
+  { id: "ollama", title: "Ollama", address: "http://localhost:11434", key: false, gpu: true,
     hint: "A local Ollama. It answers a web page only when OLLAMA_ORIGINS allows this address." },
 ];
 
@@ -37,12 +37,13 @@ export function settings() {
     saved = JSON.parse(localStorage.getItem(STORE) || "{}") || {};
   } catch (_) {}
   const type = PROVIDERS.some((p) => p.id === saved.type) ? saved.type : "comfyui";
-  return { type, url: String(saved.url || ""), model: String(saved.model || ""), key: String(saved.key || "") };
+  return { type, url: String(saved.url || ""), model: String(saved.model || ""), key: String(saved.key || ""), freeVram: saved.freeVram === true };
 }
 
 export function saveSettings(next) {
   try {
-    localStorage.setItem(STORE, JSON.stringify({ type: next.type, url: next.url.trim(), model: next.model.trim(), key: next.key.trim() }));
+    localStorage.setItem(STORE, JSON.stringify({ type: next.type, url: next.url.trim(), model: next.model.trim(), key: next.key.trim(),
+      freeVram: Boolean(next.freeVram) }));
     return true;
   } catch (_) {
     return false;
@@ -147,21 +148,66 @@ async function askComfy(given, system, user, pictures = []) {
   throw new Error("The text model had not answered after 15 minutes. ComfyUI may be busy with renders.");
 }
 
-// What the last answer saw: how many pictures went with it, and whether the model had to do without them.
-let seen = { pictures: 0, blind: false };
+// What the last answer saw: how many pictures went with it, whether the model had to do without them, and what
+// became of ComfyUI's GPU memory when it was to be freed first.
+let seen = { pictures: 0, blind: false, freed: null };
 export const lastSeen = () => ({ ...seen });
+
+// Whether the settings free this ComfyUI's GPU memory before a request: only for a protocol a model server on
+// this machine can speak, since a hosted model needs none of it.
+export const freesVram = (given) => Boolean(given.freeVram && provider(given.type).gpu);
+
+const MB = 1024 * 1024;
+
+async function gpuFree() {
+  const stats = await fetch("/system_stats").then((reply) => reply.json());
+  return (stats.devices || []).filter((device) => device.type !== "cpu").reduce((sum, device) => sum + (device.vram_free || 0), 0);
+}
+
+// Asks ComfyUI to unload its models and empty its cache, so a model server on the same GPU has room to write.
+// ComfyUI does it between prompts, a moment after it is asked, so this waits until its free memory stops growing:
+// at most ten seconds. Nothing is unloaded while a render runs or waits, since that render needs the models.
+// Says "freed", "none" (nothing was loaded), "busy" or "failed". The next render loads the models again.
+export async function freeComfyMemory() {
+  try {
+    const queue = await fetch("/queue").then((reply) => reply.json());
+    if ((queue.queue_running || []).length || (queue.queue_pending || []).length) return "busy";
+    const before = await gpuFree();
+    const reply = await fetch("/free", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ unload_models: true, free_memory: true }) });
+    if (!reply.ok) return "failed";
+    let most = before;
+    let still = 0;
+    for (let tick = 0; tick < 40; tick++) {
+      await new Promise((done) => setTimeout(done, 250));
+      const now = await gpuFree();
+      if (now > most + 64 * MB) {
+        most = now;
+        still = 0;
+        continue;
+      }
+      still += 1;
+      // Once memory came free, half a second without more ends the wait; with none, three seconds do.
+      if (still >= (most > before + 256 * MB ? 2 : 12)) break;
+    }
+    return most > before + 256 * MB ? "freed" : "none";
+  } catch (_) {
+    return "failed";
+  }
+}
 
 // One answer. With pictures, a model that cannot take them (a text-only model, or an endpoint that refuses
 // images) is asked once more with the text alone, and lastSeen() says so.
 async function ask(given, system, user, pictures = []) {
-  seen = { pictures: pictures.length, blind: false };
+  seen = { pictures: pictures.length, blind: false, freed: null };
+  if (freesVram(given)) seen.freed = await freeComfyMemory();
   if (!pictures.length) return askOnce(given, system, user, []);
   try {
     return await askOnce(given, system, user, pictures);
   } catch (error) {
     const text = await askOnce(given, system, user.replace(/\n\nPictures with this message[\s\S]*?\n\n/, "\n\n"), []).catch(() => null);
     if (text === null) throw error;
-    seen = { pictures: 0, blind: true };
+    seen = { ...seen, pictures: 0, blind: true };
     return text;
   }
 }

@@ -6130,6 +6130,14 @@ function writerNote(text, bad = false, target = "writerResult") {
   $(target).classList.toggle("bad", bad);
 }
 
+// What became of ComfyUI's GPU memory before the request, when the settings free it.
+function freedNote(freed) {
+  return { freed: " ComfyUI freed its GPU memory first; the next render loads its models again.",
+    none: " ComfyUI had no models on the GPU to free.",
+    busy: " ComfyUI was rendering, so its models stayed on the GPU.",
+    failed: " ComfyUI did not free its GPU memory." }[freed] || "";
+}
+
 function openWriterSetup(then = null) {
   const draft = writer.settings();
   const note = (text, bad = false) => writerNote(text, bad, "writerSetupResult");
@@ -6188,8 +6196,25 @@ function openWriterSetup(then = null) {
     modelRow.append(model.wrap, list);
     const key = plainField(kind.key ? "API key" : "API key, if the endpoint asks for one", draft.key, { type: "password", placeholder: "Paste your key" });
     key.input.addEventListener("input", () => (draft.key = key.input.value));
+    // A model server on this machine shares the GPU with ComfyUI, so ComfyUI can make room for it first.
+    const free = document.createElement("label");
+    free.className = "writer-free";
+    const freeBox = document.createElement("input");
+    freeBox.type = "checkbox";
+    freeBox.checked = Boolean(draft.freeVram);
+    freeBox.addEventListener("change", () => (draft.freeVram = freeBox.checked));
+    const freeText = document.createElement("span");
+    const freeTitle = document.createElement("b");
+    freeTitle.textContent = "Free ComfyUI's GPU memory before each request";
+    const freeHint = document.createElement("small");
+    freeHint.textContent = "For a model server on this machine, such as llama.cpp, llama-swap, LM Studio or Ollama, when the card is too small "
+      + "for both. ComfyUI unloads its models first, unless a render is running, and the next render loads them again. "
+      + "Have the server unload its own model when it is idle, so that render gets the card back.";
+    freeText.append(freeTitle, freeHint);
+    free.append(freeBox, freeText);
     // A model run by this ComfyUI has no address and needs no key.
-    $("writerSetupFields").replaceChildren(...(kind.local ? [type, hint, modelRow] : [type, hint, address.wrap, modelRow, key.wrap]));
+    $("writerSetupFields").replaceChildren(...(kind.local ? [type, hint, modelRow]
+      : [type, hint, address.wrap, modelRow, key.wrap, ...(kind.gpu ? [free] : [])]));
   };
   draw();
   note("");
@@ -6198,7 +6223,7 @@ function openWriterSetup(then = null) {
     $("writerSetupTest").disabled = true;
     note("Asking the model.");
     try {
-      note("It answered: " + (await writer.test(draft)));
+      note("It answered: " + (await writer.test(draft)) + freedNote(writer.lastSeen().freed));
     } catch (error) {
       note(error.message, true);
     }
@@ -6289,7 +6314,8 @@ function openWriter(job) {
       $("writerGo").textContent = "Write again";
       const seen = writer.lastSeen();
       writerNote("Read it before you use it. Nothing has changed yet."
-        + (seen.blind ? " This model takes no pictures, so it wrote from the text alone." : seen.pictures ? " It was sent " + seen.pictures + (seen.pictures === 1 ? " picture" : " pictures") + "; a model that cannot see writes from the text." : ""));
+        + (seen.blind ? " This model takes no pictures, so it wrote from the text alone." : seen.pictures ? " It was sent " + seen.pictures + (seen.pictures === 1 ? " picture" : " pictures") + "; a model that cannot see writes from the text." : "")
+        + freedNote(seen.freed));
     } catch (error) {
       writerNote(error.message, true);
     } finally {

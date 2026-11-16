@@ -47,6 +47,13 @@ Each release is a tag on GitHub, `v` followed by the version.
   (see the models page). On held 20 and 30 s takes and on a slow push into a
   close-up it read 0%; on a take whose room changed under the singer 50%.
   While the camera zooms, it compares only frames framed alike. Agents get `scene` in the cuts report.
+- **Room on the card for a local writing model.** The writer's settings have
+  **Free ComfyUI's GPU memory before each request**, for the OpenAI-compatible
+  and Ollama providers, off by default. For a model server on the same card,
+  such as llama.cpp, llama-swap, LM Studio or Ollama, ComfyUI unloads its
+  models before each rewrite, and the next render loads them again. It is
+  skipped while a render runs or waits, and the result says what happened.
+  ([#6](https://github.com/igorls/comfyui-h3-editor/issues/6))
 
 ### Changed
 

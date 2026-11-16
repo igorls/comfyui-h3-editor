@@ -654,6 +654,11 @@ label.lora-name { cursor: pointer; }
 .combo-option[aria-selected="true"] svg { visibility: visible; }
 .menu .combo-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; }
 .combo-option[aria-selected="true"] span { font-weight: 600; }
+.writer-free { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px; margin-top: 4px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--room); cursor: pointer; }
+.writer-free input { margin: 3px 0 0; }
+.writer-free span { display: grid; gap: 3px; }
+.writer-free b { font-weight: 500; }
+.writer-free small { color: var(--muted); font-size: 12px; line-height: 1.45; }
 .combo-empty { margin: 0; padding: 8px 10px; color: var(--muted); font-size: 12px; }
 @media (prefers-reduced-motion: reduce) { .combo-toggle svg { transition: none; } }
 .writer-model > button { margin-bottom: 12px; }
