@@ -3252,7 +3252,7 @@ function renderScene(panel, selected = false) {
     head,
     section("Look", [field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true })], "look"),
     section("Format", [made, formatHint, ...sizeChoices()], "format"),
-    ...(state.profiles.length ? [section("Model", [model, modelHint, ...files], "model")] : []),
+    ...(state.profiles.length ? [section("Model", [model, modelHint, ...setupButton(), ...files], "model")] : []),
     ...[loraSection(), patchSection(), writingSection(), notesSection()].filter(Boolean),
   );
 }
@@ -7711,6 +7711,218 @@ async function start() {
   if (!projects.length) await createProject("First scene");
   else await openProject(projects.includes(remembered) ? remembered : projects[0]);
   connect();
+  firstRun();
+}
+
+// Get the models. On a ComfyUI that cannot render yet, the editor opens a panel that names the files the default
+// model needs, how large they are and under which license, and downloads them into ComfyUI's models folders with
+// one button. The server decides what and where from its own list: the editor sends nothing but go or stop.
+const setup = { report: null, timer: 0, was: null };
+const canRender = () => state.profiles.some((p) => p.available) && !(state.encoders?.missing || []).length;
+const setupJob = () => setup.report?.job || null;
+const setupRunning = () => setupJob()?.state === "running";
+const FILE_STATES = { waiting: "Waiting", checking: "Checking what is already here", downloading: "Downloading", retrying: "The connection broke. Trying again",
+  done: "In place", skipped: "Already there", failed: "Failed", stopped: "Stopped", "not started": "Not started" };
+
+async function loadSetup() {
+  try {
+    setup.report = await api("/models/setup");
+  } catch (_) {
+    // A ComfyUI that started before this version has no such route: the panel stays away.
+    setup.report = null;
+  }
+  return setup.report;
+}
+
+async function firstRun() {
+  const report = await loadSetup();
+  if (!report) return;
+  if (setupRunning()) watchSetup();
+  if ((report.missing.length && !canRender()) || setupRunning()) openSetup();
+  renderInspector();
+}
+
+function openSetup() {
+  drawSetup();
+  if (!$("setup").open) $("setup").showModal();
+  if (setupRunning()) watchSetup();
+}
+
+function watchSetup() {
+  if (setup.timer) return;
+  setup.was = setupJob()?.state || null;
+  setup.timer = setInterval(async () => {
+    await loadSetup();
+    const now = setupJob()?.state || null;
+    if ($("setup").open) drawSetup();
+    if (now === "running") return;
+    clearInterval(setup.timer);
+    setup.timer = 0;
+    if (setup.was !== "running") return;
+    setup.was = now;
+    // ComfyUI lists the new files now: the Model menu and the Project tab say what renders.
+    await refreshProjects(state.folder);
+    renderInspector();
+    if (now === "done") toast(setup.report?.ready ? "The models are in. You can render now." : "The download is done.");
+    else if (now === "failed") toast("The model download stopped: " + (setupJob()?.error || "it failed") + ".", true);
+  }, 1000);
+}
+
+// What is left to download: the missing files, less what a stopped download already wrote.
+const setupLeft = (report) => report.files.filter((f) => report.missing.includes(f.id)).reduce((sum, f) => sum + f.bytes - (f.partial || 0), 0);
+const gb = (bytes) => (bytes >= 1e9 ? (bytes / 1e9).toFixed(1) + " GB" : Math.max(1, Math.round(bytes / 1e6)) + " MB");
+
+function timeLeft(seconds) {
+  if (!isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 90) return "under 2 min left";
+  if (seconds < 5400) return "about " + Math.round(seconds / 60) + " min left";
+  return "about " + (seconds / 3600).toFixed(1) + " h left";
+}
+
+function drawSetup() {
+  const report = setup.report;
+  if (!report) return;
+  const job = setupJob();
+  const running = job?.state === "running";
+  const rows = new Map((job?.files || []).map((row) => [row.id, row]));
+  const missing = report.files.filter((f) => report.missing.includes(f.id));
+  const lead = $("setupLead");
+  if (running) lead.textContent = "Downloading the files " + report.profile + " needs, from Hugging Face into ComfyUI's models folders. You can close this: it carries on.";
+  else if (!report.missing.length) lead.textContent = report.ready ? "Every file " + report.profile + " needs is in place. You can render." : "Nothing is left to download.";
+  else lead.innerHTML = "H3 Editor renders with <b></b>. These files are not in this ComfyUI yet. <b>Download</b> fetches them from Hugging Face, " +
+    "puts each one in its folder under ComfyUI's models and checks it against the file published there. A file already in place is left as it is.";
+  if (!running && report.missing.length) lead.querySelector("b").textContent = report.profile;
+  const list = $("setupFiles");
+  list.replaceChildren(...report.files.filter((f) => !f.installed || rows.has(f.id)).map((file) => {
+    const row = document.createElement("li");
+    const live = rows.get(file.id);
+    const name = document.createElement("div");
+    name.className = "setup-name";
+    const title = document.createElement("b");
+    title.textContent = file.title;
+    const where = document.createElement("small");
+    where.textContent = file.file + " in " + (file.folder_shown || "models/" + file.folder);
+    where.title = file.file + " in " + (file.folder_path || "models/" + file.folder);
+    const terms = document.createElement("small");
+    const link = document.createElement("a");
+    link.href = file.license.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = file.license.name;
+    terms.append("License: ", link);
+    name.append(title, where, terms);
+    const size = document.createElement("span");
+    size.className = "packer-size";
+    size.textContent = gb(file.bytes);
+    const say = document.createElement("span");
+    say.className = "setup-state";
+    if (live) {
+      say.textContent = FILE_STATES[live.state] || live.state;
+      if (live.state === "downloading" && live.done) say.textContent += ", " + Math.floor((100 * live.done) / live.bytes) + "%";
+      if (live.error) say.textContent += ": " + live.error;
+      say.classList.toggle("bad", live.state === "failed");
+      say.classList.toggle("good", live.state === "done" || live.state === "skipped");
+    } else if (file.page) say.textContent = "Get it from its page";
+    else if (file.partial) say.textContent = gb(file.partial) + " already here: carries on from there";
+    else say.textContent = file.for === "final" ? "For finals" : "Needed to render";
+    row.append(name, size, say);
+    if (live && live.state !== "waiting" && live.state !== "not started") {
+      const bar = document.createElement("div");
+      bar.className = "opener-bar";
+      const fill = document.createElement("i");
+      fill.style.width = Math.floor((100 * live.done) / live.bytes) + "%";
+      bar.append(fill);
+      row.append(bar);
+    }
+    return row;
+  }));
+  // The whole download, in bytes and time.
+  const overall = $("setupOverall");
+  overall.hidden = !job;
+  if (job) {
+    const share = job.bytes ? job.done / job.bytes : 0;
+    $("setupFill").style.width = Math.floor(share * 100) + "%";
+    overall.querySelector(".opener-bar").setAttribute("aria-valuenow", String(Math.floor(share * 100)));
+    const words = [gb(job.done) + " of " + gb(job.bytes)];
+    if (running && job.rate) words.push(gb(job.rate) + "/s", timeLeft((job.bytes - job.done) / job.rate));
+    if (job.state === "stopped") words.push("stopped. What came is kept: Download carries on from there");
+    if (job.state === "failed") words.push("stopped by an error");
+    $("setupProgress").textContent = words.filter(Boolean).join(", ") + ".";
+  }
+  // The Realism Slider is on Civitai, which asks for a signed-in account to download.
+  const manual = report.files.filter((f) => report.manual.includes(f.id));
+  const manualNote = $("setupManual");
+  manualNote.hidden = !manual.length;
+  manualNote.replaceChildren();
+  for (const file of manual) {
+    const link = document.createElement("a");
+    link.href = file.page;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "its page on Civitai";
+    manualNote.append("The " + file.title.split(",")[0] + " is on Civitai, which asks you to sign in to download it: get " + file.file + " from ", link,
+      " and put it in " + (file.folder_shown || "models/" + file.folder) + ". Finals render without it until then. ");
+  }
+  $("setupTerms").textContent = missing.length || running
+    ? "Each model comes under its own license, linked beside it, which this pack's license does not change. MiniMax H3 and HyperFlow H3 Flash come under the " +
+      "MiniMax H3 Community License Agreement, which limits where they may be used: read it before you download."
+    : "";
+  const result = $("setupResult");
+  result.classList.remove("bad");
+  result.textContent = "";
+  if (!running && report.short?.length) {
+    const short = report.short[0];
+    result.textContent = "There is not enough room for them: " + short.folder + " needs " + gb(short.needs) + " and has " + gb(short.free) + " free.";
+    result.classList.add("bad");
+  } else if (job?.state === "failed" && !running) {
+    result.textContent = job.error + ".";
+    result.classList.add("bad");
+  } else if (job?.state === "done" && report.ready) result.textContent = "Done. Close this and render your first clip.";
+  const go = $("setupGo");
+  const left = setupLeft(report);
+  go.hidden = running;
+  go.disabled = !!report.short?.length;
+  go.textContent = !missing.length ? "Close" : job?.state === "stopped" || job?.state === "failed" ? "Download the rest, " + gb(left) : "Download " + gb(left);
+  $("setupStop").hidden = !running;
+  $("setupClose").textContent = running ? "Hide" : missing.length ? "Not now" : "Close";
+}
+
+$("setupClose").addEventListener("click", () => $("setup").close());
+$("setupStop").addEventListener("click", async () => {
+  $("setupStop").disabled = true;
+  try {
+    setup.report = await postJson("/models/setup/cancel", {});
+  } catch (error) {
+    toast(error.message, true);
+  }
+  $("setupStop").disabled = false;
+  drawSetup();
+});
+$("setupGo").addEventListener("click", async () => {
+  if (!setup.report?.missing.length) return $("setup").close();
+  const go = $("setupGo");
+  go.disabled = true;
+  try {
+    setup.report = await postJson("/models/setup/download", {});
+    watchSetup();
+  } catch (error) {
+    $("setupResult").textContent = error.message.charAt(0).toUpperCase() + error.message.slice(1) + ".";
+    $("setupResult").classList.add("bad");
+  }
+  go.disabled = false;
+  if (!$("setupResult").classList.contains("bad")) drawSetup();
+});
+
+// In the Project tab, under Model: the way back to the panel while the default model is missing files.
+function setupButton() {
+  const report = setup.report;
+  if (!report || (!report.missing.length && !setupRunning())) return [];
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "quiet small setup-open";
+  button.textContent = setupRunning() ? "Downloading the models" : report.ready ? "Get the rest of the models, " + gb(setupLeft(report)) : "Get the models, " + gb(setupLeft(report));
+  button.addEventListener("click", openSetup);
+  return [button];
 }
 
 // A new project is named in a dialog of the editor's own. The browser's prompt box does not

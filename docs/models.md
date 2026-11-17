@@ -1,5 +1,41 @@
 # Models and quality
 
+## Get the models from the editor
+
+On a ComfyUI that has no H3 model files yet, the editor opens **Get the models**
+when it starts. It names the files the default model, HyperFlow H3 Flash, needs
+to render, with their sizes and licenses: about 54.6 GB in all. **Download**
+fetches them from Hugging Face and puts each one in its folder under ComfyUI's
+`models`, under the names in the tables below. It downloads the latent upscaler
+for finals too.
+
+- Each file comes in under its name with `.part` added, and gets its own name
+  only once its size and sha256 match the file published in its repository. A
+  file that does not match is deleted.
+- A file already in place is never written to or replaced. Another precision of
+  the same model counts as in place, such as the int8 text encoder or a HyperFlow
+  GGUF: the panel checks what you have the same way a render picks its file.
+- **Stop** keeps what came, and **Download** carries on from there. So does a
+  broken connection, a few times, on its own. Closing the panel does not stop it.
+- It checks first that the disks have room, with 1 GB to spare.
+- It fetches only the files of its own list, from the commit of each repository
+  that list names: nothing in a request can point it at another address.
+
+Each model comes under its own license, linked beside it in the panel; read them
+before you download (see [licenses](#licenses)). The MMH3 Realism Slider LoRA
+is on Civitai, which asks you to sign in to download it, so the panel links to
+its page: put the file in `models/loras` yourself. Finals render without it
+until it is there.
+
+If you close the panel, the Project tab has **Get the models** under Model for
+as long as a file is missing. Other checkpoints, upscalers, the live preview and
+the small text encoder are not on the list: get them as their sections below say.
+
+Agents and scripts can use the same routes: `GET /h3take/api/models/setup` says
+what is missing and how large it is, and the download in progress;
+`POST /h3take/api/models/setup/download` starts it, and
+`POST /h3take/api/models/setup/cancel` stops it. Neither takes a body.
+
 ## What every render needs
 
 | File | Folder | Size | Where to get it |

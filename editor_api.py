@@ -17,6 +17,7 @@ from aiohttp import web
 import folder_paths
 
 from . import archive
+from . import fetch
 from . import cuts as cutscore
 from . import listen as soundscore
 from . import lips as lipscore
@@ -322,6 +323,108 @@ def available_models():
     if store.PROJECTION_FOLDER in folder_paths.folder_names_and_paths:
         names.update(store.PROJECTION_PREFIX + name for name in folder_paths.get_filename_list(store.PROJECTION_FOLDER))
     return names
+
+
+# Get the models: the files a fresh install needs for the default profile, downloaded into ComfyUI's
+# models folders. The plan is built from store.SETUP_FILES alone; a request names no URL and no place.
+
+def setup_folder(kind):
+    """The folder a setup file of this kind goes in: ComfyUI's own folder of that name, else its first one."""
+    paths = folder_paths.get_folder_paths(kind) if kind in folder_paths.folder_names_and_paths else []
+    for path in paths:
+        if os.path.basename(os.path.normpath(path)).lower() == kind.lower():
+            return path
+    return paths[0] if paths else os.path.join(folder_paths.models_dir, kind)
+
+
+def setup_plan(status):
+    """What a download fetches: each missing file of status, with its URL, size, hash and the path it lands at."""
+    entries = {entry["id"]: entry for entry in store.SETUP_FILES}
+    plan = []
+    for name in status["missing"]:
+        entry = entries[name]
+        base = os.path.realpath(setup_folder(entry["folder"]))
+        dest = os.path.realpath(os.path.join(base, *entry["needs"][0].split("/")))
+        if not dest.startswith(base + os.sep):
+            raise ValueError("%s would land outside %s" % (entry["needs"][0], base))
+        plan.append({"id": name, "url": store.setup_url(entry), "dest": dest, "bytes": entry["bytes"], "sha256": entry["sha256"],
+                     "kind": entry["folder"]})
+    return plan
+
+
+def free_space(plan):
+    """What is short on each disk the plan writes to: [{folder, needs, free}], empty when everything fits."""
+    needs = {}
+    for item in plan:
+        folder = os.path.dirname(item["dest"])
+        while not os.path.isdir(folder):
+            folder = os.path.dirname(folder)
+        part = item["dest"] + fetch.PART
+        left = item["bytes"] - (os.path.getsize(part) if os.path.exists(part) else 0)
+        device = os.stat(folder).st_dev
+        row = needs.setdefault(device, {"folder": folder, "needs": 0})
+        row["needs"] += left
+    short = []
+    for row in needs.values():
+        free = shutil.disk_usage(row["folder"]).free
+        if free < row["needs"] + 2 ** 30:
+            short.append(dict(row, free=free))
+    return short
+
+
+def setup_report():
+    available = available_models()
+    status = store.setup_status(available)
+    plan = setup_plan(status)
+    for row in status["files"]:
+        row["folder_path"] = setup_folder(row["folder"])
+        # Shown as models/<folder> when it is inside ComfyUI's models folder, which says more than a long path.
+        home = os.path.dirname(os.path.realpath(folder_paths.models_dir))
+        inside = os.path.realpath(row["folder_path"])
+        row["folder_shown"] = os.path.relpath(inside, home).replace(os.sep, "/") if inside.startswith(home + os.sep) else row["folder_path"]
+        part = next((item["dest"] + fetch.PART for item in plan if item["id"] == row["id"]), None)
+        row["partial"] = os.path.getsize(part) if part and os.path.exists(part) else 0
+    status["short"] = free_space(plan)
+    status["job"] = fetch.status()
+    return status
+
+
+def setup_placed(item):
+    """ComfyUI lists a downloaded file at once, without waiting for its folder's cache to notice."""
+    cache = getattr(folder_paths, "filename_list_cache", None)
+    if isinstance(cache, dict):
+        cache.pop(item["kind"], None)
+        if item["kind"] == "text_encoders":
+            cache.pop("clip", None)
+
+
+async def model_setup(request):
+    """What the default profile is missing, with the total size, and the download in progress if any."""
+    return web.json_response(setup_report())
+
+
+async def model_setup_download(request):
+    """Download the missing setup files into their folders. Takes no body: the server's own list says what and where."""
+    status = store.setup_status(available_models())
+    plan = setup_plan(status)
+    if not plan:
+        return web.json_response(setup_report())
+    short = free_space(plan)
+    if short:
+        row = short[0]
+        return refused("there is not enough room in %s: the download needs %.1f GB and %.1f GB is free"
+                       % (row["folder"], row["needs"] / 1e9, row["free"] / 1e9), 507, short=short)
+    try:
+        fetch.start(plan, setup_placed)
+    except fetch.Refused as error:
+        return refused(error, 409)
+    return web.json_response(setup_report())
+
+
+async def model_setup_cancel(request):
+    """Stop the download. What was written stays, and the next download carries on from it."""
+    fetch.cancel()
+    return web.json_response(setup_report())
 
 
 def node_definitions():
@@ -2205,6 +2308,9 @@ ROUTES = (
     ("GET", "/h3take/api/projects", "projects"),
     ("POST", "/h3take/api/projects", "create"),
     ("POST", "/h3take/api/projects/open", "open_project"),
+    ("GET", "/h3take/api/models/setup", "model_setup"),
+    ("POST", "/h3take/api/models/setup/download", "model_setup_download"),
+    ("POST", "/h3take/api/models/setup/cancel", "model_setup_cancel"),
     ("GET", "/h3take/api/presets", "presets"),
     ("PUT", "/h3take/api/presets", "save_presets"),
     ("GET", "/h3take/api/cast-catalog", "cast_catalog"),

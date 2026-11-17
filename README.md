@@ -97,7 +97,14 @@ projects and settings are not in that folder: projects live in ComfyUI's
 
 ### 2. Download the models
 
-The pack does not download models. These are the ones a first video needs,
+Open **H3 Editor** from the ComfyUI sidebar. When the models are missing, it
+opens **Get the models**, which lists the files below with their sizes and
+licenses: press **Download** and each one lands in its folder. The latent
+upscaler for finals comes too. It never replaces a file you already have, and
+it carries on where it stopped if you stop it or the connection breaks. See
+[get the models from the editor](docs/models.md#get-the-models-from-the-editor).
+
+To put them in place yourself instead, these are the ones a first video needs,
 about 54 GB:
 
 | File | Folder | Size | Where to get it |
@@ -127,7 +134,7 @@ These are optional, and worth having:
 | File | Folder | Size | Where to get it | For |
 |---|---|---|---|---|
 | `minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors` | `models/latent_upscale_models` | 0.7 GB | [LBH-123-AI/Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) | Finals at up to 1920 pixels |
-| `MMH3-Realism-V2.safetensors` | `models/loras` | 71 MB | [Civitai model 3041489](https://civitai.com/models/3041489) | Natural skin in finals |
+| `MMH3-Realism-V2.safetensors` | `models/loras` | 71 MB | [Civitai model 3041489](https://civitai.com/models/3041489) | Natural skin in finals. Civitai asks you to sign in, so the editor cannot download it for you |
 | `taeh3.safetensors` | `models/vae_approx` | 23 MB | [OzzyGT/taeh3](https://huggingface.co/OzzyGT/taeh3) | The moving live preview |
 
 Other H3 checkpoints work as well; see [models and quality](docs/models.md).

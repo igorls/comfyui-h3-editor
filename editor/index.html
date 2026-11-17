@@ -267,6 +267,21 @@
   <div id="pickerList" class="picker-list" role="listbox" aria-labelledby="pickerTitle"></div>
   <p id="pickerHint" class="hint"></p>
 </dialog>
+<dialog id="setup" class="keys exporter setup" aria-labelledby="setupTitle">
+  <div class="keys-head"><h2 id="setupTitle">Get the models</h2><button id="setupClose" class="quiet">Not now</button></div>
+  <div class="exporter-body">
+    <p id="setupLead" class="packer-lead"></p>
+    <ul id="setupFiles" class="setup-files" aria-label="Model files"></ul>
+    <div id="setupOverall" class="setup-overall" hidden>
+      <div class="opener-bar" role="progressbar" aria-label="All files" aria-valuemin="0" aria-valuemax="100"><i id="setupFill"></i></div>
+      <p id="setupProgress" class="setup-progress" aria-live="polite"></p>
+    </div>
+    <p id="setupManual" class="hint" hidden></p>
+    <p id="setupTerms" class="hint setup-terms"></p>
+    <p id="setupResult" class="hint" aria-live="polite"></p>
+  </div>
+  <div class="exporter-foot"><button id="setupStop" class="quiet" hidden>Stop</button><span class="spacer"></span><button id="setupGo" class="primary">Download</button></div>
+</dialog>
 <dialog id="keys" class="keys" aria-labelledby="keysTitle">
   <div class="keys-head"><h2 id="keysTitle">Keyboard shortcuts</h2><button id="keysClose" class="quiet">Close</button></div>
   <dl>

@@ -516,6 +516,84 @@ def encoder_status(available):
     return {"auto": found, "missing": missing}
 
 
+# The files the editor's Get the models panel downloads into a fresh install: what the default profile
+# drafts with, and the latent upscaler its finals are enlarged with. Each one's needs is the list a
+# render picks its file from (MODEL_CHOICES, PROFILES, MODELS), so a file counts as installed exactly
+# when a render would find it, and file is that list's first name, the one a render asks for when none
+# is there. Each url is pinned to a commit of its repository, so the bytes are the ones sha256 names.
+# Only these urls are ever fetched. The Realism Slider is on Civitai, which asks a signed-in account to
+# download it, so the panel links to its page instead (manual).
+MINIMAX_LICENSE = ("MiniMax H3 Community License Agreement", "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE")
+HYPERFLOW_LICENSE = ("MiniMax H3 Community License Agreement", "https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash/blob/main/LICENSE")
+SETUP_REPOS = {
+    "Comfy-Org/MiniMax-H3": "4b53a35191437de05370da548e59aeabe2a5a09a",
+    "VideoRebirthAI/hyperflow-h3-flash": "6834923e1a9ca4d15a2349a622b6677bea1404cb",
+    "LBH-123-AI/Minimax_h3_latent_Upscaler": "85a0187096046badc0a71ab6bd6be182ab06c0f4",
+}
+SETUP_FILES = [
+    {"id": "text_encoder", "title": "Text encoder, Qwen3-VL 32B", "needs": MODEL_CHOICES["clip"], "folder": "text_encoders",
+     "repo": "Comfy-Org/MiniMax-H3", "path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+     "bytes": 15687142551, "sha256": "35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6",
+     "license": MINIMAX_LICENSE, "for": "draft"},
+    {"id": "vae", "title": "Video VAE", "needs": MODEL_CHOICES["vae"], "folder": "vae",
+     "repo": "Comfy-Org/MiniMax-H3", "path": "vae/minimax_h3_video_vae_fp16.safetensors",
+     "bytes": 5207808496, "sha256": "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522",
+     "license": MINIMAX_LICENSE, "for": "draft"},
+    {"id": "audio_vae", "title": "Audio VAE", "needs": MODEL_CHOICES["audio_vae"], "folder": "vae",
+     "repo": "Comfy-Org/MiniMax-H3", "path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+     "bytes": 605254808, "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48",
+     "license": MINIMAX_LICENSE, "for": "draft"},
+    {"id": "unet", "title": "HyperFlow H3 Flash, for clips with references", "needs": PROFILES[DEFAULT_PROFILE]["unet"],
+     "folder": "diffusion_models", "repo": "VideoRebirthAI/hyperflow-h3-flash",
+     "path": "ref2va_int8_convrot_comfyui/minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors",
+     "bytes": 16433000936, "sha256": "38782037e343b49803dec6a912cf66cde54cafcac9e14a34fd4df831a83bcead",
+     "license": HYPERFLOW_LICENSE, "for": "draft"},
+    {"id": "unet_text", "title": "HyperFlow H3 Flash, for clips that are only a prompt", "needs": PROFILES[DEFAULT_PROFILE]["unet_text"],
+     "folder": "diffusion_models", "repo": "VideoRebirthAI/hyperflow-h3-flash",
+     "path": "fl2va_int8_convrot_comfyui/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors",
+     "bytes": 16005009056, "sha256": "d38f0c0c46824091fa448cd8f4a68b5d3832317867d5ddc02305eaa650710604",
+     "license": HYPERFLOW_LICENSE, "for": "draft"},
+    {"id": "latent_upscaler", "title": "Latent upscaler, for finals at up to 1920 pixels", "needs": [MODELS["latent_upscaler"]],
+     "folder": "latent_upscale_models", "repo": "LBH-123-AI/Minimax_h3_latent_Upscaler",
+     "path": "minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+     "bytes": 690592992, "sha256": "4f57821f5837f32f7142b67d815606dbd7550f194e5c769f7d6c3f83b146a5e6",
+     "license": ("Apache License 2.0", "https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler"), "for": "final"},
+    {"id": "realism", "title": "MMH3 Realism Slider LoRA, for natural skin in finals", "needs": list(REALISM_LORAS),
+     "folder": "loras", "bytes": 74572040, "manual": "https://civitai.com/models/3041489",
+     "license": ("Its terms on Civitai", "https://civitai.com/models/3041489"), "for": "final"},
+]
+
+
+def setup_url(entry):
+    """Where a setup file downloads from: its path at the pinned commit of its Hugging Face repository."""
+    return "https://huggingface.co/%s/resolve/%s/%s" % (entry["repo"], SETUP_REPOS[entry["repo"]], entry["path"])
+
+
+def setup_status(available):
+    """The setup files, each with whether a render finds one of its names, and what is left to download.
+
+    available as in pick_file. ready says whether drafts can render with the default profile once the
+    missing files are in; manual lists the missing files the panel can only link to.
+    """
+    rows = []
+    for entry in SETUP_FILES:
+        found = pick_file(entry["needs"], available)
+        row = {"id": entry["id"], "title": entry["title"], "file": entry["needs"][0], "folder": entry["folder"],
+               "bytes": entry["bytes"], "for": entry["for"], "installed": found is not None, "found": found,
+               "license": {"name": entry["license"][0], "url": entry["license"][1]}}
+        if entry.get("manual"):
+            row["page"] = entry["manual"]
+        else:
+            row["source"] = "https://huggingface.co/%s" % entry["repo"]
+        rows.append(row)
+    missing = [row for row in rows if not row["installed"] and "page" not in row]
+    return {"profile": PROFILES[DEFAULT_PROFILE]["title"], "files": rows, "missing": [row["id"] for row in missing],
+            "bytes": sum(row["bytes"] for row in missing),
+            "manual": [row["id"] for row in rows if not row["installed"] and "page" in row],
+            "ready": all(row["installed"] for row in rows if row["for"] == "draft")}
+
+
+
 def text_encoder_node(encoder, available, chosen=None):
     """The graph node that loads the text encoder: ComfyUI's loader for the 32B, the pack's for a small one."""
     projection = projection_for(encoder, available, chosen)

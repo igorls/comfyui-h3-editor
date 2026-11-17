@@ -9,6 +9,18 @@ Each release is a tag on GitHub, `v` followed by the version.
 
 ### Added
 
+- **Get the models from the editor.** On a ComfyUI without H3's model files,
+  the editor opens a panel that names the files HyperFlow H3 Flash needs to
+  render, with each one's size and license, about 54.6 GB in all, and
+  downloads them from Hugging Face into ComfyUI's models folders with one
+  button, with progress for each file and for the whole. It downloads the
+  latent upscaler for finals too. A file comes in under a `.part` name and is
+  renamed only once its sha256 matches the published file; a file already in
+  place, or another precision of it, is never replaced; a stopped download
+  carries on where it stopped. The Realism Slider LoRA is on Civitai, which
+  asks for a sign-in, so the panel links to it. The Project tab has **Get the
+  models** while a file is missing. Agents use `GET /h3take/api/models/setup`
+  and `POST /h3take/api/models/setup/download` and `.../cancel`.
 - **A volume for each clip.** The **Timeline** tab of a clip has a **Volume**
   slider beside its speed and transition: 1 is as rendered, 0 is silent, and
   up to 2 is louder. It belongs to the clip's place on the timeline, so the
