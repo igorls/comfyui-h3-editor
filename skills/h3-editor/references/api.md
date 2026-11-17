@@ -454,7 +454,12 @@ The editor saves a still of each note it writes, the frame with the drawing on i
 
 ### Renders
 
-`render`: `clip`, optional `quality` (`draft`, the default, or `final`), optional `seed`.
+`render`: `clip`, optional `quality` (`draft`, the default, `final`, or `finish`), optional `seed`.
+`finish` makes a final from the clip's active take, which must be a draft: its saved latents are enlarged and
+refined at the refine size in place of a new first pass, with the draft's seed, so the final keeps the draft's
+framing, motion and sound. The new take records `finished`, the draft's id. It is refused when the active take is
+not a draft, when the clip's length changed since the draft, and when the project's final size is not Full; a
+draft with no latents saved beside it fails at render time and needs rendering again.
 Returns `{"clip", "job", "take"}`. It is refused for footage, for a clip with no action, and for a clip already
 rendering. Renders run after the edits in the same batch. `cancel`: `clip` or `job`.
 

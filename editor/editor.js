@@ -12,7 +12,12 @@ const clientId = (() => {
     return "h3editor-" + Math.random().toString(36).slice(2);
   }
 })();
-const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the picture", 17: "Decoding the sound", 18: "Assembling", 19: "Saving" };
+// What a render is doing, by the graph node running. A final's refine pass (80 to 91) comes after the sound is decoded,
+// and takes longer than the first pass on most cards: without its own labels it read as "Decoding the sound" throughout.
+const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the picture", 17: "Decoding the sound", 80: "Preparing the full size",
+  82: "Enlarging", 83: "Enlarging", 90: "Refining at full size", 91: "Decoding the full-size picture", 18: "Assembling", 19: "Saving" };
+// The nodes that report steps: the first pass, and a final's refine pass.
+const STEPPED = new Set(["15", "90"]);
 
 import { VfxRuntime } from "./vfx-runtime.js";
 import * as writer from "./writer.js";
@@ -3693,6 +3698,15 @@ function drawInspector() {
       button.addEventListener("click", () => renderClip(clip, quality));
       actions.append(button);
     }
+    if (!finishOff(clip)) {
+      const finish = document.createElement("button");
+      finish.className = "quiet";
+      finish.textContent = "Finish draft";
+      finish.title = "Make a final from the draft you see: the same shot, framing, motion and sound, enlarged and redrawn at full size. "
+        + "Only the final's last steps run, so it is faster than Render final, and there is no new seed to hope for.";
+      finish.addEventListener("click", () => renderClip(clip, "finish"));
+      actions.append(finish);
+    }
     const shown = activeTake(clip);
     const upscalers = (state.upscalers || []).filter((row) => row.installed);
     if (shown && shown.quality === "final" && !shown.upscaled && upscalers.length) {
@@ -6629,6 +6643,7 @@ function itemActions(item) {
   return [
     act("Render draft", () => renderClip(clip, "draft"), { off: busy ? clip.name + " is rendering" : "" }),
     act("Render final", () => renderClip(clip, "final"), { off: busy ? clip.name + " is rendering" : "" }),
+    act("Finish this draft", () => renderClip(clip, "finish"), { off: busy ? clip.name + " is rendering" : finishOff(clip) }),
     "-",
     act(String(clip.action || "").trim() ? "Rewrite with a language model" : "Write with a language model", () => openRewrite(clip)),
     "-",
@@ -6651,6 +6666,7 @@ function clipActions(clip) {
   return [
     act("Render draft", () => renderClip(clip, "draft"), { off: busy ? clip.name + " is rendering" : "" }),
     act("Render final", () => renderClip(clip, "final"), { off: busy ? clip.name + " is rendering" : "" }),
+    act("Finish this draft", () => renderClip(clip, "finish"), { off: busy ? clip.name + " is rendering" : finishOff(clip) }),
     "-",
     act(String(clip.action || "").trim() ? "Rewrite with a language model" : "Write with a language model", () => openRewrite(clip)),
     act("Add to the end of the cut", () => {
@@ -7323,6 +7339,16 @@ function updateQueue() {
 
 // Renders are queued by the server, which also attaches the finished take to the project.
 // The editor only shows progress, so closing it never loses a render.
+// Why a clip's draft cannot be finished, or "" when it can: a final made from it needs a draft shown and the Full final
+// size, which is the one that redraws at full size. The server checks the rest, such as the draft's saved latents.
+function finishOff(clip) {
+  const shown = activeTake(clip);
+  if (!shown || shown.quality !== "draft") return "Choose a draft take to finish";
+  const final = state.project.sizes?.final;
+  if (final && final !== "full") return "Finishing redraws at full size: set Final size to Full";
+  return "";
+}
+
 async function renderClip(clip, quality, detail, upscaler) {
   if (jobFor(clip.id)) return;
   if (!clip.action.trim()) {
@@ -7438,12 +7464,12 @@ function onMessage({ type, data }) {
   }
   if (type === "executing" && data.node) {
     job.stage = STAGES[data.node] || job.stage;
-    if (data.node !== "15") job.max = 0;
+    if (!STEPPED.has(String(data.node))) job.max = 0;
     showFrame();
-  } else if (type === "progress" && String(data.node) === "15") {
+  } else if (type === "progress" && STEPPED.has(String(data.node))) {
     job.step = data.value;
     job.max = data.max;
-    job.stage = STAGES[15];
+    job.stage = STAGES[data.node];
     job.progress = data.value / data.max;
     updateQueue();
     const bar = document.querySelector(".block.rendering .bar");

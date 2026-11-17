@@ -384,6 +384,57 @@ class ProjectTest(unittest.TestCase):
         self.assertIsNone(active_take({"takes": []}))
 
 
+class FinishTest(unittest.TestCase):
+    """A final made from the clip's draft: the draft's own latents enlarged and refined, in place of a new first pass."""
+
+    def drafted(self, **fields):
+        project = new_project("x")
+        set_project(project, dict({"format": "9:16"}, **fields))
+        made, _ = add_clip(project, {"action": "A keeper walks to the window."})
+        _, draft = plan_render(project, "x", made["id"], "draft", 3, HYPERFLOW | FINALS)
+        clip = project_module.find_clip(project, made["id"])
+        clip["takes"] = [{"id": "td", "file": "%s_td_00001_.mp4" % made["id"], "subfolder": "h3take_projects/x/clips",
+                          "frames": draft["10"]["inputs"]["length"], "quality": "draft", "seed": 77}]
+        clip["active"] = "td"
+        return project, clip
+
+    def test_a_finish_refines_the_draft_s_latents_at_full_size(self):
+        project, clip = self.drafted()
+        job, graph = plan_render(project, "x", clip["id"], "finish", None, HYPERFLOW | FINALS)
+        self.assertEqual(graph["15"], {"class_type": "H3LoadTake", "inputs": {"file": "h3take_projects/x/clips/%s_td_00001_.mp4" % clip["id"]}})
+        for node in ("13", "16"):
+            self.assertNotIn(node, graph)
+        # The enlarge, the draft's sound and the saved hold all start from the draft's latents.
+        self.assertEqual(graph["82"]["inputs"]["samples"], ["15", 0])
+        self.assertEqual(graph["17"]["inputs"]["samples"], ["15", 0])
+        self.assertEqual(graph["20"]["inputs"]["latent"], ["15", 0])
+        self.assertEqual(graph["18"]["inputs"]["images"], ["91", 0])
+        self.assertEqual((job["quality"], job["seed"], job["finished"], job["size"]), ("final", 77, "td", [1088, 1920]))
+        self.assertEqual(graph["14"]["inputs"]["noise_seed"], 77)
+        # Nothing in the graph still points at a node that is gone.
+        for node in graph.values():
+            for value in node["inputs"].values():
+                if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str):
+                    self.assertIn(value[0], graph)
+
+    def test_only_a_draft_can_be_finished(self):
+        project, clip = self.drafted()
+        clip["takes"][0]["quality"] = "final"
+        with self.assertRaisesRegex(ValueError, "no draft to finish"):
+            plan_render(project, "x", clip["id"], "finish", None, HYPERFLOW | FINALS)
+
+    def test_a_clip_whose_length_changed_needs_a_new_draft(self):
+        project, clip = self.drafted()
+        clip["seconds"] = 8
+        with self.assertRaisesRegex(ValueError, "Render a new draft"):
+            plan_render(project, "x", clip["id"], "finish", None, HYPERFLOW | FINALS)
+
+    def test_finishing_needs_the_full_final_size(self):
+        project, clip = self.drafted(sizes={"final": "large"})
+        with self.assertRaisesRegex(ValueError, "Final size to Full"):
+            plan_render(project, "x", clip["id"], "finish", None, HYPERFLOW | FINALS)
+
+
 class SizeTest(unittest.TestCase):
     """The sizes a project can render at instead of the usual ones for its format."""
 

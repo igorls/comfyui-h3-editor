@@ -944,11 +944,13 @@ def still_node(asset):
     return {"class_type": "H3LoadStill", "inputs": {"file": file}}
 
 
-def render_graph(project, folder, clip, take, quality, seed, available=None, patches=None):
+def render_graph(project, folder, clip, take, quality, seed, available=None, patches=None, finish=None):
     """One clip as a ComfyUI graph, saved as its own file in the project.
 
     available is the set of model files ComfyUI lists, used to find a profile's files.
     patches is the installed patch nodes by id, as project_patches takes them.
+    finish is a draft take of the clip to finish: the final's first pass is that draft's own latents, enlarged and
+    refined at the refine size, so the shot keeps the draft's framing, motion and sound.
     """
     if clip.get("kind") == "footage":
         raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip.get("name", "this clip"))
@@ -1106,6 +1108,8 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             add_refine_windows(graph)
     if quality != "draft" and size_name(project, quality) == SHARP:
         add_sharp(graph, refine_size(project), available)
+    if finish:
+        start_from_take(graph, clip, finish, length)
     mods = clip_refmods(project, clip, available)
     if mods:
         # Each chosen cast member's RefMod joins what H3 Take conditions on, in both passes of a final.
@@ -1122,6 +1126,24 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
                 "curve_direction": "constant", "scramble_seed": -1, "curve_shape": "linear", "curve_value": 1.0}}
             graph[key]["inputs"]["conditioning"] = [node, 0]
     return graph
+
+
+def start_from_take(graph, clip, source, length):
+    """Make a final's refine pass start from a rendered draft's latents in place of its own first pass.
+
+    The draft's sampled latents, saved beside its video, take the place of the first pass's: they are enlarged and
+    refined at the refine size as a final's would be, and their sound is the take's sound.
+    """
+    if "90" not in graph:
+        raise ValueError("finishing a draft redraws it at the refine size: set Final size to Full, and install the latent upscaler")
+    if int(source.get("frames") or 0) != int(length):
+        raise ValueError("%s runs %s frames now and its draft %s. Render a new draft to finish"
+                         % (clip.get("name", "This clip"), length, source.get("frames")))
+    file = "%s/%s" % (source["subfolder"], source["file"]) if source.get("subfolder") else source["file"]
+    graph["15"] = {"class_type": "H3LoadTake", "inputs": {"file": file}}
+    # The first pass's sampler, and its decode, which the refine replaces, have nothing left to do.
+    for unused in ("13", "16"):
+        graph.pop(unused, None)
 
 
 # How far the held frames furthest from a join are redrawn, as a mask value, falling to nothing at the join (see
@@ -2971,6 +2993,9 @@ UPSCALERS = {
     },
 }
 UPSCALE_QUALITY = "upscale"
+# A final made from the clip's active draft: the draft's own latents enlarged and redrawn at the refine size, so the
+# shot keeps the take that was chosen, and only the refine pass runs.
+FINISH_QUALITY = "finish"
 UPSCALE_MOST = 240          # frames: the enlarged frames are all held in memory at once, about 100 MB each at 4K
 # RelayVSR only: how much of the detail it adds is kept, from 0 (a plain enlargement) to 1 (all of it). At 1 skin gets
 # pores and shine that can make a face look older, so the default keeps half.
@@ -3105,6 +3130,13 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
     if quality == UPSCALE_QUALITY:
         return plan_upscale(project, folder, clip_id, available, detail, upscaler)
     clip = find_clip(project, clip_id)
+    finish = None
+    if quality == FINISH_QUALITY:
+        finish = active_take(clip)
+        if not finish or finish.get("quality") != "draft":
+            raise ValueError("%s has no draft to finish. Render a draft, or choose one of its draft takes" % clip["name"])
+        # The final keeps the draft's seed: the refine pass draws its noise from it.
+        quality, seed = "final", finish.get("seed")
     if clip.get("kind") == "footage":
         raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip["name"])
     if any(j["clip"] == clip_id for j in project.get("pending", [])):
@@ -3115,7 +3147,7 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
     if seed in (None, ""):
         seed = random.randrange(2 ** 31)
     take = new_id("t")
-    graph = render_graph(project, folder, clip, take, quality, int(seed), available, patches)
+    graph = render_graph(project, folder, clip, take, quality, int(seed), available, patches, finish)
     job = {"clip": clip_id, "take": take, "quality": quality, "seed": int(seed),
            "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
            "models": dict(render_models(graph), profile=project_profile(project, available, clip)[0],
@@ -3131,6 +3163,9 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
     elif tuple(render_size(project, quality)[:2]) != tuple(frame_size(project, quality)):
         # A size the project chose. A take that records none is at the usual size for its format.
         job["size"] = [graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]]
+    if finish:
+        # The draft this final was finished from.
+        job["finished"] = finish["id"]
     if clip.get("track"):
         # Once rendered, the take's sound is replaced by this exact slice of the track.
         job["track"] = dict(clip["track"], seconds=graph["10"]["inputs"]["length"] / float(FPS))
@@ -3161,7 +3196,7 @@ def finish_render(project, job_id, file, info):
     take = {"id": job["take"], "file": file["filename"], "subfolder": file.get("subfolder") or "",
             "poster": info["poster"], "frames": int(info["frames"]), "quality": job["quality"],
             "seed": job["seed"], "saved": job.get("saved")}
-    for key in ("models", "upscale", "size", "upscaled", "upscaler", "detail"):
+    for key in ("models", "upscale", "size", "upscaled", "upscaler", "detail", "finished"):
         if job.get(key):
             take[key] = job[key]
     if info.get("strip"):

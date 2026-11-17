@@ -559,6 +559,31 @@ class H3HyperFlowSigmas(io.ComfyNode):
         return io.NodeOutput(hyperflow.sigmas(model, 6 if steps is None else steps))
 
 
+class H3LoadTake(io.ComfyNode):
+    """A rendered take's latents as sampled, picture and sound, to carry on from: finishing a draft at final size."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3LoadTake",
+            display_name="H3 Load Take",
+            category="minimax/h3",
+            description=(
+                "Read the latents an H3 take was sampled as, picture and sound, from the file saved beside its video. "
+                "Upscale them and refine them at a larger size to finish a draft: the same shot, at final detail."
+            ),
+            inputs=[io.String.Input("file", tooltip="The take's video, as a path inside the output folder.")],
+            outputs=[io.Latent.Output(display_name="latent")],
+        )
+
+    @classmethod
+    def execute(cls, file) -> io.NodeOutput:
+        import comfy.nested_tensor
+
+        video, audio = holds.load_take(holds.hold_path(output_file(file)))
+        return io.NodeOutput({"samples": comfy.nested_tensor.NestedTensor((video, audio))})
+
+
 class H3RefineLatent(io.ComfyNode):
     """The latent for a refine pass: the upscaled picture to sample again, with the take's held parts and its sound kept."""
 
@@ -605,10 +630,10 @@ class H3RefineLatent(io.ComfyNode):
 
 
 NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3SaveHold": H3SaveHold, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
-                       "H3Lora": H3Lora, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
+                       "H3Lora": H3Lora, "H3LoadTake": H3LoadTake, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
                        "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
-                              "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3RefineLatent": "H3 Refine Latent",
+                              "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3LoadTake": "H3 Load Take", "H3RefineLatent": "H3 Refine Latent",
                               "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas", "H3SmallTextEncoder": "H3 Small Text Encoder"}
 # The editor's graphs name each node's twin, an id no other pack registers (see twins.py).
 NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = with_twins(NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS)

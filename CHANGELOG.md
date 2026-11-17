@@ -5,6 +5,31 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## 0.11.0, 2026-11-17
+
+### Added
+
+- **Finish a draft.** **Finish draft**, under a clip whose shown take is a draft,
+  and **Finish this draft** in its menu, make a final from that draft: its own
+  latents, saved beside it, are enlarged and redrawn at full size in place of a
+  new first pass. The final keeps the draft's framing, motion, faces and sound,
+  with final detail, and only the final's last steps run: a 3.8 s 9:16 shot
+  finished in 88 seconds, where a final of that length took about four minutes.
+  A final rendered from scratch is a new take at a larger size and never repeats
+  the draft, even with its seed, so this is the way to keep a draft you like.
+  Drafts at the Medium size are exactly half the full size and finish best. It
+  needs the Full final size. Agents render with `"quality": "finish"`
+  ([#7](https://github.com/igorls/comfyui-h3-editor/issues/7)).
+
+### Fixed
+
+- **A final no longer reads "Decoding the sound" while it refines.** A final's
+  refine pass runs after its sound is decoded and, on many cards, takes longer
+  than its first pass, but the editor had no label for it, so the last one stood
+  for minutes and looked stuck. It now says **Enlarging**, **Refining at full
+  size** with its steps, and **Decoding the full-size picture**
+  ([#8](https://github.com/igorls/comfyui-h3-editor/issues/8)).
+
 ## 0.10.0, 2026-11-17
 
 ### Added

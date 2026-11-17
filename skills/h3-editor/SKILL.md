@@ -53,12 +53,18 @@ or the rules for linked clips. Everything else you need is here.
 6. **Join shots that must flow.** An ordinary cut between clips is fine when the camera
    changes. When the action must continue, use the linked clips described below
    instead of hoping two renders match.
-7. **Render finals only for the clips you keep**, after the user has seen the drafts if
-   they are around. Say what it will cost first (see Costs). A final is a new render at
-   a larger size. Even with the draft's seed set on the clip, it will not repeat the
-   draft frame for frame: expect the same idea with different details, and look at the
-   finals as carefully as the drafts. Export takes its size from the first clip on the
-   timeline, so an all-draft cut exports at draft size.
+7. **Finish the drafts you keep**, after the user has seen them if they are around.
+   `render` with `"quality": "finish"` makes a final from the clip's active draft: the
+   draft's own latents enlarged and redrawn at full size, so the shot keeps its framing,
+   motion, faces and sound, with final detail. Only the final's last steps run, so it is
+   several times faster than a final. For finishing, render drafts at the Medium size
+   (`set_project` `sizes` `{"draft": "medium"}`), which is exactly half the full size.
+   It needs the Full final size and a draft rendered with 0.8.0 or later, which saves
+   its latents; without them it fails, and then `"quality": "final"` renders a new take:
+   a new render at a larger size that does not repeat the draft, even with its seed.
+   Say what it will cost first (see Costs), and look at the finals as carefully as the
+   drafts. Export takes its size from the first clip on the timeline, so an all-draft
+   cut exports at draft size.
 8. **Export** and report back (see Reporting).
 
 ## Batches

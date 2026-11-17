@@ -86,6 +86,21 @@ class FileTest(unittest.TestCase):
         self.assertEqual(tuple(saved["audio"].shape), (1, 8, 2, 207))
         self.assertEqual(saved["video"].dtype, torch.float16)
 
+    def test_a_whole_take_comes_back_to_be_finished(self):
+        holds.save(self.path, take(124))
+        video, audio = holds.load_take(self.path)
+        self.assertEqual((tuple(video.shape), tuple(audio.shape)), ((1, 4, 37, 2, 3), (1, 8, 2, 207)))
+        self.assertEqual(video.dtype, torch.float32)
+        self.assertTrue(torch.equal(video[0, 0, :, 0, 0], torch.arange(37, dtype=torch.float32)))
+
+    def test_a_take_without_its_latents_cannot_be_finished(self):
+        with self.assertRaisesRegex(FileNotFoundError, "Render it again"):
+            holds.load_take(self.path)
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        safetensors.torch.save_file({"tail": torch.zeros(1, 4, 5, 2, 3)}, self.path)
+        with self.assertRaisesRegex(ValueError, "no whole take"):
+            holds.load_take(self.path)
+
     def test_the_last_frames_come_back_as_they_were_sampled(self):
         holds.save(self.path, take(124))
         held = holds.part(self.path, 85, 124, 124)

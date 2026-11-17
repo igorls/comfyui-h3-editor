@@ -103,6 +103,20 @@ def save(path, samples, final=None):
     safetensors.torch.save_file(kept, path, metadata={"frames": str(latent_frames(video.shape[2]))})
 
 
+def load_take(path):
+    """A take's latents as sampled, picture and sound, from the file beside its video: for a pass that starts from them,
+    such as finishing a draft. Raises when the file is missing or keeps less than a whole take."""
+    if not os.path.exists(path):
+        raise FileNotFoundError("%s has no latents saved beside it. Render it again to finish it" % os.path.basename(path))
+    from safetensors import safe_open
+
+    with safe_open(path, framework="pt") as saved:
+        keys = set(saved.keys())
+        if "video" not in keys or "audio" not in keys:
+            raise ValueError("%s keeps no whole take, picture and sound. Render it again to finish it" % os.path.basename(path))
+        return saved.get_tensor("video").float(), saved.get_tensor("audio").float()
+
+
 def part(path, first, stop, total):
     """The saved latents for frames first..stop of a take of total frames, or None when the file has none for them.
 
