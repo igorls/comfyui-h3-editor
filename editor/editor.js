@@ -6794,6 +6794,27 @@ $("contextMenu").addEventListener("keydown", (event) => {
 let front = $("videoA");
 let back = $("videoB");
 let lastTick = 0;
+let tickGap = 1000 / 60;
+
+// The frame each video last put on screen, and when: what the cut is timed from. A video keeps playing between two
+// ticks of the page, so a cut decided on the tick after the out-point would show a frame from beyond it.
+for (const video of [front, back]) {
+  const seen = (now, meta) => {
+    video._shown = { media: meta.mediaTime, at: meta.expectedDisplayTime, url: video.dataset.url };
+    video.requestVideoFrameCallback(seen);
+  };
+  if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(seen);
+}
+
+// When, on the page's clock, the cut at the end of `item` is due: one frame after the item's last frame was shown.
+// Null until that frame, or one just before it, has been shown.
+function cutDue(item, video) {
+  const shown = video._shown;
+  if (!shown || shown.url !== sourceOf(item)) return null;
+  const at = item.start + (shown.media * FPS - item.in) / speedOf(item);
+  const left = itemEnd(item) - Math.round(at);
+  return left >= 1 && left <= 2 ? shown.at + (left * 1000) / FPS : null;
+}
 
 function itemAt(frame) {
   return state.project.timeline.find((i) => frame >= i.start && frame < itemEnd(i)) || null;
@@ -6943,7 +6964,7 @@ function leading(frame) {
 }
 
 // Seconds the next clip runs, silent, before its cut.
-const PREROLL = 0.4;
+const PREROLL = 0.6;
 
 function clearMix() {
   for (const video of [front, back]) {
@@ -6978,10 +6999,14 @@ function applyMix(item, frame) {
   }
 }
 
+// A paused video is put in the middle of its frame. A frame's start, k/24 of a second, is stored a hair short of
+// itself, and a video held there shows the frame before.
+const STILL = 0.5 / FPS;
+
 function place(video, item, frame, tolerance = 0.01) {
   load(video, sourceOf(item));
   if (video.playbackRate !== speedOf(item)) video.playbackRate = speedOf(item);
-  const seconds = sourceSeconds(item, frame);
+  const seconds = sourceSeconds(item, frame) + (state.playing ? 0 : STILL);
   if (Math.abs(video.currentTime - seconds) > tolerance) video.currentTime = seconds;
 }
 
@@ -7004,7 +7029,7 @@ function showSource(clip) {
     state.sourceFrame = Math.min(state.sourceFrame, take.frames - 1);
     load(front, viewUrl(take.file, take.subfolder));
     front.playbackRate = 1;
-    if (!state.playing && Math.abs(front.currentTime - state.sourceFrame / FPS) > 0.01) front.currentTime = state.sourceFrame / FPS;
+    if (!state.playing && Math.abs(front.currentTime - state.sourceFrame / FPS - STILL) > 0.01) front.currentTime = state.sourceFrame / FPS + STILL;
     front.classList.add("show");
     slate.textContent = "";
   } else {
@@ -7084,12 +7109,22 @@ function showPicture() {
 // At a cut the next clip's video may still be seeking to its first frame, with nothing drawn yet, and the
 // screen would show black for a moment. The clip that just ended stays underneath on its last frame until
 // the next one has drawn a frame of its own.
-function cover(outgoing, coming) {
-  const lift = () => outgoing.classList.remove("under");
-  if (coming.readyState >= 2 && !coming.seeking) return;
+// The same when the next clip, run ahead silent, has not yet shown its in-point (`first`, a frame of its source):
+// its frame from before the cut stays hidden, and the clip that ended keeps its last frame a moment longer.
+function cover(outgoing, coming, first = null) {
+  const behind = (media) => first !== null && Math.round(media * FPS) < first;
+  const lift = () => {
+    outgoing.classList.remove("under");
+    if (coming === front && state.playing) coming.classList.add("show");
+  };
+  const early = behind(coming._shown?.url === coming.dataset.url ? coming._shown.media : first / FPS);
+  if (coming.readyState >= 2 && !coming.seeking && !early) return;
   outgoing.classList.add("under");
-  if (coming.requestVideoFrameCallback) coming.requestVideoFrameCallback(lift);
-  else coming.addEventListener("seeked", lift, { once: true });
+  if (early) coming.classList.remove("show");
+  if (coming.requestVideoFrameCallback) {
+    const wait = (now, meta) => (behind(meta.mediaTime) ? coming.requestVideoFrameCallback(wait) : lift());
+    coming.requestVideoFrameCallback(wait);
+  } else coming.addEventListener("seeked", lift, { once: true });
   setTimeout(lift, 500);                                   // never left behind if the next clip fails to load
 }
 
@@ -7145,7 +7180,19 @@ function tick(now) {
   } else {
     state.playhead += ((now - lastTick) / 1000) * FPS;
   }
+  if (now > lastTick) tickGap = Math.min(50, now - lastTick);
   lastTick = now;
+  // A hard cut is made by the screen refresh it is due, timed from the outgoing video's last frame: what this tick
+  // draws is shown at the next refresh. The browser's own estimate of when a frame reaches the screen can be a
+  // refresh early, and a cut a refresh late would show a frame from past the out-point, so the cut comes a refresh
+  // early: the last frame is a few milliseconds shorter instead. A cut under a transition keeps the playhead's timing.
+  if (item && url && front.dataset.url === url && !incoming(state.playhead)) {
+    const due = cutDue(item, front);
+    const last = due !== null && itemEnd(item) >= sceneEnd();
+    const next = due !== null && !last ? leading(itemEnd(item)) : null;
+    // The end of the cut is timed the same way, so the last clip stops on its own last frame.
+    if ((last || (next && next !== item && !next.transition)) && now + 2 * tickGap >= due - 2) state.playhead = Math.max(state.playhead, itemEnd(item));
+  }
   syncSounds();
   previewEffect();
 
@@ -7182,8 +7229,9 @@ function tick(now) {
       // makes the sound stumble.
       const rate = speedOf(following);
       const lead = (following.start - state.playhead) / FPS;
-      const off = back.currentTime - (following.in / FPS - lead * rate);
-      const steer = lead < 0.12 ? 1 : off < -0.015 ? 1.3 : off > 0.015 ? 0.75 : 1;
+      // A quarter of a frame ahead: the frame shown at the cut is the in-point itself, never the one before it.
+      const off = back.currentTime - ((following.in + 0.25) / FPS - lead * rate);
+      const steer = lead < 0.08 ? 1 : off < -0.012 ? 1.3 : off > 0.012 ? 0.75 : 1;
       if (back.playbackRate !== rate * steer) back.playbackRate = rate * steer;
     }
   }
@@ -7195,7 +7243,7 @@ function tick(now) {
       if (back.dataset.url === sourceOf(current)) swap();
       place(front, current, state.playhead, 0.08);
       front.classList.add("show");
-      if (before !== front) cover(before, front);
+      if (before !== front) cover(before, front, current.in);
       setMix(front, 1, current);
       front.play().catch(() => {});
       if (!incoming(state.playhead)) back.pause();

@@ -105,6 +105,18 @@ Each release is a tag on GitHub, `v` followed by the version.
   unpinned anyway. HyperFlow now skips those attempts and pins the rest as
   before. Each failed attempt also waited on the GPU, so steps can come out a
   little faster ([#4](https://github.com/igorls/comfyui-h3-editor/issues/4)).
+- **The cut plays without micro jumps.** The viewer switched to the next clip
+  on the page's own tick, after the browser had already shown the outgoing
+  clip's next frame: at most cuts it showed a frame from past the out-point,
+  then the incoming clip's frame from before its in-point, and some cuts froze
+  for a moment. A cut is now timed from the last frame the outgoing clip put
+  on screen, and the incoming clip stays hidden until it shows its in-point.
+  On a 43 s reel of 14 clips, every one of its 1031 frames now plays in order,
+  where 9 frames from outside the cut used to show.
+- **A paused frame is the frame you asked for.** A frame's start time, a
+  multiple of 1/24 s, is stored a hair short of itself, and a video held there
+  showed the frame before, so stepping frame by frame was often one behind.
+  A paused video now sits in the middle of its frame.
 
 ## 0.9.1, 2026-11-15
 
