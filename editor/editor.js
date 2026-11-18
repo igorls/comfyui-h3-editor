@@ -20,7 +20,9 @@ const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the pic
 const STEPPED = new Set(["15", "90"]);
 
 import { VfxRuntime } from "./vfx-runtime.js";
+import { cropWindow, editCrop } from "./crop.js";
 import * as writer from "./writer.js";
+import { curveLevel, soundEnvelope, resumeSoundMixer, setSoundLevel, disconnectSound } from "./sound-envelope.js";
 
 const state = {
   folder: null,
@@ -203,6 +205,7 @@ function adopt(project, { external = false } = {}) {
     return;
   }
   state.project = project;
+  ensureFormatChoices(project);
   syncJobs();
   if (!clipOf(state.clip)) state.clip = null;
   if (!state.project.timeline.some((i) => i.id === state.item)) state.item = null;
@@ -3233,6 +3236,34 @@ function patchSection() {
   return disclosure("Model patches", rows.length > 0, rows.length ? active + " on" : "", children, "patch");
 }
 
+function formatOptions(select, current) {
+  const labels = { "16:9": "Wide, 16:9", "9:16": "Vertical, 9:16", "1:1": "Square, 1:1" };
+  const presets = [...(state.formatPresets || Object.keys(labels))];
+  if (!presets.includes(current)) presets.push(current);
+  select.replaceChildren(...presets.map((format) => new Option(labels[format] || format, format)),
+    new Option("Custom ratio…", "custom"));
+  select.value = current;
+}
+
+async function fetchSize(format, target = {}) {
+  const query = new URLSearchParams({ format, ...target });
+  const result = await api("/sizes?" + query);
+  (state.sizes ||= {})[result.format] = result.choices;
+  return result;
+}
+
+const loadingFormats = new Set();
+async function ensureFormatChoices(project) {
+  const format = project.format || "16:9";
+  if (state.sizes?.[format] || loadingFormats.has(format)) return;
+  loadingFormats.add(format);
+  try {
+    await fetchSize(format);
+    if (state.project?.format === format) renderAll();
+  } catch (error) { toast(error.message, true); }
+  finally { loadingFormats.delete(format); }
+}
+
 function renderScene(panel, selected = false) {
   const head = document.createElement("div");
   head.className = "inspector-head";
@@ -3260,24 +3291,27 @@ function renderScene(panel, selected = false) {
   shapeTitle.textContent = "Format";
   const shapes = document.createElement("select");
   shapes.dataset.key = "Format";
-  for (const [value, label] of [["16:9", "Wide, 16:9"], ["9:16", "Vertical, 9:16"], ["1:1", "Square, 1:1"]]) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    option.selected = (state.project.format || "16:9") === value;
-    shapes.append(option);
-  }
-  shapes.addEventListener("change", () => {
+  formatOptions(shapes, state.project.format || "16:9");
+  shapes.addEventListener("change", async () => {
+    let format = shapes.value;
+    if (format === "custom") {
+      const folder = state.folder;
+      shapes.value = state.project.format || "16:9";
+      const text = await ask({ title: "Custom aspect ratio", label: "Width : height", value: shapes.value,
+        note: "Enter a ratio such as 5:4.", confirm: "Set format" });
+      if (!text) return;
+      try { format = (await fetchSize(text)).format; } catch (error) { toast(error.message, true); return; }
+      if (state.folder !== folder) return;
+    }
     checkpoint();
-    state.project.format = shapes.value;
+    state.project.format = format;
     save();
-    // The sizes on offer follow the format.
-    renderInspector();
+    renderAll();
   });
   shape.append(shapeTitle, shapes);
   const formatHint = document.createElement("p");
   formatHint.className = "hint";
-  formatHint.textContent = "New renders and imports use this shape. Export fits every clip to it.";
+  formatHint.textContent = "New renders and imports use this ratio unless you set their dimensions. Export follows the widest take in the cut.";
   const model = document.createElement("label");
   model.className = "choice";
   const modelTitle = document.createElement("span");
@@ -3446,12 +3480,13 @@ function sizeChoices() {
     return sides.every((side) => side >= own.min && side <= own.max && side % own.step === 0) ? sides : null;
   };
   const choice = (quality, title) => {
-    const label = document.createElement("label");
+    const label = document.createElement("div");
     label.className = "choice";
     const name = document.createElement("span");
     name.textContent = title;
     const select = document.createElement("select");
     select.dataset.key = title;
+    select.setAttribute("aria-label", title);
     const usual = table[quality][0].id;
     const mine = ownSize(state.project.sizes?.[quality]);
     const current = mine ? "own" : table[quality].some((row) => row.id === state.project.sizes?.[quality]) ? state.project.sizes[quality] : usual;
@@ -3521,6 +3556,12 @@ function sizeChoices() {
     sides.append(boxes[0], times, boxes[1]);
     says(mine);
     label.append(sides, note);
+    const fromRatio = document.createElement("button");
+    fromRatio.type = "button";
+    fromRatio.className = "quiet small";
+    fromRatio.textContent = "Set by longest side or megapixels…";
+    fromRatio.addEventListener("click", () => openSizeTarget(quality, mine, setSize));
+    label.append(fromRatio);
     return label;
   };
   const hint = document.createElement("p");
@@ -3539,6 +3580,52 @@ function sizeChoices() {
   pair.className = "pair";
   pair.append(choice("draft", "Draft size"), choice("final", "Final size"));
   return [pair, hint];
+}
+
+function openSizeTarget(quality, dimensions, setSize) {
+  const dialog = $("sizeTarget"), method = $("sizeMethod"), target = $("sizeValue");
+  const ratio = $("sizeRatio"), result = $("sizeResult"), apply = $("sizeApply");
+  const folder = state.folder;
+  let measured = null, sequence = 0;
+  async function measure() {
+    const turn = ++sequence;
+    measured = null;
+    apply.disabled = true;
+    result.textContent = "";
+    if (!ratio.value.trim() || !target.valueAsNumber || !target.validity.valid) return;
+    try {
+      const reply = await fetchSize(ratio.value, { [method.value]: target.value });
+      if (turn !== sequence) return;
+      measured = reply.size;
+      result.textContent = measured.join(" × ") + " px · " + (measured[0] * measured[1] / 1e6).toFixed(2) + " MP";
+      apply.disabled = false;
+    } catch (error) {
+      if (turn === sequence) result.textContent = error.message;
+    }
+  }
+  function changeUnit() {
+    const longest = method.value === "longest_side";
+    target.step = longest ? "1" : "any";
+    target.value = longest ? Math.max(...dimensions) : +(dimensions[0] * dimensions[1] / 1e6).toFixed(6);
+    measure();
+  }
+  $("sizeTargetTitle").textContent = quality === "draft" ? "Custom draft size" : "Custom final size";
+  ratio.value = state.project.format || "16:9";
+  method.value = "longest_side";
+  target.oninput = ratio.oninput = measure;
+  method.onchange = changeUnit;
+  $("sizeTargetForm").onsubmit = (event) => {
+    event.preventDefault();
+    if (!measured || state.folder !== folder) return;
+    setSize(measured.join("x"));
+    dialog.close();
+    renderInspector();
+  };
+  $("sizeCancel").onclick = () => dialog.close();
+  changeUnit();
+  dialog.showModal();
+  target.focus();
+  target.select();
 }
 
 function renderBinPanel(panel, bin) {
@@ -4031,18 +4118,82 @@ function versions(clip) {
   const spacer = document.createElement("span");
   spacer.className = "spacer";
   tools.append(spacer);
-  const remove = trashButton("Delete take " + (clip.takes.indexOf(current) + 1), () => {
-    checkpoint();
-    const number = clip.takes.indexOf(current) + 1;
-    clip.takes = clip.takes.filter((t) => t !== current);
-    clip.active = clip.takes.at(-1)?.id ?? null;
-    save();
-    renderAll();
-    toast("Deleted take " + number + " of " + clip.name + ".", false, undoAction);
-  });
-  remove.disabled = clip.takes.length < 2;
-  tools.append(remove);
+  button("Manage takes…", () => openTakeManager(clip), clip.kind === "footage" && clip.takes.length < 2,
+    "", "Select takes to remove from this clip");
   return [takes, tools];
+}
+
+function openTakeManager(clip) {
+  const dialog = $("takeManager"), list = $("takeManagerList"), hint = $("takeManagerHint"), apply = $("takeManagerRemove");
+  const folder = state.folder, active = activeTake(clip).id;
+  const selected = new Set();
+  function update() {
+    const all = selected.size === clip.takes.length;
+    apply.disabled = !selected.size || (all && clip.kind === "footage");
+    apply.textContent = selected.size ? "Remove " + selected.size + (selected.size === 1 ? " take" : " takes") : "Remove selected";
+    hint.textContent = all ? (clip.kind === "footage" ? "Keep the last take of imported footage."
+      : "This clears the renders from the shot. Its prompt and timeline placements stay ready for a new take.") : selected.has(active)
+      ? "The newest remaining take will play in this clip. Its other independent placements keep their own takes."
+      : "Remove versions from this clip. Their media files stay available to other placements and project history.";
+  }
+  $("takeManagerTitle").textContent = "Manage takes · " + clip.name;
+  list.replaceChildren();
+  for (const [index, take] of clip.takes.entries()) {
+    const row = document.createElement("label"), check = document.createElement("input");
+    check.type = "checkbox";
+    check.onchange = () => { if (check.checked) selected.add(take.id); else selected.delete(take.id); update(); };
+    row.append(check);
+    if (take.poster) {
+      const image = document.createElement("img");
+      image.src = viewUrl(take.poster, take.subfolder);
+      image.alt = "";
+      row.append(image);
+    }
+    row.append("Take " + (index + 1) + " · " + take.quality + (take.id === active ? " · Active" : ""));
+    list.append(row);
+  }
+  $("takeManagerClose").onclick = () => dialog.close();
+  $("takeManagerForm").onsubmit = async (event) => {
+    event.preventDefault();
+    if (apply.disabled || folder !== state.folder) return;
+    apply.disabled = true;
+    const takes = [...selected];
+    try {
+      const clear = takes.length === clip.takes.length;
+      if (clear && !await ask({ title: "Clear every take from " + clip.name + "?", confirm: "Clear takes", danger: true,
+        note: "Keep the shot and its timeline edits. You can render a new take at any time." })) {
+        update();
+        return;
+      }
+      await flush();
+      if (unsaved()) throw new Error("Save the project before removing takes.");
+      const latest = clipOf(clip.id);
+      if (!latest || activeTake(latest)?.id !== active || latest.takes.length !== clip.takes.length)
+        throw new Error("The takes have changed. Close this dialog and select them again.");
+      const path = "/project/" + folder;
+      const previous = state.project.revision;
+      const reply = await postJson(path + "/ops", { revision: previous, client: clientId,
+        ops: [{ op: "remove_takes", clip: clip.id, takes, allow_empty: clear }] });
+      dialog.close();
+      await refreshProject(true);
+      toast("Removed " + takes.length + (takes.length === 1 ? " take." : " takes."), false, {
+        label: "Undo", run: async () => {
+          if (state.folder !== folder) return;
+          try {
+            await flush();
+            if (unsaved()) throw new Error("Save the project before undoing.");
+            await postJson(path + "/restore", { revision: previous, if_revision: reply.revision, client: clientId });
+            await refreshProject(true);
+          } catch (error) { toast(error.message, true); }
+        },
+      });
+    } catch (error) {
+      hint.textContent = error.message;
+      apply.disabled = false;
+    }
+  };
+  update();
+  dialog.showModal();
 }
 
 function setSpeed(item, speed) {
@@ -4156,7 +4307,26 @@ function timelineControls(item) {
     relevel();
     renderTimeline();
   }));
-  box.append(speeds, row, volume);
+  const crop = document.createElement("button");
+  crop.className = "quiet";
+  crop.textContent = "Crop and reframe";
+  const take = activeTake(clipOf(item.clip));
+  crop.disabled = !take;
+  crop.addEventListener("click", async () => {
+    if (state.playing) setPlaying(false);
+    const folder = state.folder;
+    const frame = Math.min(itemEnd(item) - 1, Math.max(item.start, state.playhead));
+    const value = await editCrop(viewUrl(take.file, take.subfolder), sourceSeconds(item, frame) + STILL,
+      takeShape(take), cutShape(), item.crop);
+    const current = state.project.timeline.find((i) => i.id === item.id);
+    if (value === undefined || state.folder !== folder || !current) return;
+    checkpoint();
+    if (value) current.crop = value;
+    else delete current.crop;
+    save();
+    renderAll();
+  });
+  box.append(speeds, row, volume, crop);
   const use = takeUse(item);
   if (use) box.append(use);
   return [box];
@@ -4526,6 +4696,9 @@ function renderSounds() {
     name.className = "name";
     name.textContent = sound.name;
     block.append(canvas, name);
+    if (selected || sound.fade_in || sound.fade_out || sound.gain_points?.length) {
+      drawSoundEnvelope(block, sound, selected);
+    }
     for (const side of ["l", "r"]) {
       const edge = document.createElement("div");
       edge.className = "edge " + side;
@@ -4548,6 +4721,74 @@ function selectSound(id) {
   state.person = null;
   state.bin = null;
   renderAll();
+}
+
+function drawSoundEnvelope(block, sound, editable) {
+  const ns = "http://www.w3.org/2000/svg";
+  const graph = document.createElementNS(ns, "svg");
+  graph.classList.add("sound-envelope");
+  graph.setAttribute("aria-hidden", "true");
+  const first = (sound.offset || 0) * FPS;
+  const points = sound.gain_points || [];
+  // Include every corner as well as samples through overlapping fades.
+  const sample = new Set([0, sound.frames, Math.min(sound.frames, sound.fade_in || 0),
+    Math.max(0, sound.frames - (sound.fade_out || 0))]);
+  for (const point of points) {
+    const at = point.frame - first;
+    if (at >= 0 && at <= sound.frames) sample.add(at);
+  }
+  for (let n = 1; n < 32; n++) sample.add(n * sound.frames / 32);
+  const path = document.createElementNS(ns, "svg");
+  path.setAttribute("width", "100%");
+  path.setAttribute("height", "100%");
+  path.setAttribute("viewBox", "0 0 100 100");
+  path.setAttribute("preserveAspectRatio", "none");
+  const plot = document.createElementNS(ns, "polyline");
+  plot.setAttribute("points", [...sample].sort((a, b) => a - b).map((at) =>
+    (100 * at / sound.frames) + "," + (100 - 100 * soundEnvelope(sound, at))).join(" "));
+  path.append(plot);
+  graph.append(path);
+  if (editable) for (const [index, point] of points.entries()) {
+    const x = (point.frame - first) / sound.frames;
+    if (x < 0 || x > 1) continue;
+    const dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("cx", (x * 100) + "%");
+    dot.setAttribute("cy", (100 - 100 * point.gain) + "%");
+    dot.setAttribute("r", 4);
+    dot.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      const bounds = graph.getBoundingClientRect();
+      const min = Math.max(Math.ceil(first), (points[index - 1]?.frame ?? -1) + 1);
+      const max = Math.min(Math.floor(first + sound.frames), Math.round(sound.seconds * FPS),
+        (points[index + 1]?.frame ?? Infinity) - 1);
+      checkpoint();
+      const move = (ev) => {
+        if (ev.pointerId !== event.pointerId) return;
+        const live = soundOf(sound.id);
+        if (!live?.gain_points?.[index]) return;
+        live.gain_points[index] = {
+          frame: Math.max(min, Math.min(max, Math.round(first + (ev.clientX - bounds.left) / bounds.width * sound.frames))),
+          gain: Math.round(100 * Math.max(0, Math.min(1, (bounds.bottom - ev.clientY) / bounds.height))) / 100,
+        };
+        block.querySelector(".sound-envelope")?.remove();
+        drawSoundEnvelope(block, live, true);
+      };
+      const end = (ev) => {
+        if (ev.pointerId !== event.pointerId) return;
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", end);
+        save();
+        renderInspector();
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", end);
+      window.addEventListener("pointercancel", end);
+    });
+    graph.append(dot);
+  }
+  block.append(graph);
 }
 
 function removeSound(id) {
@@ -4610,6 +4851,10 @@ function bindSound(block, id) {
       }
       live.style.left = px(sound.start) + "px";
       live.style.width = Math.max(10, px(sound.frames)) + "px";
+      if (edge && live.querySelector(".sound-envelope")) {
+        live.querySelector(".sound-envelope").remove();
+        drawSoundEnvelope(live, sound, true);
+      }
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
@@ -4683,13 +4928,79 @@ function renderSoundPanel(panel, sound) {
   });
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = "Drag it on the timeline to move it, up or down to change its lane, and drag its ends to trim it. The export mixes it under the clips' own sound and stops it where the cut ends. Above 1 it is louder in the export; the preview tops out at 1.";
+  hint.textContent = "Drag the sound to move it, or drag an end to trim it.";
   panel.replaceChildren(head, section("Sound", [
     volume,
     strengthSlider("Sound volume", sound.name + " volume", typeof sound.gain === "number" ? sound.gain : 1, [0, 2], 1, (v) => (live().gain = v)),
     lane,
     hint,
-  ]));
+  ]), soundEnvelopePanel(sound));
+}
+
+function soundEnvelopePanel(sound) {
+  const live = () => soundOf(sound.id);
+  const edit = (change) => {
+    const row = live();
+    if (!row) return;
+    checkpoint();
+    change(row);
+    save();
+    renderTimeline();
+    renderInspector();
+  };
+  const number = (label, value, min, max, apply) => {
+    const field = document.createElement("label");
+    field.className = "field";
+    const text = document.createElement("span");
+    text.textContent = label;
+    const input = document.createElement("input");
+    Object.assign(input, { type: "number", value, min, max, step: 1 });
+    input.addEventListener("change", () => {
+      if (input.value !== "" && input.validity.valid) apply(Number(input.value));
+      else input.value = value;
+    });
+    field.append(text, input);
+    return field;
+  };
+  const fades = document.createElement("div");
+  fades.className = "pair";
+  for (const [key, label] of [["fade_in", "Fade in (frames)"], ["fade_out", "Fade out (frames)"]]) {
+    fades.append(number(label, Math.min(sound.frames, sound[key] || 0), 0, sound.frames, (v) => edit((s) => { s[key] = v; })));
+  }
+  const list = document.createElement("div");
+  list.className = "gain-points";
+  const points = sound.gain_points || [];
+  const length = Math.max(1, Math.round(sound.seconds * FPS));
+  for (const [i, point] of points.entries()) {
+    const row = document.createElement("div");
+    row.className = "gain-point";
+    const update = (field, value) => edit((s) => { s.gain_points[i] = { ...s.gain_points[i], [field]: value }; });
+    row.append(number("Source frame", point.frame, (points[i - 1]?.frame ?? -1) + 1,
+      (points[i + 1]?.frame ?? length + 1) - 1, (v) => update("frame", v)),
+    number("Level (%)", Math.round(point.gain * 100), 0, 100, (v) => update("gain", v / 100)),
+    trashButton("Remove gain point at source frame " + point.frame, () => edit((s) => s.gain_points.splice(i, 1))));
+    list.append(row);
+  }
+  const add = document.createElement("button");
+  add.className = "quiet";
+  add.textContent = "Add point at playhead";
+  add.disabled = points.length >= 64;
+  add.addEventListener("click", () => {
+    const s = live();
+    if (!s) return;
+    const position = Math.round(state.playhead - s.start);
+    if (position < 0 || position > s.frames) return toast("Place the playhead inside this sound first.");
+    const frame = Math.max(0, Math.min(length, Math.round(position + (s.offset || 0) * FPS)));
+    if (s.gain_points?.some((p) => p.frame === frame)) return toast("There is already a point at this frame.");
+    edit((row) => {
+      const gain = Math.round(curveLevel(row, frame) * 100) / 100;
+      row.gain_points = [...row.gain_points || [], { frame, gain }].sort((a, b) => a.frame - b.frame);
+    });
+  });
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Drag points on the waveform or enter their source frames and levels. 100% plays at the sound’s volume.";
+  return section("Volume curve", [fades, list, add, hint]);
 }
 
 // Keeps each extra sound in step with the playhead while the cut plays, and silent otherwise.
@@ -4699,6 +5010,7 @@ function syncSounds() {
   for (const [id, player] of soundPlayers) {
     if (known.has(id)) continue;
     player.pause();
+    disconnectSound(player);
     soundPlayers.delete(id);
   }
   const running = state.playing && !viewing();
@@ -4710,11 +5022,11 @@ function syncSounds() {
       soundPlayers.set(sound.id, player);
     }
     const at = (state.playhead - sound.start) / FPS;
-    if (!running || at < 0 || at >= sound.frames / FPS || !(sound.gain > 0)) {
+    if (!running || at < 0 || at >= sound.frames / FPS || sound.gain === 0) {
       if (!player.paused) player.pause();
       continue;
     }
-    player.volume = Math.min(1, sound.gain) * heard();
+    setSoundLevel(player, sound, at * FPS, heard());
     const wanted = (sound.offset || 0) + at;
     if (player.paused) {
       player.currentTime = wanted;
@@ -5434,7 +5746,9 @@ function effectStamp(effect) {
   const first = effect.start, last = effect.start + effect.frames;
   const below = sorted().filter((item) => item.start < last && first < itemEnd(item)).map((item) => {
     const take = activeTake(clipOf(item.clip));
-    return [item.clip, take ? take.id : null, item.start, item.in, item.out, speedOf(item), item.transition?.type ?? null, item.transition?.frames ?? null];
+    const row = [item.clip, take ? take.id : null, item.start, item.in, item.out, speedOf(item), item.transition?.type ?? null, item.transition?.frames ?? null];
+    if (item.crop) row.push({ x: item.crop.x, y: item.crop.y, w: item.crop.w, h: item.crop.h });
+    return row;
   });
   return { rev: effect.rev || 0, start: effect.start, below };
 }
@@ -5682,7 +5996,9 @@ async function belowNow(w, h) {
   }
   if (front.readyState < 2 || !front.videoWidth) return null;
   try {
-    return await createImageBitmap(front, { resizeWidth: w, resizeHeight: h, resizeQuality: "medium" });
+    const canvas = new OffscreenCanvas(w, h);
+    drawPlacement(canvas.getContext("2d"), front, leading(Math.floor(state.playhead))?.crop);
+    return await createImageBitmap(canvas);
   } catch (_) {
     return null;
   }
@@ -5922,10 +6238,7 @@ async function exactBelow(frame, w, h, work) {
       fxSource.currentTime = seconds;
     });
   }
-  // Cover the frame, as the viewer and the export do.
-  const scale = Math.max(w / fxSource.videoWidth, h / fxSource.videoHeight);
-  const dw = fxSource.videoWidth * scale, dh = fxSource.videoHeight * scale;
-  work.drawImage(fxSource, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  drawPlacement(work, fxSource, item.crop);
   return createImageBitmap(work.canvas);
 }
 
@@ -6941,7 +7254,10 @@ function splitAtPlayhead() {
   }
   checkpoint();
   const cut = Math.round(item.in + (state.playhead - item.start) * speedOf(item));
-  state.project.timeline.push({ id: uid("i"), clip: item.clip, start: state.playhead, in: cut, out: item.out, speed: item.speed, ...(typeof item.gain === "number" ? { gain: item.gain } : {}) });
+  const right = { ...item, id: uid("i"), start: state.playhead, in: cut };
+  delete right.transition;
+  if (item.crop) right.crop = { ...item.crop };
+  state.project.timeline.push(right);
   item.out = cut;
   save();
   renderTimeline();
@@ -7232,7 +7548,7 @@ function relevel() {
   $("motion").volume = heard();
   for (const [id, player] of soundPlayers) {
     const sound = (state.project?.sounds || []).find((s) => s.id === id);
-    if (sound) player.volume = Math.min(1, sound.gain) * heard();
+    if (sound) setSoundLevel(player, sound, state.playhead - sound.start, heard());
   }
 }
 
@@ -7331,34 +7647,35 @@ const PREROLL = 0.6;
 
 function clearMix() {
   for (const video of [front, back]) {
-    video.style.opacity = "";
-    video.style.clipPath = "";
+    video.parentElement.style.opacity = "";
+    video.parentElement.style.clipPath = "";
     setMix(video, 1);
     video.muted = false;
   }
-  front.style.zIndex = "1";
-  back.style.zIndex = "2";
+  front.parentElement.style.zIndex = "1";
+  back.parentElement.style.zIndex = "2";
 }
 
 function applyMix(item, frame) {
   const progress = Math.min(1, Math.max(0, (frame - item.start) / item.transition.frames));
   const kind = item.transition.type;
-  front.style.zIndex = "1";
-  back.style.zIndex = "2";
+  const outgoing = front.parentElement.style, incoming = back.parentElement.style;
+  outgoing.zIndex = "1";
+  incoming.zIndex = "2";
   back.classList.add("show");
   back.muted = false;
   setMix(front, 1 - progress);
   setMix(back, progress, item);
   if (kind === "wipe") {
-    back.style.opacity = "";
-    back.style.clipPath = "inset(0 " + (100 - progress * 100) + "% 0 0)";
+    incoming.opacity = "";
+    incoming.clipPath = "inset(0 " + (100 - progress * 100) + "% 0 0)";
   } else if (kind === "black") {
-    front.style.opacity = String(Math.max(0, 1 - progress * 2));
-    back.style.opacity = String(Math.max(0, progress * 2 - 1));
-    back.style.clipPath = "";
+    outgoing.opacity = String(Math.max(0, 1 - progress * 2));
+    incoming.opacity = String(Math.max(0, progress * 2 - 1));
+    incoming.clipPath = "";
   } else {
-    back.style.opacity = String(progress);
-    back.style.clipPath = "";
+    incoming.opacity = String(progress);
+    incoming.clipPath = "";
   }
 }
 
@@ -7366,8 +7683,28 @@ function applyMix(item, frame) {
 // itself, and a video held there shows the frame before.
 const STILL = 0.5 / FPS;
 
+function drawPlacement(ctx, video, crop) {
+  const { width, height } = ctx.canvas;
+  const sw = video.videoWidth, sh = video.videoHeight;
+  const box = cropWindow([sw, sh], [width, height], crop);
+  ctx.drawImage(video, box.x * sw, box.y * sh, box.w * sw, box.h * sh, 0, 0, width, height);
+}
+
+function framePlacement(video, item) {
+  video._cropItem = item;
+  if (!item?.crop) {
+    if (video.style.width) Object.assign(video.style, { width: "", height: "", left: "", top: "", objectFit: "" });
+    return;
+  }
+  const take = activeTake(clipOf(item.clip));
+  const box = cropWindow(takeShape(take), cutShape(), item.crop);
+  Object.assign(video.style, { left: -100 * box.x / box.w + "%", top: -100 * box.y / box.h + "%",
+    width: 100 / box.w + "%", height: 100 / box.h + "%", objectFit: "fill" });
+}
+
 function place(video, item, frame, tolerance = 0.01) {
   load(video, sourceOf(item));
+  framePlacement(video, item);
   if (video.playbackRate !== speedOf(item)) video.playbackRate = speedOf(item);
   const seconds = sourceSeconds(item, frame) + (state.playing ? 0 : STILL);
   if (Math.abs(video.currentTime - seconds) > tolerance) video.currentTime = seconds;
@@ -7384,6 +7721,7 @@ function setSource(clipId) {
 }
 
 function showSource(clip) {
+  framePlacement(front, null);
   const take = activeTake(clip);
   const job = jobFor(clip.id);
   const slate = $("slate");
@@ -7516,6 +7854,7 @@ function setPlaying(on) {
     return;
   }
   // Whatever was shown while paused, the clip under the playhead starts at its own volume.
+  if (!viewing() && state.project?.sounds?.length) resumeSoundMixer();
   relevel();
   const range = state.loop ? currentRange() : null;
   const start = range?.a || 0, end = range?.b || viewEnd();
@@ -7588,6 +7927,7 @@ function tick(now) {
       place(back, coming, state.playhead, 0.08);
       back.play().catch(() => {});
     }
+    if (back._cropItem !== coming) framePlacement(back, coming);
     applyMix(coming, state.playhead);
   } else {
     const following = item ? sorted().find((i) => i.start >= itemEnd(item) - (i.transition?.frames || 0) && i !== item) : nextItem(state.playhead);
@@ -7909,6 +8249,7 @@ async function openProject(folder) {
   if (state.playing) setPlaying(false);
   state.folder = folder;
   state.project = await api("/project/" + folder);
+  await ensureFormatChoices(state.project);
   drawProjectPicker();
   state.edits = state.savedEdits = 0;
   state.clip = null;
@@ -7945,7 +8286,8 @@ async function refreshProjects(selected) {
   state.loras = loras || [];
   state.patches = patches || [];
   state.realism = realism || null;
-  state.sizes = sizes || null;
+  state.formatPresets = Object.keys(sizes || {});
+  state.sizes = { ...state.sizes, ...sizes };
   state.upscalers = upscalers || [];
   state.catalog = catalog || [];
   state.projects = projects;
@@ -8352,7 +8694,9 @@ function setupButton() {
 $("newProject").addEventListener("click", () => {
   const hint = $("creatorHint");
   $("creatorName").value = "";
-  $("creatorFormat").value = "16:9";
+  formatOptions($("creatorFormat"), "16:9");
+  $("creatorRatioField").hidden = true;
+  $("creatorRatio").value = "5:4";
   hint.textContent = "Its name becomes its folder in ComfyUI's output folder. The format can be changed later.";
   hint.classList.remove("bad");
   $("creatorGo").disabled = false;
@@ -8360,6 +8704,9 @@ $("newProject").addEventListener("click", () => {
   $("creatorName").focus();
 });
 $("creatorClose").addEventListener("click", () => $("creator").close());
+$("creatorFormat").addEventListener("change", () => {
+  $("creatorRatioField").hidden = $("creatorFormat").value !== "custom";
+});
 $("creatorForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const hint = $("creatorHint");
@@ -8374,8 +8721,9 @@ $("creatorForm").addEventListener("submit", async (event) => {
   if ((state.projects || []).some((known) => known.toLowerCase() === folder.toLowerCase())) return bad("There is already a project called " + folder.replaceAll("_", " ") + ". Pick another name.");
   $("creatorGo").disabled = true;
   try {
+    const choice = $("creatorFormat").value;
+    const format = choice === "custom" ? (await fetchSize($("creatorRatio").value)).format : choice;
     await createProject(name);
-    const format = $("creatorFormat").value;
     if (format !== (state.project.format || "16:9")) {
       state.project.format = format;
       save();
@@ -8388,10 +8736,11 @@ $("creatorForm").addEventListener("submit", async (event) => {
   $("creatorGo").disabled = false;
 });
 // A small dialog that asks for a name, or only for a yes. Resolves to the name, to true, or to null when it is closed.
-function ask({ title, value = null, note = "", confirm, danger = false }) {
+function ask({ title, label = "Name", value = null, note = "", confirm, danger = false }) {
   const dialog = $("asker");
   const input = $("askerInput");
   $("askerTitle").textContent = title;
+  $("askerLabel").textContent = label;
   $("askerField").hidden = value === null;
   input.value = value ?? "";
   $("askerNote").textContent = note;
@@ -8739,9 +9088,13 @@ async function openExporter() {
   const go = $("exporterGo");
   clearTimeout(saveTimer);
   await flush();
-  let plan;
+  let plan, markedPlan;
+  const range = boundedRange(state.range, sceneEnd());
+  const span = range && { from: range.a, to: range.b };
   try {
-    plan = (await postJson("/project/" + state.folder + "/export", { plan: true })).plan;
+    const endpoint = "/project/" + state.folder + "/export";
+    [plan, markedPlan] = await Promise.all([postJson(endpoint, { plan: true }).then((r) => r.plan),
+      span && postJson(endpoint, { plan: true, range: span }).then((r) => r.plan)]);
   } catch (error) {
     toast(error.message, true);
     return;
@@ -8758,16 +9111,26 @@ async function openExporter() {
     option.textContent = label + ", " + even(full[0], scale) + " x " + even(full[1], scale);
     return option;
   }));
-  $("exporterSummary").textContent = timecode(plan.frames) + " (" + plan.seconds + " seconds), " + plan.clips + (plan.clips === 1 ? " clip" : " clips") + ", with sound, as an MP4.";
-  const notes = [];
-  if (plan.drafts) notes.push(plan.drafts + (plan.drafts === 1 ? " clip is still a draft" : " clips are still drafts") + ". Drafts are small, so they will look soft next to finals.");
-  if (plan.missing) notes.push(plan.missing + (plan.missing === 1 ? " clip has no render and is" : " clips have no render and are") + " left out.");
-  if (plan.gaps) notes.push(plan.gaps + (plan.gaps === 1 ? " gap" : " gaps") + " on the timeline will be black and silent.");
-  $("exporterNotes").replaceChildren(...notes.map((text) => {
-    const item = document.createElement("li");
-    item.textContent = text;
-    return item;
-  }));
+  const scope = $("exporterSpan");
+  $("exporterSpanRow").hidden = !span;
+  scope.value = span ? "range" : "all";
+  if (span) scope.options[1].textContent = "Marked range, " + timecode(span.from) + " – " + timecode(span.to - 1);
+  scope.onchange = () => {
+    const current = scope.value === "range" ? markedPlan : plan;
+    const notes = [];
+    if (current.drafts) notes.push(current.drafts + (current.drafts === 1 ? " clip is still a draft." : " clips are still drafts."));
+    if (current.missing) notes.push(current.missing + (current.missing === 1 ? " clip has no rendered picture." : " clips have no rendered picture."));
+    if (current.gaps) notes.push(current.gaps + (current.gaps === 1 ? " gap in the picture." : " gaps in the picture."));
+    if (current.effects_stale) notes.push("Some effects were rendered before the picture below changed.");
+    $("exporterSummary").textContent = timecode(current.frames) + " (" + current.seconds + " seconds), " + current.clips + (current.clips === 1 ? " clip" : " clips") + ", with sound, as an MP4.";
+    $("exporterNotes").replaceChildren(...notes.map((text) => {
+      const li = document.createElement("li");
+      li.textContent = text;
+      return li;
+    }));
+  };
+  scope.onchange();
+  scope.dataset.range = JSON.stringify(span);
   $("exporterName").value = state.folder;
   try { $("exporterDownload").checked = localStorage.getItem("h3take.export.download") !== "no"; } catch (_) {}
   result.textContent = "It is saved in ComfyUI's output folder, under " + "h3take_projects/" + state.folder + "/exports.";
@@ -8792,6 +9155,7 @@ async function runExport() {
   try {
     const made = await postJson("/project/" + state.folder + "/export", {
       scale: Number($("exporterScale").value), quality: $("exporterQuality").value, name: $("exporterName").value.trim(),
+      ...($("exporterSpan").value === "range" ? { range: JSON.parse($("exporterSpan").dataset.range) } : {}),
     });
     link.href = viewUrl(made.filename, made.subfolder);
     link.setAttribute("download", made.filename);
@@ -9074,7 +9438,8 @@ function frameRect() {
   if (!video.classList.contains("show") || !video.videoWidth) return null;
   const screen = $("screen").getBoundingClientRect();
   const box = video.getBoundingClientRect();
-  const scale = Math.min(box.width / video.videoWidth, box.height / video.videoHeight);
+  const fit = viewing() ? Math.min : Math.max;
+  const scale = fit(box.width / video.videoWidth, box.height / video.videoHeight);
   const width = video.videoWidth * scale, height = video.videoHeight * scale;
   return { left: box.left - screen.left + (box.width - width) / 2, top: box.top - screen.top + (box.height - height) / 2, width, height };
 }
@@ -9125,8 +9490,14 @@ function drawNotes() {
   const rect = frameRect();
   const here = writing ? [] : notesHere(target);
   if (rect) {
+    const plane = front.parentElement.getBoundingClientRect(), screenBox = screen.getBoundingClientRect();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plane.left - screenBox.left, plane.top - screenBox.top, plane.width, plane.height);
+    ctx.clip();
     for (const note of here) drawShape(ctx, note.shape, rect, 1, note.status === "resolved");
     if (noting.active?.shape) drawShape(ctx, noting.active.shape, rect, 1);
+    ctx.restore();
   }
   // The box steps aside when the drawing reaches under it.
   const box = $("noteBox");

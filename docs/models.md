@@ -134,6 +134,8 @@ The editor says which ones are missing, under **Model** in the Project tab.
 
 A project can render at other sizes, with **Draft size** and **Final size** in
 the Project tab. A smaller size needs less GPU memory and renders faster.
+The project format offers 16:9, 9:16, 1:1, 3:2, 4:3, 7:5 and 21:9.
+**Custom ratio** accepts other proportions between 1:8 and 8:1.
 
 | Size | 16:9 | 9:16 | 1:1 | For |
 |---|---|---|---|---|
@@ -149,7 +151,9 @@ their size.
 
 **Your own size**, the last choice in both menus, takes any width and height
 from 256 to 2048 pixels, for a draft or a final. Each side is a multiple of 32,
-which H3's latent needs, and what you type is moved to the nearest one: 1280 by
+which H3's latent needs. **Set by longest side or megapixels** calculates both
+dimensions for your chosen ratio and shows the actual size before you apply it.
+When entering width and height directly, each is rounded to the nearest grid point. 1280 by
 720 becomes 1280 by 736. The editor starts you at 1024x576 (576x1024 for a
 vertical project), about 0.6 megapixels, between Medium and Large. A final at a
 size of your own comes out as sampled, like Large. The size can have another

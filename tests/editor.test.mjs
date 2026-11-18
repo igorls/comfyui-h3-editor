@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { curveLevel, soundEnvelope, setSoundLevel, resumeSoundMixer, disconnectSound } from "../editor/sound-envelope.js";
 
 const source = readFileSync(new URL("../editor/editor.js", import.meta.url), "utf8");
 function functions(context, names) {
@@ -70,6 +71,7 @@ function playback() {
     front: video(), back: video(), lastTick: 0, tickGap: 16, playbackRequest: 0, PREROLL: 0.15,
     $: (id) => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
     localStorage: { setItem() {} }, soundPlayers: new Map(), Audio: video,
+    setSoundLevel, resumeSoundMixer, disconnectSound,
     viewUrl: (file) => file, heard: () => 1, relevel() {}, setMix() {}, clearMix() {}, previewEffect() {},
     updateClock() {}, placePlayhead() {}, cutDue: () => null, incoming: () => null, cover() {}, applyMix() {},
     requestAnimationFrame: (callback) => { frames.set(++next, callback); return next; },
@@ -130,6 +132,20 @@ test("whole-cut looping seeks back and resets extra sound to the same time", () 
   c.step(1, 32);
   assert.equal(c.soundPlayers.get("music").currentTime, 1 / 24);
   assert.equal(c.soundPlayers.get("music").paused, false);
+});
+
+test("sound mix follows source gain points and both placement fades when seeking", () => {
+  const { c } = playback();
+  const sound = c.state.project.sounds[0];
+  Object.assign(sound, { seconds: 4, frames: 48, offset: 0.5, fade_in: 12, fade_out: 24,
+    gain_points: [{ frame: 12, gain: 0.5 }, { frame: 24, gain: 1 }, { frame: 36, gain: 0.25 }] });
+  assert.equal(curveLevel(sound, 18), 0.75);
+  assert.equal(soundEnvelope(sound, 6), 0.375);
+  assert.equal(soundEnvelope(sound, 48), 0);
+  c.state.playing = true; c.state.playhead = 6; c.syncSounds();
+  assert.equal(c.soundPlayers.get("music").volume, 0.375);
+  c.state.playhead = 30; c.syncSounds();
+  assert.ok(Math.abs(c.soundPlayers.get("music").volume - 0.325 * 0.75) < 1e-9);
 });
 
 test("once mode stops, while clip previews loop their own independent range", () => {

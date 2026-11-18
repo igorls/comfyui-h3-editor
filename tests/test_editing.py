@@ -410,6 +410,68 @@ class RenderRecordTest(unittest.TestCase):
 
 
 class MergeTest(unittest.TestCase):
+    def test_removing_versions_preserves_other_placements_and_late_renders(self):
+        data = scene(124)
+        clip, item = data["clips"][0], data["timeline"][0]
+        for name, frames in (("short", 32), ("last", 124)):
+            accept_take(data, clip["id"], take(name, frames))
+        item["in"] = 81
+        other = dict(copy.deepcopy(clip), id="independent")
+        data["clips"].append(other)
+        old = copy.deepcopy(data)
+        args = {"op": "remove_takes", "clip": clip["id"], "takes": ["t0", "last"]}
+        store.apply_op(data, args, {})
+        self.assertEqual(([t["id"] for t in clip["takes"]], clip["active"]), (["short"], "short"))
+        self.assertEqual((item["in"], item["out"]), (31, 32))
+        self.assertEqual(len(other["takes"]), 3)
+        accept_take(data, clip["id"], take("arrived", 32))
+        for base in (old, data, UNKNOWN):
+            stale = copy.deepcopy(old)
+            stale["style"] = "Ink"
+            saved = store.merge_editor_save(base, stale, data)
+            self.assertEqual([t["id"] for t in saved["clips"][0]["takes"]], ["short", "arrived"])
+            self.assertEqual(saved["clips"][0]["active"], "arrived")
+            self.assertEqual(saved["style"], "Ink")
+
+    def test_removing_unknown_or_last_versions_is_atomic(self):
+        data = scene(90)
+        clip = data["clips"][0]
+        accept_take(data, clip["id"], take("new", 90))
+        before = copy.deepcopy(data)
+        for ids in ([], ["unknown", "new"], ["t0", "new"], "new"):
+            with self.assertRaises((ValueError, KeyError)):
+                store.remove_takes(data, clip["id"], ids)
+            self.assertEqual(data, before)
+        store.remove_takes(data, clip["id"], ["t0"])
+        self.assertEqual(clip["active"], "new")
+        restored = store.restore_revision(data, before)
+        self.assertEqual([t["id"] for t in restored["clips"][0]["takes"]], ["t0", "new"])
+
+    def test_clearing_a_shot_keeps_edits_and_accepts_a_replacement(self):
+        data = scene(124)
+        clip, item = data["clips"][0], data["timeline"][0]
+        item.update({"in": 16, "out": 89})
+        split_item(data, item["id"], 32)
+        before = copy.deepcopy(data)
+        keep = copy.deepcopy(data["timeline"])
+        op = {"op": "remove_takes", "clip": clip["id"], "takes": ["t0"], "allow_empty": True}
+        self.assertIsNone(store.apply_op(data, op, {})["active"])
+        self.assertEqual((clip["action"], data["timeline"]), (before["clips"][0]["action"], keep))
+        for base in (before, data, UNKNOWN):
+            stale = store.merge_editor_save(base, before, data)
+            self.assertEqual((stale["clips"][0]["takes"], stale["clips"][0]["active"]), ([], None))
+            self.assertTrue(stale["clips"][0]["awaiting_replacement"])
+        accept_take(data, clip["id"], take("again", 124))
+        self.assertEqual((clip["active"], data["timeline"]), ("again", keep))
+        self.assertNotIn("awaiting_replacement", clip)
+        clip["kind"] = "footage"
+        with self.assertRaisesRegex(ValueError, "imported footage"):
+            store.remove_takes(data, clip["id"], ["again"], allow_empty=True)
+        updated = copy.deepcopy(data)
+        updated["clips"][0]["takes"][0]["strip"] = {"sprite": "made.jpg"}
+        self.assertEqual(store.merge_editor_save(data, updated, data)["clips"][0]["takes"][0]["strip"],
+                         {"sprite": "made.jpg"})
+
     def test_edits_to_different_clips_both_land(self):
         base = scene(124, 124)
         mine, theirs = copy.deepcopy(base), copy.deepcopy(base)
@@ -656,7 +718,7 @@ class FormatTest(unittest.TestCase):
 
     def test_an_unknown_format_is_refused(self):
         with self.assertRaisesRegex(ValueError, "16:9, 9:16, 1:1"):
-            store.set_project(new_project("Test"), {"format": "4:3"})
+            store.set_project(new_project("Test"), {"format": "4:0"})
 
     def test_footage_edits_but_never_renders(self):
         project = new_project("Test")

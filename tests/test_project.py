@@ -456,6 +456,24 @@ class FinishTest(unittest.TestCase):
 class SizeTest(unittest.TestCase):
     """The sizes a project can render at instead of the usual ones for its format."""
 
+    def test_ratios_presets_and_custom_budget_drive_the_queued_graph(self):
+        for shape in ("3:2", "4:3", "7:5", "21:9", "5:4", "4:5"):
+            project, (job, graph) = self.planned("final", sizes={"final": {"longest_side": 1280}}, format=shape)
+            width, height = job["size"]
+            self.assertEqual(max(width, height), 1280)
+            self.assertEqual((width % 32, height % 32), (0, 0))
+            self.assertEqual([graph["10"]["inputs"][key] for key in ("width", "height")], [width, height])
+            self.assertEqual(project["sizes"]["final"], "%sx%s" % (width, height))
+            self.assertEqual(project_module.project_card(project)["format"], shape)
+        one = new_project("test")
+        set_project(one, {"sizes": {"draft": {"megapixels": 0.786432}}, "format": " 8 : 6 "})
+        self.assertEqual((one["format"], one["sizes"]["draft"]), ("4:3", "1024x768"))
+        for target in ({"megapixels": 0}, {"megapixels": float("inf")}, {"megapixels": True},
+                       {"longest_side": 9999}, {"longest_side": 256}, {"longest_side": 512, "megapixels": 1}):
+            with self.assertRaises(ValueError):
+                set_project(one, {"sizes": {"draft": target}})
+        self.assertEqual(one["sizes"]["draft"], "1024x768")
+
     def planned(self, quality, **fields):
         project = new_project("x")
         set_project(project, fields)
@@ -1341,9 +1359,10 @@ class ExportTest(unittest.TestCase):
                               sound_paths={music["id"]: "m.mp3", late["id"]: "late.wav", muted["id"]: "muted.wav"})
         text = self.filter_of(args)
         # The second input, from two seconds into the file for two seconds, half as loud, one second into the cut.
-        self.assertIn("[1:a]atrim=start=2.00000:end=4.00000,asetpts=PTS-STARTPTS,volume=0.500,", text)
+        self.assertIn("[1:a]atrim=start=2.00000000:end=4.00000000,asetpts=PTS-STARTPTS,volume=0.500,", text)
         self.assertIn("adelay=1000:all=1[s1]", text)
-        self.assertIn("[a0][s1]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]", text)
+        self.assertIn("[a0]asetnsamples=n=1024:p=0[cut_audio]", text)
+        self.assertIn("[cut_audio][s1]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]", text)
         self.assertEqual([args[i + 1] for i, a in enumerate(args) if a == "-map"], ["[v0]", "[mix]"])
         # One that starts after the cut ends, or is silenced, is left out. So is one with no file.
         self.assertNotIn("late.wav", args)

@@ -903,6 +903,19 @@ async def remove(request):
     return web.json_response({"deleted": folder, "trash": "%s/%s/%s" % (store.ROOT, TRASH, kept)})
 
 
+async def sizes(request):
+    """Describe the presets for any project ratio, optionally resolving a custom size on the same grid."""
+    try:
+        shape = store.clean_format(request.query.get("format", "16:9"))
+        result = {"format": shape, "choices": store.size_choices([shape])[shape]}
+        target = {key: float(request.query[key]) for key in ("longest_side", "megapixels") if key in request.query}
+        if target:
+            result["size"] = store.fitted_size(shape, target)
+    except ValueError as error:
+        return refused(plain(error))
+    return web.json_response(result)
+
+
 async def projects(request):
     names = project_folders()
     available = available_models()
@@ -942,7 +955,7 @@ async def save(request):
             base = current
         else:
             base = read_revision(folder, based_on) or store.UNKNOWN
-        merged = store.merge(base, mine, current)
+        merged = store.merge_editor_save(base, mine, current)
         if merged != current:
             commit(folder, merged, "edit", client)
         else:
@@ -1647,7 +1660,9 @@ async def restore(request):
         if old is None:
             return refused("revision %s is not kept any more" % body.get("revision"), 404)
         current = read_project(folder)
-        restored = store.merge(current, old, current)
+        if "if_revision" in body and body["if_revision"] != current.get("revision", 0):
+            return refused("the project has changed since that edit", 409)
+        restored = store.restore_revision(current, old)
         commit(folder, restored, "restore", body.get("client"))
     return web.json_response({"revision": restored["revision"], "summary": store.describe(restored)})
 
@@ -2334,7 +2349,7 @@ async def export(request):
         raise web.HTTPBadRequest(text="scale is one of %s and quality one of %s" % (
             ", ".join("%g" % s for s in store.EXPORT_SCALES), ", ".join(store.EXPORT_QUALITY)))
     try:
-        plan = store.export_plan(data, scale)
+        plan = store.export_plan(data, scale, span=body.get("range"))
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error))
     if body.get("plan"):
@@ -2348,10 +2363,7 @@ async def export(request):
     os.makedirs(folder, exist_ok=True)
     # The file is named after the project, or after what the user typed, and numbered so nothing is overwritten.
     stem = store.slug(body["name"]) if str(body.get("name") or "").strip() else name
-    number = 1
-    while os.path.exists(os.path.join(folder, "%s_%03d.mp4" % (stem, number))):
-        number += 1
-    target = os.path.join(folder, "%s_%03d.mp4" % (stem, number))
+    temporary = os.path.join(folder, ".export_%s.mp4" % uuid.uuid4().hex)
     sound_paths = {}
     for sound in data.get("sounds") or []:
         try:
@@ -2372,11 +2384,22 @@ async def export(request):
         if os.path.exists(found):
             effect_paths[effect["id"]] = found
     try:
-        args = store.export_command(data, paths, target, scale=scale, quality=quality, sound_paths=sound_paths,
-                                    effect_paths=effect_paths)
+        args = store.export_command(data, paths, temporary, scale=scale, quality=quality, sound_paths=sound_paths,
+                                    effect_paths=effect_paths, span=body.get("range"))
     except ValueError as error:
         raise web.HTTPBadRequest(text=str(error))
-    await run(args)
+    try:
+        await run(args)
+        async with lock(name):
+            number = 1
+            target = os.path.join(folder, "%s_%03d.mp4" % (stem, number))
+            while os.path.exists(target):
+                number += 1
+                target = os.path.join(folder, "%s_%03d.mp4" % (stem, number))
+            os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
     return web.json_response({
         "filename": os.path.basename(target),
         "subfolder": "%s/%s/exports" % (store.ROOT, name),
@@ -2385,6 +2408,7 @@ async def export(request):
 
 
 ROUTES = (
+    ("GET", "/h3take/api/sizes", "sizes"),
     ("GET", "/h3take/editor", "page"),
     ("GET", "/h3take/api/projects", "projects"),
     ("POST", "/h3take/api/projects", "create"),

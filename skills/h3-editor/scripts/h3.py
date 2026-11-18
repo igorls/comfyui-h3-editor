@@ -128,6 +128,15 @@ def text_summary(s):
             t["in"], t["out"], ("  " + ", ".join(extra)) if extra else ""))
     for g in s["gaps"]:
         lines.append("  gap at frames %s-%s, black in the export" % (g["start"], g["end"]))
+    for sound in s.get("sounds", []):
+        line = "  sound %s  %s  frames %s-%s  volume %g" % (
+            sound["sound"], sound["name"], sound["start"], sound["end"], sound["gain"])
+        if sound.get("fade_in") or sound.get("fade_out"):
+            line += "  fades %s in / %s out (frames)" % (sound.get("fade_in", 0), sound.get("fade_out", 0))
+        if sound.get("gain_points"):
+            line += "  curve (source frame, level): " + ", ".join(
+                "%d/%g" % (p["frame"], p["gain"]) for p in sound["gain_points"])
+        lines.append(line)
     placed = {t["clip"] for t in s["timeline"]}
     loose = [c for c in s["clips"] if c["id"] not in placed]
     if loose:
@@ -242,6 +251,8 @@ def main():
     p.add_argument("--out", help="Folder for the pictures. Default: h3-notes/<project> in the system's temporary folder.")
     p = sub.add_parser("export", help="Join the timeline into one video in ComfyUI's output folder.")
     p.add_argument("project")
+    p.add_argument("--from", dest="first", type=int, help="First timeline frame to export, inclusive.")
+    p.add_argument("--to", dest="last", type=int, help="Stop before this timeline frame. Give both ends for a range.")
     p.add_argument("--out", help="Also download it here.")
     p = sub.add_parser("pack", help="Download a project as one zip, to open on another machine with unpack or in the editor.")
     p.add_argument("project")
@@ -462,7 +473,10 @@ def main():
                 name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(n["note"]))[:64] or "note"
                 print("  " + download(still["file"], still.get("subfolder"), os.path.join(out, name + ".png")))
     elif c == "export":
-        made = api("POST", project_path(args.project) + "/export", {}, timeout=1800)
+        if (args.first is None) != (args.last is None):
+            raise SystemExit("A range needs both --from and --to (exclusive).")
+        body = {} if args.first is None else {"range": {"from": args.first, "to": args.last}}
+        made = api("POST", project_path(args.project) + "/export", body, timeout=1800)
         print("Exported to ComfyUI's output folder: %s/%s" % (made["subfolder"], made["filename"]))
         if args.out:
             print(download(made["filename"], made["subfolder"], args.out))

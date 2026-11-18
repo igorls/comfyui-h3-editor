@@ -23,7 +23,7 @@ or the rules for linked clips. Everything else you need is here.
    editor runs in their ComfyUI and renders on its GPU, so never start a ComfyUI of
    your own or render some other way. If ComfyUI is somewhere other than
    `http://127.0.0.1:8188`, set `H3_EDITOR_URL` or pass `--url`.
-2. Pin down the brief: how long the cut runs, its shape (16:9, 9:16 or 1:1), the
+2. Pin down the brief: how long the cut runs, its aspect ratio, the
    language people speak, who appears, the look, and any real material to use such as
    screen recordings, product shots or logos. Ask for what you cannot infer. A wrong
    guess about format or language costs a full set of renders.
@@ -297,7 +297,9 @@ For a file already in ComfyUI's input folder, see the import route in the refere
 
 Music, narration or any other sound file goes under the cut on a lane of its own: upload it
 with `?sound=1` and place it with `add_sound` (see "Extra sound" in the reference). The
-export mixes it in. A sound that should drive a clip's picture is a track instead, as above.
+export mixes it in. Use `update_sound` to fade its ends in frames or set `gain_points`
+to lower music under a line of dialogue. A point's frame is counted from the start of the
+audio file. A sound that should drive a clip's picture is a track instead, as above.
 
 ## Costs
 
@@ -390,6 +392,12 @@ in chat instead of resolving it. You can also leave a note for the user with `ad
 for example on a shot you could not judge.
 
 ## Checking the cut
+
+Use `update_item` with a normalized source rectangle in `fields.crop` to
+reframe one placement. To review it against adjacent shots, use
+`python scripts/h3.py export PROJECT --from A --to B --out preview.mp4`.
+The file contains the composed picture and mixed sound, starting at timeline
+frame A and stopping before B.
 
 `python scripts/h3.py summary PROJECT` shows the timeline with timecodes, item and clip
 ids, and each clip's state. Before you export, check:

@@ -59,6 +59,7 @@ SIZE_CHOICES = {"draft": ("small", "medium"), "final": ("full", "sharp", "large"
 SIDE_STEP, SIDE_MIN, SIDE_MAX = 32, 256, 2048
 # What the editor offers first when someone asks for a size of their own: about 0.6 megapixels.
 OWN_SIZES = {"16:9": (1024, 576), "9:16": (576, 1024), "1:1": (768, 768)}
+FORMAT_PRESETS = (*FORMATS, "3:2", "4:3", "7:5", "21:9")
 # A sharp final is enlarged two times by this upscaler, keeping all the detail it adds, and
 # scaled down to the refine size. H3 is not asked to draw at a size it was not made for, so
 # skin stays as it is at H3's own size, and the edges come out crisper than a redraw gives.
@@ -70,10 +71,53 @@ LANGUAGE = "English"
 MIN_SIDE, MAX_SIDE = 16, 8192
 
 
+def clean_format(value):
+    match = re.fullmatch(r"\s*(\d{1,5})\s*:\s*(\d{1,5})\s*", value) if isinstance(value, str) else None
+    if match:
+        wide, high = map(int, match.groups())
+        if high and SIDE_MIN / SIDE_MAX <= wide / high <= SIDE_MAX / SIDE_MIN:
+            divisor = math.gcd(wide, high)
+            reduced = "%s:%s" % (wide // divisor, high // divisor)
+            return "21:9" if reduced == "7:3" else reduced
+    raise ValueError("format must be a ratio such as 16:9, 9:16, 1:1 or 4:3, between 1:8 and 8:1")
+
+
+def project_format(project):
+    try:
+        return clean_format(project.get("format"))
+    except ValueError:
+        return "16:9"
+
+
+def fitted_size(shape, target, *, fit=False):
+    """Resolve a ratio and a longest side or pixel budget onto H3's 32-pixel grid."""
+    if not isinstance(target, dict) or set(target) not in ({"longest_side"}, {"megapixels"}):
+        raise ValueError("a size target takes either longest_side or megapixels")
+    key, value = next(iter(target.items()))
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= SIDE_MAX ** 2:
+        raise ValueError("%s must be a positive number within the supported picture size" % key)
+    wide, high = map(int, shape.split(":"))
+    aspect = max(wide, high) / min(wide, high)
+    longest = value if key == "longest_side" else math.sqrt(value * 1_000_000 * aspect)
+    if fit:
+        longest = max(SIDE_MIN * aspect, min(SIDE_MAX, longest))
+    elif longest < SIDE_MIN * aspect - 1e-8 or longest > SIDE_MAX + 1e-8:
+        raise ValueError("this target at %s needs a side outside %s–%s pixels" % (shape, SIDE_MIN, SIDE_MAX))
+    sides = tuple(SIDE_STEP * math.floor(n / SIDE_STEP + 0.5) for n in (longest, longest / aspect))
+    return sides if wide >= high else sides[::-1]
+
+
+def format_sizes(shape):
+    if shape in FORMATS:
+        return {**SIZES[shape], "refine": FORMATS[shape]["refine"], "own": OWN_SIZES[shape]}
+    return {name: fitted_size(shape, {"megapixels": mp}, fit=True)
+            for name, mp in (("small", 0.23), ("medium", 0.52), ("large", 1.04), ("refine", 2.07), ("own", 0.59))}
+
+
 def frame_size(project, quality):
     """Width and height for a quality in this project's format. Imported footage counts as final."""
-    sizes = FORMATS.get(project.get("format") or "16:9", FORMATS["16:9"])
-    return sizes["draft" if quality == "draft" else "final"]
+    sizes = format_sizes(project_format(project))
+    return sizes["small" if quality == "draft" else "large"]
 
 
 def render_size(project, quality):
@@ -82,13 +126,11 @@ def render_size(project, quality):
     The project's own choice under "sizes" where it makes one, or the usual size for its format.
     """
     quality = "draft" if quality == "draft" else "final"
-    shape = project.get("format") if project.get("format") in FORMATS else "16:9"
+    sizes = format_sizes(project_format(project))
     name = size_name(project, quality)
-    if name == "full":
-        return FORMATS[shape]["final"] + (True,)
-    if name == SHARP:
-        return FORMATS[shape]["final"] + (False,)
-    return (own_size(name) or SIZES[shape][name]) + (False,)
+    if name in ("full", SHARP):
+        return sizes["large"] + (name == "full",)
+    return (own_size(name) or sizes[name]) + (False,)
 
 
 def own_size(name):
@@ -111,20 +153,21 @@ def size_name(project, quality):
     return name if name in SIZE_CHOICES[quality] or own_size(name) else SIZE_CHOICES[quality][0]
 
 
-def size_choices():
+def size_choices(shapes=FORMAT_PRESETS):
     """Every size a project can pick, per format and quality, for the editor: id, width, height, and the size it comes out at."""
     table = {}
-    for shape in FORMATS:
+    for shape in shapes:
+        sizes = format_sizes(shape)
         table[shape] = {}
         for quality, names in SIZE_CHOICES.items():
             rows = []
             for name in names:
                 width, height, refined = render_size({"format": shape, "sizes": {quality: name}}, quality)
                 rows.append({"id": name, "width": width, "height": height,
-                             "out": list(FORMATS[shape]["refine"] if refined or name == SHARP else (width, height))})
+                             "out": list(sizes["refine"] if refined or name == SHARP else (width, height))})
             table[shape][quality] = rows
         # What a size of the project's own may be, and the one to offer first.
-        table[shape]["own"] = {"step": SIDE_STEP, "min": SIDE_MIN, "max": SIDE_MAX, "first": list(OWN_SIZES[shape])}
+        table[shape]["own"] = {"step": SIDE_STEP, "min": SIDE_MIN, "max": SIDE_MAX, "first": list(sizes["own"])}
     return table
 
 
@@ -147,7 +190,7 @@ def take_size(project, take):
 
 def refine_size(project):
     """Width and height a final comes out at in this project's format."""
-    return FORMATS.get(project.get("format") or "16:9", FORMATS["16:9"])["refine"]
+    return format_sizes(project_format(project))["refine"]
 # Renders use HyperFlow H3 Flash: its ref2va model when a clip has references, and its
 # fl2va model when a clip is only a prompt. Its INT8 safetensors and GGUF files load as
 # HyperFlow (see is_hyperflow). A final's picture is enlarged by MiniMax's learned latent
@@ -1280,7 +1323,7 @@ def project_card(project):
         picture = picture or take_picture(clips.get(item.get("clip")))
     for clip in clips.values():
         picture = picture or take_picture(clip)
-    return {"name": str(project.get("name") or ""), "format": project.get("format") if project.get("format") in FORMATS else "16:9",
+    return {"name": str(project.get("name") or ""), "format": project_format(project),
             "clips": placed, "frames": frames, "picture": picture, "rendering": len(project.get("pending") or [])}
 
 
@@ -1319,6 +1362,20 @@ def clean_gain(value):
     return round(float(gain), 2)
 
 
+def clean_crop(value):
+    """An optional rectangle in the source picture, independent of take resolution."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"x", "y", "w", "h"}:
+        raise ValueError("crop needs x, y, w and h in fractions of the source picture")
+    if any(isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n)
+           or not 0 <= n <= 1 for n in value.values()):
+        raise ValueError("crop coordinates must be numbers from 0 to 1")
+    if value["w"] <= 0 or value["h"] <= 0 or value["x"] + value["w"] > 1.000000001 or value["y"] + value["h"] > 1.000000001:
+        raise ValueError("crop needs a positive area inside the picture")
+    return {k: value[k] for k in ("x", "y", "w", "h")}
+
+
 def item_length(item):
     """Frames an item fills on the timeline, after its speed."""
     return max(1, int(round((item["out"] - item["in"]) / clean_speed(item.get("speed")))))
@@ -1346,34 +1403,48 @@ EXPORT_QUALITY = {"best": 12, "high": 16, "small": 23}
 EXPORT_SCALES = (1.0, 0.75, 0.5)
 
 
-def export_plan(project, scale=1.0):
+def export_window(project, span):
+    if not isinstance(span, dict) or set(span) != {"from", "to"} or any(type(n) is not int for n in span.values()):
+        raise ValueError("range needs integer timeline frames from and to (exclusive)")
+    end = scene_end(project)
+    if not 0 <= span["from"] < span["to"] <= end:
+        raise ValueError("range must fall inside the cut, from 0 to %s frames" % end)
+    return span["from"], span["to"]
+
+
+def export_plan(project, scale=1.0, span=None):
     """What an export of the timeline will hold, before making it: its size and length, and what to know first.
 
     drafts counts the generated clips whose take on the timeline is a draft, missing the ones
     with no render (they are left out), and gaps the stretches of black between clips.
     """
     clips = {c["id"]: c for c in project.get("clips", [])}
-    width = height = drafts = missing = 0
+    first, last = export_window(project, span) if span is not None else (0, None)
+    width = height = drafts = missing = placed = 0
     for item in project.get("timeline", []):
+        in_range = last is None or (item["start"] < last and first < item_end(item))
+        placed += int(in_range)
         clip = clips.get(item.get("clip")) or {}
         take = active_take(clip)
         if not take:
-            missing += 1
+            missing += int(in_range)
             continue
-        if take.get("quality") == "draft" and clip.get("kind") != "footage":
+        if in_range and take.get("quality") == "draft" and clip.get("kind") != "footage":
             drafts += 1
         w, h = take_size(project, take)
         if w > width:
             width, height = w, h
     end = cursor = gaps = 0
     for item in ordered(project):
-        if item["start"] > cursor:
+        if item["start"] > max(cursor, first) and (last is None or cursor < last):
             gaps += 1
         cursor = max(cursor, item_end(item))
         end = cursor
-    effects = [e for e in project.get("effects") or [] if e["start"] < end]
-    return {"width": scaled(width, scale), "height": scaled(height, scale), "frames": end, "seconds": round(end / float(FPS), 2),
-            "clips": len(project.get("timeline", [])) - missing, "drafts": drafts, "missing": missing, "gaps": gaps,
+    stop = end if last is None else last
+    effects = [e for e in project.get("effects") or [] if e["start"] < stop and e["start"] + e["frames"] > first]
+    return {"width": scaled(width, scale), "height": scaled(height, scale), "frames": stop - first, "seconds": round((stop - first) / float(FPS), 2),
+            **({"range": {"from": first, "to": stop}} if span is not None else {}),
+            "clips": placed - missing, "drafts": drafts, "missing": missing, "gaps": gaps,
             "effects": sum(1 for e in effects if active_take(e)),
             "effects_missing": sum(1 for e in effects if not active_take(e)),
             "effects_stale": sum(1 for e in effects if effect_stale(project, e))}
@@ -1385,7 +1456,7 @@ def scaled(side, scale):
 
 
 def export_command(project, paths, out_path, width=None, height=None, scale=1.0, quality="high", sound_paths=None,
-                   effect_paths=None):
+                   effect_paths=None, span=None):
     """ffmpeg arguments that join the timeline's rendered clips. Gaps become black and silence.
 
     paths maps a clip id to the file of its active take. Clips with no render
@@ -1412,6 +1483,19 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
     if quality not in EXPORT_QUALITY:
         raise ValueError("quality must be one of %s" % ", ".join(EXPORT_QUALITY))
     width, height = scaled(width, scale), scaled(height, scale)
+    # Keep the full cut's output dimensions. Move the working clock to the start
+    # of the earliest contributing media, preserving phase within each placement.
+    window = export_window(project, span) if span is not None else None
+    if window:
+        first, last = window
+        items = [i for i in items if i["start"] < last and item_end(i) > first]
+        sounds = [s for s in project.get("sounds") or [] if s["start"] < last and s["start"] + s["frames"] > first]
+        effects = [e for e in project.get("effects") or [] if e["start"] < last and e["start"] + e["frames"] > first]
+        origin = min([first] + [row["start"] for row in (*items, *sounds, *effects)])
+        items = [dict(i, start=i["start"] - origin) for i in items]
+        project = dict(project, sounds=[dict(s, start=s["start"] - origin) for s in sounds],
+                       effects=[dict(e, start=e["start"] - origin) for e in effects])
+        window = first - origin, last - origin
 
     args = ["ffmpeg", "-y", "-v", "error"]
     chains = []
@@ -1420,9 +1504,13 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
     sound = SOUND_FORMAT
 
     def gap_segment(label, frames):
+        # color rounds duration up to the next frame. Bound the source, then select the exact
+        # frame count (a decimal approximation of e.g. 10/24 alone can produce 11 frames).
         seconds = frames / float(FPS)
-        chains.append("color=c=black:s=%sx%s:r=%s:d=%.5f,format=yuv420p,setsar=1,settb=1/%s[%sv]" % (width, height, FPS, seconds, FPS, label))
-        chains.append("anullsrc=r=48000:cl=stereo:d=%.5f,%s[%sa]" % (seconds, sound, label))
+        chains.append("color=c=black:s=%sx%s:r=%s:d=%.8f,trim=end_frame=%d,format=yuv420p,setsar=1,settb=1/%s[%sv]" % (
+            width, height, FPS, seconds, frames, FPS, label))
+        chains.append("anullsrc=r=48000:cl=stereo:d=%.8f,atrim=end_sample=%d,%s[%sa]" % (
+            seconds, frames * 48000 // FPS, sound, label))
 
     video = audio = None
     cursor = 0
@@ -1442,12 +1530,19 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
         args += ["-i", paths[item["clip"]]]
         speed = clean_speed(item.get("speed"))
         first, last = int(item["in"]), int(item["out"])
-        chains.append("[%s:v]trim=start_frame=%s:end_frame=%s,setpts=(PTS-STARTPTS)/%.5f,%s[v%s]" % (index, first, last, speed, finish, index))
+        crop = clean_crop(item.get("crop"))
+        crop_filter = ""
+        if crop:
+            crop_filter = ("crop=w='max(1,round(iw*%(w).12f))':h='max(1,round(ih*%(h).12f))':"
+                           "x='round(iw*%(x).12f)':y='round(ih*%(y).12f)':exact=1," % crop)
+        chains.append("[%s:v]trim=start_frame=%s:end_frame=%s,setpts=(PTS-STARTPTS)/%.5f,%s%s[v%s]" % (
+            index, first, last, speed, crop_filter, finish, index))
         tempo = tempo_chain(speed)
         gain = clean_gain(item.get("gain"))
-        chains.append("[%s:a]atrim=start=%.5f:end=%.5f,asetpts=PTS-STARTPTS,%s%s%s[a%s]" % (
+        samples = item_length(item) * 48000 // FPS
+        chains.append("[%s:a]atrim=start=%.5f:end=%.5f,asetpts=PTS-STARTPTS,%s%s%s,apad=whole_len=%d,atrim=end_sample=%d[a%s]" % (
             index, first / float(FPS), last / float(FPS), tempo + "," if tempo else "",
-            "volume=%.3f," % gain if gain != 1 else "", sound, index))
+            "volume=%.3f," % gain if gain != 1 else "", sound, samples, samples, index))
 
         overlap = cursor - item["start"]
         transition = item.get("transition")
@@ -1465,6 +1560,14 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
             join("v%s" % index, "a%s" % index)
         cursor = item["start"] + item_length(item)
 
+    # Unrendered placements can also trail the last rendered picture. Keep the timeline clock
+    # running across them, including any soundtrack or VFX that plays there.
+    timeline_end = window[1] if window else scene_end(project)
+    if timeline_end > cursor:
+        gap_segment("tail", timeline_end - cursor)
+        join("tailv", "taila")
+        cursor = timeline_end
+
     extra = []
     for row in project.get("sounds") or []:
         if row.get("id") not in (sound_paths or {}) or row.get("start", 0) >= cursor or not row.get("gain", 1.0):
@@ -1472,14 +1575,20 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
         number = len(items) + len(extra)
         args += ["-i", sound_paths[row["id"]]]
         offset = float(row.get("offset") or 0.0)
-        chains.append("[%s:a]atrim=start=%.5f:end=%.5f,asetpts=PTS-STARTPTS,volume=%.3f,%s,adelay=%d:all=1[s%s]" % (
+        # At 48 kHz each timeline frame is exactly 2,000 samples.
+        delay = row.get("start", 0) * (48000 // FPS)
+        delay_arg = str(delay // 48) if delay % 48 == 0 else "%dS" % delay
+        chains.append("[%s:a]atrim=start=%.8f:end=%.8f,asetpts=PTS-STARTPTS,volume=%.3f,%s%s,adelay=%s:all=1[s%s]" % (
             number, offset, offset + row["frames"] / float(FPS), float(row.get("gain", 1.0)), SOUND_FORMAT,
-            int(round(row.get("start", 0) * 1000.0 / FPS)), number))
+            sound_envelope_filter(row), delay_arg, number))
         extra.append("s%s" % number)
     if extra:
+        # A packet cut by atrim can be short. FFmpeg 6's amix can stop early when that
+        # stream shares its source with the video. Regroup samples without padding the tail.
+        chains.append("[%s]asetnsamples=n=1024:p=0[cut_audio]" % audio)
         # The cut sets the length: a sound that runs past its end is cut there.
-        chains.append("[%s]%samix=inputs=%s:duration=first:dropout_transition=0:normalize=0[mix]" % (
-            audio, "".join("[%s]" % label for label in extra), len(extra) + 1))
+        chains.append("[cut_audio]%samix=inputs=%s:duration=first:dropout_transition=0:normalize=0[mix]" % (
+            "".join("[%s]" % label for label in extra), len(extra) + 1))
         audio = "mix"
 
     laid = 0
@@ -1501,6 +1610,13 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
         video = "o%s" % number
         laid += 1
 
+    if window:
+        first, last = window
+        # Select after composition to keep the clocks of transitions, VFX and sound envelopes.
+        chains.append("[%s]trim=start_frame=%d:end_frame=%d,setpts=PTS-STARTPTS[rangev]" % (video, first, last))
+        chains.append("[%s]atrim=start_sample=%d:end_sample=%d,asetpts=PTS-STARTPTS[rangea]" % (
+            audio, first * 48000 // FPS, last * 48000 // FPS))
+        video, audio = "rangev", "rangea"
     args += ["-filter_complex", ";".join(chains), "-map", "[%s]" % video, "-map", "[%s]" % audio,
              "-c:v", "libx264", "-crf", str(EXPORT_QUALITY[quality]), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
              "-movflags", "+faststart", out_path]
@@ -1543,7 +1659,11 @@ def slice_project(project, first, last):
             continue
         head, tail = max(0, first - start), max(0, end - last)
         new = copy.deepcopy(sound)
-        new["offset"] = round(float(sound.get("offset") or 0.0) + head / float(FPS), 4)
+        new["offset"] = float(sound.get("offset") or 0.0) + head / float(FPS)
+        if sound.get("fade_in") or sound.get("fade_out"):
+            # An export range hears the middle of the original fades. Only an actual edit makes new edges.
+            new["_fade_from"] = sound.get("_fade_from", 0) + head
+            new["_fade_frames"] = sound.get("_fade_frames", sound["frames"])
         new["frames"] = sound["frames"] - head - tail
         new["start"] = max(start, first) - first
         if new["frames"] >= 1:
@@ -1575,8 +1695,67 @@ def add_rating(project, rating):
 # Extra sound. Music, narration or effects laid under the cut on lanes of their own, mixed in at export.
 
 SOUND_LANES = 4
-SOUND_FIELDS = ("name", "start", "offset", "frames", "gain", "lane")
+SOUND_FIELDS = ("name", "start", "offset", "frames", "gain", "lane", "fade_in", "fade_out", "gain_points")
 SOUND_GAIN = (0.0, 2.0)
+GAIN_POINT_LIMIT = 64
+
+
+def sound_frame(value, limit, field):
+    if type(value) is not int or not 0 <= value <= limit:
+        raise ValueError("%s must be a whole number from 0 to %d" % (field, limit))
+    return value
+
+
+def clean_gain_points(points, limit):
+    if not isinstance(points, list) or len(points) > GAIN_POINT_LIMIT:
+        raise ValueError("gain_points must be a list of up to %d points" % GAIN_POINT_LIMIT)
+    result = []
+    for point in points:
+        if not isinstance(point, dict) or set(point) != {"frame", "gain"}:
+            raise ValueError("each gain point needs a source frame and gain")
+        result.append({"frame": sound_frame(point["frame"], limit, "gain point frame"),
+                       "gain": clean_strength(point["gain"], (0, 1), "gain point")})
+    result.sort(key=lambda p: p["frame"])
+    if any(a["frame"] == b["frame"] for a, b in zip(result, result[1:])):
+        raise ValueError("gain points must have different frames")
+    return result
+
+
+def sound_envelope_filter(sound):
+    """Sample-accurate gain over the source file, multiplied by fades at the edges of the sound."""
+    if not any(sound.get(key) for key in ("gain_points", "fade_in", "fade_out")):
+        return ""
+    limit = max(1, math.floor(sound["seconds"] * FPS + 0.5))
+    points = clean_gain_points(sound.get("gain_points", []), limit)
+    factors = []
+    if points:
+        if points[0]["frame"] > 0:
+            points.insert(0, {"frame": 0, "gain": 1})
+        if points[-1]["frame"] < limit:
+            points.append({"frame": limit, "gain": 1})
+        # Choose the segment with a balanced tree, so a long envelope has a small evaluation depth.
+        pos = "(t*%d+%.8f)" % (FPS, sound.get("offset", 0) * FPS)
+
+        def segment(lo, hi):
+            if hi == lo + 1:
+                left, right = points[lo], points[hi]
+                delta = right["gain"] - left["gain"]
+                if not delta:
+                    return "%g" % left["gain"]
+                return "(%g+%g*clip((%s-%d)/%d,0,1))" % (
+                    left["gain"], delta, pos, left["frame"], right["frame"] - left["frame"])
+            mid = (lo + hi) // 2
+            return "if(lt(%s,%d),%s,%s)" % (pos, points[mid]["frame"], segment(lo, mid), segment(mid, hi))
+
+        factors.append(segment(0, len(points) - 1))
+    frames = sound.get("_fade_frames", sound["frames"])
+    head = sound.get("_fade_from", 0)
+    for key in ("fade_in", "fade_out"):
+        length = min(frames, sound_frame(sound.get(key, 0), limit, key))
+        if length:
+            progress = "(t*%d+%d)" % (FPS, head) if key == "fade_in" else "(%d-t*%d)" % (frames - head, FPS)
+            factors.append("clip(%s/%d,0,1)" % (progress, length))
+    return ",aeval=exprs='val(ch)*%s':c=same" % "*".join(factors)
 
 
 def find_sound(project, sound_id):
@@ -1603,6 +1782,12 @@ def clean_sound_fields(fields, seconds):
             out[key] = int(value)
     if "gain" in fields:
         out["gain"] = clean_strength(fields["gain"], SOUND_GAIN, "gain")
+    limit = max(1, math.floor(seconds * FPS + 0.5))
+    for key in ("fade_in", "fade_out"):
+        if key in fields:
+            out[key] = sound_frame(fields[key], limit, key)
+    if "gain_points" in fields:
+        out["gain_points"] = clean_gain_points(fields["gain_points"], limit)
     if "offset" in fields:
         offset = fields["offset"]
         if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not 0 <= offset < seconds:
@@ -1809,6 +1994,8 @@ def effect_below(project, effect):
             transition = item.get("transition") or {}
             rows.append([item["clip"], take["id"] if take else None, item["start"], item["in"], item["out"],
                          clean_speed(item.get("speed")), transition.get("type"), transition.get("frames")])
+            if item.get("crop"):
+                rows[-1].append(clean_crop(item["crop"]))
     return rows
 
 
@@ -2226,8 +2413,14 @@ def set_transition(project, item_id, kind, frames=12):
 
 def update_item(project, item_id, fields, ripple=False):
     """Move or trim a timeline item. With ripple, later clips follow its new end."""
-    check_fields(fields, ("start", "in", "out", "speed", "transition", "gain"))
+    check_fields(fields, ("start", "in", "out", "speed", "transition", "gain", "crop"))
     item = find_item(project, item_id)
+    if "crop" in fields:
+        crop = clean_crop(fields["crop"])
+        if crop:
+            item["crop"] = crop
+        else:
+            item.pop("crop", None)
     if "gain" in fields:
         gain = clean_gain(fields["gain"])
         if gain == 1:
@@ -2281,6 +2474,8 @@ def split_item(project, item_id, frame):
         right["speed"] = item["speed"]
     if "gain" in item:
         right["gain"] = item["gain"]
+    if "crop" in item:
+        right["crop"] = dict(item["crop"])
     item["out"] = cut
     project["timeline"].append(right)
     return right
@@ -2516,17 +2711,46 @@ def choose_take(project, clip_id, take_id):
     if take is None:
         raise KeyError("no take %s on clip %s" % (take_id, clip_id))
     clip["active"] = take_id
-    _, last = linked_range(clip.get("link"), take["frames"])
+    first, last = linked_range(clip.get("link"), take["frames"])
     for item in project.get("timeline", []):
         if item["clip"] == clip_id:
             item["out"] = min(item["out"], last)
+            item["in"] = max(first, min(item["in"], item["out"] - 1))
     return clip
+
+
+def remove_takes(project, clip_id, ids, allow_empty=False):
+    """Remove selected versions from this clip. Other clips can reference the same media."""
+    clip = find_clip(project, clip_id)
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i for i in ids):
+        raise ValueError("takes must be a non-empty list of take ids")
+    selected = set(ids)
+    takes = clip.get("takes") or []
+    unknown = selected.difference(t["id"] for t in takes)
+    if unknown:
+        raise KeyError("no take %s on clip %s" % (sorted(unknown)[0], clip_id))
+    kept = [take for take in takes if take["id"] not in selected]
+    if not kept and clip.get("kind") == "footage":
+        raise ValueError("keep the last take of imported footage")
+    if not kept and allow_empty is not True:
+        raise ValueError("set allow_empty to true to remove every take of this shot")
+    active = active_take(clip)["id"]
+    clip["takes"] = kept
+    if not kept:
+        clip["active"] = None
+        # The next render replaces the removed media beneath the existing trims and splits.
+        clip["awaiting_replacement"] = True
+    elif active in selected:
+        choose_take(project, clip_id, kept[-1]["id"])
+    return {"clip": clip_id, "removed": [take["id"] for take in takes if take["id"] in selected],
+            "active": clip["active"]}
 
 
 def accept_take(project, clip_id, take):
     """A finished render becomes the clip's active take. A first render sets its timeline range."""
     clip = find_clip(project, clip_id)
-    fresh = not clip.get("takes")
+    replacing = clip.pop("awaiting_replacement", False)
+    fresh = not clip.get("takes") and not replacing
     clip.setdefault("takes", []).append(take)
     clip["active"] = take["id"]
     clip.pop("error", None)
@@ -2540,6 +2764,7 @@ def accept_take(project, clip_id, take):
             shift_from(project, end, item_end(item) - end, skip=item)
         else:
             item["out"] = min(item["out"], last)
+            item["in"] = max(first, min(item["in"], item["out"] - 1))
     settle(project)
     return clip
 
@@ -2683,7 +2908,7 @@ def clean_checkpoints(value, limit=CHECKPOINT_LIMIT):
     return rows
 
 
-def clean_sizes(value):
+def clean_sizes(value, shape="16:9"):
     """The sizes a project asks for, without the ones that are the usual size anyway. None asks for none."""
     if value is None:
         return {}
@@ -2692,6 +2917,9 @@ def clean_sizes(value):
     chosen = {}
     for quality, name in value.items():
         if name is None:
+            continue
+        if isinstance(name, dict):
+            chosen[quality] = "%sx%s" % fitted_size(shape, name)
             continue
         if isinstance(name, str) and name not in SIZE_CHOICES[quality]:
             # A size of the project's own, however it was typed: "1024 × 576", "1024X576".
@@ -2736,8 +2964,8 @@ def set_project(project, fields):
                 project.pop("models", None)
             continue
         if key == "sizes":
+            chosen = clean_sizes(value, clean_format(fields.get("format", project_format(project))))
             project.pop("sizes", None)
-            chosen = clean_sizes(value)
             if chosen:
                 project["sizes"] = chosen
             continue
@@ -2750,8 +2978,8 @@ def set_project(project, fields):
             continue
         if not isinstance(value, str):
             raise ValueError("%s must be text" % key)
-        if key == "format" and value not in FORMATS:
-            raise ValueError("format must be one of %s" % ", ".join(FORMATS))
+        if key == "format":
+            value = clean_format(value)
         if key == "profile" and value not in project_profiles(project):
             raise ValueError("profile must be one of %s" % ", ".join(project_profiles(project)))
         if key == "language" and not value.strip():
@@ -3270,6 +3498,41 @@ def _merge_lists(base, mine, theirs, keep_theirs=False):
     return out
 
 
+def merge_editor_save(base, mine, current):
+    """Only explicit operations change an existing clip's take list. A newly placed copy keeps its own take."""
+    merged = merge(base, mine, current)
+    existing = {clip["id"]: clip for clip in current.get("clips", [])}
+    for clip in merged.get("clips", []):
+        stored = existing.get(clip["id"])
+        if stored is None:
+            continue
+        ids = {take["id"] for take in stored.get("takes", [])}
+        # Keep client-added display metadata such as filmstrips on surviving takes.
+        clip["takes"] = [take for take in clip.get("takes", []) if take["id"] in ids]
+        if stored.get("awaiting_replacement"):
+            clip["awaiting_replacement"] = True
+        else:
+            clip.pop("awaiting_replacement", None)
+        if not clip["takes"]:
+            clip["active"] = None
+        if clip["takes"] and not any(t["id"] == clip.get("active") for t in clip["takes"]):
+            choose_take(merged, clip["id"], active_take(stored)["id"])
+    return merged
+
+
+def restore_revision(current, old):
+    """Restore the historical order of takes while retaining any rendered since that revision."""
+    restored = merge(current, old, current)
+    earlier_clips = {clip["id"]: clip for clip in old.get("clips", [])}
+    for clip in restored.get("clips", []):
+        earlier = earlier_clips.get(clip["id"])
+        if earlier and clip.get("takes"):
+            clip.pop("awaiting_replacement", None)
+            order = {take["id"]: i for i, take in enumerate(earlier.get("takes", []))}
+            clip["takes"].sort(key=lambda take: order.get(take["id"], len(order)))
+    return restored
+
+
 def merge(base, mine, theirs, key=None):
     """Three-way merge of a project, or of any part of one.
 
@@ -3521,6 +3784,8 @@ def describe(project):
             entry["speed"] = item["speed"]
         if clean_gain(item.get("gain")) != 1:
             entry["gain"] = item["gain"]
+        if item.get("crop"):
+            entry["crop"] = item["crop"]
         if item.get("transition"):
             entry["transition"] = item["transition"]
         timeline.append(entry)
@@ -3532,7 +3797,8 @@ def describe(project):
         end = max(end, item_end(item))
     sounds = [{"sound": s["id"], "name": s.get("name", ""), "lane": s.get("lane", 0), "start": s.get("start", 0),
                "end": s.get("start", 0) + s.get("frames", 0), "at": timecode(s.get("start", 0)),
-               "offset": s.get("offset", 0.0), "gain": s.get("gain", 1.0)}
+               "offset": s.get("offset", 0.0), "gain": s.get("gain", 1.0),
+               **{key: s[key] for key in ("fade_in", "fade_out", "gain_points") if s.get(key)}}
               for s in sorted(project.get("sounds") or [], key=lambda s: (s.get("lane", 0), s.get("start", 0)))]
     return {
         "sounds": sounds,
@@ -3626,6 +3892,8 @@ def apply_op(project, op, names):
     elif kind == "choose_take":
         choose_take(project, clip_id, op["take"])
         result = {"clip": clip_id}
+    elif kind == "remove_takes":
+        result = remove_takes(project, clip_id, op.get("takes"), op.get("allow_empty"))
     elif kind == "set_project":
         set_project(project, op.get("fields") or {})
         result = {}

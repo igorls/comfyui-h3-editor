@@ -73,8 +73,8 @@
     <div class="splitter-v" id="splitBin" role="separator" aria-orientation="vertical" aria-label="Resize the clips panel" title="Drag to resize. Double-click to reset." tabindex="0"></div>
     <section class="stage" aria-label="Viewer">
       <div id="screen" class="screen">
-        <video id="videoA" playsinline></video>
-        <video id="videoB" playsinline></video>
+        <div class="picture-plane"><video id="videoA" playsinline></video></div>
+        <div class="picture-plane"><video id="videoB" playsinline></video></div>
         <canvas id="vfx" hidden></canvas>
         <img id="preview" alt="Live render preview" hidden>
         <video id="motion" playsinline loop hidden></video>
@@ -194,9 +194,32 @@
         <option value="9:16">Vertical, 9:16</option>
         <option value="1:1">Square, 1:1</option>
       </select></label>
+      <label id="creatorRatioField" class="field" hidden><span>Custom aspect ratio</span><input id="creatorRatio" type="text" placeholder="5:4"></label>
       <p id="creatorHint" class="hint" aria-live="polite"></p>
     </div>
     <div class="exporter-foot"><span class="spacer"></span><button id="creatorGo" class="primary" type="submit">Create project</button></div>
+  </form>
+</dialog>
+<dialog id="sizeTarget" class="keys exporter" aria-labelledby="sizeTargetTitle">
+  <form id="sizeTargetForm">
+    <div class="keys-head"><h2 id="sizeTargetTitle">Custom size</h2><button id="sizeCancel" class="quiet" type="button">Cancel</button></div>
+    <div class="exporter-body">
+      <label class="field"><span>Aspect ratio</span><input id="sizeRatio" required placeholder="4:3"></label>
+      <label class="choice"><span>Size by</span><select id="sizeMethod"><option value="longest_side">Longest side (pixels)</option><option value="megapixels">Megapixels</option></select></label>
+      <label class="field"><span>Target</span><input id="sizeValue" type="number" required></label>
+      <p class="hint" id="sizeResult" aria-live="polite"></p>
+    </div>
+    <div class="exporter-foot"><button id="sizeApply" class="primary" type="submit">Apply size</button></div>
+  </form>
+</dialog>
+<dialog id="takeManager" class="keys exporter" aria-labelledby="takeManagerTitle">
+  <form id="takeManagerForm">
+    <div class="keys-head"><h2 id="takeManagerTitle">Manage takes</h2><button id="takeManagerClose" class="quiet" type="button">Cancel</button></div>
+    <div class="exporter-body">
+      <div id="takeManagerList" class="take-manager-list"></div>
+      <p id="takeManagerHint" class="hint" aria-live="polite"></p>
+    </div>
+    <div class="exporter-foot"><button id="takeManagerRemove" class="quiet danger" type="submit">Remove selected</button></div>
   </form>
 </dialog>
 <dialog id="asker" class="keys exporter" aria-labelledby="askerTitle">
@@ -228,10 +251,25 @@
   </div>
 </dialog>
 
+<dialog id="cropper" class="keys exporter" aria-labelledby="cropTitle">
+  <form method="dialog">
+    <div class="keys-head"><h2 id="cropTitle">Crop and reframe</h2><button class="quiet" value="cancel">Cancel</button></div>
+    <div class="exporter-body">
+      <div id="cropStage"><video id="cropSource" playsinline muted></video>
+        <div id="cropBox" tabindex="0" aria-label="Crop position. Drag or use the arrow keys."><span id="cropHandle"></span></div>
+      </div>
+      <p class="hint">Drag the frame to move it. Drag its corner or use Zoom to resize.</p>
+      <label class="crop-zoom">Zoom <input id="cropZoom" type="range" min="1" max="8" step="0.01"><output id="cropValue"></output></label>
+      <p id="cropError" class="hint" hidden>The source picture could not be loaded.</p>
+    </div>
+    <div class="exporter-foot"><button id="cropReset" type="button" class="quiet">Reset framing</button><span class="spacer"></span><button class="primary" value="apply">Apply crop</button></div>
+  </form>
+</dialog>
 <dialog id="exporter" class="keys exporter" aria-labelledby="exporterTitle">
   <div class="keys-head"><h2 id="exporterTitle">Export the cut</h2><button id="exporterClose" class="quiet">Close</button></div>
   <div class="exporter-body">
     <p id="exporterSummary" class="exporter-summary"></p>
+    <label class="choice" id="exporterSpanRow" hidden><span>Export</span><select id="exporterSpan"><option value="all">Whole timeline</option><option value="range">Marked range</option></select></label>
     <ul id="exporterNotes" class="exporter-notes"></ul>
     <label class="field"><span>File name</span><input id="exporterName" type="text" autocomplete="off" spellcheck="false"></label>
     <div class="halves">

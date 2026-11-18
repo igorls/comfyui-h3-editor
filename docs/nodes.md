@@ -123,6 +123,8 @@ connect the clip as `source_video` and set `video_mode`.
 
 ### Known limits
 
-Mid pins are not ready. In a test on an earlier checkpoint, a still pinned at
-frame 68 froze for about nine frames, with a hard jump in and out. Start pins,
-end pins and held video do not do this.
+An earlier checkpoint froze for about nine frames around a middle guide.
+On HyperFlow H3 Flash INT8, one- and two-guide tests on two short moving shots
+reached the stills within one frame while motion continued. The guides also
+changed how much the subject moved elsewhere in the shot. Check the approach
+and exit around each guide on your own checkpoint. [Test results](editing-render-tests.md)

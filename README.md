@@ -22,8 +22,8 @@ made with it, shot by shot.
 - **Edit as in any editor.** Trim, split, move, change speed, add transitions,
   flip between takes, file clips in bins, bring in your own footage and
   pictures, and export one video.
-- **Add music and narration.** Lay sound files under the cut on lanes of their
-  own, trim them and set their volume. The export mixes them in.
+- **Add music and narration.** Lay sound files under the cut, trim them,
+  fade their ends and draw volume curves under dialogue. The export mixes them in.
 - **Set how loud each clip is.** A clip on the timeline has its own volume,
   from silent to twice as loud, and the export applies it. The viewer has a
   volume of its own beside the play controls, which changes only what you hear.
@@ -142,7 +142,9 @@ Other H3 checkpoints work as well; see [models and quality](docs/models.md).
 ### 3. Make your first video
 
 1. Open **H3 Editor** from the ComfyUI sidebar. It starts you on a first project.
-2. In the **Project** tab on the right, choose the format: 16:9, 9:16 or 1:1.
+2. In the **Project** tab on the right, choose an aspect ratio or enter your own.
+   **Draft size** and **Final size** each offer **Your own size**, where you can set
+   width and height directly or calculate them from a longest side or megapixel target.
 3. Press **New clip**, write what happens in **What happens**, and press
    **Render draft**. The viewer shows the clip taking shape.
 4. When the draft lands, press Space to play it. Not right? Change the text and
@@ -168,6 +170,10 @@ expand the clip in **Clips** and drag individual takes onto the picture track.
 Click a take in that list, or choose **Add as clip** in the inspector, to append
 it to the cut. Each placement creates an independent clip using the existing
 render, so choosing a different take on the original clip leaves the cut intact.
+In **Takes → Manage takes**, select the versions to remove. You can clear every
+render from a generated shot and render it again with the same prompt and edits.
+Removing the active take selects the newest one left. Media files, independently
+placed takes and earlier revisions stay available.
 Rendered clips stay on disk: moving,
 trimming or splitting them never renders anything again. **Render all drafts**
 renders every clip that has no take yet, the ones that share a model one after
@@ -209,7 +215,12 @@ project's format. You can trim it, and extend or bridge from it like a render.
 **Music and narration.** **Add sound** on the timeline lays a sound file under
 the cut at the playhead, on a lane of its own. Drag it to move it, up or down to
 change its lane, and drag its ends to trim it; its volume is in the panel on
-the right. The export mixes it under the clips' own sound.
+the right. In **Volume curve**, set the fade lengths in frames. Move the
+playhead and press **Add point at playhead**, then drag the point on the waveform
+or type its level in the panel. For example, add four points at 100%, 25%, 25%
+and 100% to lower the music under a line of dialogue and bring it back up.
+Points follow their source audio when you trim or move the sound. The export
+mixes it under the clips' own sound.
 
 **Notes on frames.** Stop on a frame and press **N**, or **Note** under the
 viewer. Pin a spot, drag a box or draw on the picture, and write what should
@@ -241,6 +252,16 @@ repeating. **In** and **Out** mark the range to repeat; Out includes the frame o
 screen. Clear the marks to repeat the whole cut. Clip previews have their own
 range and can loop too. The **Sound** menu above the timeline switches all sound
 lanes between Waveform and Spectrogram.
+
+**Crop and reframe.** Select a placement on the picture track, open its **Timeline**
+tab and choose **Crop and reframe**. Drag the box around the subject and use its
+corner or **Zoom** to resize it. **Apply crop** affects this placement in the
+viewer and export. **Reset framing** restores the full source at the cut's aspect ratio.
+
+**Export a range.** Mark **In** and **Out** on the timeline and click **Export**.
+The dialog selects **Marked range** and shows its duration. You can also choose
+**Whole timeline**. The exported range includes the displayed Out frame, picture
+transitions, rendered VFX and the mixed soundtrack.
 
 **Reusable looks.** The **Style library** in the Project tab includes eight
 built-in looks. **Save look** keeps your own style for every project on this

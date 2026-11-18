@@ -28,7 +28,7 @@ class ProjectCardTest(unittest.TestCase):
         self.assertEqual((card["clips"], card["picture"]["file"]), (0, "shot.jpg"))
 
     def test_a_broken_timeline_item_is_left_out_instead_of_failing_the_list(self):
-        card = project_card({"format": "4:3", "timeline": [{"id": "i1", "clip": "c1", "start": 0}, "junk",
+        card = project_card({"format": "4:0", "timeline": [{"id": "i1", "clip": "c1", "start": 0}, "junk",
                                                           {"id": "i2", "clip": "c1", "start": 10, "in": 0, "out": 40}]})
         self.assertEqual((card["format"], card["clips"], card["frames"]), ("16:9", 1, 50))
 

@@ -41,9 +41,9 @@ except the two uploads.
 | `POST /project/{name}/asset` | multipart `file`: PNG, JPEG or WebP, or WAV, MP3, FLAC, M4A, OGG, OPUS, AAC | `{"file", "subfolder"}`, an asset. With `?sound=1` on a sound, also `seconds`, its length, and `peaks`, as `add_sound` needs |
 | `POST /project/{name}/grab` | `{"file", "subfolder", "frame"}`, a take's file and a frame of it | A picture asset |
 | `POST /project/{name}/grab_sound` | `{"file", "subfolder", "first", "last"}` in take frames | A WAV asset, 30 s at most |
-| `POST /project/{name}/export` | `{}`, or any of `scale` (1, 0.75 or 0.5 of the rendered size), `quality` (`best`, `high`, the default, or `small`) and `name` (the file's name instead of the project's) | `{"filename", "subfolder", "bytes", "plan"}` in ComfyUI's output folder. With `"plan": true` nothing is made: `{"plan": {"width", "height", "frames", "seconds", "clips", "drafts", "missing", "gaps"}}` says what an export would hold |
+| `POST /project/{name}/export` | `{}`, or any of `range` (timeline frames `{"from":24,"to":48}`, exclusive end), `scale` (1, 0.75 or 0.5 of the rendered size), `quality` (`best`, `high`, the default, or `small`) and `name` (the file's name instead of the project's) | `{"filename", "subfolder", "bytes", "plan"}` in ComfyUI's output folder. With `"plan": true` nothing is made: `{"plan": {"width", "height", "frames", "seconds", "clips", "drafts", "missing", "gaps"}}` says what an export would hold |
 | `GET /project/{name}/history` | | `{"revisions": [{"revision", "time", "source", "clips", "frames"}]}`, newest first |
-| `POST /project/{name}/restore` | `{"revision"}` | `{"revision", "summary"}` |
+| `POST /project/{name}/restore` | `{"revision", "if_revision"?}` | `{"revision", "summary"}`. Optionally guard the current revision with `if_revision`. A mismatch returns 409. |
 | `POST /sheet` | `{"filename", "subfolder", "frames"?, "first"?, "last"?, "count"?, "tile_width"?}` | `{"sheet", "picked", "frames"}`: a grid of frames saved beside the clip |
 
 Import fields: `name`, `fit` (`contain` or `cover`), `seconds` for a picture (0.5 to
@@ -134,6 +134,17 @@ starts from; `frames`, how long it plays in timeline frames, never past the end 
 `gain`, from 0 to 2, where 1 leaves it as it is; `lane`, 0 to 3. The summary lists them as
 `sounds`. An export mixes each one in at its place and gain, and stops it where the cut ends.
 
+`fade_in` and `fade_out` are lengths in whole timeline frames (0 disables that fade).
+Each is limited during playback to the placed sound's length. Overlapping fades multiply.
+`gain_points` is a list of up to 64 `{"frame": 24, "gain": 0.5}` pairs. The frame is
+relative to the **start of the source file**, at 24 fps, so moving or trimming the
+sound preserves its automation. A point may lie at either file boundary; each
+unmarked file boundary defaults to full level. Gains from 0 to 1 multiply the
+sound's overall volume and its fades. Levels interpolate linearly. To duck music,
+place four points at the start of the ramp down, start and end of the spoken line,
+and end of the ramp up. Send the whole list with `update_sound`, or `[]` to clear
+it. The summary includes the fades and points when set.
+
 ### Bins
 
 | op | Takes | Notes |
@@ -148,16 +159,28 @@ A clip extended, bridged or merged from a filed clip goes in the same bin.
 
 | op | Takes | Notes |
 |---|---|---|
-| `update_item` | `item`, `fields`: `start`, `in`, `out`, `speed`, `transition`, `gain`; optional `ripple` | `transition` can be `"none"`. Speed and transition always move the clips after it. With `ripple`, trimming does too. `gain` is the clip's volume where it sits, from 0 (silent) to 2, with 1 as rendered: the export applies it, and the summary lists it on the item when it is not 1 |
+| `update_item` | `item`, `fields`: `start`, `in`, `out`, `speed`, `transition`, `gain`, `crop`; optional `ripple` | `transition` can be `"none"`. Speed and transition always move the clips after it. With `ripple`, trimming does too. `gain` is the clip's volume where it sits, from 0 (silent) to 2, with 1 as rendered: the export applies it, and the summary lists it on the item when it is not 1 |
 | `remove_item` | `item`, optional `ripple` | Ripple closes the space it leaves |
 | `split_item` | `item`, `frame` (a timeline frame inside it) | Returns `right`, the new second half |
 | `close_gap` | optional `frame` | No frame closes every gap. Returns `removed` |
 | `choose_take` | `clip`, `take` | Items keep their trim, cut short if the take is shorter |
+| `remove_takes` | `clip`, `takes` (one or more take IDs), optional `allow_empty` | Read IDs from the clip in the project. The newest remaining take replaces a removed active take. To clear even the last take from a generated shot, set `allow_empty: true`. Its prompt and timeline edits survive for the next render. Imported footage needs one take. Returns `clip`, `removed` and `active`. Other clips using the media, files on disk, notes and history are preserved. Supply the current `revision` on the batch to guard the selection. |
 
 To slip a clip, send `update_item` with `in` and `out` moved by the same number of frames:
 the item keeps its `start` and length and shows another part of its take. Switching a
 clip's take, or rendering it again, also keeps the item where it is; a shorter take pulls
 `out` in.
+
+To crop a placement, set `update_item.fields.crop` to a rectangle, for example
+`{"x":0.5,"y":0.25,"w":0.5,"h":0.5}`. Coordinates are fractions of the
+original take measured from its top left. A rectangle from a frame note uses
+the same coordinates. The chosen region fills the aspect ratio of the cut.
+The summary includes the rectangle on the timeline item. Set it to `null` to reset.
+
+To export a marked range, pass `"range":{"from":24,"to":48}` to the export
+route, including for a plan. The 24 exported frames are timeline frames 24
+through 47. Bounds must be whole frames inside the cut. The output keeps the
+cut's size, transitions, rendered VFX and mixed sound. Omit `range` for the whole cut.
 
 ### VFX clips: drawn by code
 
@@ -241,13 +264,14 @@ needs a render.
 
 ### Project and cast
 
-`set_project`: `fields`: `style` (applies to every clip), `format` (`16:9`, `9:16` or
-`1:1`), `language` (for example `English` or `Portuguese`), and `profile`, the checkpoint
+`set_project`: `fields`: `style` (applies to every clip), `format` (a positive integer
+ratio between `1:8` and `8:1`, including `3:2`, `4:3`, `7:5` and `21:9`),
+`language` (for example `English` or `Portuguese`), and `profile`, the checkpoint
 family new renders use (`hyperflow`, the default, `h3_turbo`, `h3`, `singularity`, `dasiwa`
 `dasiwa_turbo`, `dasiwa_v5` or `eros`). `GET /projects` lists the profiles with whether each is installed;
 pick only an `available` one. A new project starts on the first installed profile, and a
-project that names none renders on it. The format sets new renders and imports, and export fits
-every clip to it.
+project that names none renders on it. The format sets new renders and imports.
+Export fits every clip to the widest rendered take on the timeline.
 
 `set_project` also takes `sizes`, for a GPU with less memory or for speed:
 `{"draft": "medium", "final": "large"}`. A draft is `small` (the usual) or `medium`. A final is
@@ -259,6 +283,13 @@ and it comes out as sampled. A size off that grid is refused. Leave a quality ou
 every choice per format under `sizes`, with `width`, `height` and the size it comes out at,
 `out`, and under `own` what a size of the project's own may be (`step`, `min`, `max`) with
 one to start from, `first`. The summary's `sizes` says what the project renders at.
+
+A size can also be `{"longest_side": 1280}` or `{"megapixels": 0.8}`. The editor
+resolves the project ratio and target onto its 32-pixel grid and saves the resulting
+width and height. Send `format` and `sizes` in one `set_project` to use the new ratio.
+`GET /sizes?format=4:3&megapixels=0.786432` previews this as `"size":[1024,768]`,
+with the normalized `format` and its preset `choices`. Use either target or omit
+both for the preset list alone.
 
 `set_project` also takes `loras`, the LoRAs every new render of the project samples with,
 drafts and finals alike, and `realism`:
