@@ -173,8 +173,8 @@ clip needs a lot of it: an eight-second clip can need more than 48 GB.
 
 ## Upscalers
 
-**Upscale 2x**, on a clip whose take is a final, makes a new take at twice its
-size. You pick the upscaler among the ones whose two files are installed:
+**Upscale 2x** makes a new take at twice the width and height of a generated
+final or imported footage. Choose one of the installed upscalers in the clip inspector.
 
 | Upscaler | Files | Folder | Where to get them | What it does |
 |---|---|---|---|---|
@@ -191,8 +191,9 @@ The wrapper downloads its roughly 7 GB model bundle from
 [CSWRY/VOSR](https://huggingface.co/CSWRY/VOSR) on first use. It also accepts
 a complete offline bundle in `models/vosr2/VOSR2/`; the wrapper README lists the files.
 
-Select VOSR2 explicitly on a final take. It doubles both dimensions, copies the
-source soundtrack and creates a new take. It runs the image upscaler on each
+Select VOSR2 explicitly on a final take or in the Footage inspector. Its output
+keeps the source soundtrack. Open **Takes** to switch between versions or remove
+one. It runs the image upscaler on each
 frame with seed 42, wavelet colour alignment, 512-pixel DiT tiles and 1024-pixel
 VAE tiles. Frames stream through the model and encoder one at a time. Compare
 fine details during motion for flicker before choosing the take for the cut.

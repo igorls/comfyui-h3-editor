@@ -1,4 +1,7 @@
+import ast
+import asyncio
 import os
+from pathlib import Path
 import sys
 import tempfile
 import subprocess
@@ -40,6 +43,27 @@ class FfmpegTest(unittest.TestCase):
 
 @unittest.skipIf(av is None, "needs PyAV")
 class VideoInfoTest(unittest.TestCase):
+    def test_shortest_clips_have_decodable_posters(self):
+        # Load the API function at its three media boundaries, without starting ComfyUI.
+        source = Path(__file__).parents[1] / "editor_api.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        probe = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "probe_file")
+
+        async def run(args):
+            subprocess.run(media.command(args), capture_output=True, check=True)
+
+        with tempfile.TemporaryDirectory() as directory:
+            for frames in (1, 12, 13, 24):
+                with self.subTest(frames=frames):
+                    path = os.path.join(directory, "%d.mp4" % frames)
+                    self.make(path, frames, False)
+                    namespace = {"os": os, "run": run, "video_info": mock.AsyncMock(return_value=media.video_info(path)),
+                                 "make_strip": mock.AsyncMock(return_value=None)}
+                    exec(compile(ast.Module(body=[probe], type_ignores=[]), str(source), "exec"), namespace)
+                    result = asyncio.run(namespace["probe_file"](path))
+                    with av.open(os.path.join(directory, result["poster"])) as image:
+                        self.assertEqual(next(image.decode(video=0)).width, 480)
+
     def make(self, path, frames, sound):
         with av.open(path, "w") as container:
             video = container.add_stream("mpeg4", rate=24)

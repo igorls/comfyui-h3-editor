@@ -1692,7 +1692,8 @@ async def probe_file(path):
     """Frame count, a poster and a filmstrip for a finished render."""
     frames = (await video_info(path))["frames"]
     poster = os.path.splitext(path)[0] + ".jpg"
-    await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf", "select=eq(n\\,12),scale=480:-2", "-frames:v", "1", poster])
+    frame = max(0, min(12, frames - 1))
+    await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf", "select=eq(n\\,%d),scale=480:-2" % frame, "-frames:v", "1", poster])
     try:
         made = await make_strip(path, frames)
     except web.HTTPException:
