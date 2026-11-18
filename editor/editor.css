@@ -927,3 +927,8 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--tungsten); 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+.sprite-enable, .sprite-transport { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
+.sprite-enable input { width: auto; }
+.sprite-loop { flex: none; background-repeat: no-repeat; image-rendering: pixelated; background-color: #777; }
+.sprite-transport { margin-top: .5rem; }

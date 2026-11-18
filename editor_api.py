@@ -2080,7 +2080,9 @@ async def watch_once():
                 continue
             entry = queue.get_history(prompt_id=job["id"]).get(job["id"])
             file = saved_file(entry)
-            if not file:
+            sheets = ((entry or {}).get("outputs") or {}).get("211", {}).get("sprite")
+            expects_sheet = (job.get("saved") or {}).get("sprite") is not None
+            if not file or (expects_sheet and not sheets):
                 finished.append((job, None, None, failure(entry)))
                 continue
             try:
@@ -2088,6 +2090,8 @@ async def watch_once():
                 if job.get("track"):
                     await lay_track(path, job["track"])
                 info = await probe_file(path)
+                if sheets:
+                    info["sprite"] = sheets[0]
                 finished.append((job, file, info, None))
             except web.HTTPException as error:
                 finished.append((job, None, None, "The render saved a file that cannot be read: %s" % error.text))

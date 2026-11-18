@@ -40,6 +40,7 @@ or the rules for linked clips. Everything else you need is here.
 3. **Add every clip in one batch** with `add_clip`, then render them all as drafts.
    To guide an interior pose, set `fields.mid_guides` to picture assets with zero-based
    source frames. Review the moving lead-in and exit on these experimental guides.
+   For game sprites, enable Sprite Draft on an independent shot, pick the facing and camera, and inspect both PNG styles at game size. Finish the chosen draft to keep its loop settings.
    Drafts are small and fast. They exist to judge the idea, the framing and the
    timing.
 4. **Wait, then look at every draft.** `python scripts/h3.py wait PROJECT` blocks until

@@ -8,6 +8,8 @@ below. You can use them in your own workflows too.
 | H3 Take | One shot: the prompt, pinned frames, references, held video or sound |
 | H3 Style Guider (experimental) | Cross-encode H3 Take's style markers and blend their predictions across video time; see [style transitions](style-timeline.md) |
 | H3 Live Preview | Shows the whole clip moving, with sound, at every sampling step |
+| H3 Sprite Motion Guide | Projects a repeating jog at the requested facing and camera pitch into 39 frames for a reference video |
+| H3 Sprite Sheet | Extracts a transparent illustrated PNG and a 15-color indexed PNG from a 39-frame take, with a shared 64-pixel cell and pivot |
 | H3 Load Clip | Reads frames and sound from a clip in the output folder, and the saved latents of those frames when they start on a multiple of 17 frames |
 | H3 Save Hold | Saves a sampled take's latents, picture and sound, beside its video, for clips that extend or bridge it. Connect `final` to save a refine pass's picture too |
 | H3 Load Still | Reads a picture from the output folder |

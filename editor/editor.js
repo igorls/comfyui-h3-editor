@@ -302,7 +302,7 @@ function snapFrames(seconds) {
 
 function plannedFrames(clip) {
   const take = activeTake(clip);
-  return take ? take.frames : clip.link ? linkedFrames(clip.link, clip.seconds) : snapFrames(clip.seconds);
+  return take ? take.frames : clip.link ? linkedFrames(clip.link, clip.seconds) : clip.sprite ? 39 : snapFrames(clip.seconds);
 }
 
 // An unrendered clip follows its seconds on the timeline, and the clips after it move along.
@@ -1439,7 +1439,7 @@ function clipStatus(clip) {
 
 function clipSeconds(clip) {
   const take = activeTake(clip);
-  return (take ? take.frames / FPS : clip.seconds).toFixed(1) + " s";
+  return (take ? take.frames / FPS : clip.sprite ? 39 / FPS : clip.seconds).toFixed(1) + " s";
 }
 
 // Run the pointer across a thumbnail to scrub through the clip, frame strip permitting.
@@ -2518,7 +2518,10 @@ function clipModel(clip) {
   const own = profileOf(clip.profile);
   const usual = document.createElement("option");
   usual.value = "";
-  usual.textContent = "The project's model" + (projectProfile() ? ": " + projectProfile().title : "");
+  const fast = clip.sprite && !state.project.models?.unet
+    && state.profiles.find(p => p.available && ["hyperflow", "h3_turbo"].includes(p.id));
+  usual.textContent = fast ? "Sprite Draft default · " + fast.title
+    : "The project's model" + (projectProfile() ? ": " + projectProfile().title : "");
   usual.selected = !own;
   select.append(usual);
   for (const profile of menuProfiles()) {
@@ -3890,8 +3893,9 @@ function drawInspector() {
 
   const timing = document.createElement("div");
   timing.className = "two";
-  const duration = plainField("Seconds", clip.seconds, { type: "number" });
+  const duration = plainField("Seconds", clip.sprite ? 39 / FPS : clip.seconds, { type: "number" });
   Object.assign(duration.input, { min: "0.5", max: "60", step: "any", required: true });
+  duration.input.disabled = Boolean(clip.sprite);
   duration.input.dataset.key = "Seconds";
   const durationHint = document.createElement("small");
   durationHint.id = "shotDurationHint";
@@ -3938,6 +3942,9 @@ function drawInspector() {
     ...(state.project.cast?.some((p) => p.file || p.refmod) ? castPicker(clip) : []),
     ...framesFor(clip),
   ], "shot"));
+  if (state.tab === "shot" && !clip.link) parts.push(spriteSection(clip));
+  const spriteTake = activeTake(clip);
+  if (spriteTake?.sprite && ["shot", "takes"].includes(state.tab)) parts.push(spritePlayback(spriteTake));
   if (state.tab === "shot") parts.push(midGuidesSection(clip));
 
   const voiced = ["speaker", "dialogue", "sound", "music"].filter((k) => String(clip[k] || "").trim()).length;
@@ -4012,7 +4019,7 @@ function drawInspector() {
       const finish = document.createElement("button");
       finish.className = "quiet";
       finish.textContent = "Finish draft";
-      finish.title = "Make a final from the draft you see: the same shot, framing, motion and sound, redrawn at the selected Final size. "
+      finish.title = activeTake(clip)?.sprite ? "Refine this sprite at 512 × 768 with its saved loop timing, scale and pivot." : "Make a final from the draft you see: the same shot, framing, motion and sound, redrawn at the selected Final size. "
         + "Only the final's last steps run, so it is faster than Render final, and there is no new seed to hope for.";
       finish.addEventListener("click", () => renderClip(clip, "finish"));
       actions.append(finish);
@@ -4107,12 +4114,13 @@ function upscaleControls(clip) {
   return upscale;
 }
 
-const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides"];
+const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides", "sprite"];
 
 function restoreTakeFields(clip, saved) {
   for (const name of SAVED_FIELDS) {
     if (name in saved) clip[name] = structuredClone(saved[name]);
   }
+  if (!saved.sprite) delete clip.sprite;
   if (!saved.mid_guides?.length) delete clip.mid_guides;
 }
 
@@ -4505,9 +4513,115 @@ function framesFor(clip) {
   return [row];
 }
 
+function spriteChoice(label, options, value, choose) {
+  const wrap = document.createElement("label");
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", label);
+  wrap.append(label, select);
+  for (const [id, title] of options) select.append(new Option(title, id));
+  select.value = value;
+  select.onchange = () => choose(select.value);
+  return wrap;
+}
+
+function spriteSection(clip) {
+  const config = clip.sprite;
+  const label = document.createElement("label");
+  const toggle = document.createElement("input");
+  toggle.type = "checkbox";
+  toggle.checked = Boolean(config);
+  label.className = "sprite-enable";
+  label.append(toggle, "Enable Sprite Draft");
+  function update(next) {
+    if (next && clip.mid_guides?.some(g => g.frame > 37)) {
+      toggle.checked = Boolean(config);
+      toast("Move or remove guides after frame 37 before enabling Sprite Draft.", true);
+      return;
+    }
+    checkpoint();
+    if (next) clip.sprite = next;
+    else delete clip.sprite;
+    resizePlanned(clip);
+    save();
+    renderBin();
+    renderInspector();
+  }
+  toggle.onchange = () => update(toggle.checked ? { direction: "S", camera: "rpg", poses: 7 } : null);
+  const children = [label];
+  if (config) {
+    const guides = new Map();
+    function addGuide(asset, title) {
+      const ref = { file: asset.file, subfolder: asset.subfolder || "" };
+      guides.set(JSON.stringify(ref), title);
+    }
+    if (config.guide) addGuide(config.guide, config.guide.file);
+    for (const other of state.project.clips) {
+      if (other.id === clip.id) continue;
+      for (const [index, take] of (other.takes || []).entries()) {
+        if (take.file && take.frames >= 39) addGuide(take, other.name + " · take " + (index + 1));
+      }
+    }
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "Choose character views in Cast. For another motion guide, import at least 39 frames at 24 fps.";
+    children.push(
+      spriteChoice("Facing", [["S", "South"], ["E", "East"], ["N", "North"], ["W", "West"]],
+        config.direction, direction => update({ ...config, direction })),
+      spriteChoice("View", [["rpg", "RPG · 45°"], ["overhead", "Overhead · 90°"], ["level", "Eye level"]],
+        config.camera, camera => update({ ...config, camera })),
+      spriteChoice("Loop poses", Array.from({ length: 9 }, (_, i) => [String(i + 4), String(i + 4)]),
+        String(config.poses), poses => update({ ...config, poses: Number(poses) })),
+      spriteChoice("Motion guide", [["", "Built-in jog"], ["prompt", "Use shot prompt"], ...guides],
+        config.guide ? JSON.stringify({ file: config.guide.file, subfolder: config.guide.subfolder || "" }) : (config.motion || ""), key => {
+          const next = { ...config };
+          delete next.guide;
+          delete next.motion;
+          if (key === "prompt") next.motion = key;
+          else if (key) next.guide = JSON.parse(key);
+          update(next);
+        }), hint,
+    );
+  }
+  return disclosure("Sprite Draft", Boolean(config), config ? config.direction + " · " + config.poses + " poses" : "", children);
+}
+
+function spritePlayback(take) {
+  const sheet = take.sprite;
+  const preview = document.createElement("div");
+  preview.className = "sprite-loop";
+  preview.style.width = preview.style.height = sheet.tile + "px";
+  preview.role = "img";
+  preview.setAttribute("aria-label", "Sprite loop at game size");
+  const animation = preview.animate([{ backgroundPositionX: "0px" }, { backgroundPositionX: -(sheet.tile * sheet.poses) + "px" }],
+    { duration: 1000 * sheet.poses / sheet.fps, easing: "steps(" + sheet.poses + ", end)", iterations: Infinity });
+  const play = document.createElement("button");
+  play.type = "button";
+  function playback(running) {
+    if (running) animation.play();
+    else animation.pause();
+    play.textContent = running ? "Pause loop" : "Play loop";
+  }
+  playback(!window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  play.onclick = () => playback(animation.playState !== "running");
+  const download = document.createElement("a");
+  download.textContent = "Download PNG";
+  function show(style) {
+    download.download = sheet[style];
+    download.href = viewUrl(sheet[style], take.subfolder);
+    preview.style.backgroundImage = "url(" + download.href + ")";
+  }
+  show("illustrated");
+  const style = spriteChoice("Output style", [["illustrated", "Illustrated"], ["indexed", "Indexed · 15 colors"]],
+    "illustrated", show);
+  const controls = document.createElement("div");
+  controls.className = "sprite-transport";
+  controls.append(preview, play, download);
+  return section("Sprite loop", [style, controls]);
+}
+
 function midGuideLimits(clip, seconds = clip.seconds) {
   const link = clip.link;
-  const length = link ? linkedFrames(link, seconds) : snapFrames(seconds);
+  const length = link ? linkedFrames(link, seconds) : clip.sprite ? 39 : snapFrames(seconds);
   let first = 1, last = length - 2, limit = 8;
   if (link?.mode === "extend_after" || link?.mode === "bridge") first = link.hold;
   if (link?.mode === "extend_before") last = length - link.hold - 1;
@@ -8471,15 +8585,16 @@ function updateQueue() {
 function finishOff(clip) {
   const shown = activeTake(clip);
   if (!shown || shown.quality !== "draft") return "Choose a draft take to finish";
+  if (clip.sprite && !shown.sprite) return "Choose a Sprite Draft take to finish with sprite settings";
   const final = state.project.sizes?.final;
-  if (final === "sharp") return "Choose Full, Large, Medium, Small or your own Final size to finish a draft";
+  if (final === "sharp" && !shown.sprite) return "Choose Full, Large, Medium, Small or your own Final size to finish a draft";
   return "";
 }
 
 async function renderClip(clip, quality, detail, upscaler) {
   const folder = state.folder;
   if (jobFor(clip.id)) return;
-  if (quality !== "upscale" && !clip.action.trim()) {
+  if (quality !== "upscale" && !(quality === "finish" && activeTake(clip)?.sprite) && !clip.action.trim()) {
     selectClip(clip.id);
     toast("Describe what happens in " + clip.name + " before rendering it.", true);
     return;

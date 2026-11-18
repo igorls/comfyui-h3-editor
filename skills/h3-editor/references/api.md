@@ -621,3 +621,9 @@ Everything runs at 24 frames per second. H3 renders set lengths, so `seconds` sn
 
 The timeline reserves that length before the render, so a finished take lands where the
 timeline expects it.
+
+### Sprite Draft
+
+For an independent generated shot, pass `sprite` in `add_clip` or `update_clip` fields. For example, `{"sprite":{"direction":"E","camera":"rpg","poses":7}}` uses the built-in jog. Direction is S, E, N or W. Camera is level, rpg (45 degrees) or overhead (90 degrees). Choose 4–12 poses. Set `"motion":"prompt"` to drive motion entirely from the shot action. For another movement, add `guide: {"file":"movement.mp4","subfolder":"..."}` using an imported output video at 24 fps with at least 39 frames. Set `sprite` to null to return to normal shot timing. Use the existing cast pictures and shot action for character identity.
+
+The default sprite model is the first installed of HyperFlow H3 Flash and H3 Turbo, then the project profile. An explicit shot profile or pinned project checkpoint still applies. Render a draft for 39 frames at 256 × 384. The completed take’s `sprite` object gives `illustrated` and `indexed` PNG filenames in the take’s subfolder, tile size, pivot, playback fps, pose count and extraction layout. Play cells from left to right at 12 fps. Each 64 × 64 cell targets a 48-pixel median character height with a shared ground pivot at (32, 59). The indexed strip uses up to 15 opaque colors and a transparent palette entry. Finish the chosen draft through the usual `quality: "finish"` route to refine at 512 × 768 using its saved latent and extraction layout.

@@ -1,5 +1,6 @@
 """One H3 take. Calls ComfyUI's own MiniMax nodes. Does not import any other pack."""
 
+import json
 import logging
 import os
 import subprocess
@@ -15,6 +16,7 @@ from . import h3lora
 from .twins import with_twins
 from . import hyperflow
 from . import clipproj
+from . import sprite
 from . import media
 from . import holds
 from . import style_timeline
@@ -458,6 +460,46 @@ class H3LoadClip(io.ComfyNode):
         return io.NodeOutput(frames[first:stop], audio, holds.part(holds.hold_path(path), first, stop, frames.shape[0]))
 
 
+class H3SpriteGuide(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id="H3SpriteGuide", display_name="H3 Sprite Motion Guide", category="minimax/h3",
+            inputs=[io.Combo.Input("direction", options=list(sprite.DIRECTIONS)),
+                    io.Combo.Input("camera", options=list(sprite.CAMERAS)),
+                    io.Int.Input("poses", default=7, min=4, max=12)],
+            outputs=[io.Image.Output(display_name="motion guide")])
+
+    @classmethod
+    def execute(cls, direction, camera, poses):
+        frames = sprite.jog(direction, camera, poses)
+        return io.NodeOutput(torch.from_numpy(frames).float().div_(255))
+
+
+class H3SpriteSheet(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id="H3SpriteSheet", display_name="H3 Sprite Sheet", category="minimax/h3",
+            inputs=[io.Image.Input("images"), io.Int.Input("poses", default=7, min=4, max=12),
+                    io.String.Input("filename_prefix"), io.String.Input("layout", default="")],
+            outputs=[], is_output_node=True)
+
+    @classmethod
+    def execute(cls, images, poses, filename_prefix, layout=""):
+        base = os.path.realpath(folder_paths.get_output_directory())
+        dest = os.path.realpath(os.path.join(base, filename_prefix))
+        if os.path.commonpath((base, dest)) != base or dest == base:
+            raise ValueError("Sprite sheets must be saved inside the output folder")
+        frames = [Image.fromarray((f.detach().cpu().clamp(0, 1).numpy() * 255).round().astype(np.uint8)) for f in images]
+        full, indexed, transform = sprite.strips(frames, poses, json.loads(layout) if layout else None)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        metadata = {"poses": poses, "fps": 12, "tile": sprite.TILE, "pivot": list(sprite.PIVOT), "layout": transform}
+        for label, sheet in (("illustrated", full), ("indexed", indexed)):
+            filename = dest + "." + label + ".png"
+            sheet.save(filename, format="PNG")
+            metadata[label] = os.path.basename(filename)
+        return io.NodeOutput(ui={"sprite": [metadata]})
+
+
 class H3SaveHold(io.ComfyNode):
     """Keeps a sampled take's latents, picture and sound, for the clips that will extend or bridge it."""
 
@@ -692,12 +734,12 @@ class H3RefineLatent(io.ComfyNode):
         return io.NodeOutput(out)
 
 
-NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3SaveHold": H3SaveHold, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
+NODE_CLASS_MAPPINGS = {"H3SpriteGuide": H3SpriteGuide, "H3SpriteSheet": H3SpriteSheet, "H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3SaveHold": H3SaveHold, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
                        "H3VOSR2Video": H3VOSR2Video,
                        "H3StyleGuider": H3StyleGuider,
                        "H3Lora": H3Lora, "H3LoadTake": H3LoadTake, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
                        "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder}
-NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
+NODE_DISPLAY_NAME_MAPPINGS = {"H3SpriteGuide": "H3 Sprite Motion Guide", "H3SpriteSheet": "H3 Sprite Sheet", "H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
                               "H3VOSR2Video": "H3 VOSR2 Video (experimental)",
                               "H3StyleGuider": "H3 Style Guider (experimental)",
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3LoadTake": "H3 Load Take", "H3RefineLatent": "H3 Refine Latent",

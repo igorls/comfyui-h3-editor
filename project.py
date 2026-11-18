@@ -12,12 +12,14 @@ import time
 import uuid
 
 try:
+    from . import sprite
     from . import holds
     from . import style_timeline
     from . import vosr2
     from . import patches as patching
     from .prompting import compose_prompt, compose_reference_prompt
 except ImportError:
+    import sprite
     import holds
     import style_timeline
     import vosr2
@@ -364,6 +366,11 @@ def project_profile(project, available=None, clip=None):
     name = (clip or {}).get("profile")
     if not isinstance(name, str) or name not in profiles:
         name = project.get("profile")
+        if (clip or {}).get("sprite") is not None and not (project.get("models") or {}).get("unet"):
+            for candidate in profile_status(available):
+                if candidate["id"] in ("hyperflow", "h3_turbo") and candidate["available"]:
+                    name = candidate["id"]
+                    break
     if not isinstance(name, str) or name not in profiles:
         name = installed_profile(available)
     return name, profiles[name]
@@ -955,7 +962,7 @@ def frame_of(clip, side):
 def has_references(project, clip):
     """Does the clip show a cast picture, pin a first or last frame, or speak with a cast voice."""
     return bool(clip_cast(project, clip) or frame_of(clip, "first") or frame_of(clip, "last")
-                or clip_voice(project, clip))
+                or clip_voice(project, clip) or (clip.get("sprite") is not None and clip["sprite"].get("motion") != "prompt"))
 
 
 def clip_prompt(project, clip):
@@ -973,6 +980,8 @@ def clip_prompt(project, clip):
     action = name_unpictured(clip.get("action", ""), [m for m in project.get("cast", [])
                                                       if m["id"] in chosen and m.get("refmod") and not m.get("file")])
     voice = clip_voice(project, clip)
+    if clip.get("sprite") is not None:
+        action = action + " " + sprite.instruction(sprite.settings(clip["sprite"]))
     if has_references(project, clip):
         owner = None
         if voice:
@@ -1006,6 +1015,12 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     if quality not in QUALITIES:
         raise ValueError("quality must be one of %s" % (tuple(QUALITIES),))
     width, height, enlarged = render_size(project, quality)
+    config = sprite.settings(clip.get("sprite"))
+    if config:
+        if clip.get("link"):
+            raise ValueError("Sprite Draft needs an independent shot")
+        width, height = (sprite.WIDTH, sprite.HEIGHT) if quality == "draft" else (sprite.WIDTH * 2, sprite.HEIGHT * 2)
+        enlarged = False
     _, profile = project_profile(project, available, clip)
     size = dict(QUALITIES[quality], width=width, height=height, steps=profile["steps"][quality])
     if not enlarged:
@@ -1018,6 +1033,8 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     hyperflow = is_hyperflow(unet)
     link = clip.get("link")
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
+    if config:
+        length = sprite.FRAMES
     guides = clean_mid_guides(clip, length)
     graph = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
@@ -1090,6 +1107,14 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         model = [node, 0]
     graph["5"]["inputs"]["model"] = model
     take_inputs = graph["10"]["inputs"]
+    if config and config.get("motion") != "prompt":
+        guide = config.get("guide")
+        if guide:
+            file = "/".join(filter(None, [guide["subfolder"], guide["file"]]))
+            graph["210"] = {"class_type": "H3LoadClip", "inputs": {"file": file, "first": 0, "last": length}}
+        else:
+            graph["210"] = {"class_type": "H3SpriteGuide", "inputs": dict(config)}
+        take_inputs["ref_videos.ref_video_0"] = ["210", 0]
     first, last = frame_of(clip, "first"), frame_of(clip, "last")
     if first:
         graph["40"] = still_node(first)
@@ -1161,7 +1186,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         take_inputs.update({"audio_hold": "full", "audio_align": "take", "source_audio": ["61", 0]})
         if link and link["mode"] == "bridge" and not arrives_on_pin(link):
             take_inputs["end_audio"] = ["61", 0]
-    if finish and size_name(project, quality) == SHARP:
+    if finish and not config and size_name(project, quality) == SHARP:
         raise ValueError("Sharp uses a video upscaler. Choose Full, Large, Medium, Small or your own Final size to finish a draft")
     if (size.get("refine") or finish) and models.get("latent_upscaler") and installed(models["latent_upscaler"], available):
         # Without the latent upscaler a final stays at H3's own size.
@@ -1169,7 +1194,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         add_refine(graph, refine_size(project) if enlarged else (width, height), tail, models["latent_upscaler"])
         if length > LONG_TAKE:
             add_refine_windows(graph)
-    if quality != "draft" and size_name(project, quality) == SHARP:
+    if not config and quality != "draft" and size_name(project, quality) == SHARP:
         add_sharp(graph, refine_size(project), available)
     if finish:
         start_from_take(graph, clip, finish, length)
@@ -1198,6 +1223,17 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
                 "conditioning": graph[key]["inputs"]["conditioning"], "mods": ["72", 0], "override": False, "retention": 1.0,
                 "curve_direction": "constant", "scramble_seed": -1, "curve_shape": "linear", "curve_value": 1.0}}
             graph[key]["inputs"]["conditioning"] = [node, 0]
+    if config:
+        # Sprite drafts display the finished loop. Skip intermediate video and audio preview decoding.
+        for guider in ("13", "88"):
+            if guider in graph:
+                graph[guider]["inputs"]["model"] = graph["9"]["inputs"]["model"]
+        graph.pop("9")
+        layout = (finish or {}).get("sprite", {}).get("layout")
+        graph["211"] = {"class_type": "H3SpriteSheet", "inputs": {
+            "images": list(graph["18"]["inputs"]["images"]), "poses": config["poses"],
+            "filename_prefix": graph["19"]["inputs"]["filename_prefix"],
+            "layout": json.dumps(layout) if layout else ""}}
     return graph
 
 
@@ -2055,7 +2091,7 @@ HOLD = 39
 HANDOVER = 9
 MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
-               "first", "last", "language", "track", "bin", "profile", "loras", "style_markers", "mid_guides")
+               "first", "last", "language", "track", "bin", "profile", "loras", "style_markers", "mid_guides", "sprite")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
 PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "patches", "realism", "checkpoints", "text_encoder", "text_projection", "vae", "audio_vae", "sizes")
 # The model files set_project names, and their keys in the project's models. A projection only
@@ -2091,7 +2127,7 @@ END_HOLD = 22
 # (it dissolved or cut instead), and at 153 in 4 of 6.
 BRIDGE_SECONDS = 6.375
 LINK_TITLES = {"extend_after": "After ", "extend_before": "Before ", "bridge": "Bridge from ", "merge": "Merge from "}
-SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides")
+SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides", "sprite")
 
 
 def new_id(prefix):
@@ -2191,7 +2227,7 @@ def planned_frames(clip):
         return take["frames"]
     if clip.get("link"):
         return linked_length(clip["link"], clip.get("seconds", 5))
-    return snap_frames(clip.get("seconds", 5))
+    return sprite.FRAMES if clip.get("sprite") is not None else snap_frames(clip.get("seconds", 5))
 
 
 def check_fields(fields, allowed):
@@ -2223,7 +2259,7 @@ def clean_mid_guides(clip, length=None):
         raise ValueError("mid-frame guides belong to generated clips")
     link = clip.get("link") or {}
     seconds = clip.get("seconds", 5)
-    length = length or (linked_length(link, seconds) if link else snap_frames(seconds))
+    length = length or (linked_length(link, seconds) if link else sprite.FRAMES if clip.get("sprite") else snap_frames(seconds))
     first, last, limit = 1, length - 2, 8
     if link.get("mode") in ("extend_after", "bridge"):
         first = link["hold"]
@@ -2251,6 +2287,8 @@ def clean_mid_guides(clip, length=None):
 def clean_clip_fields(fields):
     check_fields(fields, CLIP_FIELDS)
     out = dict(fields)
+    if "sprite" in out:
+        out["sprite"] = sprite.settings(out["sprite"])
     if "style_markers" in out:
         out["style_markers"] = style_timeline.clean_markers(out["style_markers"])
     if "seconds" in out:
@@ -2358,10 +2396,12 @@ def update_clip(project, clip_id, fields):
     check_bin(project, fields)
     check_profile(project, fields)
     before = planned_frames(clip)
-    if "mid_guides" in fields or ("seconds" in fields and clip.get("mid_guides")):
+    if fields.get("sprite") and (clip.get("link") or clip.get("kind") == "footage"):
+        raise ValueError("Sprite Draft needs an independent generated shot")
+    if "mid_guides" in fields or (("seconds" in fields or "sprite" in fields) and clip.get("mid_guides")):
         fields["mid_guides"] = clean_mid_guides(dict(clip, **fields))
     for key, value in fields.items():
-        if value is None and key in ("first", "last", "track", "bin", "profile", "loras"):
+        if value is None and key in ("first", "last", "track", "bin", "profile", "loras", "sprite"):
             clip.pop(key, None)
         else:
             clip[key] = value
@@ -3453,6 +3493,11 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
             raise ValueError("%s has no draft to finish. Render a draft, or choose one of its draft takes" % clip["name"])
         # The final keeps the draft's seed: the refine pass draws its noise from it.
         quality, seed = "final", finish.get("seed")
+        if finish.get("sprite"):
+            clip = dict(clip, **(finish.get("saved") or {}))
+            clip["profile"] = finish.get("models", {}).get("profile") or clip.get("profile")
+        elif clip.get("sprite"):
+            raise ValueError("Choose a Sprite Draft take to finish with sprite settings")
     if clip.get("kind") == "footage":
         raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip["name"])
     if any(j["clip"] == clip_id for j in project.get("pending", [])):
@@ -3476,7 +3521,7 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
         job["size"] = [graph["36"]["inputs"]["width"], graph["36"]["inputs"]["height"]]
         job["upscaler"], job["detail"] = SHARP_UPSCALER, SHARP_DETAIL
         job["models"]["video_upscaler"] = graph["31"]["inputs"]["unet_name"]
-    elif tuple(render_size(project, quality)[:2]) != tuple(frame_size(project, quality)):
+    elif clip.get("sprite") or tuple(render_size(project, quality)[:2]) != tuple(frame_size(project, quality)):
         # A size the project chose. A take that records none is at the usual size for its format.
         job["size"] = [graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]]
     if finish:
@@ -3515,6 +3560,8 @@ def finish_render(project, job_id, file, info):
     for key in ("models", "upscale", "size", "upscaled", "upscaler", "detail", "finished", "source"):
         if job.get(key):
             take[key] = job[key]
+    if info.get("sprite"):
+        take["sprite"] = info["sprite"]
     if info.get("strip"):
         take["strip"] = info["strip"]
     return accept_take(project, job["clip"], take)
@@ -3575,6 +3622,10 @@ def merge_editor_save(base, mine, current):
     merged = merge(base, mine, current)
     existing = {clip["id"]: clip for clip in current.get("clips", [])}
     for clip in merged.get("clips", []):
+        if clip.get("sprite") is not None:
+            if clip.get("link") or clip.get("kind") == "footage":
+                raise ValueError("Sprite Draft needs an independent generated shot")
+            clip["sprite"] = sprite.settings(clip["sprite"])
         if "mid_guides" in clip:
             clip["mid_guides"] = clean_mid_guides(clip)
         stored = existing.get(clip["id"])
@@ -3844,6 +3895,11 @@ def describe(project):
             entry["error"] = clip["error"]
         if clip.get("style_markers"):
             entry["style_markers"] = clip["style_markers"]
+        if clip.get("sprite"):
+            entry["sprite"] = clip["sprite"]
+            entry["seconds"] = sprite.FRAMES / FPS
+        if take and take.get("sprite"):
+            entry["sprite_sheet"] = take["sprite"]
         if clip.get("mid_guides"):
             entry["mid_guides"] = clip["mid_guides"]
         for name in ("speaker", "dialogue", "cast"):

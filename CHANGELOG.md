@@ -7,6 +7,8 @@ Each release is a tag on GitHub, `v` followed by the version.
 
 ## 0.13.0 (unreleased)
 
+- Experimental Sprite Draft adds a directional motion guide to independent shots. Choose a cardinal facing and an eye-level, RPG or overhead view. Preview the loop at game size and download transparent illustrated and indexed PNG strips. Finish draft keeps the selected take’s seed, loop timing, scale and pivot.
+
 - Crop or reframe a placement, export a marked timeline range, and mix sound with fades and volume points. The editor and agent API share the same project edits.
 - Choose additional aspect ratios, calculate a resolution by longest side or megapixels, and remove selected takes from a clip. Removed takes can be restored from history.
 - Add experimental mid-frame image guides in the Shot inspector or agent API. Upload a picture or capture a frame from the viewer. The guide frame is measured in the source shot.
