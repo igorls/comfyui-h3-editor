@@ -41,4 +41,10 @@ The ordinary batch starts at seed 42 and increments the seed for each frame. The
 
 PSNR compares each output frame to the published source resized to the target dimensions. Temporal error is the mean absolute difference between consecutive output-frame changes and the corresponding source-frame changes, in 8-bit RGB levels. These measures reward fidelity to the source. They will also penalize invented detail, even when a viewer likes its appearance. In a separate eight-frame batch of one repeated rain frame, changing only the seed produced an average adjacent-frame difference of 0.74 levels.
 
-On the neon close-up VOSR2 sharpens the eyes and hair and redraws skin and water texture. Keeping the seed fixed reduced temporal error in both examples. A video upscaler comparison on longer, naturally low-resolution footage would be the next test before offering VOSR2 as a built-in editor option. Neither the small benchmark nor the 720p run evaluated a final 1080p delivery or an editor integration.
+On the neon close-up VOSR2 sharpens the eyes and hair and redraws skin and water texture. Keeping the seed fixed reduced temporal error in both examples. Longer, naturally low-resolution footage and 1080p delivery remain open quality comparisons.
+
+## Release-candidate browser renders
+
+Edge submitted a 90-frame HyperFlow draft with an uploaded guide at source frame 68. The completed 640 × 352, 24 fps take retained the guide and its audio. Frame 67 most closely matched the reference. At frame 68, mean absolute RGB error was 5.09 on a 0–255 scale.
+
+Selecting VOSR2 in the Footage inspector produced a second take from a 448 × 256 harbor clip on an RTX PRO 6000 Blackwell. The 896 × 512 output retained all 17 frames at 24 fps and all 84 AAC packets matched the source byte for byte. The first queued render took 23.62 seconds. Both takes played when selected again in Chromium.

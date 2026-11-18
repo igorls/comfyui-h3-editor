@@ -22,3 +22,17 @@ An isolated ComfyUI instance imported a two-color clip, placed it twice, cropped
 - **Mid-frame image guides.** Hold the prompt, start image, model settings and seed constant. Measure how closely the render reaches a guide at the requested frame and how motion changes on either side. Include one and two interior guides at draft and native render sizes.
 
 [GPU experiment results](editing-render-tests.md)
+
+## Release-candidate browser verification
+
+The editing workflows ran on disposable projects in an isolated ComfyUI instance. Edge and Chromium verified independent placement crops, cancellation and reset, a 12-frame export with exactly half a second of picture and audio, persisted sound fades and gain points, custom size calculations, and take removal followed by Undo and reload.
+
+Right-click coverage included 168 pointer locations across 1440, 1024 and 390 pixel windows. Targeted checks executed actions on picture clips, original clip audio, added sounds, notes, bins, takes, the ruler, empty lanes and dialogs. Keyboard checks exercised Shift+F10, arrow navigation and Escape focus restoration. Native text fields retained editing commands. Nine window sizes from 320 to 1440 pixels were checked for page overflow and access to Export. On compact windows, Generate appears first in the timeline toolbar.
+
+Run the repeatable menu check against a QA server with Playwright and Edge installed:
+
+```shell
+python tests/browser_context.py http://127.0.0.1:8188/h3take --channel msedge
+```
+
+The combined candidate passed all 13 JavaScript tests. The GPU-enabled Python suite ran 603 tests with one skip. A 12-frame video also imported through the browser and produced a decodable poster. Browser-submitted inference results for mid-frame guides and VOSR2 are in the [render tests](editing-render-tests.md).

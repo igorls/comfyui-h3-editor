@@ -5,6 +5,15 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## 0.13.0 (unreleased)
+
+- Crop or reframe a placement, export a marked timeline range, and mix sound with fades and volume points. The editor and agent API share the same project edits.
+- Choose additional aspect ratios, calculate a resolution by longest side or megapixels, and remove selected takes from a clip. Removed takes can be restored from history.
+- Add experimental mid-frame image guides in the Shot inspector or agent API. Upload a picture or capture a frame from the viewer. The guide frame is measured in the source shot.
+- Try the optional VOSR2 2× upscaler on imported footage and final takes. Choosing it explicitly produces a separate take and preserves the source audio. Fine texture can flicker between frames.
+- Open contextual actions with right-click or Shift+F10 on the bin, viewer, timeline, inspector and dialogs. Extend and Bridge appear together on timeline clips. Compact windows can switch between Clips and cast, Viewer and Inspector.
+- Short footage imports now use a poster frame inside the clip. Shot duration errors show the value the project kept.
+
 ## 0.12.0, 2026-11-17
 
 ### Added
