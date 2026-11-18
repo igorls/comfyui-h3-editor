@@ -159,13 +159,12 @@
       <button id="addEffect" class="quiet" title="Add a clip drawn by code on the VFX lane, over the picture at the playhead">Add VFX</button>
       <button id="addStyleMarker" class="quiet" title="Blend styles within one generated clip (experimental)">Style marker</button>
       <button id="rate" class="quiet" title="Rate a range of the cut against a rubric with Gemini. Mark a range with I and O, or Shift-drag on the ruler">Rate</button>
-      <label class="sound-display">Sound <select id="soundDisplay" aria-label="Sound track display"><option value="waveform">Waveform</option><option value="spectrogram">Spectrogram</option></select></label>
       <div class="spacer"></div>
       <button id="fit" class="quiet" title="Show the whole scene (\)">Fit</button>
       <label class="zoom">Zoom <input id="zoom" type="range" min="0.1" max="12" step="0.1" value="3"></label>
     </div>
     <div class="tl-body" id="tlBody">
-      <div class="tl-heads"><div class="tl-head ruler-head"></div><div class="tl-head" title="Experimental style blends inside generated clips">Look</div><div class="tl-head" title="Clips drawn by code, over the picture below them">VFX</div><div class="tl-head">Picture</div><div class="tl-head">Sound</div></div>
+      <div class="tl-heads"><div class="tl-head ruler-head"></div><div class="tl-head" title="Experimental style blends inside generated clips">Look</div><div class="tl-head" title="Clips drawn by code, over the picture below them">VFX</div><div class="tl-head">Picture</div><div class="tl-head" id="pictureSoundHead">Sound</div></div>
       <div class="tl-scroll" id="tlScroll">
         <div class="tl-content" id="tlContent">
           <div class="ruler" id="ruler"></div>
@@ -180,6 +179,12 @@
     </div>
   </section>
 </div>
+
+<dialog id="inputReview" class="keys input-review" aria-labelledby="inputReviewTitle">
+  <div class="keys-head"><h2 id="inputReviewTitle"></h2><form method="dialog"><button class="quiet" autofocus>Close</button></form></div>
+  <img id="inputReviewImage" alt="">
+  <div class="input-review-nav" id="inputReviewNav"></div>
+</dialog>
 
 <dialog id="models" class="keys models" aria-labelledby="modelsTitle">
   <div class="keys-head"><h2 id="modelsTitle">Models</h2><button id="modelsClose" class="quiet">Close</button></div>

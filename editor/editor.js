@@ -899,11 +899,8 @@ function frameUsable(clip, side) {
 function frameSlot(clip, side, label) {
   const slot = document.createElement("div");
   slot.className = "slot" + (clip[side] ? " set" : "");
-  const picture = document.createElement("div");
+  const picture = clip[side] ? inputPicture(clip, side, clip[side], label) : document.createElement("div");
   picture.className = "picture";
-  // The box takes the project's shape, so a frame shows whole.
-  const [wide, tall] = String(state.project.format || "16:9").split(":").map(Number);
-  if (wide > 0 && tall > 0) picture.style.setProperty("--frame", String(wide / tall));
   const text = document.createElement("div");
   text.className = "slot-text";
   const title = document.createElement("span");
@@ -913,12 +910,11 @@ function frameSlot(clip, side, label) {
   ways.className = "ways";
   text.append(title, ways);
   if (clip[side]) {
-    const image = document.createElement("img");
-    image.alt = label;
-    image.src = assetUrl(clip[side]);
-    picture.append(image);
     slot.title = "Drop a picture here to replace the " + label.toLowerCase();
-    ways.append(iconButton("close", "Remove the " + label.toLowerCase(), () => setClipFrame(clip, side, null)));
+    ways.append(
+      iconButton("upload", "Replace the " + label.toLowerCase(), () => uploadFrame(clip, side)),
+      iconButton("close", "Remove the " + label.toLowerCase(), () => setClipFrame(clip, side, null)),
+    );
   } else {
     picture.append(icon("picture"));
     slot.title = "Drop a picture here to start or end the shot on it";
@@ -937,6 +933,51 @@ function frameSlot(clip, side, label) {
   }, "a picture for the " + label.toLowerCase());
   slot.append(picture, text);
   return slot;
+}
+
+function inputPicture(clip, key, asset, label) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "input-picture";
+  button.setAttribute("aria-label", "Review " + label.toLowerCase());
+  button.title = "Review " + label.toLowerCase();
+  const image = document.createElement("img");
+  image.alt = "";
+  image.src = assetUrl(asset);
+  button.append(image);
+  button.onclick = () => {
+    const pictures = [
+      ["first", "First frame", frameUsable(clip, "first") && clip.first],
+      ...(clip.mid_guides || []).map(guide => [guide.frame, "Guide at frame " + guide.frame, guide]),
+      ["last", "Last frame", frameUsable(clip, "last") && clip.last],
+    ].filter(([, , picture]) => picture);
+    const dialog = $("inputReview"), nav = $("inputReviewNav"), preview = $("inputReviewImage");
+    let index = Math.max(0, pictures.findIndex(row => row[0] === key));
+    const choose = (next) => {
+      index = next;
+      const [, name, file] = pictures[index];
+      $("inputReviewTitle").textContent = name;
+      preview.alt = name;
+      preview.src = assetUrl(file);
+      for (const [i, control] of [...nav.children].entries()) control.setAttribute("aria-pressed", String(i === index));
+    };
+    nav.replaceChildren(...pictures.map(([, name], i) => {
+      const control = document.createElement("button");
+      control.className = "quiet";
+      control.textContent = name;
+      control.onclick = () => choose(i);
+      return control;
+    }));
+    nav.hidden = pictures.length < 2;
+    dialog.onkeydown = (event) => {
+      if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      event.preventDefault();
+      choose((index + (event.key === "ArrowRight" ? 1 : -1) + pictures.length) % pictures.length);
+    };
+    choose(index);
+    dialog.showModal();
+  };
+  return button;
 }
 
 function castPicker(clip) {
@@ -1450,7 +1491,7 @@ function clipSeconds(clip) {
 // Run the pointer across a thumbnail to scrub through the clip, frame strip permitting.
 // fit is "cover" for the small thumbnails of the Clips panel, which crop to fill, or "contain" for a picture
 // that must show whole, such as a take in the Takes tab.
-function skim(thumb, take, fit = "cover") {
+function skim(thumb, take, fit = "cover", position = null) {
   const poster = "url(" + viewUrl(take.poster, take.subfolder) + ")";
   thumb.style.backgroundImage = poster;
   if (!take.strip) return;
@@ -1463,7 +1504,9 @@ function skim(thumb, take, fit = "cover") {
     const rect = thumb.getBoundingClientRect();
     const share = Math.min(0.999, Math.max(0, (event.clientX - rect.left) / rect.width));
     const { count, w, h } = take.strip;
-    const index = Math.floor(share * count);
+    const frame = position?.(share);
+    const index = frame === undefined ? Math.floor(share * count)
+      : Math.min(count - 1, Math.floor(frame / (take.strip.step || take.frames / count)));
     // Each frame sits in the thumbnail as the poster does, cropped to cover it or shown whole, never squeezed.
     const scale = w && h ? (fit === "contain" ? Math.min : Math.max)(rect.width / w, rect.height / h) : 0;
     const tileW = scale ? w * scale : rect.width;
@@ -1608,6 +1651,7 @@ function trashButton(label, onClick) {
 
 // The panel's icons: drawn on a 24 grid in one line weight, in the colour of the text around them.
 const ICONS = {
+  spectrum: '<path d="M4 19h16M6 16v-4m4 4V8m4 8V5m4 11V9"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   shot: '<rect x="3.5" y="6.5" width="12" height="11" rx="1.5"/><path d="M15.5 10.5l5-3v9l-5-3"/>',
   takes: '<rect x="3.5" y="8.5" width="13" height="11" rx="1.5"/><path d="M7.5 5h11.5a1.5 1.5 0 0 1 1.5 1.5V16"/>',
@@ -1984,8 +2028,12 @@ function clipRow(clip) {
   button.setAttribute("aria-pressed", String(clip.id === state.clip));
   button.dataset.clip = clip.id;
   button.draggable = true;
+  let skimmed = null, returnFrame = null;
+  const placements = state.project.timeline.filter(item => item.clip === clip.id);
+  const placement = placements.find(item => item.id === state.item) || (placements.length === 1 ? placements[0] : null);
   button.addEventListener("click", () => {
     setSource(clip.id);
+    if (skimmed !== null) state.sourceFrame = skimmed;
     selectClip(clip.id);
     focusInBin('.clip[data-clip="' + CSS.escape(clip.id) + '"]');
   });
@@ -1999,7 +2047,31 @@ function clipRow(clip) {
   });
   const thumb = document.createElement("span");
   thumb.className = "thumb" + (take ? "" : " none");
-  if (take) skim(thumb, take);
+  if (take) {
+    thumb.classList.add("source-thumb");
+    thumb.title = "Scrub the thumbnail or click to open this frame in the viewer";
+    const stamp = document.createElement("span");
+    stamp.className = "skim-time";
+    stamp.hidden = true;
+    thumb.append(stamp);
+    skim(thumb, take, "contain", (share) => {
+      const first = placement?.in ?? 0;
+      const last = Math.min(take.frames, placement?.out ?? take.frames);
+      skimmed = Math.min(take.frames - 1, first + Math.floor(share * Math.max(1, last - first)));
+      stamp.textContent = timecode(skimmed);
+      stamp.hidden = false;
+      if (viewing()?.id === clip.id && !state.playing) {
+        returnFrame ??= state.sourceFrame;
+        seek(skimmed);
+      }
+      return skimmed;
+    });
+    thumb.addEventListener("pointerleave", () => {
+      stamp.hidden = true;
+      if (returnFrame !== null && viewing()?.id === clip.id && !state.playing) seek(returnFrame);
+      skimmed = returnFrame = null;
+    });
+  }
   const text = document.createElement("span");
   text.className = "text";
   const title = document.createElement("span");
@@ -3907,7 +3979,7 @@ function drawInspector() {
     const about = document.createElement("p");
     about.className = "hint";
     about.textContent = "On the timeline, use Generate to extend this footage or bridge to the next clip.";
-    if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)));
+    if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)), clipEnvelopePanel(placed, take));
     else if (state.tab === "shot") parts.push(section("Footage", [source, about]));
     if (state.tab === "takes" && clip.takes.length) {
       parts.push(section("Takes", versions(clip)));
@@ -3925,7 +3997,8 @@ function drawInspector() {
     panel.replaceChildren(...parts);
     return;
   }
-  if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)), styleMarkersSection(clip));
+  if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)),
+    clipEnvelopePanel(placed, activeTake(clip)), styleMarkersSection(clip));
 
   const timing = document.createElement("div");
   timing.className = "two";
@@ -4761,8 +4834,7 @@ function midGuidesSection(clip) {
   const rows = guides.map((guide) => {
     const row = document.createElement("div");
     row.className = "mid-guide-row";
-    const picture = document.createElement("img");
-    picture.src = assetUrl(guide); picture.alt = "Guide at frame " + guide.frame;
+    const picture = inputPicture(clip, guide.frame, guide, "Guide at frame " + guide.frame);
     const at = number("Guide source frame " + guide.frame, guide.frame);
     at.onchange = () => {
       try { change(guide, at.value === "" ? null : Number(at.value), guide); }
@@ -4930,7 +5002,7 @@ function fillFilm(film, item, take, height) {
   film.replaceChildren(...tiles);
 }
 
-function drawWave(canvas, item, take, height, selected) {
+function drawWave(canvas, item, take, height, selected, display = state.soundDisplay) {
   const width = Math.max(1, Math.round(px(itemLength(item))));
   const ratio = Math.min(2, window.devicePixelRatio || 1);
   const scale = Math.min(1, 16000 / (width * ratio));
@@ -4938,7 +5010,7 @@ function drawWave(canvas, item, take, height, selected) {
   canvas.height = Math.max(1, Math.round(height * ratio));
   canvas.style.width = width + "px";
   canvas.style.height = height + "px";
-  if (state.soundDisplay === "spectrogram") {
+  if (display === "spectrogram") {
     drawSpectrogram(canvas, item, take);
     return;
   }
@@ -5003,6 +5075,76 @@ async function drawSpectrogram(canvas, item, take) {
 const SOUND_LANES = 4;
 const soundOf = (id) => (state.project?.sounds || []).find((s) => s.id === id) || null;
 const soundPlayers = new Map();
+const trackMix = new Map();
+const trackDisplay = new Map();
+
+function trackAudible(track) {
+  if (!trackMix.size) return true;
+  if (trackMix.get(track)?.mute) return false;
+  const extra = Number($("tlContent").dataset.lanes || 0);
+  return trackMix.get(track)?.solo || ![...trackMix].some(([id, mix]) => id <= extra && mix.solo);
+}
+
+function changeSoundDisplay(track) {
+  const mode = (trackDisplay.get(track) || state.soundDisplay) === "spectrogram" ? "waveform" : "spectrogram";
+  trackDisplay.set(track, mode);
+  if (track === 0) {
+    try { localStorage.setItem("h3take.soundDisplay", mode); } catch (_) {}
+  }
+  renderTimeline();
+}
+
+function soundTrackHead(head, track) {
+  head.classList.add("sound-head");
+  head.dataset.track = track;
+  const label = track ? "Sound " + (track + 1) : "Sound";
+  const name = document.createElement("span");
+  name.textContent = label;
+  const display = iconButton("wave", label + " display", () => changeSoundDisplay(track));
+  display.dataset.trackControl = "display";
+  const controls = [display];
+  for (const [key, text, letter] of [["mute", "Mute", "M"], ["solo", "Solo", "S"]]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "quiet";
+    button.textContent = letter;
+    button.title = text + " " + label + " in the viewer";
+    button.setAttribute("aria-label", text + " " + label);
+    button.dataset.trackControl = key;
+    button.onclick = () => {
+      const mix = trackMix.get(track) || {};
+      mix[key] = !mix[key];
+      trackMix.set(track, mix);
+      updateTrackHeads();
+      relevel();
+      syncSounds();
+    };
+    controls.push(button);
+  }
+  const bar = document.createElement("div");
+  bar.className = "sound-tools";
+  bar.append(...controls);
+  head.replaceChildren(name, bar);
+}
+
+function updateTrackHeads() {
+  const active = [...document.querySelectorAll(".sound-head")];
+  const anySolo = active.some(head => trackMix.get(Number(head.dataset.track))?.solo);
+  for (const head of active) {
+    const track = Number(head.dataset.track);
+    const mix = trackMix.get(track);
+    const spectrum = (trackDisplay.get(track) || state.soundDisplay) === "spectrogram";
+    const display = head.querySelector('[data-track-control="display"]');
+    display.replaceChildren(icon(spectrum ? "spectrum" : "wave"));
+    display.title = spectrum ? "Show waveform" : "Show spectrogram";
+    display.setAttribute("aria-pressed", String(spectrum));
+    for (const action of ["mute", "solo"]) {
+      head.querySelector('[data-track-control="' + action + '"]').setAttribute("aria-pressed", String(Boolean(mix?.[action])));
+    }
+    const lane = track ? $("tlContent").querySelector('.lane.extra[data-lane="' + (track - 1) + '"]') : $("laneA");
+    lane?.classList.toggle("track-silent", Boolean(mix?.mute || (anySolo && !mix?.solo)));
+  }
+}
 
 // The lanes follow the sounds: as many as the highest lane in use, and none in a project without extra sound.
 function layoutSoundLanes(count) {
@@ -5014,7 +5156,7 @@ function layoutSoundLanes(count) {
     for (let n = 0; n < count; n++) {
       const head = document.createElement("div");
       head.className = "tl-head extra";
-      head.textContent = "Sound " + (n + 2);
+      soundTrackHead(head, n + 1);
       heads.append(head);
       const lane = document.createElement("div");
       lane.className = "lane a extra";
@@ -5027,6 +5169,7 @@ function layoutSoundLanes(count) {
     // The timeline grows by its extra lanes, so the picture lane keeps its height.
     document.documentElement.style.setProperty("--tl-extra", count * 42 + "px");
   }
+  updateTrackHeads();
   // The lanes scroll sideways and their names do not, so the names leave room for the scrollbar under the lanes.
   heads.style.paddingBottom = $("tlScroll").offsetHeight - $("tlScroll").clientHeight + "px";
   return [...content.querySelectorAll(".lane.extra")];
@@ -5052,7 +5195,7 @@ function renderSounds() {
     // The waveform reads the same loudness file a clip's does, made when the sound was added.
     const from = (sound.offset || 0) * FPS;
     drawWave(canvas, { in: from, out: from + sound.frames }, { file: sound.file, subfolder: sound.subfolder,
-      strip: { peaks: sound.file.replace(/\.[^.]+$/, "") + ".peaks.json" } }, 30, selected);
+      strip: { peaks: sound.file.replace(/\.[^.]+$/, "") + ".peaks.json" } }, 30, selected, trackDisplay.get((sound.lane || 0) + 1));
     const name = document.createElement("div");
     name.className = "name";
     name.textContent = sound.name;
@@ -5084,18 +5227,19 @@ function selectSound(id) {
   renderAll();
 }
 
-function drawSoundEnvelope(block, sound, editable) {
+function drawSoundEnvelope(block, sound, editable, liveSound = () => soundOf(sound.id), read = row => row) {
   const ns = "http://www.w3.org/2000/svg";
   const graph = document.createElementNS(ns, "svg");
   graph.classList.add("sound-envelope");
   graph.setAttribute("aria-hidden", "true");
   const first = (sound.offset || 0) * FPS;
+  const span = sound.frames * (sound.rate || 1);
   const points = sound.gain_points || [];
   // Include every corner as well as samples through overlapping fades.
   const sample = new Set([0, sound.frames, Math.min(sound.frames, sound.fade_in || 0),
     Math.max(0, sound.frames - (sound.fade_out || 0))]);
   for (const point of points) {
-    const at = point.frame - first;
+    const at = (point.frame - first) / (sound.rate || 1);
     if (at >= 0 && at <= sound.frames) sample.add(at);
   }
   for (let n = 1; n < 32; n++) sample.add(n * sound.frames / 32);
@@ -5110,7 +5254,7 @@ function drawSoundEnvelope(block, sound, editable) {
   path.append(plot);
   graph.append(path);
   if (editable) for (const [index, point] of points.entries()) {
-    const x = (point.frame - first) / sound.frames;
+    const x = (point.frame - first) / span;
     if (x < 0 || x > 1) continue;
     const dot = document.createElementNS(ns, "circle");
     dot.setAttribute("cx", (x * 100) + "%");
@@ -5121,19 +5265,19 @@ function drawSoundEnvelope(block, sound, editable) {
       event.preventDefault();
       const bounds = graph.getBoundingClientRect();
       const min = Math.max(Math.ceil(first), (points[index - 1]?.frame ?? -1) + 1);
-      const max = Math.min(Math.floor(first + sound.frames), Math.round(sound.seconds * FPS),
+      const max = Math.min(Math.floor(first + span), Math.round(sound.seconds * FPS),
         (points[index + 1]?.frame ?? Infinity) - 1);
       checkpoint();
       const move = (ev) => {
         if (ev.pointerId !== event.pointerId) return;
-        const live = soundOf(sound.id);
+        const live = liveSound();
         if (!live?.gain_points?.[index]) return;
         live.gain_points[index] = {
-          frame: Math.max(min, Math.min(max, Math.round(first + (ev.clientX - bounds.left) / bounds.width * sound.frames))),
+          frame: Math.max(min, Math.min(max, Math.round(first + (ev.clientX - bounds.left) / bounds.width * span))),
           gain: Math.round(100 * Math.max(0, Math.min(1, (bounds.bottom - ev.clientY) / bounds.height))) / 100,
         };
         block.querySelector(".sound-envelope")?.remove();
-        drawSoundEnvelope(block, live, true);
+        drawSoundEnvelope(block, read(live), true, liveSound, read);
       };
       const end = (ev) => {
         if (ev.pointerId !== event.pointerId) return;
@@ -5298,8 +5442,23 @@ function renderSoundPanel(panel, sound) {
   ]), soundEnvelopePanel(sound));
 }
 
-function soundEnvelopePanel(sound) {
-  const live = () => soundOf(sound.id);
+function clipEnvelope(item, take) {
+  return { ...item, frames: itemLength(item), seconds: take.frames / FPS, offset: item.in / FPS, rate: speedOf(item),
+    gain_points: item.gain_points?.filter(point => point.frame <= take.frames) };
+}
+
+function clipEnvelopePanel(item, take) {
+  if (!take || !item) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "Volume curves are available when the clip has a rendered take.";
+    return section("Volume curve", [hint]);
+  }
+  return soundEnvelopePanel(clipEnvelope(item, take),
+    () => state.project.timeline.find(row => row.id === item.id), row => clipEnvelope(row, take));
+}
+
+function soundEnvelopePanel(sound, live = () => soundOf(sound.id), read = row => row) {
   const edit = (change) => {
     const row = live();
     if (!row) return;
@@ -5347,14 +5506,15 @@ function soundEnvelopePanel(sound) {
   add.textContent = "Add point at playhead";
   add.disabled = points.length >= 64;
   add.addEventListener("click", () => {
-    const s = live();
-    if (!s) return;
+    const row = live();
+    if (!row) return;
+    const s = read(row);
     const position = Math.round(state.playhead - s.start);
     if (position < 0 || position > s.frames) return toast("Place the playhead inside this sound first.");
-    const frame = Math.max(0, Math.min(length, Math.round(position + (s.offset || 0) * FPS)));
+    const frame = Math.max(0, Math.min(length, Math.round(position * (s.rate || 1) + (s.offset || 0) * FPS)));
     if (s.gain_points?.some((p) => p.frame === frame)) return toast("There is already a point at this frame.");
     edit((row) => {
-      const gain = Math.round(curveLevel(row, frame) * 100) / 100;
+      const gain = Math.round(curveLevel(s, frame) * 100) / 100;
       row.gain_points = [...row.gain_points || [], { frame, gain }].sort((a, b) => a.frame - b.frame);
     });
   });
@@ -5383,7 +5543,7 @@ function syncSounds() {
       soundPlayers.set(sound.id, player);
     }
     const at = (state.playhead - sound.start) / FPS;
-    if (!running || at < 0 || at >= sound.frames / FPS || sound.gain === 0) {
+    if (!running || at < 0 || at >= sound.frames / FPS || sound.gain === 0 || !trackAudible((sound.lane || 0) + 1)) {
       if (!player.paused) player.pause();
       continue;
     }
@@ -5635,7 +5795,11 @@ function renderTimeline() {
     if (take) {
       const canvas = document.createElement("canvas");
       wave.append(canvas);
-      drawWave(canvas, item, take, waveHeight, item.id === state.item);
+      drawWave(canvas, item, take, waveHeight, item.id === state.item, trackDisplay.get(0));
+      if (item.id === state.item || item.fade_in || item.fade_out || item.gain_points?.length) {
+        drawSoundEnvelope(wave, clipEnvelope(item, take), item.id === state.item,
+          () => state.project.timeline.find(row => row.id === item.id), row => clipEnvelope(row, take));
+      }
     }
     waves.push(wave);
   }
@@ -7627,6 +7791,7 @@ function splitAtPlayhead() {
   checkpoint();
   const cut = Math.round(item.in + (state.playhead - item.start) * speedOf(item));
   const right = { ...item, id: uid("i"), start: state.playhead, in: cut };
+  if (item.gain_points) right.gain_points = structuredClone(item.gain_points);
   delete right.transition;
   if (item.crop) right.crop = { ...item.crop };
   state.project.timeline.push(right);
@@ -7796,6 +7961,10 @@ function actionsAt(target, x) {
     selectClip(item.clip, item.id);
     if (block.closest("#laneA") || block.classList.contains("wave")) {
       return { title: clipOf(item.clip).name + " · Sound", rows: [
+        act("Edit fades and volume curve", () => {
+          showWorkspacePanel("inspector"); showTab("timeline");
+          revealInspectorControl(".gain-points")?.scrollIntoView({ block: "nearest" });
+        }),
         act("Edit clip volume", () => {
           showWorkspacePanel("inspector"); showTab("timeline");
           revealInspectorControl('[data-key="Clip volume"]')?.focus();
@@ -7921,10 +8090,10 @@ function timelineSurfaceActions(target, x) {
   if (lane === $("laneX")) return { title: "VFX lane", rows: [at("Add VFX here", addEffect), ...timeline] };
   if (lane === $("laneStyle")) return { title: "Look lane", rows: [at("Add style marker here", addStyleMarker), ...timeline] };
   if (lane.classList.contains("a")) {
-    const display = $("soundDisplay");
-    const next = display.value === "waveform" ? "spectrogram" : "waveform";
-    return { title: head?.textContent || "Sound lane", rows: [at("Add sound here", addSound),
-      act("Show " + next, () => { display.value = next; display.dispatchEvent(new Event("change")); }), ...timeline] };
+    const track = lane === $("laneA") ? 0 : Number(lane.dataset.lane) + 1;
+    const controls = document.querySelector('.sound-head[data-track="' + track + '"]');
+    return { title: controls.querySelector("span").textContent, rows: [at("Add sound here", addSound),
+      ...[...controls.querySelectorAll("button")].map((button, i) => buttonAction(button, i === 0 ? button.title : undefined)), ...timeline] };
   }
   const gap = gapAt(frame);
   const rows = [byId("newClip", "New clip at end"), byId("importClip", "Import footage")];
@@ -8102,7 +8271,11 @@ const gainOf = (item) => (typeof item?.gain === "number" ? item.gain : 1);
 function setMix(video, mix, item) {
   video._mix = mix;
   if (item !== undefined) video._gain = gainOf(item);
-  video.volume = Math.min(1, mix * (video._gain ?? 1)) * heard();
+  const placement = viewing() ? null : (item ?? video._cropItem);
+  const take = placement && activeTake(clipOf(placement.clip));
+  const envelope = take && (placement.fade_in || placement.fade_out || placement.gain_points?.length)
+    ? soundEnvelope(clipEnvelope(placement, take), state.playhead - placement.start) : 1;
+  video.volume = Math.min(1, mix * (video._gain ?? 1) * envelope) * (viewing() || trackAudible(0) ? heard() : 0);
 }
 
 // After the viewer's volume or a clip's volume changed: everything that sounds takes its level again.
@@ -8112,7 +8285,7 @@ function relevel() {
   $("motion").volume = heard();
   for (const [id, player] of soundPlayers) {
     const sound = (state.project?.sounds || []).find((s) => s.id === id);
-    if (sound) setSoundLevel(player, sound, state.playhead - sound.start, heard());
+    if (sound) setSoundLevel(player, sound, state.playhead - sound.start, trackAudible((sound.lane || 0) + 1) ? heard() : 0);
   }
 }
 
@@ -8484,6 +8657,7 @@ function tick(now) {
     return;
   }
   syncSounds();
+  setMix(front, front._mix ?? 1, item);
   previewEffect();
 
   const coming = incoming(state.playhead);
@@ -8815,6 +8989,8 @@ async function openProject(folder) {
   await flush();
   if (state.playing) setPlaying(false);
   state.folder = folder;
+  trackMix.clear();
+  trackDisplay.clear();
   state.project = await api("/project/" + folder);
   await ensureFormatChoices(state.project);
   drawProjectPicker();
@@ -9031,7 +9207,6 @@ async function start() {
     state.loop = localStorage.getItem("h3take.loop") === "on";
     state.soundDisplay = localStorage.getItem("h3take.soundDisplay") === "spectrogram" ? "spectrogram" : "waveform";
   } catch (_) {}
-  $("soundDisplay").value = state.soundDisplay;
   let remembered = null;
   try { remembered = localStorage.getItem("h3take.project"); } catch (_) {}
   const projects = await refreshProjects(remembered);
@@ -9747,11 +9922,7 @@ $("loop").addEventListener("click", () => setLoop(!state.loop));
 $("markIn").addEventListener("click", markIn);
 $("markOut").addEventListener("click", markOut);
 $("clearRange").addEventListener("click", () => setRange(null, null));
-$("soundDisplay").addEventListener("change", (event) => {
-  state.soundDisplay = event.target.value;
-  try { localStorage.setItem("h3take.soundDisplay", state.soundDisplay); } catch (_) {}
-  renderTimeline();
-});
+soundTrackHead($("pictureSoundHead"), 0);
 $("shortcuts").addEventListener("click", () => $("keys").showModal());
 $("keysClose").addEventListener("click", () => $("keys").close());
 bindSplitter();

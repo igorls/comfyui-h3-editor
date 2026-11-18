@@ -1591,10 +1591,18 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
             index, first, last, speed, crop_filter, finish, index))
         tempo = tempo_chain(speed)
         gain = clean_gain(item.get("gain"))
-        samples = item_length(item) * 48000 // FPS
-        chains.append("[%s:a]atrim=start=%.5f:end=%.5f,asetpts=PTS-STARTPTS,%s%s%s,apad=whole_len=%d,atrim=end_sample=%d[a%s]" % (
+        frames = item_length(item)
+        samples = frames * 48000 // FPS
+        take = active_take(clips[item["clip"]]) or {}
+        source_frames = take.get("frames", last)
+        envelope = sound_envelope_filter({**item, "frames": frames, "seconds": source_frames / FPS,
+                                          "offset": first / FPS, "rate": speed,
+                                          **{key: min(item.get("_fade_frames", frames), item.get(key, 0))
+                                             for key in ("fade_in", "fade_out")},
+                                          "gain_points": [p for p in item.get("gain_points", []) if p["frame"] <= source_frames]})
+        chains.append("[%s:a]atrim=start=%.5f:end=%.5f,asetpts=PTS-STARTPTS,%s%s%s%s,apad=whole_len=%d,atrim=end_sample=%d[a%s]" % (
             index, first / float(FPS), last / float(FPS), tempo + "," if tempo else "",
-            "volume=%.3f," % gain if gain != 1 else "", sound, samples, samples, index))
+            "volume=%.3f," % gain if gain != 1 else "", sound, envelope, samples, samples, index))
 
         overlap = cursor - item["start"]
         transition = item.get("transition")
@@ -1699,6 +1707,9 @@ def slice_project(project, first, last):
         new["in"] = item["in"] + int(round(head * speed))
         new["out"] = item["out"] - int(round(tail * speed))
         new["start"] = max(start, first) - first
+        if item.get("fade_in") or item.get("fade_out"):
+            new["_fade_from"] = item.get("_fade_from", 0) + head
+            new["_fade_frames"] = item.get("_fade_frames", item_length(item))
         if head:
             new.pop("transition", None)      # what it came in over is outside the range
         if new["out"] - new["in"] >= 1:
@@ -1786,7 +1797,7 @@ def sound_envelope_filter(sound):
         if points[-1]["frame"] < limit:
             points.append({"frame": limit, "gain": 1})
         # Choose the segment with a balanced tree, so a long envelope has a small evaluation depth.
-        pos = "(t*%d+%.8f)" % (FPS, sound.get("offset", 0) * FPS)
+        pos = "(t*%g+%.8f)" % (FPS * sound.get("rate", 1), sound.get("offset", 0) * FPS)
 
         def segment(lo, hi):
             if hi == lo + 1:
@@ -1803,7 +1814,7 @@ def sound_envelope_filter(sound):
     frames = sound.get("_fade_frames", sound["frames"])
     head = sound.get("_fade_from", 0)
     for key in ("fade_in", "fade_out"):
-        length = min(frames, sound_frame(sound.get(key, 0), limit, key))
+        length = min(frames, sound_frame(sound.get(key, 0), max(limit, frames), key))
         if length:
             progress = "(t*%d+%d)" % (FPS, head) if key == "fade_in" else "(%d-t*%d)" % (frames - head, FPS)
             factors.append("clip(%s/%d,0,1)" % (progress, length))
@@ -2512,7 +2523,7 @@ def set_transition(project, item_id, kind, frames=12):
 
 def update_item(project, item_id, fields, ripple=False):
     """Move or trim a timeline item. With ripple, later clips follow its new end."""
-    check_fields(fields, ("start", "in", "out", "speed", "transition", "gain", "crop"))
+    check_fields(fields, ("start", "in", "out", "speed", "transition", "gain", "crop", "fade_in", "fade_out", "gain_points"))
     item = find_item(project, item_id)
     if "crop" in fields:
         crop = clean_crop(fields["crop"])
@@ -2541,6 +2552,11 @@ def update_item(project, item_id, fields, ripple=False):
         shift_from(project, old_end, item_end(item) - old_end, skip=item)
     if "speed" in fields:
         set_speed(project, item_id, fields["speed"])
+    for key in ("fade_in", "fade_out"):
+        if key in fields:
+            item[key] = sound_frame(fields[key], item_length(item), key)
+    if "gain_points" in fields:
+        item["gain_points"] = clean_gain_points(fields["gain_points"], take["frames"] if take else last)
     if "transition" in fields:
         transition = fields["transition"] or {}
         if isinstance(transition, str):
@@ -2575,6 +2591,9 @@ def split_item(project, item_id, frame):
         right["gain"] = item["gain"]
     if "crop" in item:
         right["crop"] = dict(item["crop"])
+    for key in ("fade_in", "fade_out", "gain_points"):
+        if key in item:
+            right[key] = copy.deepcopy(item[key])
     item["out"] = cut
     project["timeline"].append(right)
     return right
@@ -3916,6 +3935,7 @@ def describe(project):
             entry["speed"] = item["speed"]
         if clean_gain(item.get("gain")) != 1:
             entry["gain"] = item["gain"]
+        entry.update({key: item[key] for key in ("fade_in", "fade_out", "gain_points") if item.get(key)})
         if item.get("crop"):
             entry["crop"] = item["crop"]
         if item.get("transition"):

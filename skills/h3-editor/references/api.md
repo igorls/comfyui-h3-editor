@@ -175,7 +175,7 @@ A clip extended, bridged or merged from a filed clip goes in the same bin.
 
 | op | Takes | Notes |
 |---|---|---|
-| `update_item` | `item`, `fields`: `start`, `in`, `out`, `speed`, `transition`, `gain`, `crop`; optional `ripple` | `transition` can be `"none"`. Speed and transition always move the clips after it. With `ripple`, trimming does too. `gain` is the clip's volume where it sits, from 0 (silent) to 2, with 1 as rendered: the export applies it, and the summary lists it on the item when it is not 1 |
+| `update_item` | `item`, `fields`: `start`, `in`, `out`, `speed`, `transition`, `gain`, `crop`, `fade_in`, `fade_out`, `gain_points`; optional `ripple` | `transition` can be `"none"`. Speed and transition always move the clips after it. With `ripple`, trimming does too. `gain` scales the clip's own audio from 0 to 2. Fades count timeline frames from the placement edges. Gain points use `{"frame": source_frame, "gain": 0.0–1.0}` and interpolate between frames. The viewer and export apply both. |
 | `remove_item` | `item`, optional `ripple` | Ripple closes the space it leaves |
 | `split_item` | `item`, `frame` (a timeline frame inside it) | Returns `right`, the new second half |
 | `close_gap` | optional `frame` | No frame closes every gap. Returns `removed` |

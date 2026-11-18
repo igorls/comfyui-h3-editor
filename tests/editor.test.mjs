@@ -100,7 +100,7 @@ function playback() {
     $: (id) => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
     localStorage: { setItem() {} }, soundPlayers: new Map(), Audio: video,
     setSoundLevel, resumeSoundMixer, disconnectSound,
-    viewUrl: (file) => file, heard: () => 1, relevel() {}, setMix() {}, clearMix() {}, previewEffect() {},
+    viewUrl: (file) => file, heard: () => 1, trackAudible: () => true, relevel() {}, setMix() {}, clearMix() {}, previewEffect() {},
     updateClock() {}, placePlayhead() {}, cutDue: () => null, incoming: () => null, cover() {}, applyMix() {},
     requestAnimationFrame: (callback) => { frames.set(++next, callback); return next; },
     cancelAnimationFrame: (id) => frames.delete(id),

@@ -19,7 +19,7 @@ export function soundEnvelope(sound, frame) {
   const at = Math.max(0, Math.min(length, frame));
   const fadeIn = Math.min(length, sound.fade_in || 0);
   const fadeOut = Math.min(length, sound.fade_out || 0);
-  return curveLevel(sound, at + (sound.offset || 0) * 24)
+  return curveLevel(sound, at * (sound.rate || 1) + (sound.offset || 0) * 24)
     * (fadeIn ? Math.min(1, at / fadeIn) : 1)
     * (fadeOut ? Math.min(1, (length - at) / fadeOut) : 1);
 }

@@ -42,6 +42,8 @@ class SoundEnvelopeTest(unittest.TestCase):
         clip, item = project.add_clip(data, {"action": "Black picture."})
         project.accept_take(data, clip["id"], {"id": "take", "frames": 96, "file": "black.mp4", "quality": "draft"})
         item.update({"in": 0, "out": 96})
+        project.update_item(data, item["id"], {"fade_in": 24,
+                            "gain_points": [{"frame": 24, "gain": 0.5}, {"frame": 72, "gain": 0.5}]})
         sound = project.add_sound(data, {"file": "tone.wav"}, 4, {
             "offset": 0.5, "start": 12, "frames": 48, "gain": 1.5, "fade_in": 12, "fade_out": 18,
             "gain_points": [{"frame": 12, "gain": 0.4}, {"frame": 24, "gain": 1},
@@ -77,8 +79,10 @@ class SoundEnvelopeTest(unittest.TestCase):
 
         self.assertAlmostEqual(level(full, 6), 0, delta=0.01)
         self.assertGreaterEqual(len(part), 40 * 2000, "audio must cover all 40 frames of the range")
-        self.assertAlmostEqual(level(full_clip, 90), 0.5, delta=0.025)
-        self.assertAlmostEqual(level(part_clip, 39), 0.5, delta=0.025)
+        self.assertAlmostEqual(level(full_clip, 90), 0.4375, delta=0.025)
+        self.assertAlmostEqual(level(part_clip, 39), 0.25, delta=0.025)
+        self.assertAlmostEqual(level(full_clip, 20), 0.5 * (1 - 0.5 * 20 / 24) * 20 / 24, delta=0.025)
+        self.assertAlmostEqual(level(part_clip, 4), level(full_clip, 20), delta=0.025)
         # Positions in the placed sound, with independently calculated linear gains.
         for at, gain in ((6, 0.7 * 0.5), (9, 0.85 * 0.75), (12, 1), (18, 0.625), (24, 0.25),
                          (36, 0.5 * 12 / 18), (42, 0.5625 * 6 / 18)):
