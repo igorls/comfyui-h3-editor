@@ -458,10 +458,25 @@ The editor saves a still of each note it writes, the frame with the drawing on i
 `finish` makes a final from the clip's active take, which must be a draft: its saved latents are enlarged and
 refined at the refine size in place of a new first pass, with the draft's seed, so the final keeps the draft's
 framing, motion and sound. The new take records `finished`, the draft's id. It is refused when the active take is
-not a draft, when the clip's length changed since the draft, and when the project's final size is not Full; a
+not a draft, when the clip's length changed since the draft, and when the project's final size is Sharp; a
 draft with no latents saved beside it fails at render time and needs rendering again.
+The latent upscaler is required. Full finishes at the refine size; Large, Medium, Small and custom final sizes
+finish directly at the selected size, without a new first pass.
 Returns `{"clip", "job", "take"}`. It is refused for footage, for a clip with no action, and for a clip already
 rendering. Renders run after the edits in the same batch. `cancel`: `clip` or `job`.
+
+`POST /project/<name>/cancel` also accepts `{"all": true}` and optional `quality: "final"` or `"draft"`.
+It deletes matching queued jobs before interrupting a matching running job and returns `cancelled` as a list.
+Other projects' jobs are untouched.
+
+A clip can have `style_markers: [{"frame": 0, "name": "Pencil", "style": "Monochrome pencil drawing"}, ...]`.
+Frames are relative to the generated take (before timeline trim and speed). Up to 32 markers and four distinct
+styles are supported. Markers blend across clip time and add model evaluations; see [style transitions](../../../docs/style-timeline.md).
+
+`GET /looks` lists the installation-wide style library. `POST /looks` saves `{name, style}`; send an existing
+custom look's `id` to update it. `DELETE /looks/<id>` removes a custom entry. Built-ins are read-only and project
+style text is always an independent copy. `POST /spectrogram` accepts `{filename, subfolder}` and returns a
+cached PNG and audio duration under `spectrogram`, or null for a file without audio.
 
 The renders of one batch are queued grouped by the model file each one loads, so a batch that
 mixes models (prompt-only clips and clips with pictures, or clips on different profiles) loads

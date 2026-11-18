@@ -429,9 +429,27 @@ class FinishTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Render a new draft"):
             plan_render(project, "x", clip["id"], "finish", None, HYPERFLOW | FINALS)
 
-    def test_finishing_needs_the_full_final_size(self):
+    def test_a_small_draft_can_be_finished_at_the_chosen_final_size(self):
+        for size, expected in (("large", [768, 1344]), ("medium", [544, 960]), ("576x1024", [576, 1024])):
+            with self.subTest(size=size):
+                project, clip = self.drafted(sizes={"draft": "small", "final": size})
+                job, graph = plan_render(project, "x", clip["id"], "finish", None, HYPERFLOW | FINALS)
+                self.assertEqual(job["size"], expected)
+                self.assertEqual(job["finished"], "td")
+                self.assertEqual(graph["15"]["class_type"], "H3LoadTake")
+                self.assertEqual([graph["80"]["inputs"][side] for side in ("width", "height")], expected)
+                self.assertEqual(graph["82"]["inputs"]["samples"], ["15", 0])
+                self.assertEqual(graph["17"]["inputs"]["samples"], ["15", 0])
+                self.assertEqual(graph["18"]["inputs"]["images"], ["91", 0])
+
+    def test_finishing_needs_the_latent_upscaler(self):
         project, clip = self.drafted(sizes={"final": "large"})
-        with self.assertRaisesRegex(ValueError, "Final size to Full"):
+        with self.assertRaisesRegex(ValueError, "install the latent upscaler"):
+            plan_render(project, "x", clip["id"], "finish", None, HYPERFLOW)
+
+    def test_a_sharp_final_needs_a_new_render(self):
+        project, clip = self.drafted(sizes={"final": "sharp"})
+        with self.assertRaisesRegex(ValueError, "Sharp"):
             plan_render(project, "x", clip["id"], "finish", None, HYPERFLOW | FINALS)
 
 

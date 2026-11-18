@@ -24,6 +24,7 @@ from . import lips as lipscore
 from . import scene as scenescore
 from . import detail as finescore
 from . import media
+from . import looks
 from . import patches as patching
 from . import project as store
 from .policy import editor_id, group_by_model
@@ -202,6 +203,24 @@ async def strip(request):
     if not os.path.exists(path):
         raise web.HTTPNotFound(text="that clip is gone")
     return web.json_response(await make_strip(path, int(body.get("frames") or 1)))
+
+
+SPECTROGRAM_GATE = asyncio.Semaphore(2)
+
+
+async def spectrogram(request):
+    """Generate only on request, shared by all timelines that use this file."""
+    body = await request.json()
+    path = output_path(body.get("subfolder"), body["filename"])
+    if not os.path.isfile(path):
+        raise web.HTTPNotFound(text="that sound is gone")
+    try:
+        async with lock("spectrogram:" + path):
+            async with SPECTROGRAM_GATE:
+                made = await asyncio.to_thread(media.spectrogram, path)
+    except (ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        return refused("could not draw this spectrogram: %s" % error)
+    return web.json_response({"spectrogram": made})
 
 
 async def sheet(request):
@@ -1427,6 +1446,38 @@ def settings_file():
     return os.path.join(folder_paths.get_user_directory(), "h3take", "settings.json")
 
 
+def looks_file():
+    return os.path.join(folder_paths.get_user_directory(), "h3take", "looks.json")
+
+
+async def look_library(request):
+    try:
+        return web.json_response({"looks": looks.library(looks_file())})
+    except (OSError, ValueError) as error:
+        return refused("could not read the look library: %s" % error)
+
+
+async def save_look(request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        return refused("send a look name and style")
+    async with lock("_looks"):
+        try:
+            entry = looks.save(looks_file(), body.get("name"), body.get("style"), body.get("id"))
+            return web.json_response({"look": entry, "looks": looks.library(looks_file())})
+        except (OSError, ValueError) as error:
+            return refused(str(error))
+
+
+async def remove_look(request):
+    async with lock("_looks"):
+        try:
+            looks.remove(looks_file(), request.match_info["look"])
+            return web.json_response({"looks": looks.library(looks_file())})
+        except (OSError, ValueError) as error:
+            return refused(str(error))
+
+
 def read_settings():
     try:
         with open(settings_file(), encoding="utf-8") as file:
@@ -1737,6 +1788,29 @@ async def stop_render(data, job):
     store.pop_pending(data, job["id"])
 
 
+async def stop_renders(data, quality=None):
+    """Delete this project's selected queued jobs together before interrupting a selected running job."""
+    if quality not in (None, "draft", "final"):
+        raise ValueError("quality must be draft or final")
+    jobs = [job for job in data.get("pending", []) if quality is None or job.get("quality") == quality]
+    ids = [job["id"] for job in jobs]
+    if not ids:
+        return []
+    status, _ = await comfy("POST", "/queue", {"delete": ids})
+    if status != 200:
+        raise Refused("ComfyUI could not remove the queued renders; try again")
+    # The running job can have changed during the delete request. Never interrupt a different project's job.
+    running, _ = comfy_queue()
+    for job_id in ids:
+        if job_id in running:
+            status, _ = await comfy("POST", "/interrupt", {"prompt_id": job_id})
+            if status != 200:
+                raise Refused("ComfyUI could not interrupt the render; try again")
+    for job_id in ids:
+        store.pop_pending(data, job_id)
+    return ids
+
+
 def find_job(data, body):
     for job in data.get("pending") or []:
         if job.get("id") == body.get("job") or (body.get("clip") and job["clip"] == body.get("clip")):
@@ -1766,9 +1840,16 @@ async def cancel(request):
     async with lock(folder):
         data = read_project(folder)
         try:
+            if body.get("all") is True:
+                cancelled = await stop_renders(data, body.get("quality"))
+                if cancelled:
+                    commit(folder, data, "render", body.get("client_id"))
+                return web.json_response({"cancelled": cancelled, "revision": data["revision"], "project": data})
             job = find_job(data, body)
         except KeyError as error:
             return refused(plain(error), 404)
+        except (ValueError, Refused) as error:
+            return refused(plain(error))
         await stop_render(data, job)
         commit(folder, data, "render", body.get("client_id"))
     return web.json_response({"cancelled": job["id"], "revision": data["revision"], "project": data})
@@ -2336,6 +2417,9 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/asset", "upload"),
     ("POST", "/h3take/api/project/{name}/rate", "rate"),
     ("GET", "/h3take/api/settings", "settings"),
+    ("GET", "/h3take/api/looks", "look_library"),
+    ("POST", "/h3take/api/looks", "save_look"),
+    ("DELETE", "/h3take/api/looks/{look}", "remove_look"),
     ("PUT", "/h3take/api/settings", "save_settings"),
     ("POST", "/h3take/api/project/{name}/effect/{effect}/frames", "effect_frames"),
     ("POST", "/h3take/api/project/{name}/effect/{effect}/take", "effect_take"),
@@ -2344,6 +2428,7 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/import", "import_media"),
     ("POST", "/h3take/api/probe", "probe"),
     ("POST", "/h3take/api/strip", "strip"),
+    ("POST", "/h3take/api/spectrogram", "spectrogram"),
     ("POST", "/h3take/api/sheet", "sheet"),
 )
 

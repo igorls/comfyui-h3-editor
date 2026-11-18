@@ -163,7 +163,12 @@ selects nothing.
 **Clips and takes.** Every render of a clip is a take with its own seed and the
 prompt that made it. Run the pointer across a take's picture to look through
 it, flip between takes with `[` and `]`, keep a seed to render variations of
-one result, or restore a take's prompt. Rendered clips stay on disk: moving,
+one result, or restore a take's prompt and style markers. To cut between takes,
+expand the clip in **Clips** and drag individual takes onto the picture track.
+Click a take in that list, or choose **Add as clip** in the inspector, to append
+it to the cut. Each placement creates an independent clip using the existing
+render, so choosing a different take on the original clip leaves the cut intact.
+Rendered clips stay on disk: moving,
 trimming or splitting them never renders anything again. **Render all drafts**
 renders every clip that has no take yet, the ones that share a model one after
 another.
@@ -231,6 +236,29 @@ the timeline; click the timeline to go back to the cut. File clips in bins with
 the folder button and drag clips onto them. Delete a clip with the trash button
 in its panel, or with Delete in the Clips panel.
 
+**Playback.** The **Loop** button beside Play switches between playing once and
+repeating. **In** and **Out** mark the range to repeat; Out includes the frame on
+screen. Clear the marks to repeat the whole cut. Clip previews have their own
+range and can loop too. The **Sound** menu above the timeline switches all sound
+lanes between Waveform and Spectrogram.
+
+**Reusable looks.** The **Style library** in the Project tab includes eight
+built-in looks. **Save look** keeps your own style for every project on this
+ComfyUI, in `user/h3take/looks.json`, outside project folders. Applying a look
+copies its text into the project's style, where you can edit it.
+
+**Styles within a shot (experimental).** Put the playhead inside a generated
+clip and press **Style marker**. Choose looks and frame positions in the clip's
+Timeline tab. Each marker is the destination of a smooth blend from the
+previous look. Render the clip again to see it; these are generation controls.
+See [style transitions](docs/style-timeline.md) for the node setup, cost and limits.
+
+**Batch renders.** The header's **Render** menu renders all missing drafts or
+all clips whose selected take is not a final. It also cancels all renders, or
+only finals, in the current project. **Finish draft** can redraw a small draft
+at Large, Medium or a custom final size as well as Full; it needs the latent
+upscaler. Sharp uses a separate video-upscaling path and needs a new final.
+
 **Models and LoRAs.** **Models and their settings** in the Project tab lists
 every model the project can render with, and adds your own checkpoints. The
 LoRAs section adds LoRAs for the whole project; a clip's Shot tab has **LoRAs
@@ -250,6 +278,7 @@ work on one project at once.
 | Key | Does |
 |---|---|
 | Space | Play or pause |
+| I, O | Mark In and Out; enable Loop to repeat the range |
 | Left, Right | Move one frame. Hold Shift for one second |
 | Up, Down | Jump to the previous or next edit |
 | Home, End | Go to the start or end |
@@ -294,6 +323,8 @@ Press ? in the editor for this list.
 `python -m unittest discover -s tests` runs from the repo root. The writer,
 LoRA and HyperFlow tests need torch and ComfyUI, with `PYTHONPATH` set to
 ComfyUI's folder, and the GGUF tests need gguf too. They skip without them.
+`node --test tests/editor.test.mjs` checks playback clocks, batch actions and
+spectrogram trimming without browser dependencies.
 
 `tools/deploy.sh` copies the repo into a running container, runs the tests
 there, and reloads the pack in place, so models stay loaded. Refresh the browser

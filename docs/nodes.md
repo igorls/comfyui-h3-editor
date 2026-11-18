@@ -6,6 +6,7 @@ below. You can use them in your own workflows too.
 | Node | What it does |
 |---|---|
 | H3 Take | One shot: the prompt, pinned frames, references, held video or sound |
+| H3 Style Guider (experimental) | Cross-encode H3 Take's style markers and blend their predictions across video time; see [style transitions](style-timeline.md) |
 | H3 Live Preview | Shows the whole clip moving, with sound, at every sampling step |
 | H3 Load Clip | Reads frames and sound from a clip in the output folder, and the saved latents of those frames when they start on a multiple of 17 frames |
 | H3 Save Hold | Saves a sampled take's latents, picture and sound, beside its video, for clips that extend or bridge it. Connect `final` to save a refine pass's picture too |

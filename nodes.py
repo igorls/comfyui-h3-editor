@@ -17,6 +17,7 @@ from . import hyperflow
 from . import clipproj
 from . import media
 from . import holds
+from . import style_timeline
 
 # Why a HyperFlow .gguf cannot load here (the gguf package, which this pack's requirements install),
 # or None. The INT8 safetensors files load either way.
@@ -87,6 +88,8 @@ class H3Take(io.ComfyNode):
                 io.Vae.Input("vae"),
                 io.Vae.Input("audio_vae", optional=True, tooltip="H3 audio VAE. Needed for reference audio and held audio."),
                 io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.String.Input("style_markers", default="[]", multiline=True, optional=True,
+                                tooltip='Experimental: [{"frame": 0, "style": "Watercolor"}, {"frame": 123, "style": "Clay animation"}]. Styles blend over video time. Keep the shot in prompt. Connect positive to H3 Style Guider. Each distinct style adds a model evaluation per sampling step.'),
                 io.Int.Input("width", default=768, min=32, max=4096, step=32),
                 io.Int.Input("height", default=1152, min=32, max=4096, step=32),
                 io.Int.Input("length", default=124, min=5, max=3600, step=17, tooltip="Frames at 24 fps on the 5 + 17k grid. 124 is about 5 seconds."),
@@ -146,7 +149,7 @@ class H3Take(io.ComfyNode):
                 audio_vae=None, start_image=None, end_image=None, mid_images=None, source_video=None, end_video=None,
                 end_audio=None, carry=None, region=None, source_audio=None, ref_images=None, ref_videos=None, ref_video_audios=None,
                 ref_audios=None, audio_align="video", source_hold=None, end_hold=None, end_hold_frames=0,
-                context_noise=0.0) -> io.NodeOutput:
+                context_noise=0.0, style_markers="[]") -> io.NodeOutput:
         keep = resolve_keep(strength, keep)
         second = None
         if video_mode == "bridge":
@@ -206,28 +209,26 @@ class H3Take(io.ComfyNode):
             MiniMaxH3ReferenceToVideo,
         )
 
-        if checkpoint == "fl2va":
-            out = MiniMaxH3ImageToVideo.execute(
-                clip, vae, prompt, width, height, length, first_frame=start_image, last_frame=end_image
-            )
-            pinned = [pin for pin in decided["pins"] if pin[0].startswith("mid")]
-        else:
-            pictures = {"ref_image_%s" % i: image for i, (_, image) in enumerate(decided["pictures"], 1)}
-            out = MiniMaxH3ReferenceToVideo.execute(
-                clip,
-                prompt,
-                width,
-                height,
-                length,
-                ref_image_size=ref_image_size,
-                vae=vae,
-                audio_vae=audio_vae,
-                ref_images=pictures or None,
-                ref_videos=dict(videos) or None,
-                ref_video_audios=tracks or None,
-                ref_audios=dict(audios) or None,
-            )
-            pinned = decided["pins"]
+        markers = style_timeline.schedule(style_markers, length)
+        styles = list(dict.fromkeys(row["style"] for row in markers))
+        pictures = {"ref_image_%s" % i: image for i, (_, image) in enumerate(decided["pictures"], 1)}
+
+        def encode(text):
+            if checkpoint == "fl2va":
+                return MiniMaxH3ImageToVideo.execute(clip, vae, text, width, height, length,
+                                                    first_frame=start_image, last_frame=end_image)
+            return MiniMaxH3ReferenceToVideo.execute(clip, text, width, height, length,
+                                                    ref_image_size=ref_image_size, vae=vae, audio_vae=audio_vae,
+                                                    ref_images=pictures or None, ref_videos=dict(videos) or None,
+                                                    ref_video_audios=tracks or None, ref_audios=dict(audios) or None)
+
+        def styled(text):
+            if "__h3_style__" in prompt:
+                return prompt.replace("__h3_style__", text)
+            return (text + "\n" + prompt) if text else prompt
+
+        out = encode(styled(styles[0]) if styles else prompt)
+        pinned = [pin for pin in decided["pins"] if pin[0].startswith("mid")] if checkpoint == "fl2va" else decided["pins"]
         positive, latent = out[0], out[1]
 
         images = {"start": start_image, "end": end_image}
@@ -235,6 +236,16 @@ class H3Take(io.ComfyNode):
             images["mid %s" % i] = image
         for role, frame in pinned:
             positive = MiniMaxH3AddGuide.execute(positive, latent, frame, vae=vae, image=images[role])[0]
+
+        if styles:
+            variants = [positive]
+            for style in styles[1:]:
+                variant = encode(styled(style))[0]
+                for role, frame in pinned:
+                    variant = MiniMaxH3AddGuide.execute(variant, latent, frame, vae=vae, image=images[role])[0]
+                variants.append(variant)
+            timeline = {"markers": markers, "length": length, "conditioning": variants}
+            positive = [[text, dict(meta, h3_style_timeline=timeline)] for text, meta in positive]
 
         if span is not None or window is not None:
             # A carried take brings its own sound for the held span. A track given with it replaces that.
@@ -246,6 +257,8 @@ class H3Take(io.ComfyNode):
                               video_feather, audio_feather, region, carry, context_noise or 0.0)
 
         card = "; ".join(decided["labels"])
+        if styles:
+            card += "; experimental style blend, %s encodings: use H3 Style Guider" % len(styles)
         if decided["length_note"] == "short":
             card += "; length is below the trained 124-frame range"
         return io.NodeOutput(positive, latent, card)
@@ -297,6 +310,18 @@ class H3Take(io.ComfyNode):
             latent = write_holds(latent, video_latent, video_first, audio_latent, audio_first,
                                  video_curve, audio_curve, region)
         return latent
+
+
+class H3StyleGuider(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id="H3StyleGuider", display_name="H3 Style Guider (experimental)", category="minimax/h3",
+                         description="Blend separately encoded styles across video time in one H3 latent. Use with H3 Take's style_markers. Audio follows the first style. Multiple styles cost multiple model evaluations per step.",
+                         inputs=[io.Model.Input("model"), io.Conditioning.Input("conditioning")], outputs=[io.Guider.Output()])
+
+    @classmethod
+    def execute(cls, model, conditioning):
+        return io.NodeOutput(style_timeline.make_guider(model, conditioning))
 
 
 def output_file(file):
@@ -630,9 +655,11 @@ class H3RefineLatent(io.ComfyNode):
 
 
 NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3SaveHold": H3SaveHold, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
+                       "H3StyleGuider": H3StyleGuider,
                        "H3Lora": H3Lora, "H3LoadTake": H3LoadTake, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
                        "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
+                              "H3StyleGuider": "H3 Style Guider (experimental)",
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3LoadTake": "H3 Load Take", "H3RefineLatent": "H3 Refine Latent",
                               "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas", "H3SmallTextEncoder": "H3 Small Text Encoder"}
 # The editor's graphs name each node's twin, an id no other pack registers (see twins.py).

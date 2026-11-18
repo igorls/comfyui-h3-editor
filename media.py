@@ -9,6 +9,7 @@ streams needs no ffprobe: PyAV, which ComfyUI itself requires, opens the file di
 
 import os
 import shutil
+import subprocess
 
 MISSING = ("ffmpeg is missing. Install this pack's requirements, which bring it "
            "(pip install -r requirements.txt in the pack's folder), or put ffmpeg on the PATH")
@@ -63,3 +64,29 @@ def has_sound(path):
 
     with av.open(path) as container:
         return bool(container.streams.audio)
+
+
+def spectrogram(path):
+    """A bounded, cached frequency picture of the whole sound, with its duration for source-time cropping."""
+    import av
+
+    with av.open(path) as container:
+        if not container.streams.audio:
+            return None
+        stream = container.streams.audio[0]
+        seconds = float(stream.duration * stream.time_base) if stream.duration is not None else float(container.duration or 0) / 1e6
+    if seconds <= 0:
+        raise ValueError("could not read the length of this sound")
+    target = os.path.splitext(path)[0] + ".spectrogram.png"
+    if not os.path.exists(target) or os.stat(target).st_mtime_ns < os.stat(path).st_mtime_ns:
+        temporary = target + ".tmp.png"
+        try:
+            subprocess.run(command(["ffmpeg", "-y", "-v", "error", "-i", path, "-filter_complex",
+                                    "[0:a:0]aformat=channel_layouts=mono,showspectrumpic=s=2048x256:legend=disabled:scale=log:fscale=log:color=viridis[s]",
+                                    "-map", "[s]", "-frames:v", "1", temporary]),
+                           capture_output=True, check=True, timeout=120)
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+    return {"filename": os.path.basename(target), "seconds": seconds}

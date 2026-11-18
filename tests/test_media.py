@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import subprocess
 import unittest
 from unittest import mock
 
@@ -67,6 +68,33 @@ class VideoInfoTest(unittest.TestCase):
             self.assertEqual(media.video_info(voiced)["frames"], 7)
             self.assertTrue(media.has_sound(voiced))
             self.assertNotIn("frames", media.video_info(silent, count=False))
+
+    def test_spectrogram_maps_frequency_and_reuses_its_cached_picture(self):
+        try:
+            media.ffmpeg()
+        except RuntimeError as error:
+            self.skipTest(str(error))
+        with tempfile.TemporaryDirectory() as folder:
+            source = os.path.join(folder, "tones.wav")
+            subprocess.run(media.command(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                                          "-f", "lavfi", "-i", "sine=frequency=1760:duration=1", "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1", source]),
+                           capture_output=True, check=True)
+            made = media.spectrogram(source)
+            self.assertAlmostEqual(made["seconds"], 2, places=2)
+            with av.open(os.path.join(folder, made["filename"])) as picture:
+                pixels = next(picture.decode(video=0)).to_ndarray(format="rgb24")
+            self.assertEqual(pixels.shape, (256, 2048, 3))
+            low = pixels[:, 200:800].mean(axis=(1, 2)).argmax()
+            high = pixels[:, 1250:1850].mean(axis=(1, 2)).argmax()
+            self.assertLess(high, low, "higher frequencies belong higher in the picture")
+            with mock.patch.object(media.subprocess, "run", side_effect=AssertionError("cache missed")):
+                self.assertEqual(media.spectrogram(source), made)
+
+    def test_a_silent_video_has_no_spectrogram(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "silent.mp4")
+            self.make(path, 10, False)
+            self.assertIsNone(media.spectrogram(path))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,32 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## 0.12.0, 2026-11-17
+
+### Added
+
+- **Playback ranges.** Switch between **Play once** and **Loop** beside the
+  playback controls. Set **In** and **Out** to loop part of the cut or an
+  individual clip preview. With no markers, the whole cut or clip loops.
+- **Sound display.** Switch between waveform and spectrogram on every sound lane.
+- **Style library.** Choose from eight built-in looks or save your own for reuse
+  across projects.
+- **Style markers (experimental).** Change a generated clip's look over time
+  without cutting to a new shot. The [style timeline guide](docs/style-timeline.md)
+  explains how conditioning is blended and how to reproduce the three-style demo.
+- **Cut between takes.** Expand a clip to see its takes, then drag a specific
+  take onto the timeline or append it as an independent clip
+  ([#11](https://github.com/igorls/comfyui-h3-editor/issues/11)).
+- **Batch finals.** Queue eligible finals together and cancel either the project's
+  finals or all its renders ([#9](https://github.com/igorls/comfyui-h3-editor/issues/9)).
+
+### Changed
+
+- **Finish draft** reuses the draft's saved latents at Large, Medium, Small or a
+  custom final size, as well as Full. The refine pass also uses the draft's style
+  markers ([#8](https://github.com/igorls/comfyui-h3-editor/issues/8),
+  [#10](https://github.com/igorls/comfyui-h3-editor/issues/10)).
+
 ## 0.11.0, 2026-11-17
 
 ### Added

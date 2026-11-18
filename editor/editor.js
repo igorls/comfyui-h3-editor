@@ -14,8 +14,8 @@ const clientId = (() => {
 })();
 // What a render is doing, by the graph node running. A final's refine pass (80 to 91) comes after the sound is decoded,
 // and takes longer than the first pass on most cards: without its own labels it read as "Decoding the sound" throughout.
-const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the picture", 17: "Decoding the sound", 80: "Preparing the full size",
-  82: "Enlarging", 83: "Enlarging", 90: "Refining at full size", 91: "Decoding the full-size picture", 18: "Assembling", 19: "Saving" };
+const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the picture", 17: "Decoding the sound", 80: "Preparing the final size",
+  82: "Enlarging", 83: "Enlarging", 90: "Refining at final size", 91: "Decoding the final picture", 18: "Assembling", 19: "Saving" };
 // The nodes that report steps: the first pass, and a final's refine pass.
 const STEPPED = new Set(["15", "90"]);
 
@@ -31,6 +31,7 @@ const state = {
   gap: null,
   playhead: 0,
   playing: false,
+  loop: false,
   zoom: 3,
   jobs: new Map(),
   running: null,
@@ -55,8 +56,13 @@ const state = {
   sound: null,
   effect: null,
   range: null,
+  sourceRange: null,
+  soundDisplay: "waveform",
+  looks: [],
+  lookSelection: null,
   tab: "shot",
   folded: new Set(),
+  expandedTakes: new Set(),
   source: null,
   sourceFrame: 0,
 };
@@ -302,11 +308,39 @@ function resizePlanned(clip) {
   renderTimeline();
 }
 
-function placeOnTimeline(clip, start) {
-  const [first, last] = linkedRange(clip.link, plannedFrames(clip));
+function placeOnTimeline(clip, start, [first, last] = linkedRange(clip.link, plannedFrames(clip))) {
   const item = { id: uid("i"), clip: clip.id, start, in: first, out: last };
   state.project.timeline.push(item);
   settle(item);
+  return item;
+}
+
+function placeTakeAsClip(source, takeId, start = sceneEnd()) {
+  const index = source?.takes.findIndex((take) => take.id === takeId) ?? -1;
+  if (index < 0) return;
+  checkpoint();
+  const clip = structuredClone(source);
+  const take = clip.takes[index];
+  clip.id = uid("c");
+  clip.name += " · Take " + (index + 1);
+  clip.takes = [take];
+  clip.active = take.id;
+  clip.seed = take.seed ?? clip.seed;
+  delete clip.error;
+  if (take.saved) restoreTakeFields(clip, take.saved);
+  const range = linkedRange(clip.link, take.frames);
+  if (clip.link) {
+    // Keep the rendered cut, but stop this copy from changing the original linked edit on re-render.
+    clip.seconds = take.frames / FPS;
+    delete clip.link;
+  }
+  state.project.clips.push(clip);
+  const item = placeOnTimeline(clip, start, range);
+  state.tab = "shot";
+  save();
+  selectClip(clip.id, item.id);
+  seek(item.start);
+  toast("Added " + clip.name + " to the timeline.", false, undoAction);
   return item;
 }
 
@@ -1552,6 +1586,7 @@ function trashButton(label, onClick) {
 
 // The panel's icons: drawn on a 24 grid in one line weight, in the colour of the text around them.
 const ICONS = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
   shot: '<rect x="3.5" y="6.5" width="12" height="11" rx="1.5"/><path d="M15.5 10.5l5-3v9l-5-3"/>',
   takes: '<rect x="3.5" y="8.5" width="13" height="11" rx="1.5"/><path d="M7.5 5h11.5a1.5 1.5 0 0 1 1.5 1.5V16"/>',
   timeline: '<path d="M3.5 5.5h17M3.5 18.5h17"/><rect x="4.5" y="9" width="7" height="6" rx="1"/><rect x="13.5" y="9" width="6" height="6" rx="1"/>',
@@ -1907,6 +1942,15 @@ function binGroup(bin, inside) {
 }
 
 let draggedClip = null;
+const TAKE_DRAG = "text/h3take";
+
+function bindTakeDrag(element, clip, take) {
+  element.draggable = true;
+  element.addEventListener("dragstart", (event) => {
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(TAKE_DRAG, clip.id + ":" + take.id);
+  });
+}
 
 function clipRow(clip) {
   const take = activeTake(clip);
@@ -1946,16 +1990,57 @@ function clipRow(clip) {
   state_.dataset.status = clip.id;
   state_.textContent = status.text;
   meta.append(length, state_);
-  const open = notesOf().filter((n) => n.clip === clip.id && n.status !== "resolved").length;
-  if (open) {
+  const openNotes = notesOf().filter((n) => n.clip === clip.id && n.status !== "resolved").length;
+  if (openNotes) {
     const count = document.createElement("span");
     count.className = "notes";
-    count.textContent = open === 1 ? "1 note" : open + " notes";
+    count.textContent = openNotes === 1 ? "1 note" : openNotes + " notes";
     meta.append(count);
   }
   text.append(title, meta);
   button.append(thumb, text);
-  return button;
+  if (clip.takes.length < 2) return button;
+  const entry = document.createElement("div");
+  entry.className = "clip-entry";
+  const head = document.createElement("div");
+  head.className = "clip-entry-head";
+  const open = state.expandedTakes.has(clip.id);
+  const fold = document.createElement("button");
+  fold.className = "fold";
+  fold.dataset.takeFold = clip.id;
+  fold.setAttribute("aria-expanded", String(open));
+  const label = (open ? "Hide" : "Show") + " takes for " + clip.name;
+  fold.setAttribute("aria-label", label);
+  fold.title = label;
+  fold.addEventListener("click", () => {
+    if (open) state.expandedTakes.delete(clip.id);
+    else state.expandedTakes.add(clip.id);
+    renderBin();
+    focusInBin('[data-take-fold="' + CSS.escape(clip.id) + '"]');
+  });
+  head.append(button, fold);
+  entry.append(head);
+  if (open) {
+    const list = document.createElement("div");
+    list.className = "clip-takes";
+    clip.takes.forEach((take, index) => {
+      const row = document.createElement("button");
+      row.className = "clip-take";
+      const label = document.createElement("span");
+      label.textContent = "Take " + (index + 1) + " · " + take.quality;
+      row.setAttribute("aria-label", "Append " + label.textContent + " from " + clip.name + " as a clip");
+      row.title = "Drag onto the timeline, or click to append this take as a clip";
+      row.append(label, icon("plus"));
+      bindTakeDrag(row, clip, take);
+      row.addEventListener("click", () => {
+        const item = placeTakeAsClip(clip, take.id);
+        if (item) focusInBin('.clip[data-clip="' + CSS.escape(item.clip) + '"]');
+      });
+      list.append(row);
+    });
+    entry.append(list);
+  }
+  return entry;
 }
 
 // Where a clip dragged over the Clips panel would land: a bin, or null for the loose list.
@@ -3255,11 +3340,86 @@ function renderScene(panel, selected = false) {
   })] : [];
   panel.replaceChildren(
     head,
-    section("Look", [field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true })], "look"),
+    section("Look", lookFields(), "look"),
     section("Format", [made, formatHint, ...sizeChoices()], "format"),
     ...(state.profiles.length ? [section("Model", [model, modelHint, ...setupButton(), ...files], "model")] : []),
     ...[loraSection(), patchSection(), writingSection(), notesSection()].filter(Boolean),
   );
+}
+
+function lookFields() {
+  const row = document.createElement("div");
+  row.className = "look-library";
+  const label = document.createElement("label");
+  label.className = "choice";
+  const title = document.createElement("span");
+  title.textContent = "Style library";
+  const pick = document.createElement("select");
+  pick.setAttribute("aria-label", "Style library");
+  pick.dataset.key = "lookLibrary";
+  pick.append(new Option("Choose a look…", ""));
+  const matched = state.looks.find((look) => look.style === state.project.style);
+  for (const builtin of [false, true]) {
+    const group = document.createElement("optgroup");
+    group.label = builtin ? "Built-in looks" : "Your looks";
+    for (const look of state.looks.filter((look) => Boolean(look.builtin) === builtin)) group.append(new Option(look.name, look.id));
+    if (group.children.length) pick.append(group);
+  }
+  pick.value = matched?.id || state.lookSelection || "";
+  pick.addEventListener("change", () => {
+    const look = state.looks.find((look) => look.id === pick.value);
+    if (!look) { state.lookSelection = null; return; }
+    checkpoint();
+    state.lookSelection = look.id;
+    state.project.style = look.style;
+    save();
+    renderInspector();
+  });
+  label.append(title, pick);
+  const saveLook = document.createElement("button");
+  saveLook.className = "quiet";
+  saveLook.textContent = "Save look";
+  saveLook.title = "Save this style for every project";
+  saveLook.addEventListener("click", saveCurrentLook);
+  row.append(label, saveLook);
+  const selected = state.looks.find((look) => look.id === pick.value);
+  if (selected && !selected.builtin) {
+    const remove = document.createElement("button");
+    remove.className = "label-action";
+    remove.textContent = "Remove saved look";
+    remove.addEventListener("click", async () => {
+      const yes = await ask({ title: "Remove " + selected.name + "?", confirm: "Remove look", danger: true,
+        note: "Projects keep the style they already use. This removes only the saved look from your library." });
+      if (!yes) return;
+      try {
+        state.looks = (await api("/looks/" + encodeURIComponent(selected.id), { method: "DELETE" })).looks;
+        state.lookSelection = null;
+        renderInspector();
+      } catch (error) { toast(error.message, true); }
+    });
+    row.append(remove);
+  }
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Saved looks are shared by all projects on this ComfyUI. Choose one, then edit its style below.";
+  return [row, field("Style for every clip", state.project.style, (v) => (state.project.style = v), { area: true }), hint];
+}
+
+async function saveCurrentLook() {
+  const style = state.project.style;
+  if (!style?.trim()) return toast("Write a style before saving a look.", true);
+  const selected = state.looks.find((look) => look.id === state.lookSelection && !look.builtin);
+  const name = await ask({ title: "Save a look", value: selected?.name || "", confirm: "Save look",
+    note: selected ? "Keep the name to update this saved look, or give it a new name to save a copy." : "Give this style a name. It will be available in every project on this ComfyUI." });
+  if (name === null) return;
+  try {
+    const id = selected && name.trim().toLowerCase() === selected.name.toLowerCase() ? selected.id : undefined;
+    const result = await postJson("/looks", { name, style, id });
+    state.looks = result.looks;
+    state.lookSelection = result.look.id;
+    renderInspector();
+    toast("Saved " + result.look.name + " to the style library.");
+  } catch (error) { toast(error.message, true); }
 }
 
 // The model files a project renders with, in a few words: automatic, or the ones it names.
@@ -3608,7 +3768,7 @@ function drawInspector() {
     panel.replaceChildren(...parts);
     return;
   }
-  if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)));
+  if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)), styleMarkersSection(clip));
 
   const timing = document.createElement("div");
   timing.className = "two";
@@ -3702,7 +3862,7 @@ function drawInspector() {
       const finish = document.createElement("button");
       finish.className = "quiet";
       finish.textContent = "Finish draft";
-      finish.title = "Make a final from the draft you see: the same shot, framing, motion and sound, enlarged and redrawn at full size. "
+      finish.title = "Make a final from the draft you see: the same shot, framing, motion and sound, redrawn at the selected Final size. "
         + "Only the final's last steps run, so it is faster than Render final, and there is no new seed to hope for.";
       finish.addEventListener("click", () => renderClip(clip, "finish"));
       actions.append(finish);
@@ -3780,7 +3940,13 @@ function drawInspector() {
   panel.replaceChildren(...parts);
 }
 
-const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track"];
+const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers"];
+
+function restoreTakeFields(clip, saved) {
+  for (const name of SAVED_FIELDS) {
+    if (name in saved) clip[name] = structuredClone(saved[name]);
+  }
+}
 
 function chooseTake(clip, take) {
   checkpoint();
@@ -3809,6 +3975,8 @@ function versions(clip) {
   clip.takes.forEach((take, index) => {
     const button = document.createElement("button");
     button.className = "take" + (take === current ? " on" : "");
+    button.title = "Click to choose this take, or drag onto the timeline as a clip";
+    bindTakeDrag(button, clip, take);
     // Its picture scrubs through the take as the pointer crosses it, like a clip in the Clips panel.
     const img = document.createElement("div");
     img.className = "take-thumb";
@@ -3851,12 +4019,14 @@ function versions(clip) {
   }, false, "pin", "Render this clip again with the seed of the take shown");
   button("Restore prompt", () => {
     checkpoint();
-    for (const name of SAVED_FIELDS) {
-      if (current.saved && name in current.saved) clip[name] = current.saved[name];
-    }
+    restoreTakeFields(clip, current.saved);
     save();
     renderInspector();
   }, !current.saved, "restore", "Put back the text this take was rendered from");
+  button("Add as clip", () => {
+    const item = placeTakeAsClip(clip, current.id);
+    if (item) focusInBin('.clip[data-clip="' + CSS.escape(item.clip) + '"]');
+  }, false, "plus", "Append the selected take as its own clip");
   // Deleting sits apart from the safe actions, at the end of the row.
   const spacer = document.createElement("span");
   spacer.className = "spacer";
@@ -4079,9 +4249,104 @@ function framesFor(clip) {
   return [row];
 }
 
+function addStyleMarker(clip = null) {
+  const item = itemAt(state.playhead);
+  clip = clip || viewing() || (item && clipOf(item.clip)) || clipOf(state.clip);
+  if (!clip || clip.kind === "footage") return toast("Place the playhead inside a generated clip to add a style marker.");
+  const length = plannedFrames(clip);
+  const frame = Math.max(0, Math.min(length - 1, Math.round(viewing() === clip ? state.sourceFrame
+    : item?.clip === clip.id ? item.in + (state.playhead - item.start) * speedOf(item) : 0)));
+  if ((clip.style_markers || []).some((marker) => marker.frame === frame)) {
+    state.tab = "timeline";
+    selectClip(clip.id, item?.clip === clip.id ? item.id : null);
+    return;
+  }
+  if ((clip.style_markers || []).length >= 32) return toast("A clip holds up to 32 style markers.", true);
+  checkpoint();
+  const markers = clip.style_markers || (clip.style_markers = []);
+  if (!markers.length && frame > 0) markers.push({ frame: 0, name: "Project look", style: state.project.style || "" });
+  markers.push({ frame, name: "New look", style: state.project.style || "" });
+  markers.sort((a, b) => a.frame - b.frame);
+  save();
+  state.tab = "timeline";
+  selectClip(clip.id, item?.clip === clip.id ? item.id : null);
+}
+
+function styleMarkersSection(clip) {
+  const hint = document.createElement("p");
+  hint.className = "style-experiment";
+  hint.textContent = "Experimental: each marker is the destination of a smooth blend from the previous look, within this clip. Render again to see it. Each distinct style adds a model evaluation per sampling step (up to four). The first look supplies the sound.";
+  const add = document.createElement("button");
+  add.className = "quiet";
+  add.textContent = "Add at playhead";
+  add.addEventListener("click", () => addStyleMarker(clip));
+  const rows = (clip.style_markers || []).map((marker, index) => {
+    const row = document.createElement("div");
+    row.className = "style-marker-row";
+    const head = document.createElement("div");
+    head.className = "style-marker-head";
+    const name = document.createElement("b");
+    name.textContent = marker.name || "Style " + (index + 1);
+    const remove = document.createElement("button");
+    remove.className = "quiet";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", "Remove style marker " + (index + 1));
+    remove.addEventListener("click", () => {
+      checkpoint();
+      clip.style_markers = clip.style_markers.filter((other) => other !== marker);
+      save(); renderInspector(); renderTimeline();
+    });
+    head.append(name, remove);
+    const frame = field("Frame " + (index + 1), marker.frame, (value) => {
+      const at = Number(value);
+      if (!Number.isInteger(at) || at < 0 || at >= plannedFrames(clip) || clip.style_markers.some((other) => other !== marker && other.frame === at)) return;
+      marker.frame = at;
+      renderStyleMarkers();
+    }, { type: "number" });
+    frame.querySelector("input").min = 0;
+    frame.querySelector("input").max = plannedFrames(clip) - 1;
+    const library = choice("Look " + (index + 1), [["", "Custom style"], ...state.looks.map((look) => [look.id, look.name])],
+      state.looks.find((look) => look.style === marker.style)?.id || "", (value) => {
+        const look = state.looks.find((look) => look.id === value);
+        if (!look) return;
+        marker.name = look.name;
+        marker.style = look.style;
+        renderInspector(); renderStyleMarkers();
+      });
+    const style = field("Style " + (index + 1), marker.style, (value) => { marker.style = value; }, { area: true });
+    row.append(head, frame, library, style);
+    return row;
+  });
+  return section("Style markers (experimental)", [hint, add, ...rows]);
+}
+
+function renderStyleMarkers() {
+  const markers = [];
+  for (const item of sorted()) {
+    const clip = clipOf(item.clip);
+    for (const marker of clip?.style_markers || []) {
+      if (marker.frame < item.in || marker.frame >= item.out) continue;
+      const at = item.start + (marker.frame - item.in) / speedOf(item);
+      const button = document.createElement("button");
+      button.className = "style-marker";
+      button.style.left = px(at) + "px";
+      button.textContent = marker.name || "Style";
+      button.title = clip.name + ", frame " + marker.frame + ": " + marker.style;
+      button.addEventListener("click", () => {
+        state.tab = "timeline";
+        selectClip(clip.id, item.id);
+        seek(at);
+      });
+      markers.push(button);
+    }
+  }
+  $("laneStyle").replaceChildren(...markers);
+}
+
 /* Frame strips and waveforms, made once per render on the server */
 
 const peakCache = new Map();
+const spectrumCache = new Map();
 
 async function ensureStrips() {
   const project = state.project;
@@ -4101,7 +4366,7 @@ async function ensureStrips() {
 }
 
 async function loadPeaks(take) {
-  const key = take.file;
+  const key = viewUrl(take.file, take.subfolder);
   if (!peakCache.has(key)) {
     peakCache.set(key, fetch(viewUrl(take.strip.peaks, take.subfolder)).then((r) => r.json()).catch(() => []));
   }
@@ -4142,6 +4407,10 @@ function drawWave(canvas, item, take, height, selected) {
   canvas.height = Math.max(1, Math.round(height * ratio));
   canvas.style.width = width + "px";
   canvas.style.height = height + "px";
+  if (state.soundDisplay === "spectrogram") {
+    drawSpectrogram(canvas, item, take);
+    return;
+  }
   if (!take.strip) return;
   loadPeaks(take).then((peaks) => {
     if (!peaks.length || !canvas.isConnected) return;
@@ -4159,6 +4428,43 @@ function drawWave(canvas, item, take, height, selected) {
       context.fillRect(x, middle - bar / 2, 1.4, bar);
     }
   });
+}
+
+async function drawSpectrogram(canvas, item, take) {
+  const key = viewUrl(take.file, take.subfolder);
+  canvas.setAttribute("aria-label", "Sound spectrogram: low frequencies at the bottom, high frequencies at the top");
+  const status = document.createElement("span");
+  status.className = "sound-status";
+  status.textContent = "Loading spectrogram…";
+  // drawWave is also called before an extra sound's canvas is attached to its block.
+  queueMicrotask(() => { if (canvas.isConnected) canvas.after(status); });
+  try {
+    if (!spectrumCache.has(key)) {
+      const pending = postJson("/spectrogram", { filename: take.file, subfolder: take.subfolder }).then(async ({ spectrogram }) => {
+        if (!spectrogram) return null;
+        const picture = new Image();
+        picture.src = viewUrl(spectrogram.filename, take.subfolder);
+        await picture.decode();
+        return { picture, frames: spectrogram.seconds * FPS };
+      });
+      spectrumCache.set(key, pending);
+      pending.catch(() => spectrumCache.delete(key));
+      while (spectrumCache.size > 100) spectrumCache.delete(spectrumCache.keys().next().value);
+    }
+    const spectrum = await spectrumCache.get(key);
+    if (!canvas.isConnected) return;
+    if (!spectrum) { status.textContent = "No sound"; return; }
+    const { picture, frames } = spectrum;
+    const from = Math.max(0, Math.min(frames, item.in));
+    const to = Math.max(from, Math.min(frames, item.out));
+    if (to > from) canvas.getContext("2d").drawImage(picture, from / frames * picture.width, 0,
+      (to - from) / frames * picture.width, picture.height, 0, 0,
+      canvas.width * (to - from) / (item.out - item.in), canvas.height);
+    status.remove();
+  } catch (error) {
+    status.textContent = "Spectrogram unavailable";
+    status.title = error.message;
+  }
 }
 
 /* Extra sound: music, narration or effects on lanes of their own, under the clips' own sound. */
@@ -4184,7 +4490,7 @@ function layoutSoundLanes(count) {
       lane.dataset.lane = n;
       content.insertBefore(lane, $("playhead"));
     }
-    const rows = count ? "28px 34px minmax(56px, 2fr) minmax(36px, 1fr)" + " 42px".repeat(count) : "";
+    const rows = count ? "28px 28px 34px minmax(56px, 2fr) minmax(36px, 1fr)" + " 42px".repeat(count) : "";
     heads.style.gridTemplateRows = rows;
     content.style.gridTemplateRows = rows;
     // The timeline grows by its extra lanes, so the picture lane keeps its height.
@@ -4789,6 +5095,7 @@ function renderTimeline() {
   $("laneV").replaceChildren(...blocks);
   $("laneA").replaceChildren(...waves);
   renderEffects();
+  renderStyleMarkers();
   showRange();
   renderSounds();
   if (focused) $("laneV").querySelector('[data-item="' + CSS.escape(focused) + '"]')?.focus();
@@ -5738,21 +6045,60 @@ export function frame(env, k) {
 
 // The range marked on the timeline, in frames: I and O at the playhead, or a Shift-drag on the ruler.
 function setRange(a, b) {
-  const end = sceneEnd();
-  if (a === null || b === null) state.range = null;
-  else {
-    const first = Math.max(0, Math.min(Math.round(a), Math.round(b))), last = Math.min(end || Infinity, Math.max(Math.round(a), Math.round(b)));
-    state.range = last > first ? { a: first, b: last } : null;
-  }
+  const key = viewing() ? "sourceRange" : "range";
+  state[key] = a === null || b === null ? null : boundedRange({ a, b }, viewEnd());
+  showRange();
+}
+
+function boundedRange(range, end) {
+  if (!range || end <= 0) return null;
+  const a = Math.max(0, Math.min(end, Math.round(Math.min(range.a, range.b))));
+  const b = Math.max(0, Math.min(end, Math.round(Math.max(range.a, range.b))));
+  return b > a ? { a, b } : null;
+}
+
+function currentRange() {
+  return boundedRange(viewing() ? state.sourceRange : state.range, viewEnd());
+}
+
+function markIn() {
+  const end = viewEnd();
+  if (!end) return;
+  const frame = Math.max(0, Math.min(end - 1, Math.round(here())));
+  const range = currentRange();
+  setRange(frame, range && range.b > frame ? range.b : end);
+}
+
+function markOut() {
+  if (!viewEnd()) return;
+  const frame = Math.max(1, Math.min(viewEnd(), Math.round(here()) + 1));
+  const range = currentRange();
+  setRange(range && range.a < frame ? range.a : 0, frame);
+}
+
+function setLoop(on) {
+  state.loop = on;
+  try { localStorage.setItem("h3take.loop", on ? "on" : "off"); } catch (_) {}
   showRange();
 }
 
 function showRange() {
   const band = $("range");
+  state.range = boundedRange(state.range, sceneEnd());
   band.hidden = !state.range;
-  if (!state.range) return;
-  band.style.left = px(state.range.a) + "px";
-  band.style.width = Math.max(2, px(state.range.b - state.range.a)) + "px";
+  if (state.range) {
+    band.style.left = px(state.range.a) + "px";
+    band.style.width = Math.max(2, px(state.range.b - state.range.a)) + "px";
+  }
+  const range = currentRange();
+  $("loop").setAttribute("aria-pressed", String(state.loop));
+  $("loop").title = "Loop " + (range ? "In to Out" : viewing() ? "the whole clip" : "the whole cut");
+  $("markIn").disabled = $("markOut").disabled = !viewEnd();
+  $("markIn").classList.toggle("marked", Boolean(range));
+  $("markOut").classList.toggle("marked", Boolean(range));
+  $("clearRange").hidden = $("rangeLabel").hidden = !range;
+  $("rangeLabel").textContent = range ? timecode(range.a) + " – " + timecode(range.b - 1) : "";
+  $("rangeLabel").title = "In to Out, including the Out frame";
 }
 
 // What Rate will look at: the marked range, else the selected clip on the timeline, else the cut from its start.
@@ -6811,6 +7157,7 @@ let front = $("videoA");
 let back = $("videoB");
 let lastTick = 0;
 let tickGap = 1000 / 60;
+let playbackRequest = 0;
 
 // The frame each video last put on screen, and when: what the cut is timed from. A video keeps playing between two
 // ticks of the page, so a cut decided on the tick after the out-point would show a frame from beyond it.
@@ -7032,6 +7379,8 @@ function setSource(clipId) {
   if (state.playing) setPlaying(false);
   state.source = clipId;
   state.sourceFrame = 0;
+  state.sourceRange = null;
+  showRange();
 }
 
 function showSource(clip) {
@@ -7078,6 +7427,7 @@ function cutShape() {
 function showFrame() {
   showPicture();
   previewEffect();
+  showRange();
 }
 
 function showPicture() {
@@ -7152,6 +7502,9 @@ function swap() {
 }
 
 function setPlaying(on) {
+  cancelAnimationFrame(playbackRequest);
+  playbackRequest = 0;
+  if (on && !viewEnd()) on = false;
   state.playing = on;
   $("play").classList.toggle("playing", on);
   $("play").setAttribute("aria-label", on ? "Pause" : "Play");
@@ -7164,28 +7517,40 @@ function setPlaying(on) {
   }
   // Whatever was shown while paused, the clip under the playhead starts at its own volume.
   relevel();
+  const range = state.loop ? currentRange() : null;
+  const start = range?.a || 0, end = range?.b || viewEnd();
   if (viewing()) {
     if (!sourceEnd()) {
       setPlaying(false);
       return;
     }
-    if (state.sourceFrame >= sourceEnd() - 1) state.sourceFrame = 0;
+    if (state.sourceFrame >= end - (state.loop ? 0 : 1) || (range && state.sourceFrame < start)) state.sourceFrame = start;
+    front.currentTime = state.sourceFrame / FPS;
     showFrame();
     // A clip on its own plays as rendered: its volume belongs to its place on the timeline.
     setMix(front, 1, null);
     front.play().catch(() => {});
-    requestAnimationFrame(tickSource);
+    playbackRequest = requestAnimationFrame(tickSource);
     return;
   }
-  if (state.playhead >= sceneEnd()) state.playhead = 0;
+  if (state.playhead >= end || (range && state.playhead < start)) state.playhead = start;
   showFrame();
   lastTick = performance.now();
   const item = leading(state.playhead);
   if (item && sourceOf(item)) front.play().catch(() => {});
-  requestAnimationFrame(tick);
+  playbackRequest = requestAnimationFrame(tick);
+}
+
+function restartPlayback(frame) {
+  setPlaying(false);
+  if (viewing()) state.sourceFrame = frame;
+  else state.playhead = frame;
+  showFrame();
+  setPlaying(true);
 }
 
 function tick(now) {
+  playbackRequest = 0;
   if (!state.playing) return;
   const item = leading(state.playhead);
   const url = sourceOf(item);
@@ -7208,6 +7573,11 @@ function tick(now) {
     const next = due !== null && !last ? leading(itemEnd(item)) : null;
     // The end of the cut is timed the same way, so the last clip stops on its own last frame.
     if ((last || (next && next !== item && !next.transition)) && now + 2 * tickGap >= due - 2) state.playhead = Math.max(state.playhead, itemEnd(item));
+  }
+  const range = state.loop ? currentRange() : null;
+  if (state.loop && viewEnd() > 0 && state.playhead >= (range?.b || sceneEnd())) {
+    restartPlayback(range?.a || 0);
+    return;
   }
   syncSounds();
   previewEffect();
@@ -7278,25 +7648,31 @@ function tick(now) {
   const scroller = $("tlScroll");
   const x = px(state.playhead);
   if (x > scroller.scrollLeft + scroller.clientWidth - 40) scroller.scrollLeft = x - 80;
-  requestAnimationFrame(tick);
+  playbackRequest = requestAnimationFrame(tick);
 }
 
 // A clip on its own plays straight through its active take, at its own speed.
 function tickSource() {
+  playbackRequest = 0;
   if (!state.playing) return;
   if (!viewing()) {
     setPlaying(false);
     return;
   }
-  const end = sourceEnd();
+  const range = state.loop ? currentRange() : null;
+  const end = range?.b || sourceEnd();
   if (front.ended || front.currentTime * FPS >= end - 0.5) {
+    if (state.loop && end > 0) {
+      restartPlayback(range?.a || 0);
+      return;
+    }
     state.sourceFrame = end - 1;
     setPlaying(false);
     return;
   }
   state.sourceFrame = front.currentTime * FPS;
   updateClock();
-  requestAnimationFrame(tickSource);
+  playbackRequest = requestAnimationFrame(tickSource);
 }
 
 function seek(frame) {
@@ -7311,6 +7687,8 @@ function seek(frame) {
 function updateQueue() {
   const box = $("queue");
   const count = state.jobs.size;
+  $("cancelRenders").disabled = !count;
+  $("cancelFinals").disabled = ![...state.jobs.values()].some((job) => job.quality === "final");
   if (!count) {
     box.replaceChildren();
     return;
@@ -7339,17 +7717,17 @@ function updateQueue() {
 
 // Renders are queued by the server, which also attaches the finished take to the project.
 // The editor only shows progress, so closing it never loses a render.
-// Why a clip's draft cannot be finished, or "" when it can: a final made from it needs a draft shown and the Full final
-// size, which is the one that redraws at full size. The server checks the rest, such as the draft's saved latents.
+// The server also checks the draft's saved latents and the installed latent upscaler.
 function finishOff(clip) {
   const shown = activeTake(clip);
   if (!shown || shown.quality !== "draft") return "Choose a draft take to finish";
   const final = state.project.sizes?.final;
-  if (final && final !== "full") return "Finishing redraws at full size: set Final size to Full";
+  if (final === "sharp") return "Choose Full, Large, Medium, Small or your own Final size to finish a draft";
   return "";
 }
 
 async function renderClip(clip, quality, detail, upscaler) {
+  const folder = state.folder;
   if (jobFor(clip.id)) return;
   if (!clip.action.trim()) {
     selectClip(clip.id);
@@ -7358,10 +7736,12 @@ async function renderClip(clip, quality, detail, upscaler) {
   }
   try {
     await flush();
+    if (folder !== state.folder) return;
     const body = { clip: clip.id, quality, client_id: clientId };
     if (detail !== undefined) body.detail = detail;
     if (upscaler) body.upscaler = upscaler;
-    const result = await postJson("/project/" + state.folder + "/render", body);
+    const result = await postJson("/project/" + folder + "/render", body);
+    if (folder !== state.folder) return;
     state.jobs.set(result.job.id, { ...result.job, step: 0, max: 0, progress: 0 });
     if (!unsaved()) adopt(result.project);
     updateQueue();
@@ -7372,9 +7752,12 @@ async function renderClip(clip, quality, detail, upscaler) {
 }
 
 async function cancelJob(job) {
+  const folder = state.folder;
   try {
     await flush();
-    const result = await postJson("/project/" + state.folder + "/cancel", { job: job.id, client_id: clientId });
+    if (folder !== state.folder) return;
+    const result = await postJson("/project/" + folder + "/cancel", { job: job.id, client_id: clientId });
+    if (folder !== state.folder) return;
     job.reported = true;
     state.jobs.delete(job.id);
     if (!unsaved()) adopt(result.project);
@@ -7523,6 +7906,7 @@ function restoreFocus(focus) {
 
 async function openProject(folder) {
   await flush();
+  if (state.playing) setPlaying(false);
   state.folder = folder;
   state.project = await api("/project/" + folder);
   drawProjectPicker();
@@ -7533,6 +7917,9 @@ async function openProject(folder) {
   setSource(null);
   loadFolded();
   state.playhead = 0;
+  state.range = state.sourceRange = null;
+  state.lookSelection = null;
+  state.expandedTakes.clear();
   undo = [];
   redo = [];
   try { localStorage.setItem("h3take.project", folder); } catch (_) {}
@@ -7731,11 +8118,20 @@ async function createProject(name) {
 }
 
 async function start() {
+  try {
+    state.loop = localStorage.getItem("h3take.loop") === "on";
+    state.soundDisplay = localStorage.getItem("h3take.soundDisplay") === "spectrogram" ? "spectrogram" : "waveform";
+  } catch (_) {}
+  $("soundDisplay").value = state.soundDisplay;
   let remembered = null;
   try { remembered = localStorage.getItem("h3take.project"); } catch (_) {}
   const projects = await refreshProjects(remembered);
   if (!projects.length) await createProject("First scene");
   else await openProject(projects.includes(remembered) ? remembered : projects[0]);
+  try {
+    state.looks = (await api("/looks")).looks;
+    renderInspector();
+  } catch (error) { toast(error.message, true); }
   connect();
   firstRun();
 }
@@ -8226,6 +8622,7 @@ $("projectDelete").addEventListener("click", async () => {
 
 $("newClip").addEventListener("click", addClip);
 $("addEffect").addEventListener("click", addEffect);
+$("addStyleMarker").addEventListener("click", () => addStyleMarker());
 $("addCast").addEventListener("click", addCastMember);
 $("addVoice").addEventListener("click", addVoiceMember);
 $("addFromCatalog").addEventListener("click", () => {
@@ -8261,32 +8658,78 @@ clipList.addEventListener("drop", (event) => {
   fileClip(clip, dropBin(event));
 });
 $("close").addEventListener("click", () => window.parent.postMessage("h3-editor-close", location.origin));
-$("renderAll").addEventListener("click", () => {
-  const waiting = sorted().map((i) => clipOf(i.clip)).filter((c, i, all) => c && !c.takes.length && all.indexOf(c) === i);
-  if (!waiting.length) return toast("Every clip on the timeline already has a render.");
+let batchRendering = false;
+async function renderTimelineClips(quality) {
+  if (batchRendering) return;
+  const folder = state.folder;
+  const waiting = sorted().map((i) => clipOf(i.clip)).filter((c, i, all) => c && c.kind !== "footage" && all.indexOf(c) === i
+    && (quality === "draft" ? !c.takes.length : activeTake(c)?.quality !== "final"));
+  if (!waiting.length) return toast(quality === "draft" ? "Every clip on the timeline already has a render." : "Every generated clip on the timeline already shows a final.");
   const ready = waiting.filter((c) => c.action.trim() && !jobFor(c.id));
   const blank = waiting.filter((c) => !c.action.trim());
-  (async () => {
+  batchRendering = true;
+  try {
     if (ready.length) {
       try {
         await flush();
+        if (folder !== state.folder) return;
         // One batch, so the server can run the clips that share a model one after another.
-        const ops = ready.map((c) => ({ op: "render", clip: c.id, quality: "draft", client_id: clientId }));
-        await postJson("/project/" + state.folder + "/ops", { ops });
-        adopt(await api("/project/" + state.folder));
-        updateQueue();
-        renderAll();
+        const ops = ready.map((c) => ({ op: "render", clip: c.id, quality, client_id: clientId }));
+        await postJson("/project/" + folder + "/ops", { ops });
+        const project = await api("/project/" + folder);
+        if (folder === state.folder && !unsaved()) adopt(project);
       } catch (error) {
-        // One clip that cannot render stops a batch. Asked for one at a time, the others still go.
-        try { adopt(await api("/project/" + state.folder)); } catch (_) {}
-        for (const clip of ready) await renderClip(clip, "draft");
+        if (folder !== state.folder) return;
+        // Refresh first: part of a batch may already be queued. Never queue those clips twice.
+        try {
+          const project = await api("/project/" + folder);
+          if (folder !== state.folder || unsaved()) return;
+          adopt(project);
+        } catch (_) { return toast(error.message, true); }
+        for (const clip of ready) {
+          if (folder !== state.folder) return;
+          const fresh = clipOf(clip.id);
+          if (fresh && !jobFor(fresh.id)) await renderClip(fresh, quality);
+        }
       }
-    }
+    } else if (!blank.length) toast("Those clips are already queued or rendering.");
     if (blank.length) {
       toast((blank.length === 1 ? blank[0].name + " has" : blank.length + " clips have") + " nothing in What happens yet, so " + (blank.length === 1 ? "it was" : "they were") + " left out.", true);
     }
-  })();
-});
+  } finally { batchRendering = false; }
+}
+
+let batchCancelling = false;
+async function cancelRenders(quality = null) {
+  if (batchCancelling) return;
+  const folder = state.folder;
+  batchCancelling = true;
+  try {
+    await flush();
+    if (folder !== state.folder) return;
+    const result = await postJson("/project/" + folder + "/cancel", { all: true, quality, client_id: clientId });
+    if (!result.cancelled.length) return toast("No matching renders to cancel.");
+    if (folder === state.folder) for (const id of result.cancelled) {
+      const job = state.jobs.get(id);
+      if (job) job.reported = true;
+    }
+    toast("Cancelled " + result.cancelled.length + (quality ? " final" : " render") + (result.cancelled.length === 1 ? "." : "s."));
+  } catch (error) { toast(error.message, true); }
+  finally {
+    batchCancelling = false;
+    if (folder === state.folder) {
+      try {
+        const project = await api("/project/" + folder);
+        if (folder === state.folder && !unsaved()) adopt(project);
+      } catch (_) {}
+    }
+  }
+}
+
+$("renderAll").addEventListener("click", () => renderTimelineClips("draft"));
+$("renderFinals").addEventListener("click", () => renderTimelineClips("final"));
+$("cancelRenders").addEventListener("click", () => cancelRenders());
+$("cancelFinals").addEventListener("click", () => cancelRenders("final"));
 // Export joins the timeline into one video file. The dialog says what will be in it first.
 const megabytes = (bytes) => (bytes >= 1e9 ? (bytes / 1e9).toFixed(2) + " GB" : Math.max(0.1, bytes / 1e6).toFixed(1) + " MB");
 
@@ -8369,6 +8812,15 @@ $("exporterGo").addEventListener("click", runExport);
 $("exporterClose").addEventListener("click", () => $("exporter").close());
 $("modelsClose").addEventListener("click", () => $("models").close());
 $("play").addEventListener("click", () => setPlaying(!state.playing));
+$("loop").addEventListener("click", () => setLoop(!state.loop));
+$("markIn").addEventListener("click", markIn);
+$("markOut").addEventListener("click", markOut);
+$("clearRange").addEventListener("click", () => setRange(null, null));
+$("soundDisplay").addEventListener("change", (event) => {
+  state.soundDisplay = event.target.value;
+  try { localStorage.setItem("h3take.soundDisplay", state.soundDisplay); } catch (_) {}
+  renderTimeline();
+});
 $("shortcuts").addEventListener("click", () => $("keys").showModal());
 $("keysClose").addEventListener("click", () => $("keys").close());
 bindSplitter();
@@ -8408,7 +8860,7 @@ $("tlContent").addEventListener("pointerdown", (event) => {
   if (event.target.classList.contains("extra") && event.target.classList.contains("lane")) selectClip(null);
 });
 // A menu opens under its button, or over it when the window is short, and closes once something is chosen.
-for (const [button, id] of [["generate", "generateMenu"], ["castAdd", "castMenu"], ["projectMore", "projectMenu"]]) {
+for (const [button, id] of [["generate", "generateMenu"], ["castAdd", "castMenu"], ["projectMore", "projectMenu"], ["renderMenuButton", "renderMenu"]]) {
   const menu = $(id);
   menu.addEventListener("toggle", (event) => {
     if (event.newState !== "open") return;
@@ -8463,18 +8915,28 @@ $("ruler").addEventListener("pointerdown", (event) => {
 
 const lane = $("laneV");
 lane.addEventListener("dragover", (event) => {
+  const types = event.dataTransfer.types;
+  if (!types.includes(TAKE_DRAG) && !types.includes("text/h3clip")) return;
   event.preventDefault();
+  if (types.includes(TAKE_DRAG)) event.dataTransfer.dropEffect = "copy";
   lane.classList.add("drop");
 });
 lane.addEventListener("dragleave", () => lane.classList.remove("drop"));
 lane.addEventListener("drop", (event) => {
   event.preventDefault();
   lane.classList.remove("drop");
+  const frame = Math.max(0, Math.round((event.clientX - lane.getBoundingClientRect().left) / state.zoom));
+  const start = snap(frame, snapPoints(null));
+  const take = event.dataTransfer.getData(TAKE_DRAG);
+  if (take) {
+    const [clipId, takeId] = take.split(":");
+    placeTakeAsClip(clipOf(clipId), takeId, start);
+    return;
+  }
   const clip = clipOf(event.dataTransfer.getData("text/h3clip"));
   if (!clip) return;
   checkpoint();
-  const frame = Math.max(0, Math.round((event.clientX - lane.getBoundingClientRect().left) / state.zoom));
-  placeOnTimeline(clip, snap(frame, snapPoints(null)));
+  placeOnTimeline(clip, start);
   save();
   renderTimeline();
 });
@@ -8504,7 +8966,7 @@ window.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape") {
     if (state.clip || state.item || state.person || state.bin || state.gap || state.sound || state.effect) selectClip(null);
-    else if (state.range) setRange(null, null);
+    else if (currentRange()) setRange(null, null);
   } else if (event.code === "Space") {
     event.preventDefault();
     setPlaying(!state.playing);
@@ -8527,8 +8989,8 @@ window.addEventListener("keydown", (event) => {
   else if (event.key === "." ) slipSelected(event.shiftKey ? 12 : 1);
   else if (event.key === "<") slipSelected(-12);
   else if (event.key === ">") slipSelected(12);
-  else if (event.key === "i" || event.key === "I") setRange(here(), state.range && state.range.b > here() ? state.range.b : sceneEnd());
-  else if (event.key === "o" || event.key === "O") setRange(state.range && state.range.a < here() ? state.range.a : 0, here());
+  else if (event.key.toLowerCase() === "i" && !event.ctrlKey && !event.metaKey && !event.altKey) markIn();
+  else if (event.key.toLowerCase() === "o" && !event.ctrlKey && !event.metaKey && !event.altKey) markOut();
   else if (event.key === "[") cycleTake(-1);
   else if (event.key === "]") cycleTake(1);
   else if (event.key === "\\") fitTimeline();

@@ -13,10 +13,12 @@ import uuid
 
 try:
     from . import holds
+    from . import style_timeline
     from . import patches as patching
     from .prompting import compose_prompt, compose_reference_prompt
 except ImportError:
     import holds
+    import style_timeline
     import patches as patching
     from prompting import compose_prompt, compose_reference_prompt
 
@@ -1100,16 +1102,28 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         take_inputs.update({"audio_hold": "full", "audio_align": "take", "source_audio": ["61", 0]})
         if link and link["mode"] == "bridge" and not arrives_on_pin(link):
             take_inputs["end_audio"] = ["61", 0]
-    if size.get("refine") and models.get("latent_upscaler") and installed(models["latent_upscaler"], available):
+    if finish and size_name(project, quality) == SHARP:
+        raise ValueError("Sharp uses a video upscaler. Choose Full, Large, Medium, Small or your own Final size to finish a draft")
+    if (size.get("refine") or finish) and models.get("latent_upscaler") and installed(models["latent_upscaler"], available):
         # Without the latent upscaler a final stays at H3's own size.
         tail = profile.get("refine_sigmas") or profile["refine_from"]
-        add_refine(graph, refine_size(project), tail, models["latent_upscaler"])
+        add_refine(graph, refine_size(project) if enlarged else (width, height), tail, models["latent_upscaler"])
         if length > LONG_TAKE:
             add_refine_windows(graph)
     if quality != "draft" and size_name(project, quality) == SHARP:
         add_sharp(graph, refine_size(project), available)
     if finish:
         start_from_take(graph, clip, finish, length)
+    markers = style_timeline.schedule(clip.get("style_markers"), length, project.get("style", ""))
+    if markers:
+        # Each style prefixes the same shot text, so content, cast and speech stay constant.
+        shot = clip_prompt(dict(project, style="__h3_style__"), clip)
+        for node in ("10", "80"):
+            if node in graph:
+                graph[node]["inputs"].update(prompt=shot, style_markers=json.dumps(markers, ensure_ascii=False))
+        for node in ("13", "88"):
+            if node in graph:
+                graph[node]["class_type"] = "H3StyleGuider"
     mods = clip_refmods(project, clip, available)
     if mods:
         # Each chosen cast member's RefMod joins what H3 Take conditions on, in both passes of a final.
@@ -1118,7 +1132,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             _, file, strength = mods[slot - 1] if slot <= len(mods) else (None, "(none)", 1.0)
             loader.update({"mod_%s" % slot: file, "strength_%s" % slot: strength, "copies_%s" % slot: 1})
         graph["72"] = {"class_type": "MiniMaxH3RefModsLoader", "inputs": loader}
-        guiders = sorted((key for key, node in graph.items() if node["class_type"] == "BasicGuider"), key=int)
+        guiders = sorted((key for key, node in graph.items() if node["class_type"] in ("BasicGuider", "H3StyleGuider")), key=int)
         for number, key in enumerate(guiders):
             node = str(73 + number)
             graph[node] = {"class_type": "MiniMaxH3RefModApply", "inputs": {
@@ -1135,7 +1149,7 @@ def start_from_take(graph, clip, source, length):
     refined at the refine size as a final's would be, and their sound is the take's sound.
     """
     if "90" not in graph:
-        raise ValueError("finishing a draft redraws it at the refine size: set Final size to Full, and install the latent upscaler")
+        raise ValueError("finishing a draft needs the latent upscaler: install the latent upscaler from Get the models")
     if int(source.get("frames") or 0) != int(length):
         raise ValueError("%s runs %s frames now and its draft %s. Render a new draft to finish"
                          % (clip.get("name", "This clip"), length, source.get("frames")))
@@ -1838,7 +1852,7 @@ HOLD = 39
 HANDOVER = 9
 MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
-               "first", "last", "language", "track", "bin", "profile", "loras")
+               "first", "last", "language", "track", "bin", "profile", "loras", "style_markers")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
 PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "patches", "realism", "checkpoints", "text_encoder", "text_projection", "vae", "audio_vae", "sizes")
 # The model files set_project names, and their keys in the project's models. A projection only
@@ -1873,7 +1887,7 @@ END_HOLD = 22
 # (it dissolved or cut instead), and at 153 in 4 of 6.
 BRIDGE_SECONDS = 6.375
 LINK_TITLES = {"extend_after": "After ", "extend_before": "Before ", "bridge": "Bridge from ", "merge": "Merge from "}
-SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track")
+SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers")
 
 
 def new_id(prefix):
@@ -1995,6 +2009,8 @@ def clean_asset(value, what):
 def clean_clip_fields(fields):
     check_fields(fields, CLIP_FIELDS)
     out = dict(fields)
+    if "style_markers" in out:
+        out["style_markers"] = style_timeline.clean_markers(out["style_markers"])
     if "seconds" in out:
         seconds = float(out["seconds"])
         if not math.isfinite(seconds) or not 0.5 <= seconds <= 60:
@@ -3489,6 +3505,8 @@ def describe(project):
             entry["track"] = {"file": clip["track"]["file"], "from": clip["track"]["from"]}
         if clip.get("error"):
             entry["error"] = clip["error"]
+        if clip.get("style_markers"):
+            entry["style_markers"] = clip["style_markers"]
         for name in ("speaker", "dialogue", "cast"):
             if clip.get(name):
                 entry[name] = clip[name]

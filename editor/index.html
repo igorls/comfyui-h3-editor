@@ -38,7 +38,13 @@
     </div>
     <div id="contextMenu" class="menu context-menu" popover role="menu" aria-label="Actions" tabindex="-1"></div>
     <div id="queue" class="queue"></div>
-    <button id="renderAll" class="quiet">Render all drafts</button>
+    <button id="renderMenuButton" class="quiet menu-button" aria-haspopup="menu" popovertarget="renderMenu">Render<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+    <div id="renderMenu" class="menu" popover role="menu" aria-label="Batch renders">
+      <button id="renderAll" role="menuitem"><b>Render all drafts</b><span>Timeline clips that have no take yet</span></button>
+      <button id="renderFinals" role="menuitem"><b>Render all finals</b><span>Timeline clips whose selected take is not a final</span></button>
+      <button id="cancelFinals" role="menuitem" disabled><b>Cancel all finals</b><span>Stop queued and running finals in this project</span></button>
+      <button id="cancelRenders" role="menuitem" disabled><b>Cancel all renders</b><span>Stop queued and running renders in this project</span></button>
+    </div>
     <button id="export" class="primary">Export</button>
     <button id="shortcuts" class="tool tip-end" aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts (?)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6.5" width="18" height="11" rx="2"/><path d="M7 10.5h.01M10.3 10.5h.01M13.7 10.5h.01M17 10.5h.01M8.5 14h7"/></svg></button>
     <button id="close" class="tool tip-end" aria-label="Back to the graph" data-tip="Back to the graph"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button>
@@ -102,12 +108,19 @@
         <button id="forward" class="icon" aria-label="One frame forward" title="One frame forward (Right)">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6.5L15 12l-5.5 5.5"/></svg>
         </button>
+        <button id="loop" class="quiet loop-button" aria-pressed="false" title="Loop the whole cut">Loop<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5l3 3-3 3M21 8H7a4 4 0 0 0-4 4M6 19l-3-3 3-3M3 16h14a4 4 0 0 0 4-4"/></svg></button>
         <span class="clock" title="Minutes, seconds and frames"><span id="time" class="time">00:00:00</span><span id="total" class="total"></span></span>
         <button id="addNote" class="quiet note-button" title="Write a note on this frame (N)">Note</button>
         <span class="monitor">
           <button id="mute" class="icon live-sound" aria-pressed="true" aria-label="Sound of the viewer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path class="on" d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/><path class="off" d="M16 9.5l5 5M21 9.5l-5 5"/></svg></button>
           <input id="volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Viewer volume">
         </span>
+        <div class="playback-range" role="group" aria-label="Playback In and Out">
+          <button id="markIn" class="quiet" title="Mark In at the playhead (I)">In</button>
+          <button id="markOut" class="quiet" title="Mark Out after this frame (O)">Out</button>
+          <span id="rangeLabel" class="range-label" hidden></span>
+          <button id="clearRange" class="icon" aria-label="Clear In and Out" title="Clear In and Out" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button>
+        </div>
       </div>
     </section>
 
@@ -138,20 +151,23 @@
       </div>
       <button id="addSound" class="quiet" title="Lay music, narration or another sound under the cut, on a lane of its own">Add sound</button>
       <button id="addEffect" class="quiet" title="Add a clip drawn by code on the VFX lane, over the picture at the playhead">Add VFX</button>
+      <button id="addStyleMarker" class="quiet" title="Blend styles within one generated clip (experimental)">Style marker</button>
       <button id="rate" class="quiet" title="Rate a range of the cut against a rubric with Gemini. Mark a range with I and O, or Shift-drag on the ruler">Rate</button>
+      <label class="sound-display">Sound <select id="soundDisplay" aria-label="Sound track display"><option value="waveform">Waveform</option><option value="spectrogram">Spectrogram</option></select></label>
       <div class="spacer"></div>
       <button id="fit" class="quiet" title="Show the whole scene (\)">Fit</button>
       <label class="zoom">Zoom <input id="zoom" type="range" min="0.1" max="12" step="0.1" value="3"></label>
     </div>
     <div class="tl-body" id="tlBody">
-      <div class="tl-heads"><div class="tl-head ruler-head"></div><div class="tl-head" title="Clips drawn by code, over the picture below them">VFX</div><div class="tl-head">Picture</div><div class="tl-head">Sound</div></div>
+      <div class="tl-heads"><div class="tl-head ruler-head"></div><div class="tl-head" title="Experimental style blends inside generated clips">Look</div><div class="tl-head" title="Clips drawn by code, over the picture below them">VFX</div><div class="tl-head">Picture</div><div class="tl-head">Sound</div></div>
       <div class="tl-scroll" id="tlScroll">
         <div class="tl-content" id="tlContent">
           <div class="ruler" id="ruler"></div>
+          <div class="lane styles" id="laneStyle"></div>
           <div class="lane x" id="laneX"></div>
           <div class="lane v" id="laneV"></div>
           <div class="lane a" id="laneA"></div>
-          <div class="range" id="range" hidden></div>
+          <div class="range" id="range" hidden><span class="range-in">In</span><span class="range-out">Out</span></div>
           <div class="playhead" id="playhead"></div>
         </div>
       </div>
@@ -296,7 +312,7 @@
     <dt>Tab, Enter</dt><dd>Reach a clip or a sound on the timeline, and select it</dd>
     <dt>Delete</dt><dd>On the timeline, remove a clip from it, or close a selected gap. In the Clips panel, delete the clip or bin</dd>
     <dt>Shift+Delete</dt><dd>Remove a clip from the timeline and close the space</dd>
-    <dt>I and O</dt><dd>Mark the start and the end of a range at the playhead, for Rate. Shift-drag on the ruler marks one too; Esc clears it</dd>
+    <dt>I and O</dt><dd>Mark In at the playhead and Out after that frame. Loop repeats this range. Shift-drag on the ruler marks a range too; Esc clears it</dd>
     <dt>[ and ]</dt><dd>Flip between takes of the selected clip</dd>
     <dt>, and .</dt><dd>Slip the selected clip: show an earlier or a later part of its take, without moving it. With Shift, half a second</dd>
     <dt>Alt+drag</dt><dd>Slip a clip on the timeline</dd>
