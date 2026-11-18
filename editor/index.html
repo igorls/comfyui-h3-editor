@@ -100,34 +100,47 @@
         </div>
         <div id="sourceTag" class="source-tag" hidden><span id="sourceName"></span><button id="toTimeline" class="quiet" title="Show the cut again. Clicking the timeline does too">Back to timeline</button></div>
       </div>
-      <div class="transport">
-        <button id="toStart" class="icon" aria-label="Go to start" title="Go to start (Home)">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 5.5v13"/><path class="solid" d="M18 6.2v11.6L9.4 12z"/></svg>
-        </button>
-        <button id="back" class="icon" aria-label="One frame back" title="One frame back (Left)">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5L9 12l5.5 5.5"/></svg>
-        </button>
-        <button id="play" class="icon play" aria-label="Play" title="Play or pause (Space)">
-          <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M8.5 5.6v12.8L18.6 12z"/></svg>
-          <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect class="solid" x="7" y="5.5" width="3.6" height="13" rx="1"/><rect class="solid" x="13.4" y="5.5" width="3.6" height="13" rx="1"/></svg>
-        </button>
-        <button id="forward" class="icon" aria-label="One frame forward" title="One frame forward (Right)">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6.5L15 12l-5.5 5.5"/></svg>
-        </button>
-        <button id="loop" class="quiet loop-button" aria-pressed="false" title="Loop the whole cut">Loop<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5l3 3-3 3M21 8H7a4 4 0 0 0-4 4M6 19l-3-3 3-3M3 16h14a4 4 0 0 0 4-4"/></svg></button>
+      <div class="transport" role="group" aria-label="Viewer controls">
         <span class="clock" title="Minutes, seconds and frames"><span id="time" class="time">00:00:00</span><span id="total" class="total"></span></span>
-        <button id="addNote" class="quiet note-button" title="Write a note on this frame (N)">Note</button>
-        <span class="monitor">
-          <button id="mute" class="icon live-sound" aria-pressed="true" aria-label="Sound of the viewer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path class="on" d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/><path class="off" d="M16 9.5l5 5M21 9.5l-5 5"/></svg></button>
-          <input id="volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Viewer volume">
-        </span>
-        <div class="playback-range" role="group" aria-label="Playback In and Out">
-          <button id="markIn" class="quiet" title="Mark In at the playhead (I)">In</button>
-          <button id="markOut" class="quiet" title="Mark Out after this frame (O)">Out</button>
-          <span id="rangeLabel" class="range-label" hidden></span>
-          <button id="clearRange" class="icon" aria-label="Clear In and Out" title="Clear In and Out" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button>
+        <div id="viewerPlayback" class="playback-controls" role="group" aria-label="Playback">
+          <button id="toStart" class="icon" aria-label="Go to start" title="Go to start (Home)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 5.5v13"/><path class="solid" d="M18 6.2v11.6L9.4 12z"/></svg><span class="in-viewer-popover">Go to start</span>
+          </button>
+          <button id="back" class="icon" aria-label="One frame back" title="One frame back (Left)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5L9 12l5.5 5.5"/></svg>
+          </button>
+          <button id="play" class="icon play" aria-label="Play" title="Play or pause (Space)">
+            <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M8.5 5.6v12.8L18.6 12z"/></svg>
+            <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect class="solid" x="7" y="5.5" width="3.6" height="13" rx="1"/><rect class="solid" x="13.4" y="5.5" width="3.6" height="13" rx="1"/></svg>
+          </button>
+          <button id="forward" class="icon" aria-label="One frame forward" title="One frame forward (Right)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6.5L15 12l-5.5 5.5"/></svg>
+          </button>
+          <button id="loop" class="icon loop-button" aria-pressed="false" aria-label="Loop playback" title="Loop the whole cut"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5l3 3-3 3M21 8H7a4 4 0 0 0-4 4M6 19l-3-3 3-3M3 16h14a4 4 0 0 0 4-4"/></svg></button>
         </div>
+        <div id="viewerToolsDock">
+          <div id="viewerTools" class="viewer-tools">
+            <div class="playback-range" role="group" aria-label="Playback In and Out">
+              <span class="in-viewer-popover viewer-tool-label">Playback range</span>
+              <div class="range-actions">
+                <button id="markIn" class="quiet" aria-label="Mark In" title="Mark In at the playhead (I)"><span class="in-viewer-popover">Mark </span>In</button>
+                <button id="markOut" class="quiet" aria-label="Mark Out" title="Mark Out after this frame (O)"><span class="in-viewer-popover">Mark </span>Out</button>
+                <button id="clearRange" class="icon" aria-label="Clear In and Out" title="Clear In and Out" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button>
+              </div>
+              <span id="rangeLabel" class="range-label" hidden></span>
+            </div>
+            <div class="monitor">
+              <label class="in-viewer-popover viewer-tool-label" for="volume">Viewer volume</label>
+              <span id="volumeValue" class="in-viewer-popover volume-value"></span>
+              <button id="mute" class="icon live-sound" aria-pressed="true" aria-label="Sound of the viewer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path class="on" d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/><path class="off" d="M16 9.5l5 5M21 9.5l-5 5"/></svg></button>
+              <input id="volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Viewer volume">
+            </div>
+            <button id="addNote" class="quiet note-button" aria-label="Add frame note" title="Write a note on this frame (N)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-8l-5.5 4v-4H5a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1zM8 9h8M8 12h5"/></svg><span>Frame note</span></button>
+          </div>
+        </div>
+        <button id="viewerMore" class="viewer-more" aria-label="More viewer controls" title="Playback range, viewer volume and frame notes" aria-haspopup="dialog" aria-expanded="false" aria-controls="viewerToolsPopover" aria-describedby="rangeLabel" popovertarget="viewerToolsPopover"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.1M12 12h.1M19 12h.1" stroke-width="3"/></svg><span>More</span></button>
       </div>
+      <div id="viewerToolsPopover" class="viewer-popover" popover role="dialog" aria-label="Viewer tools"></div>
     </section>
 
     <div class="splitter-v" id="splitInspector" role="separator" aria-orientation="vertical" aria-label="Resize the inspector" title="Drag to resize. Double-click to reset." tabindex="0"></div>

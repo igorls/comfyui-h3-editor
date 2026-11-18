@@ -7337,6 +7337,9 @@ function showRange() {
   $("clearRange").hidden = $("rangeLabel").hidden = !range;
   $("rangeLabel").textContent = range ? timecode(range.a) + " – " + timecode(range.b - 1) : "";
   $("rangeLabel").title = "In to Out, including the Out frame";
+  $("viewerMore").classList.toggle("marked", Boolean(range));
+  $("viewerMore").title = range ? "Playback range " + $("rangeLabel").textContent + ", viewer volume and frame notes"
+    : "Playback range, viewer volume and frame notes";
 }
 
 // What Rate will look at: the marked range, else the selected clip on the timeline, else the cut from its start.
@@ -8082,8 +8085,8 @@ function updateClock() {
   const now = timecode(here());
   const frames = document.createElement("span");
   frames.className = "frames-part";
-  frames.textContent = now.slice(5);
-  $("time").replaceChildren(now.slice(0, 5), frames);
+  frames.textContent = now.slice(-3);
+  $("time").replaceChildren(now.slice(0, -3), frames);
   $("total").textContent = "of " + timecode(viewEnd());
   drawNotes();
 }
@@ -8717,8 +8720,11 @@ function setMonitor(level, muted) {
   const button = $("mute");
   button.setAttribute("aria-pressed", String(!silent));
   button.dataset.tip = silent ? "Unmute the viewer" : "Mute the viewer";
+  const percent = Math.round((muted ? 0 : monitor) * 100) + "%";
   $("volume").value = String(muted ? 0 : monitor);
-  $("volume").title = "Viewer volume, " + Math.round((muted ? 0 : monitor) * 100) + "%. The export is not changed";
+  $("volume").setAttribute("aria-valuetext", percent);
+  $("volume").title = "Viewer volume, " + percent + ". The export is not changed";
+  $("volumeValue").textContent = percent;
   relevel();
 }
 
@@ -10336,11 +10342,69 @@ $("export").addEventListener("click", openExporter);
 $("exporterGo").addEventListener("click", runExport);
 $("exporterClose").addEventListener("click", () => $("exporter").close());
 $("modelsClose").addEventListener("click", () => $("models").close());
+
+// Keep a single set of inputs, including their current value and selection, as the viewer resizes.
+function bindViewerTools() {
+  const viewer = $("viewer"), more = $("viewerMore"), panel = $("viewerToolsPopover");
+  const tools = $("viewerTools"), playback = $("viewerPlayback"), start = $("toStart");
+  function place() {
+    if (!panel.matches(":popover-open")) return;
+    const at = more.getBoundingClientRect();
+    const above = at.top - 14, below = window.innerHeight - at.bottom - 14;
+    const opensUp = panel.scrollHeight + 2 <= above || above >= below;
+    panel.style.maxHeight = Math.max(0, opensUp ? above : below) + "px";
+    panel.style.top = (opensUp ? at.top - panel.offsetHeight - 6 : at.bottom + 6) + "px";
+    panel.style.left = Math.max(8, Math.min(at.right - panel.offsetWidth, window.innerWidth - panel.offsetWidth - 8)) + "px";
+  }
+  function arrange() {
+    if (!viewer.clientWidth) {
+      if (panel.matches(":popover-open")) panel.hidePopover();
+      return;
+    }
+    const compact = more.offsetWidth > 0;
+    const dock = compact ? panel : $("viewerToolsDock");
+    // Leave room for full-size touch targets at the smallest pane widths.
+    const startGroup = compact && viewer.clientWidth < 370 ? tools : playback;
+    if (tools.parentElement !== dock || start.parentElement !== startGroup) {
+      const focus = document.activeElement;
+      const hadFocus = tools.contains(focus) || focus === start || focus === more;
+      if (!compact && panel.matches(":popover-open")) panel.hidePopover();
+      if (tools.parentElement !== dock) dock.append(tools);
+      if (start.parentElement !== startGroup) startGroup.prepend(start);
+      if (hadFocus) {
+        const fallback = compact ? more : $("play");
+        (focus.offsetWidth ? focus : fallback).focus({ preventScroll: true });
+      }
+    }
+    place();
+  }
+  panel.addEventListener("toggle", event => {
+    const open = event.newState === "open";
+    more.setAttribute("aria-expanded", String(open));
+    if (open) {
+      place();
+      if (more.matches(":focus-visible")) panel.querySelector("button:not(:disabled, [hidden])").focus({ preventScroll: true });
+    }
+  });
+  panel.addEventListener("click", event => {
+    if (event.target.closest("#addNote, #toStart")) panel.hidePopover();
+  }, true);
+  arrange();
+  const observer = new ResizeObserver(arrange);
+  observer.observe(viewer);
+  observer.observe(panel);
+}
+
+bindViewerTools();
 $("play").addEventListener("click", () => setPlaying(!state.playing));
 $("loop").addEventListener("click", () => setLoop(!state.loop));
 $("markIn").addEventListener("click", markIn);
 $("markOut").addEventListener("click", markOut);
-$("clearRange").addEventListener("click", () => setRange(null, null));
+$("clearRange").addEventListener("click", () => {
+  const focused = document.activeElement === $("clearRange");
+  setRange(null, null);
+  if (focused) $("markIn").focus({ preventScroll: true });
+});
 soundTrackHead($("pictureSoundHead"), 0);
 $("shortcuts").addEventListener("click", () => $("keys").showModal());
 $("keysClose").addEventListener("click", () => $("keys").close());
@@ -10485,6 +10549,7 @@ $("laneV").addEventListener("pointerdown", (event) => {
 window.addEventListener("keydown", (event) => {
   if (event.defaultPrevented) return;
   if (event.key === "Escape" && noting.active) {
+    if (document.querySelector("dialog[open], [popover]:popover-open")) return;
     closeNote();
     drawNotes();
     return;
@@ -10674,7 +10739,7 @@ function drawNotes() {
   // The box steps aside when the drawing reaches under it.
   const box = $("noteBox");
   const shape = noting.active?.shape;
-  if (shape && rect && !box.hidden && !box.classList.contains("moved")) {
+  if (shape && rect && box.parentElement === screen && !box.hidden && !box.classList.contains("moved")) {
     const points = shape.type === "stroke" ? shape.paths.flat() : shape.type === "rect" ? [[shape.x, shape.y], [shape.x + shape.w, shape.y + shape.h]] : [[shape.x, shape.y]];
     const right = rect.left + Math.max(...points.map((p) => p[0])) * rect.width;
     const top = rect.top + Math.min(...points.map((p) => p[1])) * rect.height;
@@ -10690,6 +10755,29 @@ function drawNotes() {
     line.addEventListener("click", () => showNoteInList(note.id));
     return line;
   }));
+}
+
+// A short preview still needs its picture free for drawing and its note actions within reach.
+function fitNoteBox() {
+  const box = $("noteBox");
+  if (box.hidden) return;
+  const screen = $("screen"), rect = screen.getBoundingClientRect();
+  const visible = window.visualViewport;
+  const bottom = visible ? visible.offsetTop + visible.height : window.innerHeight;
+  const short = rect.height > 0 && Math.min(rect.bottom, bottom) - Math.max(rect.top, visible?.offsetTop || 0) < 260;
+  const host = short ? document.body : screen;
+  if (box.parentElement !== host) {
+    const focus = box.contains(document.activeElement) ? document.activeElement : null;
+    box.classList.remove("aside", "moved");
+    box.style.left = box.style.top = "";
+    host.append(box);
+    if (rect.height) focus?.focus({ preventScroll: true });
+  }
+  if (short) {
+    box.style.setProperty("--note-right", Math.max(8, window.innerWidth - rect.right) + "px");
+    box.style.setProperty("--note-bottom", Math.max(0, window.innerHeight - bottom) + 8 + "px");
+    box.style.setProperty("--note-max-height", Math.max(44, (visible?.height || window.innerHeight) - 16) + "px");
+  }
 }
 
 function startNote() {
@@ -10725,6 +10813,7 @@ function startNote() {
   box.classList.remove("aside", "moved");
   box.style.left = box.style.top = "";
   box.hidden = false;
+  fitNoteBox();
   $("noteLayer").classList.add("drawing");
   $("noteText").focus();
   drawNotes();
@@ -10740,7 +10829,9 @@ function setNoteTool(tool) {
 
 function closeNote() {
   noting.active = null;
-  $("noteBox").hidden = true;
+  const box = $("noteBox");
+  box.hidden = true;
+  if (box.parentElement !== $("screen")) $("screen").append(box);
   $("noteLayer").classList.remove("drawing");
 }
 
@@ -10911,6 +11002,8 @@ function noteMarks() {
 
 function bindNoteLayer() {
   const layer = $("noteLayer");
+  // The canvas only takes input while drawing. A fast stroke must not become a fling that eats the next tap.
+  layer.addEventListener("touchstart", event => event.preventDefault(), { passive: false });
   const point = (event) => {
     const rect = frameRect();
     if (!rect) return null;
@@ -10981,6 +11074,7 @@ function bindNoteLayer() {
   $("noteWhere").addEventListener("pointerdown", (event) => {
     const box = $("noteBox");
     const screen = $("screen");
+    if (box.parentElement !== screen) return;
     const from = { x: event.clientX, y: event.clientY, left: box.offsetLeft, top: box.offsetTop };
     event.preventDefault();
     $("noteWhere").setPointerCapture(event.pointerId);
@@ -10999,7 +11093,9 @@ function bindNoteLayer() {
     $("noteWhere").addEventListener("pointermove", move);
     $("noteWhere").addEventListener("pointerup", stop);
   });
-  new ResizeObserver(() => drawNotes()).observe($("screen"));
+  new ResizeObserver(() => { fitNoteBox(); drawNotes(); }).observe($("screen"));
+  window.visualViewport?.addEventListener("resize", fitNoteBox);
+  window.visualViewport?.addEventListener("scroll", fitNoteBox);
   for (const video of [$("videoA"), $("videoB")]) video.addEventListener("seeked", () => drawNotes());
 }
 bindNoteLayer();

@@ -1,4 +1,4 @@
-"""Exercise editor context menus on a running QA server.
+"""Exercise editor context menus, timeline edits, and viewer controls on a running QA server.
 
 Run python tests/browser_context.py http://127.0.0.1:8188/h3take --channel msedge
 with Playwright installed. The fixture uses a new, disposable project.
@@ -115,6 +115,79 @@ def exercise_style_markers(page, base, folder):
     assert not request(project_url, "GET")["clips"][0].get("style_markers")
 
 
+def exercise_viewer_controls(page, footage):
+    page.set_viewport_size({"width": 1440, "height": 900})
+    dock = page.locator("#viewerToolsDock")
+    more = page.get_by_role("button", name="More viewer controls")
+    panel = page.get_by_role("dialog", name="Viewer tools")
+    expect(dock.get_by_role("button", name="Mark In", exact=True)).to_be_visible()
+    page.locator("#splitInspector").press("ArrowLeft")
+    page.locator("#splitInspector").press("ArrowLeft")
+    expect(more).to_be_visible()  # Only the pane changed size.
+
+    page.locator("#toStart").click()
+    page.locator("#forward").click()
+    expect(page.locator("#time")).to_have_text("00:00:01")
+    more.press("Enter")
+    mark_in = panel.get_by_role("button", name="Mark In", exact=True)
+    expect(mark_in).to_be_focused()
+    mark_in.press("Enter")
+    page.keyboard.press("Escape")
+    expect(more).to_be_focused()
+    page.locator("#forward").click()
+    more.click()
+    panel.get_by_role("button", name="Mark Out", exact=True).click()
+    expect(panel.locator("#rangeLabel")).to_have_text("00:00:01 – 00:00:02")
+    volume = panel.get_by_role("slider", name="Viewer volume")
+    volume.press("Home")
+    volume.press("ArrowRight")
+    expect(volume).to_have_attribute("aria-valuetext", "5%")
+
+    page.set_viewport_size({"width": 1920, "height": 900})
+    expect(panel).to_be_hidden()
+    expect(dock.locator("#rangeLabel")).to_have_text("00:00:01 – 00:00:02")
+    expect(dock.get_by_role("slider", name="Viewer volume")).to_have_value("0.05")
+    dock.get_by_role("button", name="Clear In and Out").click()
+    expect(dock.locator("#rangeLabel")).to_be_hidden()
+
+    for width, height in [(390, 844), (320, 568)]:
+        page.set_viewport_size({"width": width, "height": height})
+        page.get_by_role("button", name="Viewer", exact=True).click()
+        expect(more).to_be_visible()
+        strip = page.locator(".transport")
+        assert strip.bounding_box()["height"] <= 56
+        assert strip.evaluate("el => el.scrollWidth <= el.clientWidth")
+        more.click()
+        expect(panel.get_by_role("button", name="Add frame note")).to_be_visible()
+        if width == 320:
+            panel.get_by_role("button", name="Go to start").click()
+            expect(page.locator("#time")).to_have_text("00:00:00")
+        else:
+            page.keyboard.press("Escape")
+        expect(panel).to_be_hidden()
+
+    page.get_by_role("button", name="Clips and cast", exact=True).click()
+    if page.locator("#clips").is_hidden():
+        page.locator("#clipsToggle").click()
+    page.locator('#clips button.clip[data-clip="' + footage + '"]').click()
+    page.get_by_role("button", name="Viewer", exact=True).click()
+    page.wait_for_function("document.querySelector('#screen video.show')?.readyState >= 2")
+    more.click()
+    panel.get_by_role("button", name="Add frame note").click()
+    note = page.get_by_role("dialog", name="Write a note on this frame")
+    expect(note.get_by_role("button", name="Save note")).to_be_in_viewport()
+    note.get_by_role("textbox").fill("Frame note across sizes")
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    expect(page.locator("#screen #noteText")).to_have_value("Frame note across sizes")
+    page.set_viewport_size({"width": 390, "height": 844})
+    more.click()
+    page.keyboard.press("Escape")
+    expect(panel).to_be_hidden()
+    expect(note).to_be_visible()
+    note.get_by_role("button", name="Cancel").click()
+    expect(note).to_be_hidden()
+
+
 def exercise_waveform(page, base, folder):
     project_url = base + "/api/project/" + folder
     request(project_url + "/ops", "POST", {"ops": [
@@ -216,6 +289,7 @@ def exercise_waveform(page, base, folder):
     expect(editor.locator("[data-gain-frame]")).to_have_count(1)
     track.click()
     expect(editor).to_have_count(0)
+    return imported.json()["clip"]
 
 
 def main():
@@ -235,12 +309,13 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             exercise(page, base, folder)
             exercise_style_markers(page, base, folder)
-            exercise_waveform(page, base, folder)
+            footage = exercise_waveform(page, base, folder)
+            exercise_viewer_controls(page, footage)
             assert not errors, errors
             browser.close()
     finally:
         request(project_url, "DELETE")
-    print("Browser context menus, style markers, and waveform checks passed.")
+    print("Browser context menus, style markers, waveform, and responsive viewer controls passed.")
 
 
 if __name__ == "__main__":
