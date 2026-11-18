@@ -4691,15 +4691,17 @@ function spriteSection(clip) {
         config.camera, camera => update({ ...config, camera })),
       spriteChoice("Loop poses", Array.from({ length: 9 }, (_, i) => [String(i + 4), String(i + 4)]),
         String(config.poses), poses => update({ ...config, poses: Number(poses) })),
-      spriteChoice("Motion guide", [["", "Built-in jog"], ["prompt", "Use shot prompt"], ...guides],
+      spriteChoice("Motion guide", [["", "Built-in jog"], ["idle", "Idle · planted stance"], ["prompt", "Use shot prompt"], ...guides],
         config.guide ? JSON.stringify({ file: config.guide.file, subfolder: config.guide.subfolder || "" }) : (config.motion || ""), key => {
           const next = { ...config };
           delete next.guide;
           delete next.motion;
-          if (key === "prompt") next.motion = key;
+          if (key === "prompt" || key === "idle") next.motion = key;
           else if (key) next.guide = JSON.parse(key);
           update(next);
-        }), hint,
+        }),
+      spriteChoice("Cutout", [["auto", "Auto · prefer BiRefNet"], ["edge", "Background key"]],
+        config.cutout || "auto", cutout => update({ ...config, cutout })), hint,
     );
   }
   return disclosure("Sprite Draft", Boolean(config), config ? config.direction + " · " + config.poses + " poses" : "", children);
@@ -4736,7 +4738,10 @@ function spritePlayback(take) {
   const controls = document.createElement("div");
   controls.className = "sprite-transport";
   controls.append(preview, play, download);
-  return section("Sprite loop", [style, controls]);
+  const info = document.createElement("p");
+  info.className = "hint";
+  info.textContent = sheet.fps + " fps" + (sheet.cutout ? " · " + sheet.cutout : "");
+  return section("Sprite loop", [style, controls, info]);
 }
 
 function midGuideLimits(clip, seconds = clip.seconds) {

@@ -27,7 +27,7 @@ made with it, shot by shot.
 - **Set how loud each clip is.** A clip on the timeline has its own volume,
   from silent to twice as loud, and the export applies it. The viewer has a
   volume of its own beside the play controls, which changes only what you hear.
-- **Make a game sprite (experimental).** In an independent shot, open **Sprite Draft**, choose a facing and camera, and use the built-in jog or an imported motion guide. Select your character in Cast. Sprite Draft chooses installed HyperFlow H3 Flash first, then H3 Turbo. You can override the model on the shot. Render a draft, preview its 64-pixel cells at game size, and download either PNG style. **Finish draft** refines the selected motion with the same loop and pivot. Check side views at game size, especially for overhead games.
+- **Make a game sprite (experimental).** In an independent shot, open **Sprite Draft**, choose a facing and camera, and select a jog, a planted idle, the shot prompt or an imported motion guide. Select your character in Cast. Sprite Draft prefers installed HyperFlow H3 Flash, then H3 Turbo. Render a draft and inspect the 64-pixel cells. Auto cutout uses BiRefNet when installed in ComfyUI’s `background_removal` model folder and otherwise uses the background key. Download the illustrated or indexed PNG. **Finish draft** refines the selected motion with the same loop and pivot.
 - **Try fast, finish large.** Drafts are small and quick. Finals are refined at
   up to 1920 pixels, with a realism LoRA for natural skin.
 - **Pick the model, per project or per clip.** HyperFlow H3 Flash, MiniMax H3,

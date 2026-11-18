@@ -478,21 +478,29 @@ class H3SpriteGuide(io.ComfyNode):
 class H3SpriteSheet(io.ComfyNode):
     @classmethod
     def define_schema(cls):
+        optional = [io.BackgroundRemoval.Input("bg_model", optional=True)] if hasattr(io, "BackgroundRemoval") else []
         return io.Schema(node_id="H3SpriteSheet", display_name="H3 Sprite Sheet", category="minimax/h3",
             inputs=[io.Image.Input("images"), io.Int.Input("poses", default=7, min=4, max=12),
-                    io.String.Input("filename_prefix"), io.String.Input("layout", default="")],
+                    io.String.Input("filename_prefix"), io.String.Input("layout", default=""),
+                    io.Boolean.Input("idle", default=False, optional=True), *optional],
             outputs=[], is_output_node=True)
 
     @classmethod
-    def execute(cls, images, poses, filename_prefix, layout=""):
+    def execute(cls, images, poses, filename_prefix, layout="", idle=False, bg_model=None):
         base = os.path.realpath(folder_paths.get_output_directory())
         dest = os.path.realpath(os.path.join(base, filename_prefix))
         if os.path.commonpath((base, dest)) != base or dest == base:
             raise ValueError("Sprite sheets must be saved inside the output folder")
         frames = [Image.fromarray((f.detach().cpu().clamp(0, 1).numpy() * 255).round().astype(np.uint8)) for f in images]
-        full, indexed, transform = sprite.strips(frames, poses, json.loads(layout) if layout else None)
+        def masks_for(indices):
+            return bg_model.encode_image(images[indices]).detach().float().cpu().numpy()
+
+        full, indexed, transform = sprite.strips(frames, poses, json.loads(layout) if layout else None,
+                                                masks_for if bg_model is not None else None, idle=idle)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        metadata = {"poses": poses, "fps": 12, "tile": sprite.TILE, "pivot": list(sprite.PIVOT), "layout": transform}
+        metadata = {"poses": full.width // sprite.TILE, "source_poses": poses, "fps": 6 if idle else 12,
+                    "tile": sprite.TILE, "pivot": list(sprite.PIVOT), "layout": transform,
+                    "cutout": "foreground model" if bg_model is not None else "background key"}
         for label, sheet in (("illustrated", full), ("indexed", indexed)):
             filename = dest + "." + label + ".png"
             sheet.save(filename, format="PNG")

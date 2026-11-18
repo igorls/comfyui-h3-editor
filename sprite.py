@@ -6,6 +6,7 @@ FRAMES = 39
 WIDTH, HEIGHT = 256, 384
 TILE, BODY = 64, 48
 PIVOT = (32, 59)
+MATTE_PREFIX = "background_removal:"
 DIRECTIONS = {
     "S": "south, down the screen",
     "E": "east, screen right",
@@ -22,8 +23,8 @@ CAMERAS = {
 def settings(value):
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) - {"direction", "camera", "poses", "guide", "motion"}:
-        raise ValueError("sprite takes direction, camera, poses and an optional guide video")
+    if not isinstance(value, dict) or set(value) - {"direction", "camera", "poses", "guide", "motion", "cutout"}:
+        raise ValueError("unknown sprite setting")
     direction, camera, poses = value.get("direction", "S"), value.get("camera", "rpg"), value.get("poses", 7)
     if direction not in tuple(DIRECTIONS) or camera not in tuple(CAMERAS):
         raise ValueError("choose a cardinal sprite direction and a level, rpg or overhead camera")
@@ -31,9 +32,13 @@ def settings(value):
         raise ValueError("a sprite cycle needs 4 to 12 poses at 12 fps")
     out = {"direction": direction, "camera": camera, "poses": poses}
     if "motion" in value:
-        if value["motion"] != "prompt" or value.get("guide") is not None:
-            raise ValueError("Use a guide video or motion from the prompt")
-        out["motion"] = "prompt"
+        if value["motion"] not in ("prompt", "idle") or value.get("guide") is not None:
+            raise ValueError("choose one sprite motion source")
+        out["motion"] = value["motion"]
+    if "cutout" in value:
+        if value["cutout"] not in ("auto", "edge"):
+            raise ValueError("choose auto or edge sprite cutout")
+        out["cutout"] = value["cutout"]
     if value.get("guide") is not None:
         g = value["guide"]
         if (
@@ -65,6 +70,10 @@ def instruction(config):
     poses = "Match the poses and foot contacts in <Video 1>, keeping the same proportions and equipment. "
     if config.get("motion") == "prompt":
         poses = "Loop the movement with consistent proportions and equipment. "
+    elif config.get("motion") == "idle":
+        motion = "resting in its natural standing pose"
+        poses = ("Make one subtle repeating idle gesture and return to the initial pose. "
+                 "Keep every ground contact planted and the body in the same spot. ")
     return (
         "Single full-body game character "
         + motion
@@ -150,7 +159,23 @@ def cutout(im):
     return im
 
 
-def strips(frames, poses, previous=None):
+def with_matte(frame, mask):
+    """Remove the estimated backdrop colour from partially covered foreground pixels."""
+    import numpy as np
+    from PIL import Image
+
+    rgb = np.asarray(frame.convert("RGB"), dtype=np.float32) / 255
+    border = np.concatenate((rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]))
+    ground = np.median(border, axis=0)
+    alpha = np.asarray(mask, dtype=np.float32)[..., None].clip(0, 1)
+    if alpha.shape[:2] != rgb.shape[:2]:
+        raise ValueError("sprite matte must match the source frame")
+    color = ((rgb - (1 - alpha) * ground) / np.maximum(alpha, .05)).clip(0, 1)
+    coverage = ((alpha - .12) / .76).clip(0, 1)
+    return Image.fromarray((np.concatenate((color, coverage), axis=2) * 255).round().astype("uint8"))
+
+
+def strips(frames, poses, previous=None, masks_for=None, idle=False):
     """Pick a loop once. Finish reuses the draft's phase, scale and ground contact in normalized source coordinates."""
     import numpy as np
     from PIL import Image
@@ -159,7 +184,7 @@ def strips(frames, poses, previous=None):
         raise ValueError("Sprite Draft expects exactly 39 source frames")
     keyed = [
         cutout(frame.convert("RGB").resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)) for frame in frames
-    ]
+    ] if previous is None or masks_for is None else []
     period = 2 * poses
     if previous is None:
         signatures = []
@@ -203,15 +228,30 @@ def strips(frames, poses, previous=None):
         ):
             raise ValueError("Invalid sprite draft layout")
     scale = BODY / layout["height"]
-    atlas = Image.new("RGBA", (TILE * poses, TILE))
-    for i in range(poses):
-        # Inverse mapping avoids sizing each pose independently or allocating a huge intermediate on sparse masks.
-        origin = (layout["center"] - PIVOT[0] / scale, layout["ground"] - PIVOT[1] / scale)
-        box = (*origin, origin[0] + TILE / scale, origin[1] + TILE / scale)
-        tile = keyed[start + 2 * i].transform(
-            (TILE, TILE), Image.Transform.EXTENT, box, Image.Resampling.BICUBIC
-        )
-        atlas.paste(tile, (TILE * i, 0))
+    # Bake the return into the PNG. Left-to-right playback works in engines without a ping-pong mode.
+    order = list(range(poses)) + (list(range(poses - 2, 0, -1)) if idle else [])
+    atlas = Image.new("RGBA", (TILE * len(order), TILE))
+    indices = [start + 2 * i for i in range(poses)]
+    if masks_for is None:
+        selected = [keyed[n] for n in indices]
+    else:
+        masks = masks_for(indices)
+        if len(masks) != poses:
+            raise ValueError("expected one foreground mask per sprite pose")
+        selected = [with_matte(frames[n], mask) for n, mask in zip(indices, masks)]
+    tiles = []
+    for frame in selected:
+        sx, sy = frame.width / WIDTH, frame.height / HEIGHT
+        x = (layout["center"] - PIVOT[0] / scale) * sx
+        y = (layout["ground"] - PIVOT[1] / scale) * sy
+        box = (x, y, x + TILE * sx / scale, y + TILE * sy / scale)
+        fine = frame.convert("RGBa").transform((4 * TILE, 4 * TILE), Image.Transform.EXTENT, box, Image.Resampling.BILINEAR)
+        tile = fine.resize((TILE, TILE), Image.Resampling.LANCZOS).convert("RGBA")
+        coverage = fine.getchannel("a").resize((TILE, TILE), Image.Resampling.BOX)
+        tile.paste((0, 0, 0, 0), mask=coverage.point(lambda v: 0 if v else 255))
+        tiles.append(tile)
+    for column, index in enumerate(order):
+        atlas.paste(tiles[index], (TILE * column, 0))
     rgba = np.asarray(atlas)
     visible = rgba[:, :, 3] >= 128
     pixels = rgba[:, :, :3][visible]

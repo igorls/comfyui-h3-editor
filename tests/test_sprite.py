@@ -62,6 +62,22 @@ class SpriteProjectTest(unittest.TestCase):
         self.assertNotIn("<Video 1>", graph["10"]["inputs"]["prompt"])
         self.assertIn("90 degrees", graph["10"]["inputs"]["prompt"])
 
+    def test_idle_uses_planted_motion_and_optional_installed_matte(self):
+        project.update_clip(self.project, self.id, {"sprite": {"motion": "idle"}})
+        files = {sprite.MATTE_PREFIX + "seg/birefnet.safetensors"}
+        _, graph = project.plan_render(self.project, "Sprites", self.id, "draft", seed=77, available=files)
+        self.assertNotIn("210", graph)
+        self.assertNotIn("<Video 1>", graph["10"]["inputs"]["prompt"])
+        self.assertIn("planted", graph["10"]["inputs"]["prompt"])
+        self.assertTrue(graph["211"]["inputs"]["idle"])
+        self.assertEqual(graph["212"]["inputs"]["bg_removal_name"], "seg/birefnet.safetensors")
+        self.assertEqual(graph["211"]["inputs"]["bg_model"], ["212", 0])
+        self.assertNotIn("bg_model", self.plan()[1]["211"]["inputs"])
+        project.update_clip(self.project, self.id, {"sprite": {"cutout": "edge"}})
+        _, graph = project.plan_render(self.project, "Sprites", self.id, "draft", seed=77, available=files)
+        self.assertNotIn("212", graph)
+        self.assertNotIn("cutout", graph["210"]["inputs"])
+
     def test_finish_uses_selected_take_after_shot_changes(self):
         project.update_clip(self.project, self.id, {"sprite": {"direction": "W", "poses": 8}})
         draft, _ = self.plan()
@@ -98,6 +114,8 @@ class SpriteProjectTest(unittest.TestCase):
             {"camera": "flat"},
             {"guide": {"file": "a.mp4", "subfolder": "../escape"}},
             {"guide": {"file": "a.mp4"}, "motion": "prompt"},
+            {"guide": {"file": "a.mp4"}, "motion": "idle"},
+            {"motion": "bad"}, {"cutout": "bad"},
         ):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 sprite.settings(value)
@@ -132,11 +150,44 @@ class SpriteImageTest(unittest.TestCase):
         self.assertEqual(indexed.info["transparency"], 0)
         self.assertLessEqual(np.asarray(indexed).max(), 15)
         cell = full.crop((0, 0, 64, 64))
-        self.assertEqual(cell.getchannel("A").getbbox(), (26, 11, 38, 59))
+        self.assertEqual(cell.getchannel("A").point(lambda v: 255 if v >= 128 else 0).getbbox(), (26, 11, 38, 59))
         self.assertEqual(cell.getpixel((32, 15)), (255, 255, 255, 255))
-        self.assertEqual(indexed.convert("RGBA").getpixel((32, 50)), (35, 85, 169, 255))
+        np.testing.assert_allclose(indexed.convert("RGBA").getpixel((32, 50)), (35, 85, 169, 255), atol=1)
         final, _, inherited = sprite.strips([frame.resize((512, 768))] * 39, 7, layout)
         self.assertEqual(layout, inherited)
         self.assertEqual(final.size, full.size)
         with self.assertRaisesRegex(ValueError, "silhouette"):
             sprite.strips([Image.new("RGB", frame.size, "white")] * 39, 7)
+
+    def test_selected_pose_masks_open_holes_and_keep_white_clothing(self):
+        frame = Image.new("RGB", (256, 384), "white")
+        draw = ImageDraw.Draw(frame)
+        draw.rectangle((70, 100, 180, 260), fill="#5a3621")
+        draw.rectangle((90, 130, 160, 170), fill="white")
+        draw.rectangle((90, 190, 160, 237), fill="white")
+        mask = np.zeros((384, 256), np.float32)
+        mask[100:261, 70:181] = 1
+        mask[190:238, 90:161] = 0
+        layout = {"start": 8, "height": 160, "center": 125, "ground": 260}
+        def load(indices):
+            self.assertEqual(indices, list(range(8, 22, 2)))
+            return [mask] * 7
+        full, indexed, saved = sprite.strips([frame]*39, 7, layout, load)
+        self.assertEqual(full.getpixel((32, 26)), (255, 255, 255, 255))
+        self.assertEqual(full.getpixel((32, 45))[3], 0)
+        self.assertEqual(indexed.convert("RGBA").getpixel((32, 45))[3], 0)
+        self.assertEqual(saved, layout)
+
+    def test_idle_bakes_a_return_without_duplicate_endpoints(self):
+        frames = []
+        for n in range(39):
+            frame = Image.new("RGB", (256,384), "white")
+            ImageDraw.Draw(frame).rectangle((80+n,100,140+n,240), fill="navy")
+            frames.append(frame)
+        layout = {"start": 6, "height": 140, "center": 123, "ground": 240}
+        strip, indexed, _ = sprite.strips(frames, 7, layout, idle=True)
+        self.assertEqual(strip.size, (12*64, 64))
+        for sheet in (strip,indexed):
+            cells = [sheet.crop((i*64,0,(i+1)*64,64)).tobytes() for i in range(12)]
+            self.assertEqual(cells[7:], cells[5:0:-1])
+            self.assertNotEqual(cells[0], cells[-1])

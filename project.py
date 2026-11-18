@@ -962,7 +962,7 @@ def frame_of(clip, side):
 def has_references(project, clip):
     """Does the clip show a cast picture, pin a first or last frame, or speak with a cast voice."""
     return bool(clip_cast(project, clip) or frame_of(clip, "first") or frame_of(clip, "last")
-                or clip_voice(project, clip) or (clip.get("sprite") is not None and clip["sprite"].get("motion") != "prompt"))
+                or clip_voice(project, clip) or (clip.get("sprite") is not None and not clip["sprite"].get("motion")))
 
 
 def clip_prompt(project, clip):
@@ -1107,13 +1107,13 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         model = [node, 0]
     graph["5"]["inputs"]["model"] = model
     take_inputs = graph["10"]["inputs"]
-    if config and config.get("motion") != "prompt":
+    if config and not config.get("motion"):
         guide = config.get("guide")
         if guide:
             file = "/".join(filter(None, [guide["subfolder"], guide["file"]]))
             graph["210"] = {"class_type": "H3LoadClip", "inputs": {"file": file, "first": 0, "last": length}}
         else:
-            graph["210"] = {"class_type": "H3SpriteGuide", "inputs": dict(config)}
+            graph["210"] = {"class_type": "H3SpriteGuide", "inputs": {k: config[k] for k in ("direction", "camera", "poses")}}
         take_inputs["ref_videos.ref_video_0"] = ["210", 0]
     first, last = frame_of(clip, "first"), frame_of(clip, "last")
     if first:
@@ -1234,6 +1234,15 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             "images": list(graph["18"]["inputs"]["images"]), "poses": config["poses"],
             "filename_prefix": graph["19"]["inputs"]["filename_prefix"],
             "layout": json.dumps(layout) if layout else ""}}
+        if config.get("motion") == "idle":
+            graph["211"]["inputs"]["idle"] = True
+        if config.get("cutout") != "edge":
+            matte = next((name.removeprefix(sprite.MATTE_PREFIX) for name in sorted(available or ())
+                          if name.startswith(sprite.MATTE_PREFIX)
+                          and name.removeprefix(sprite.MATTE_PREFIX).replace("\\", "/").split("/")[-1].lower() == "birefnet.safetensors"), None)
+            if matte:
+                graph["212"] = {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": matte}}
+                graph["211"]["inputs"]["bg_model"] = ["212", 0]
     return graph
 
 

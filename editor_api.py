@@ -337,6 +337,9 @@ def available_models():
     import nodes as comfy_nodes
 
     names = set()
+    if ("LoadBackgroundRemovalModel" in comfy_nodes.NODE_CLASS_MAPPINGS
+            and "background_removal" in folder_paths.folder_names_and_paths):
+        names.update(store.sprite.MATTE_PREFIX + name for name in folder_paths.get_filename_list("background_removal"))
     for kind in ("diffusion_models", "unet_gguf", "loras", "latent_upscale_models", "text_encoders", "clip", "vae"):
         if kind in folder_paths.folder_names_and_paths:
             names.update(folder_paths.get_filename_list(kind))
