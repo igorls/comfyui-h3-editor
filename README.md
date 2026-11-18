@@ -231,6 +231,11 @@ optionally supply a replacement first frame. The result appears under **Takes**
 as a full-length alternate with the original sound and the picture outside the
 edit range intact.
 
+**Compare takes.** In **Takes**, click **Compare takes**, Ctrl-click or
+Command-click a second take, or drag it into the viewer. Play or step
+through both versions together and drag the divider to reveal either
+side. Audio plays from take A. **Done** closes the comparison.
+
 **Music and narration.** **Add sound** on the timeline lays a sound file under
 the cut at the playhead, on a lane of its own. Drag it to move it, up or down to
 change its lane, and drag its ends to trim it; its volume is in the panel on

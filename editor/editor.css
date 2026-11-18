@@ -226,6 +226,20 @@ button:disabled { opacity: 0.42; cursor: default; }
 .picture-plane { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .screen.cut .picture-plane { inset: auto; left: 50%; top: 50%; translate: -50% -50%; width: min(100cqw, calc(100cqh * var(--frame, 1.7778))); aspect-ratio: var(--frame, 1.7778); }
 .screen.cut .picture-plane video { object-fit: cover; }
+.compare-wipe { position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(100%, calc(100cqh * var(--compare-frame, 1.7778))); aspect-ratio: var(--compare-frame, 1.7778); --wipe: 50%; }
+.screen .compare-wipe video { visibility: visible; background: #000; clip-path: inset(0 0 0 var(--wipe)); }
+.compare-divider { position: absolute; z-index: 2; inset: 0 auto 0 var(--wipe); width: 2px; background: var(--text); transform: translateX(-50%); pointer-events: none; }
+.compare-divider span { position: absolute; top: 50%; left: 50%; display: grid; place-items: center; width: 29px; height: 29px; transform: translate(-50%, -50%); border: 1px solid var(--text); border-radius: 50%; background: var(--room); }
+.compare-divider svg { width: 20px; fill: none; stroke: var(--text); stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.compare-wipe input[type="range"] { position: absolute; z-index: 3; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: ew-resize; touch-action: none; }
+.compare-wipe:focus-within .compare-divider span { outline: 2px solid var(--tungsten); outline-offset: 2px; }
+.screen > .source-tag.compare-bar { gap: 8px; }
+.compare-bar span + span { border-left: 1px solid var(--line-hi); padding-left: 8px; }
+.screen.compare-drop { outline: 2px dashed var(--tungsten); outline-offset: -3px; }
+.screen:has(.compare-wipe:not([hidden])) > :is(.note-tag, .note-layer) { visibility: hidden; }
+.take[data-comparison] { border-color: var(--live); }
+.take[data-comparison] .take-thumb::after { content: attr(data-comparison); position: absolute; left: 4px; top: 4px; padding: 1px 6px; border-radius: 4px; background: var(--room); color: var(--text); font-weight: 600; }
+.take-tools button[aria-pressed="true"] { color: var(--tungsten); }
 #cropStage { position: relative; width: min(100%, calc(48vh * var(--source-ratio))); aspect-ratio: var(--source-ratio); margin: auto; overflow: hidden; background: #000; }
 #cropSource { display: block; width: 100%; height: 100%; }
 #cropBox { position: absolute; box-sizing: border-box; border: 2px solid var(--tungsten); box-shadow: 0 0 0 100vmax rgb(0 0 0 / 55%); cursor: move; touch-action: none; }

@@ -172,6 +172,24 @@ test("picture audio starts the mixer even without any added sounds", () => {
   assert.equal(started, true);
 });
 
+test("the comparison video follows a playing take and seeks to the same paused frame", () => {
+  const { c } = playback();
+  const follower = video();
+  c.$ = () => follower;
+  functions(c, ["syncComparison"]);
+  c.state.playing = true;
+  c.front.paused = false;
+  c.syncComparison(1);
+  assert.equal(follower.currentTime, 1);
+  assert.equal(follower.paused, false);
+  c.syncComparison(1 + 1 / 48);
+  assert.equal(follower.currentTime, 1);
+  c.state.playing = false;
+  c.syncComparison(1 + 1 / 48);
+  assert.equal(follower.currentTime, 1 + 1 / 48);
+  assert.equal(follower.paused, true);
+});
+
 test("sound mix follows source gain points and both placement fades when seeking", () => {
   const { c } = playback();
   const sound = c.state.project.sounds[0];

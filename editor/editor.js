@@ -59,6 +59,7 @@ const state = {
   effect: null,
   range: null,
   sourceRange: null,
+  comparison: null,
   soundDisplay: "waveform",
   looks: [],
   lookSelection: null,
@@ -81,7 +82,11 @@ const binOf = (id) => (id && (state.project.bins || []).find((b) => b.id === id)
 const selectedBin = () => (!state.clip && !state.person && binOf(state.bin)) || null;
 // The clip the viewer shows on its own, picked in the Clips panel. Any other selection ends it.
 const viewing = () => (state.source && state.source === state.clip && clipOf(state.source)) || null;
-const sourceEnd = () => activeTake(viewing())?.frames || 0;
+const sourceEnd = () => {
+  const clip = viewing();
+  const comparison = comparisonTakes(clip);
+  return comparison ? Math.min(comparison.a.frames, comparison.b.frames) : activeTake(clip)?.frames || 0;
+};
 const here = () => (viewing() ? state.sourceFrame : state.playhead);
 const viewEnd = () => (viewing() ? sourceEnd() : sceneEnd());
 const itemLength = (item) => Math.max(1, Math.round((item.out - item.in) / (item.speed || 1)));
@@ -874,7 +879,7 @@ async function grabFrame(clip, side) {
   // The frame the viewer shows: of the clip on its own, or of the cut at the playhead.
   const alone = viewing();
   const item = alone ? null : itemAt(state.playhead);
-  const take = activeTake(alone || clipOf(item?.clip));
+  const take = comparisonTakes(alone)?.a || activeTake(alone || clipOf(item?.clip));
   if (!take) {
     toast("Move the playhead over a rendered clip, then press Use playhead frame.");
     return;
@@ -4263,6 +4268,7 @@ function restoreTakeFields(clip, saved) {
 }
 
 function chooseTake(clip, take) {
+  if (state.comparison) closeComparison();
   checkpoint();
   clip.active = take.id;
   const [, last] = linkedRange(clip.link, take.frames);
@@ -4286,10 +4292,15 @@ function versions(clip) {
   const takes = document.createElement("div");
   takes.className = "takes";
   const current = activeTake(clip);
+  const comparison = comparisonTakes(clip);
   clip.takes.forEach((take, index) => {
     const button = document.createElement("button");
     button.className = "take" + (take === current ? " on" : "");
-    button.title = "Click to choose this take, or drag onto the timeline as a clip";
+    button.title = "Click to choose, Ctrl or Command-click to compare, or drag to the viewer or timeline";
+    if (comparison && (take === comparison.a || take === comparison.b)) {
+      button.dataset.comparison = take === comparison.a ? "A" : "B";
+      button.setAttribute("aria-label", "Compare " + button.dataset.comparison + " · Take " + (index + 1));
+    }
     bindTakeDrag(button, clip, take);
     // Its picture scrubs through the take as the pointer crosses it, like a clip in the Clips panel.
     const img = document.createElement("div");
@@ -4309,7 +4320,12 @@ function versions(clip) {
     const seed = document.createElement("small");
     seed.textContent = "Seed " + take.seed;
     button.append(img, label, seed);
-    button.addEventListener("click", () => chooseTake(clip, take));
+    button.addEventListener("click", event => {
+      if (event.ctrlKey || event.metaKey) {
+        toggleComparison(clip, take, true);
+        $("inspBody").querySelector('.take[data-take="' + CSS.escape(take.id) + '"]')?.focus({ preventScroll: true });
+      } else chooseTake(clip, take);
+    });
     takes.append(button);
   });
   const tools = document.createElement("div");
@@ -4325,6 +4341,15 @@ function versions(clip) {
     tools.append(element);
     return element;
   };
+  const alternate = clip.takes.find(take => take.id === current.edit?.take)
+    || clip.takes.findLast(take => take.edit?.take === current.id) || clip.takes.findLast(take => take !== current);
+  const compare = button("Compare takes", () => {
+    if (comparison) closeComparison();
+    else toggleComparison(clip, alternate);
+    $("inspBody").querySelector("[data-compare-toggle]")?.focus({ preventScroll: true });
+  }, !alternate, "", "Compare two takes in the viewer with a draggable divider");
+  compare.dataset.compareToggle = "";
+  compare.setAttribute("aria-pressed", String(Boolean(comparison)));
   button("Edit with prompt", () => openPromptEdit(clip), Boolean(jobFor(clip.id)));
   if (clip.kind !== "footage") {
     button("Keep seed", () => {
@@ -8379,9 +8404,10 @@ function clipActions(clip) {
 
 function viewerActions() {
   const clip = clipOf(state.clip);
-  const shown = viewing() ? activeTake(viewing()) : activeTake(clipOf(itemAt(state.playhead)?.clip));
+  const compared = comparisonTakes(viewing());
+  const shown = compared?.a || activeTake(viewing() || clipOf(itemAt(state.playhead)?.clip));
   const off = !clip || clip.kind === "footage" ? "Select a generated shot to give it this frame" : !shown ? "The viewer shows no rendered frame" : "";
-  const rows = [];
+  const rows = compared ? [act("Close take comparison", closeComparison, { key: "Escape" }), "-"] : [];
   for (const [side, label] of [["first", "First frame"], ["last", "Last frame"]]) {
     rows.push(act("Use as the " + label.toLowerCase() + (clip ? " of " + clip.name : ""), () => grabFrame(clip, side),
       { off: off || (frameUsable(clip, side) ? "" : clip.name + " carries on from another clip there") }));
@@ -8394,7 +8420,7 @@ function viewerActions() {
       revealInspectorControl(".capture-mid-guide")?.click();
     }, { off: off || (frame === null || frame < first || frame > last ? "Move the playhead to an interior frame of this shot" : "") }));
   }
-  rows.push("-", act("Note on this frame", startNote, { key: "N", off: shown ? "" : "The viewer shows no rendered frame" }));
+  rows.push("-", act("Note on this frame", startNote, { key: "N", off: compared ? "Finish comparing takes first" : shown ? "" : "The viewer shows no rendered frame" }));
   return rows;
 }
 
@@ -8966,10 +8992,91 @@ function place(video, item, frame, tolerance = 0.01) {
   if (Math.abs(video.currentTime - seconds) > tolerance) video.currentTime = seconds;
 }
 
+function comparisonTakes(clip) {
+  const pair = state.comparison;
+  if (!clip || pair?.clip !== clip.id) return null;
+  const a = clip.takes.find(take => take.id === pair.a);
+  const b = clip.takes.find(take => take.id === pair.take);
+  return a && b && a !== b ? { a, b } : null;
+}
+
+function toggleComparison(clip, take, advance = false) {
+  const previous = comparisonTakes(clip);
+  if (previous && (take === previous.a || take === previous.b)) {
+    closeComparison();
+    return;
+  }
+  const a = previous ? (advance ? previous.b : previous.a) : activeTake(clip);
+  if (!a || !take || take.id === a.id) return;
+  if (noting.active) {
+    toast("Save or cancel the frame note before comparing takes.", true);
+    return;
+  }
+  const fromSource = viewing()?.id === clip.id;
+  const placement = leading(state.playhead);
+  const frame = fromSource ? state.sourceFrame : placement?.clip === clip.id
+    ? Math.round(sourceSeconds(placement, state.playhead) * FPS) : 0;
+  const range = fromSource ? state.sourceRange : state.range && placement?.clip === clip.id
+    ? promptEditRange(clip, a, placement) : null;
+  const returnToCut = previous ? state.comparison.returnToCut : !fromSource;
+  if (state.playing) setPlaying(false);
+  setSource(clip.id);
+  if (clip.id !== state.clip) selectClip(clip.id);
+  state.comparison = { clip: clip.id, a: a.id, take: take.id, returnToCut };
+  state.sourceFrame = Math.min(frame, sourceEnd() - 1);
+  state.sourceRange = boundedRange(range, sourceEnd());
+  showWorkspacePanel("viewer");
+  showFrame();
+  renderInspector();
+}
+
+function closeComparison() {
+  const pair = state.comparison;
+  if (!pair) return;
+  state.comparison = null;
+  if (pair.returnToCut) setSource(null);
+  if (state.playing) setPlaying(false);
+  else showFrame();
+  renderInspector();
+}
+
+function syncComparison(seconds) {
+  const video = $("compareVideo");
+  const playing = state.playing && !front.paused && !front.seeking;
+  if (video.readyState >= 1 && !video.seeking && Math.abs(video.currentTime - seconds) > (playing ? 1 / FPS : 0.004)) {
+    video.currentTime = seconds;
+  }
+  if (playing && (video.readyState >= 2 || video.seeking)) {
+    if (video.paused) video.play().catch(() => {});
+  } else if (!video.paused) video.pause();
+}
+
+function showComparison(clip, pair) {
+  const wipe = $("compareWipe"), video = $("compareVideo");
+  wipe.hidden = $("compareBar").hidden = !pair;
+  if (!pair) {
+    state.comparison = null;
+    if (video.dataset.url) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      delete video.dataset.url;
+    }
+    return;
+  }
+  const [width, height] = front.readyState >= 1 && front.videoHeight ? [front.videoWidth, front.videoHeight] : takeShape(pair.a);
+  wipe.style.setProperty("--compare-frame", width / height);
+  $("compareA").textContent = "A · Take " + (clip.takes.indexOf(pair.a) + 1);
+  $("compareB").textContent = "B · Take " + (clip.takes.indexOf(pair.b) + 1);
+  load(video, viewUrl(pair.b.file, pair.b.subfolder));
+  syncComparison(state.sourceFrame / FPS + (state.playing ? 0 : STILL));
+}
+
 // Switches the viewer between the cut (null) and one clip on its own.
 function setSource(clipId) {
   if (state.source === clipId) return;
   if (state.playing) setPlaying(false);
+  state.comparison = null;
   state.source = clipId;
   state.sourceFrame = 0;
   state.sourceRange = null;
@@ -8978,14 +9085,15 @@ function setSource(clipId) {
 
 function showSource(clip) {
   framePlacement(front, null);
-  const take = activeTake(clip);
+  const compared = comparisonTakes(clip);
+  const take = compared?.a || activeTake(clip);
   const job = jobFor(clip.id);
   const slate = $("slate");
   clearMix();
   back.pause();
   back.classList.remove("show");
   if (take) {
-    state.sourceFrame = Math.min(state.sourceFrame, take.frames - 1);
+    state.sourceFrame = Math.min(state.sourceFrame, sourceEnd() - 1);
     load(front, viewUrl(take.file, take.subfolder));
     front.playbackRate = 1;
     if (!state.playing && Math.abs(front.currentTime - state.sourceFrame / FPS - STILL) > 0.01) front.currentTime = state.sourceFrame / FPS + STILL;
@@ -8995,7 +9103,7 @@ function showSource(clip) {
     front.classList.remove("show");
     slate.textContent = job ? "" : "This clip has not been rendered yet. Press Render draft.";
   }
-  showLive(job);
+  showLive(compared ? null : job);
   updateClock();
 }
 
@@ -9026,16 +9134,19 @@ function showFrame() {
 
 function showPicture() {
   const clip = viewing();
+  const pair = comparisonTakes(clip);
   const shape = clip ? null : cutShape();
   $("screen").classList.toggle("cut", Boolean(shape));
   if (shape) $("screen").style.setProperty("--frame", String(shape[0] / shape[1]));
-  $("sourceTag").hidden = !clip;
+  $("sourceTag").hidden = !clip || Boolean(pair);
   $("timeline").classList.toggle("source", Boolean(clip));
   if (clip) {
     $("sourceName").textContent = clip.name;
     showSource(clip);
+    showComparison(clip, pair);
     return;
   }
+  showComparison(null, null);
   // Stopped on the very end of the cut, the viewer keeps the last frame instead of going empty.
   const end = sceneEnd();
   const frame = end && state.playhead >= end ? end - 1 : state.playhead;
@@ -9268,6 +9379,7 @@ function tickSource() {
     return;
   }
   state.sourceFrame = front.currentTime * FPS;
+  if (state.comparison) syncComparison(front.currentTime);
   updateClock();
   playbackRequest = requestAnimationFrame(tickSource);
 }
@@ -10612,6 +10724,45 @@ $("ruler").addEventListener("pointerdown", (event) => {
 });
 
 const lane = $("laneV");
+$("comparePosition").addEventListener("input", event => {
+  $("compareWipe").style.setProperty("--wipe", event.target.value + "%");
+});
+$("comparePosition").addEventListener("keydown", event => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeComparison();
+  }
+});
+$("compareClose").addEventListener("click", closeComparison);
+$("compareVideo").addEventListener("seeked", () => {
+  if (state.comparison && !state.playing) syncComparison(state.sourceFrame / FPS + STILL);
+});
+$("compareVideo").addEventListener("error", () => {
+  if (!state.comparison) return;
+  closeComparison();
+  toast("Could not load take B for comparison.", true);
+});
+const viewerScreen = $("screen");
+viewerScreen.addEventListener("dragover", event => {
+  if (!event.dataTransfer.types.includes(TAKE_DRAG)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  viewerScreen.classList.add("compare-drop");
+});
+viewerScreen.addEventListener("dragleave", event => {
+  if (!viewerScreen.contains(event.relatedTarget)) viewerScreen.classList.remove("compare-drop");
+});
+viewerScreen.addEventListener("drop", event => {
+  viewerScreen.classList.remove("compare-drop");
+  const value = event.dataTransfer.getData(TAKE_DRAG);
+  if (!value) return;
+  event.preventDefault();
+  const [clipId, takeId] = value.split(":");
+  const clip = clipOf(clipId);
+  const take = clip?.takes.find(row => row.id === takeId);
+  const pair = comparisonTakes(clip);
+  if (take && take !== (pair?.a || activeTake(clip)) && take !== pair?.b) toggleComparison(clip, take);
+});
 lane.addEventListener("dragover", (event) => {
   const types = event.dataTransfer.types;
   if (!types.includes(TAKE_DRAG) && !types.includes("text/h3clip")) return;
@@ -10666,6 +10817,10 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (event.key === "Escape") {
+    if (state.comparison) {
+      closeComparison();
+      return;
+    }
     if (state.clip || state.item || state.person || state.bin || state.gap || state.sound || state.effect) selectClip(null);
     else if (currentRange()) setRange(null, null);
   } else if (event.code === "Space") {
@@ -10881,6 +11036,10 @@ function fitNoteBox() {
 }
 
 function startNote() {
+  if (state.comparison) {
+    toast("Finish comparing takes before adding a frame note.", true);
+    return;
+  }
   if (state.playing) setPlaying(false);
   const target = noteTarget();
   if (!target) {

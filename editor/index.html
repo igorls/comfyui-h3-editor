@@ -88,6 +88,14 @@
       <div id="screen" class="screen">
         <div class="picture-plane"><video id="videoA" playsinline></video></div>
         <div class="picture-plane"><video id="videoB" playsinline></video></div>
+        <div id="compareWipe" class="compare-wipe" hidden>
+          <video id="compareVideo" muted playsinline preload="auto"></video>
+          <div class="compare-divider" aria-hidden="true"><span><svg viewBox="0 0 24 24"><path d="m9 8-4 4 4 4m6-8 4 4-4 4"/></svg></span></div>
+          <input id="comparePosition" type="range" min="0" max="100" value="50" aria-label="Take comparison divider">
+        </div>
+        <div id="compareBar" class="source-tag compare-bar" hidden>
+          <span id="compareA"></span><span id="compareB"></span><button id="compareClose" class="quiet" type="button">Done</button>
+        </div>
         <canvas id="vfx" hidden></canvas>
         <img id="preview" alt="Live render preview" hidden>
         <video id="motion" playsinline loop hidden></video>
