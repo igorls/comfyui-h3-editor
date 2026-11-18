@@ -1951,6 +1951,8 @@ let draggedClip = null;
 const TAKE_DRAG = "text/h3take";
 
 function bindTakeDrag(element, clip, take) {
+  element.dataset.take = take.id;
+  element.dataset.clip = clip.id;
   element.draggable = true;
   element.addEventListener("dragstart", (event) => {
     event.dataTransfer.effectAllowed = "copy";
@@ -4338,26 +4340,29 @@ function timelineControls(item) {
   const crop = document.createElement("button");
   crop.className = "quiet";
   crop.textContent = "Crop and reframe";
-  const take = activeTake(clipOf(item.clip));
-  crop.disabled = !take;
-  crop.addEventListener("click", async () => {
-    if (state.playing) setPlaying(false);
-    const folder = state.folder;
-    const frame = Math.min(itemEnd(item) - 1, Math.max(item.start, state.playhead));
-    const value = await editCrop(viewUrl(take.file, take.subfolder), sourceSeconds(item, frame) + STILL,
-      takeShape(take), cutShape(), item.crop);
-    const current = state.project.timeline.find((i) => i.id === item.id);
-    if (value === undefined || state.folder !== folder || !current) return;
-    checkpoint();
-    if (value) current.crop = value;
-    else delete current.crop;
-    save();
-    renderAll();
-  });
+  crop.disabled = !activeTake(clipOf(item.clip));
+  crop.addEventListener("click", () => openPlacementCrop(item));
   box.append(speeds, row, volume, crop);
   const use = takeUse(item);
   if (use) box.append(use);
   return [box];
+}
+
+async function openPlacementCrop(item) {
+  const take = activeTake(clipOf(item.clip));
+  if (!take) return;
+  if (state.playing) setPlaying(false);
+  const folder = state.folder;
+  const frame = Math.min(itemEnd(item) - 1, Math.max(item.start, state.playhead));
+  const value = await editCrop(viewUrl(take.file, take.subfolder), sourceSeconds(item, frame) + STILL,
+    takeShape(take), cutShape(), item.crop);
+  const current = state.project.timeline.find(i => i.id === item.id);
+  if (value === undefined || state.folder !== folder || !current) return;
+  checkpoint();
+  if (value) current.crop = value;
+  else delete current.crop;
+  save();
+  renderAll();
 }
 
 // How much of its take a clip shows, and a window to drag: the clip stays where it is and shows another part.
@@ -7330,21 +7335,26 @@ function itemActions(item) {
   const next = followingItem(item);
   const holdable = rendered && itemLength(item) >= HOLD;
   const inside = state.playhead > item.start && state.playhead < itemEnd(item);
-  return [
+  const generate = [
+    act("Extend forward", () => addLinked("extend_after"), { off: holdable ? "" : "Needs a rendered clip with " + HOLD + " frames" }),
+    act("Extend back", () => addLinked("extend_before"), { off: holdable ? "" : "Needs a rendered clip with " + HOLD + " frames" }),
+    act("Bridge to next", () => addLinked("bridge"), { off: bridgeable(item, next) ? "" : "Needs a rendered clip after it" }),
+    act("Bridge into its movement", () => addLinked("bridge", "hold"), { off: bridgeable(item, next, "hold") ? "" : "Needs a longer rendered clip after it" }),
+    act("Merge with next", mergeWithNext, { off: next && activeTake(clipOf(next.clip)) && next.start === itemEnd(item) ? "" : "Needs a rendered clip right after it" }),
+  ];
+  const render = clip.kind === "footage" ? [] : [
     act("Render draft", () => renderClip(clip, "draft"), { off: busy ? clip.name + " is rendering" : "" }),
     act("Render final", () => renderClip(clip, "final"), { off: busy ? clip.name + " is rendering" : "" }),
     act("Finish this draft", () => renderClip(clip, "finish"), { off: busy ? clip.name + " is rendering" : finishOff(clip) }),
     "-",
     act(String(clip.action || "").trim() ? "Rewrite with a language model" : "Write with a language model", () => openRewrite(clip)),
     "-",
-    act("Extend forward", () => addLinked("extend_after"), { off: holdable ? "" : "Render it first; it needs " + HOLD + " frames to carry on from" }),
-    act("Extend back", () => addLinked("extend_before"), { off: holdable ? "" : "Render it first; it needs " + HOLD + " frames to carry on from" }),
-    act("Bridge to next", () => addLinked("bridge"), { off: bridgeable(item, next) ? "" : "Needs a rendered clip after it" }),
-    act("Bridge into its movement", () => addLinked("bridge", "hold"), { off: bridgeable(item, next, "hold") ? "" : "Needs a rendered clip after it, with " + HOLD + " frames on the timeline" }),
-    act("Merge with next", mergeWithNext, { off: next && activeTake(clipOf(next.clip)) && next.start === itemEnd(item) ? "" : "Needs a rendered clip right after it" }),
-    "-",
+  ];
+  return [
+    ...generate, "-", ...render,
+    act("Crop and reframe", () => openPlacementCrop(item), { off: rendered ? "" : "Render a take first" }),
     act("Split at the playhead", splitAtPlayhead, { key: "S", off: inside ? "" : "Move the playhead over this clip" }),
-    act("Show its takes", () => { state.tab = "takes"; renderAll(); }, { off: clip.takes.length ? "" : "Not rendered yet" }),
+    act("Manage takes", () => openTakeManager(clip), { off: !rendered ? "Render a take first" : clip.kind === "footage" && clip.takes.length === 1 ? "Keep the source take of imported footage" : "" }),
     "-",
     act("Remove from the timeline", removeSelected, { key: "Delete" }),
     act("Ripple delete", rippleDelete, { key: "Shift+Delete", danger: true }),
@@ -7353,12 +7363,18 @@ function itemActions(item) {
 
 function clipActions(clip) {
   const busy = Boolean(jobFor(clip.id));
-  return [
+  const render = clip.kind === "footage" ? [] : [
     act("Render draft", () => renderClip(clip, "draft"), { off: busy ? clip.name + " is rendering" : "" }),
     act("Render final", () => renderClip(clip, "final"), { off: busy ? clip.name + " is rendering" : "" }),
     act("Finish this draft", () => renderClip(clip, "finish"), { off: busy ? clip.name + " is rendering" : finishOff(clip) }),
     "-",
     act(String(clip.action || "").trim() ? "Rewrite with a language model" : "Write with a language model", () => openRewrite(clip)),
+    "-",
+  ];
+  return [
+    act("Open in viewer", () => { setSource(clip.id); showFrame(); showWorkspacePanel("viewer"); }),
+    act("Open in inspector", () => { showTab("shot"); showWorkspacePanel("inspector"); }),
+    ...render,
     act("Add to the end of the cut", () => {
       checkpoint();
       placeOnTimeline(clip, sceneEnd());
@@ -7385,17 +7401,45 @@ function viewerActions() {
 }
 
 // What a right click landed on: the actions for it, after selecting it as a left click would.
-function actionsAt(target) {
-  const block = target.closest("#laneV .block[data-item]");
+function actionsAt(target, x) {
+  const overlay = target.closest("dialog, [popover]:popover-open");
+  if (overlay) {
+    const controls = [...overlay.querySelectorAll("button")].filter(b => b.offsetWidth && !b.closest("#contextMenu"));
+    return { title: overlay.querySelector("h2")?.textContent || overlay.getAttribute("aria-label") || "Actions",
+      rows: controls.map(buttonAction) };
+  }
+  const takeRow = target.closest("[data-take][data-clip]");
+  if (takeRow) {
+    const clip = clipOf(takeRow.dataset.clip), take = clip?.takes.find(t => t.id === takeRow.dataset.take);
+    if (take) return { title: clip.name + " · Take " + (clip.takes.indexOf(take) + 1), rows: [
+      act("Use this take", () => { selectClip(clip.id); chooseTake(clip, take); }),
+      act("Append as a separate clip", () => placeTakeAsClip(clip, take.id)),
+      act("Manage takes", () => openTakeManager(clip), { off: clip.kind === "footage" && clip.takes.length === 1 ? "Keep the source take" : "" }),
+    ] };
+  }
+  const block = target.closest("#laneV [data-item], #laneA [data-item]");
   if (block) {
     const item = state.project.timeline.find((i) => i.id === block.dataset.item);
     if (!item) return null;
     selectClip(item.clip, item.id);
+    if (block.closest("#laneA") || block.classList.contains("wave")) {
+      return { title: clipOf(item.clip).name + " · Sound", rows: [
+        act("Edit clip volume", () => {
+          showWorkspacePanel("inspector"); showTab("timeline");
+          $("inspBody").querySelector('[data-key="Clip volume"]')?.focus();
+        }),
+        act(gainOf(item) ? "Mute this placement" : "Restore placement volume", () => {
+          checkpoint();
+          if (gainOf(item)) item.gain = 0; else delete item.gain;
+          save(); relevel(); renderAll();
+        }),
+      ] };
+    }
     return { title: clipOf(item.clip).name, rows: itemActions(item) };
   }
-  const row = target.closest("#clips .clip[data-clip]");
+  const row = target.closest("#clips .clip[data-clip], #clips [data-take-fold]");
   if (row) {
-    const clip = clipOf(row.dataset.clip);
+    const clip = clipOf(row.dataset.clip || row.dataset.takeFold);
     if (!clip) return null;
     selectClip(clip.id);
     return { title: clip.name, rows: clipActions(clip) };
@@ -7413,7 +7457,10 @@ function actionsAt(target) {
     const found = (state.project.sounds || []).find((s) => s.id === sound.dataset.sound);
     if (!found) return null;
     selectSound(found.id);
-    return { title: found.name || "Sound", rows: [act("Remove from the sound lane", () => removeSound(found.id), { key: "Delete" })] };
+    return { title: found.name || "Sound", rows: [act("Edit fades and volume", () => {
+      showWorkspacePanel("inspector"); showTab("shot");
+      $("inspBody").querySelector(".gain-points")?.scrollIntoView({ block: "nearest" });
+    }), act("Remove from the sound lane", () => removeSound(found.id), { key: "Delete", danger: true })] };
   }
   const member = target.closest("#cast [data-person]");
   if (member) {
@@ -7423,12 +7470,87 @@ function actionsAt(target) {
     return { title: person.name, rows: [act("Use the voice of the clip under the playhead", () => grabVoice(person)), "-",
       act("Remove from the cast", () => removePerson(person), { danger: true })] };
   }
-  if (target.closest("#screen")) return { title: "Viewer", rows: viewerActions() };
-  return null;
+  if (target.closest(".stage")) return { title: "Viewer", rows: [
+    byId("play", state.playing ? "Pause" : "Play"), byId("markIn", "Mark In at playhead"), byId("markOut", "Mark Out at playhead"), "-", ...viewerActions()] };
+  const noteId = target.closest("[data-note]")?.dataset.note;
+  const note = noteId && notesOf().find(n => n.id === noteId);
+  if (note) return { title: "Frame note", rows: [
+    act("Go to this frame", () => goToNote(note)),
+    act("Show note in inspector", () => { showWorkspacePanel("inspector"); showNoteInList(note.id); }),
+    act(note.status === "resolved" ? "Reopen note" : "Resolve note", () => setNoteStatus(note, note.status === "resolved")),
+    act("Delete note", () => removeNote(note), { danger: true })] };
+  const marker = target.closest(".style-marker, .gap-bridge");
+  if (marker) return { title: marker.classList.contains("style-marker") ? "Style marker" : "Gap",
+    rows: [buttonAction(marker, marker.classList.contains("style-marker") ? "Edit this style marker" : "Generate a bridge")] };
+  if (target.closest("#timeline")) return timelineSurfaceActions(target, x);
+  const bin = binOf(target.closest(".bin-group")?.dataset.bin);
+  if (bin) return { title: bin.name, rows: [
+    act("Open bin in inspector", () => { selectBin(bin.id); showWorkspacePanel("inspector"); }),
+    act("New clip in this bin", () => { selectBin(bin.id); addClip(); }),
+    act("Delete bin", () => deleteBin(bin), { danger: true }),
+  ] };
+  if (target.closest("#cast, .cast-head")) return { title: "Cast", rows: [
+    byId("addCast", "Add reference"), byId("addVoice", "Add voice"), byId("addFromCatalog", "From the catalog")] };
+  if (target.closest(".bin")) return { title: "Clips", rows: [
+    byId("newClip", "New clip"), byId("importClip", "Import footage"), byId("newBin", "New bin")] };
+  if (target.closest("#inspector")) {
+    const controls = [...$("inspTabs").querySelectorAll('[role="tab"]')];
+    const section = target.closest(".section, .inspector-foot, .inspector-head");
+    const actions = section ? [...section.querySelectorAll("button")].filter(b => b.offsetWidth) : [];
+    return { title: section?.querySelector("h3, summary")?.textContent || "Inspector",
+      rows: [...actions.map(buttonAction), ...(actions.length ? ["-"] : []), ...controls.map(b => buttonAction(b, "Show " + b.title))] };
+  }
+  const splitter = target.closest('[role="separator"]');
+  if (splitter) return { title: splitter.getAttribute("aria-label"), rows: [
+    act("Reset panel size", () => {
+      if (splitter.id !== "splitter") return splitter.dispatchEvent(new MouseEvent("dblclick"));
+      document.documentElement.style.removeProperty("--tl-h");
+      try { localStorage.removeItem("h3take.timeline"); } catch (_) {}
+      renderTimeline();
+    })] };
+  if (target.closest(".workspace-panels")) return { title: "Workspace panels", rows: [...workspacePanels].map(buttonAction) };
+  return { title: state.project.name || "Project", rows: [
+    byId("project", "Switch project"), byId("newProject", "New project"), byId("export", "Export the cut"), byId("shortcuts", "Keyboard shortcuts")] };
 }
 
-function openContextMenu(found, x, y, keyboard = false) {
+function buttonAction(button, override) {
+  const label = typeof override === "string" ? override : button.getAttribute("aria-label")
+    || button.querySelector("b")?.textContent || button.textContent.trim() || button.title;
+  return act(label, () => button.click(), { off: button.disabled ? button.title || "Unavailable for this selection" : "" });
+}
+const byId = (id, label) => buttonAction($(id), label);
+
+function timelineSurfaceActions(target, x) {
+  const head = target.closest(".tl-head");
+  const lanes = [$("ruler"), $("laneStyle"), $("laneX"), $("laneV"), $("laneA"), ...$("tlContent").querySelectorAll(".lane.extra")];
+  const lane = head ? lanes[[...head.parentElement.children].indexOf(head)] : target.closest(".lane, .ruler");
+  const frame = Number.isFinite(x) && !head && target.closest("#tlContent")
+    ? Math.max(0, Math.min(sceneEnd(), Math.floor((x - $("tlContent").getBoundingClientRect().left) / state.zoom))) : state.playhead;
+  const move = () => { setSource(null); seek(frame); };
+  const at = (label, run) => act(label, () => { move(); run(); });
+  const timeline = [act("Move playhead here", move), at("Mark In here", markIn), at("Mark Out here", markOut), byId("fit", "Fit timeline")];
+  if (!lane) return { title: "Timeline", rows: [byId("generate", "Generate from selection"), byId("addSound", "Add sound"), byId("addEffect", "Add VFX"), ...timeline] };
+  if (lane === $("ruler")) return { title: "Timeline ruler", rows: timeline };
+  if (lane === $("laneX")) return { title: "VFX lane", rows: [at("Add VFX here", addEffect), ...timeline] };
+  if (lane === $("laneStyle")) return { title: "Look lane", rows: [at("Add style marker here", addStyleMarker), ...timeline] };
+  if (lane.classList.contains("a")) {
+    const display = $("soundDisplay");
+    const next = display.value === "waveform" ? "spectrogram" : "waveform";
+    return { title: head?.textContent || "Sound lane", rows: [at("Add sound here", addSound),
+      act("Show " + next, () => { display.value = next; display.dispatchEvent(new Event("change")); }), ...timeline] };
+  }
+  const gap = gapAt(frame);
+  const rows = [byId("newClip", "New clip at end"), byId("importClip", "Import footage")];
+  if (gap) rows.push(act("Close this gap", () => { selectClip(null); state.gap = gap; closeGap(); }));
+  return { title: gap ? "Picture gap" : "Picture lane", rows: [...rows, "-", ...timeline] };
+}
+
+let restoreContextFocus = null;
+function openContextMenu(found, x, y, host, keyboard = false) {
   const menu = $("contextMenu");
+  if (menu.matches(":popover-open")) menu.hidePopover();
+  if (menu.parentElement !== host) host.append(menu);
+  menu.scrollTop = 0;
   const head = document.createElement("p");
   head.className = "context-title";
   head.textContent = found.title;
@@ -7462,34 +7584,55 @@ function openContextMenu(found, x, y, keyboard = false) {
   menu.style.left = Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8)) + "px";
   menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8)) + "px";
   // From the keyboard the first action takes the focus; from the mouse the menu does, so arrows still work.
-  if (keyboard) menu.querySelector(".context-row:not([aria-disabled])")?.focus();
+  if (keyboard) (menu.querySelector(".context-row:not([aria-disabled])") || menu).focus();
   else menu.focus();
 }
 
-document.addEventListener("contextmenu", (event) => {
-  if (!state.project || event.target.closest("dialog, input, textarea, select, [contenteditable], #contextMenu")) return;
-  const found = actionsAt(event.target);
-  if (!found) return;
-  event.preventDefault();
-  openContextMenu(found, event.clientX, event.clientY);
-});
+// Fields keep native text editing. A secondary press on a ruler, handle or clip must not begin a drag.
+const nativeContext = "input:not([type=button]):not([type=submit]), textarea, select, [contenteditable]:not([contenteditable=false])";
+document.addEventListener("pointerdown", event => {
+  if (event.button === 2 && state.project && !event.target.closest(nativeContext)) event.stopPropagation();
+}, true);
 
-// The keyboard's menu key, or Shift+F10, opens the same menu for what has the focus.
-document.addEventListener("keydown", (event) => {
-  if (!(event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey))) return;
-  const focused = document.activeElement;
-  if (!focused || !state.project || focused.closest("dialog, input, textarea, select")) return;
-  const found = actionsAt(focused);
+function requestContext(event, keyboard) {
+  const target = keyboard ? document.activeElement : event.target;
+  if (!state.project || !target || target.closest(nativeContext)) return;
+  if (target.closest("#contextMenu")) { event.preventDefault(); return; }
+  const origin = target.closest("button, [tabindex], a") || target;
+  const region = target.closest("[id]")?.id;
+  const data = [...origin.attributes].filter(a => a.name.startsWith("data-") && a.value);
+  const selector = data.length ? origin.localName + [...origin.classList].slice(0, 1).map(c => "." + CSS.escape(c)).join("")
+    + data.map(a => "[" + CSS.escape(a.name) + "=" + CSS.escape(a.value) + "]").join("") : null;
+  const host = target.closest("dialog[open], [popover]:popover-open") || document.querySelector(".bar");
+  const at = origin.getBoundingClientRect();
+  const found = actionsAt(target, keyboard ? undefined : event.clientX);
   if (!found) return;
   event.preventDefault();
-  const at = focused.getBoundingClientRect();
-  openContextMenu(found, at.left + 12, at.bottom - 4, true);
+  restoreContextFocus = () => {
+    const live = origin.isConnected ? origin : selector ? document.querySelector(selector) : $(region);
+    const focus = live?.closest("button, [tabindex], a") || $(region) || $("timeline");
+    if (!focus.matches("button, [tabindex], a")) focus.tabIndex = -1;
+    focus.focus({ preventScroll: true });
+  };
+  openContextMenu(found, keyboard ? at.left + 12 : event.clientX, keyboard ? at.bottom - 4 : event.clientY, host, keyboard);
+}
+document.addEventListener("contextmenu", event => requestContext(event, false));
+document.addEventListener("keydown", event => {
+  if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) requestContext(event, true);
 });
 
 $("contextMenu").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    $("contextMenu").hidePopover();
+    restoreContextFocus?.();
+    return;
+  }
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
   event.preventDefault();
-  const rows = [...$("contextMenu").querySelectorAll(".context-row")];
+  const rows = [...$("contextMenu").querySelectorAll(".context-row:not([aria-disabled])")];
+  if (!rows.length) return;
   const at = rows.indexOf(document.activeElement);
   const step = event.key === "ArrowDown" ? 1 : -1;
   rows[at < 0 ? (step > 0 ? 0 : rows.length - 1) : (at + step + rows.length) % rows.length]?.focus();
@@ -9763,6 +9906,7 @@ function noteMarks() {
     if (place === null) return null;
     const mark = document.createElement("button");
     mark.className = "note-mark" + (note.status === "resolved" ? " done" : "");
+    mark.dataset.note = note.id;
     mark.style.left = px(place) + "px";
     if (note.range) {
       const end = notePlace({ clip: note.clip, frame: note.range.to });

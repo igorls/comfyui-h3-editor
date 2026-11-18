@@ -851,7 +851,7 @@ a.button[hidden] { display: none; }
 .menu button[hidden] { display: none; }
 .menu b { font-weight: 500; }
 .menu span { color: var(--muted); font-size: 12px; }
-.menu.context-menu { width: auto; min-width: 220px; max-width: 320px; }
+.menu.context-menu { width: auto; min-width: min(220px, calc(100vw - 16px)); max-width: min(320px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; }
 .menu.context-menu:focus { outline: none; }
 .context-title { margin: 0; padding: 6px 10px 4px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .menu .context-row { display: flex; align-items: center; gap: 16px; padding: 6px 10px; }
@@ -907,6 +907,7 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--tungsten); 
   .work:not([data-panel="viewer"]) > .stage { display: none; }
   .tl-tools { min-width: 0; overflow-x: auto; gap: 6px; padding: 0 8px; }
   .tl-tools > .spacer { flex: 1 0 0; }
+  .tl-tools > #generate { order: -1; }
   .menu { max-width: calc(100vw - 16px); }
 }
 @media (max-width: 560px) {
