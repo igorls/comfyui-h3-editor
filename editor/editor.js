@@ -334,7 +334,7 @@ function placeTakeAsClip(source, takeId, start = sceneEnd()) {
   const clip = structuredClone(source);
   const take = clip.takes[index];
   clip.id = uid("c");
-  clip.name += " Â· Take " + (index + 1);
+  clip.name += " · Take " + (index + 1);
   clip.takes = [take];
   clip.active = take.id;
   clip.seed = take.seed ?? clip.seed;
@@ -1519,6 +1519,8 @@ function toggleBin(binId) {
 function selectBin(binId) {
   setSource(null);
   state.bin = binId;
+  state.effect = null;
+  state.sound = null;
   state.clip = null;
   state.item = null;
   state.person = null;
@@ -2043,7 +2045,7 @@ function clipRow(clip) {
       const row = document.createElement("button");
       row.className = "clip-take";
       const label = document.createElement("span");
-      label.textContent = "Take " + (index + 1) + " Â· " + take.quality;
+      label.textContent = "Take " + (index + 1) + " · " + take.quality;
       row.setAttribute("aria-label", "Append " + label.textContent + " from " + clip.name + " as a clip");
       row.title = "Drag onto the timeline, or click to append this take as a clip";
       row.append(label, icon("plus"));
@@ -3254,7 +3256,7 @@ function formatOptions(select, current) {
   const presets = [...(state.formatPresets || Object.keys(labels))];
   if (!presets.includes(current)) presets.push(current);
   select.replaceChildren(...presets.map((format) => new Option(labels[format] || format, format)),
-    new Option("Custom ratioâ€¦", "custom"));
+    new Option("Custom ratio…", "custom"));
   select.value = current;
 }
 
@@ -3404,7 +3406,7 @@ function lookFields() {
   const pick = document.createElement("select");
   pick.setAttribute("aria-label", "Style library");
   pick.dataset.key = "lookLibrary";
-  pick.append(new Option("Choose a lookâ€¦", ""));
+  pick.append(new Option("Choose a look…", ""));
   const matched = state.looks.find((look) => look.style === state.project.style);
   for (const builtin of [false, true]) {
     const group = document.createElement("optgroup");
@@ -3506,7 +3508,7 @@ function sizeChoices() {
     for (const row of table[quality]) {
       const option = document.createElement("option");
       option.value = row.id;
-      option.textContent = names[row.id] + ", " + row.out[0] + " Ã— " + row.out[1];
+      option.textContent = names[row.id] + ", " + row.out[0] + " × " + row.out[1];
       option.selected = row.id === current;
       if (row.id === "sharp" && relay && !relay.installed) {
         option.disabled = row.id !== current;
@@ -3565,14 +3567,14 @@ function sizeChoices() {
       return box;
     });
     const times = document.createElement("span");
-    times.textContent = "Ã—";
+    times.textContent = "×";
     sides.append(boxes[0], times, boxes[1]);
     says(mine);
     label.append(sides, note);
     const fromRatio = document.createElement("button");
     fromRatio.type = "button";
     fromRatio.className = "quiet small";
-    fromRatio.textContent = "Set by longest side or megapixelsâ€¦";
+    fromRatio.textContent = "Set by longest side or megapixels…";
     fromRatio.addEventListener("click", () => openSizeTarget(quality, mine, setSize));
     label.append(fromRatio);
     return label;
@@ -3582,9 +3584,9 @@ function sizeChoices() {
   const full = table.final.find((row) => row.id === "full");
   const sharp = table.final.find((row) => row.id === "sharp");
   hint.textContent = "New renders use these sizes. A smaller one needs less GPU memory and renders faster."
-    + (full ? " Full samples at " + full.width + " Ã— " + full.height + ", then redraws its last steps at " + full.out[0] + " Ã— " + full.out[1] + "." : "")
+    + (full ? " Full samples at " + full.width + " × " + full.height + ", then redraws its last steps at " + full.out[0] + " × " + full.out[1] + "." : "")
     + (sharp ? " Sharp samples at the same size once, enlarges the picture two times with RelayVSR and scales it down to "
-      + sharp.out[0] + " Ã— " + sharp.out[1] + ": quicker than Full, with crisper edges and the smoother skin of the sampled size."
+      + sharp.out[0] + " × " + sharp.out[1] + ": quicker than Full, with crisper edges and the smoother skin of the sampled size."
       + (relay && !relay.installed ? " It needs " + relay.missing.join(" and ") + " from " + relay.source + " on Hugging Face." : "") : "")
     + (own ? " Your own size takes any width and height from " + own.min + " to " + own.max + " in steps of " + own.step
       + ", and comes out as sampled." : "")
@@ -3610,7 +3612,7 @@ function openSizeTarget(quality, dimensions, setSize) {
       const reply = await fetchSize(ratio.value, { [method.value]: target.value });
       if (turn !== sequence) return;
       measured = reply.size;
-      result.textContent = measured.join(" Ã— ") + " px Â· " + (measured[0] * measured[1] / 1e6).toFixed(2) + " MP";
+      result.textContent = measured.join(" × ") + " px · " + (measured[0] * measured[1] / 1e6).toFixed(2) + " MP";
       apply.disabled = false;
     } catch (error) {
       if (turn === sequence) result.textContent = error.message;
@@ -4050,7 +4052,7 @@ function upscaleControls(clip) {
   for (const row of upscalers) {
     const option = document.createElement("option");
     option.value = row.id;
-    option.textContent = row.title + (row.installed ? "" : " Â· setup");
+    option.textContent = row.title + (row.installed ? "" : " · setup");
     option.selected = row.id === chosen;
     which.append(option);
   }
@@ -4199,7 +4201,7 @@ function versions(clip) {
   const spacer = document.createElement("span");
   spacer.className = "spacer";
   tools.append(spacer);
-  button("Manage takesâ€¦", () => openTakeManager(clip), clip.kind === "footage" && clip.takes.length < 2,
+  button("Manage takes…", () => openTakeManager(clip), clip.kind === "footage" && clip.takes.length < 2,
     "", "Select takes to remove from this clip");
   return [takes, tools];
 }
@@ -4217,7 +4219,7 @@ function openTakeManager(clip) {
       ? "The newest remaining take will play in this clip. Its other independent placements keep their own takes."
       : "Remove versions from this clip. Their media files stay available to other placements and project history.";
   }
-  $("takeManagerTitle").textContent = "Manage takes Â· " + clip.name;
+  $("takeManagerTitle").textContent = "Manage takes · " + clip.name;
   list.replaceChildren();
   for (const [index, take] of clip.takes.entries()) {
     const row = document.createElement("label"), check = document.createElement("input");
@@ -4230,7 +4232,7 @@ function openTakeManager(clip) {
       image.alt = "";
       row.append(image);
     }
-    row.append("Take " + (index + 1) + " Â· " + take.quality + (take.id === active ? " Â· Active" : ""));
+    row.append("Take " + (index + 1) + " · " + take.quality + (take.id === active ? " · Active" : ""));
     list.append(row);
   }
   $("takeManagerClose").onclick = () => dialog.close();
@@ -4527,7 +4529,7 @@ function guideFrameAtPlayhead(clip) {
 
 function updateGuideLimits(section, clip) {
   const { first, last, limit } = midGuideLimits(clip);
-  section.querySelector(".hint").textContent = "Use up to " + limit + " guide pictures on source frames " + first + "â€“" + last
+  section.querySelector(".hint").textContent = "Use up to " + limit + " guide pictures on source frames " + first + "–" + last
     + ". A guide steers the next render near its frame. It can cause a brief hold or jump.";
   for (const input of section.querySelectorAll("input")) {
     input.min = first;
@@ -4602,7 +4604,9 @@ function midGuidesSection(clip) {
       change(null, frame, asset);
     } catch (error) { toast(error.message, true); }
   }
-  bar.append(label, act("Upload image", () => add("upload")), act("Use playhead frame", () => add("grab")));
+  const capture = act("Use playhead frame", () => add("grab"));
+  capture.classList.add("capture-mid-guide");
+  bar.append(label, act("Upload image", () => add("upload")), capture);
   dropTarget(bar, (file) => add("upload", file));
   const rows = guides.map((guide) => {
     const row = document.createElement("div");
@@ -4812,7 +4816,7 @@ async function drawSpectrogram(canvas, item, take) {
   canvas.setAttribute("aria-label", "Sound spectrogram: low frequencies at the bottom, high frequencies at the top");
   const status = document.createElement("span");
   status.className = "sound-status";
-  status.textContent = "Loading spectrogramâ€¦";
+  status.textContent = "Loading spectrogram…";
   // drawWave is also called before an extra sound's canvas is attached to its block.
   queueMicrotask(() => { if (canvas.isConnected) canvas.after(status); });
   try {
@@ -5206,7 +5210,7 @@ function soundEnvelopePanel(sound) {
   });
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = "Drag points on the waveform or enter their source frames and levels. 100% plays at the soundâ€™s volume.";
+  hint.textContent = "Drag points on the waveform or enter their source frames and levels. 100% plays at the sound’s volume.";
   return section("Volume curve", [fades, list, add, hint]);
 }
 
@@ -5466,6 +5470,16 @@ function renderTimeline() {
     const wave = document.createElement("div");
     wave.className = "wave" + (take ? "" : " todo") + (item.id === state.item ? " on" : "");
     wave.dataset.item = item.id;
+    wave.tabIndex = 0;
+    wave.setAttribute("role", "button");
+    wave.setAttribute("aria-label", "Clip audio for " + clip.name);
+    const editAudio = () => { selectClip(clip.id, item.id); showTab("timeline"); };
+    wave.addEventListener("click", editAudio);
+    wave.addEventListener("keydown", event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      editAudio();
+    });
     wave.style.left = block.style.left;
     wave.style.width = block.style.width;
     if (take) {
@@ -5610,14 +5624,15 @@ function renderTimeline() {
     blocks.push(mark);
   }
   // Drawing the lane again must not take the focus away from the clip that had it.
-  const focused = $("laneV").contains(document.activeElement) ? document.activeElement.dataset.item : null;
+  const focusedLane = document.activeElement?.closest("#laneV, #laneA");
+  const focused = focusedLane && document.activeElement.dataset.item;
   $("laneV").replaceChildren(...blocks);
   $("laneA").replaceChildren(...waves);
   renderEffects();
   renderStyleMarkers();
   showRange();
   renderSounds();
-  if (focused) $("laneV").querySelector('[data-item="' + CSS.escape(focused) + '"]')?.focus();
+  if (focused) focusedLane.querySelector('[data-item="' + CSS.escape(focused) + '"]')?.focus({ preventScroll: true });
   placePlayhead();
   updateTools();
   renderChecks();
@@ -6133,7 +6148,7 @@ function showEffectProgress() {
   }
   const label = document.querySelector("#inspBody .row button.primary");
   if (label && state.effect === job.id) label.textContent = "Rendering " + job.done + " of " + job.total + time;
-  document.title = percent + "% " + job.name + " Â· " + job.title;
+  document.title = percent + "% " + job.name + " · " + job.title;
 }
 
 // A VFX render runs in this page. Closing or reloading it would throw the render away, so the browser asks first.
@@ -6617,7 +6632,7 @@ function showRange() {
   $("markIn").classList.toggle("marked", Boolean(range));
   $("markOut").classList.toggle("marked", Boolean(range));
   $("clearRange").hidden = $("rangeLabel").hidden = !range;
-  $("rangeLabel").textContent = range ? timecode(range.a) + " â€“ " + timecode(range.b - 1) : "";
+  $("rangeLabel").textContent = range ? timecode(range.a) + " – " + timecode(range.b - 1) : "";
   $("rangeLabel").title = "In to Out, including the Out frame";
 }
 
@@ -6674,7 +6689,7 @@ function raterRows(rating) {
     const level = document.createElement("div");
     level.className = "level";
     if (row.error) {
-      num.textContent = "â€“";
+      num.textContent = "–";
       level.textContent = row.error;
     } else {
       const fill = document.createElement("i");
@@ -6685,7 +6700,7 @@ function raterRows(rating) {
       meter.setAttribute("aria-label", row.title + ": " + (row.of === 1 ? Math.round(row.part * 100) + "% likely" : row.score.toFixed(1) + " of " + row.of));
       // A check has two ends, so it reads as how likely the good one is. A scale reads as a level.
       num.textContent = row.of === 1 ? Math.round(row.part * 100) + "%" : row.score.toFixed(1) + " / " + row.of;
-      level.textContent = row.level + (row.of === 1 || row.confidence === null || row.confidence === undefined ? "" : " Â· " + Math.round(row.confidence * 100) + "% sure");
+      level.textContent = row.level + (row.of === 1 || row.confidence === null || row.confidence === undefined ? "" : " · " + Math.round(row.confidence * 100) + "% sure");
     }
     box.append(what, meter, num, level);
     return box;
@@ -6702,7 +6717,7 @@ function raterPast(span) {
   // Earlier ratings that looked at some of the same frames: how this stretch scored before.
   const past = (state.project.ratings || []).filter((r) => r.from < span.b && span.a < r.to).slice(0, 6);
   $("raterPast").textContent = past.length
-    ? "Earlier ratings here:\n" + past.map((r) => r.at.replace("T", " ") + "  " + timecode(r.from) + " to " + timecode(r.to) + "  " + (ratingMean(r) ?? "â€“") + "%").join("\n")
+    ? "Earlier ratings here:\n" + past.map((r) => r.at.replace("T", " ") + "  " + timecode(r.from) + " to " + timecode(r.to) + "  " + (ratingMean(r) ?? "–") + "%").join("\n")
     : "";
   return past;
 }
@@ -7564,11 +7579,19 @@ function clipActions(clip) {
 function viewerActions() {
   const clip = clipOf(state.clip);
   const shown = viewing() ? activeTake(viewing()) : activeTake(clipOf(itemAt(state.playhead)?.clip));
-  const off = !clip ? "Select the clip to give it this frame" : !shown ? "The viewer shows no rendered frame" : "";
+  const off = !clip || clip.kind === "footage" ? "Select a generated shot to give it this frame" : !shown ? "The viewer shows no rendered frame" : "";
   const rows = [];
   for (const [side, label] of [["first", "First frame"], ["last", "Last frame"]]) {
     rows.push(act("Use as the " + label.toLowerCase() + (clip ? " of " + clip.name : ""), () => grabFrame(clip, side),
       { off: off || (frameUsable(clip, side) ? "" : clip.name + " carries on from another clip there") }));
+  }
+  if (clip && clip.kind !== "footage") {
+    const frame = guideFrameAtPlayhead(clip);
+    const { first, last } = midGuideLimits(clip);
+    rows.push(act("Use as a mid-frame guide", () => {
+      showTab("shot");
+      $("inspBody").querySelector(".capture-mid-guide")?.click();
+    }, { off: off || (frame === null || frame < first || frame > last ? "Move the playhead to an interior frame of this shot" : "") }));
   }
   rows.push("-", act("Note on this frame", startNote, { key: "N", off: shown ? "" : "The viewer shows no rendered frame" }));
   return rows;
@@ -7576,16 +7599,41 @@ function viewerActions() {
 
 // What a right click landed on: the actions for it, after selecting it as a left click would.
 function actionsAt(target, x) {
+  const control = target.closest("select, input[type=range], input[type=checkbox], input[type=radio]");
+  if (control) {
+    const title = control.getAttribute("aria-label") || control.labels?.[0]?.innerText.trim() || "Control";
+    if (control.tagName === "SELECT") {
+      return { title, rows: [...control.options].filter(o => !o.hidden).map(option => act(option.textContent, () => {
+        control.value = option.value;
+        control.dispatchEvent(new Event("input", { bubbles: true }));
+        control.dispatchEvent(new Event("change", { bubbles: true }));
+      }, { off: option.disabled || control.disabled ? "Unavailable" : "" })) };
+    }
+    if (control.type === "range") {
+      const adjust = direction => {
+        if (direction > 0) control.stepUp(); else control.stepDown();
+        control.dispatchEvent(new Event("input", { bubbles: true }));
+        control.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      return { title, rows: [act("Increase", () => adjust(1)), act("Decrease", () => adjust(-1))] };
+    }
+    return { title, rows: [act(control.checked && control.type === "checkbox" ? "Uncheck" : "Select", () => control.click())] };
+  }
+  const projectRow = target.closest(".project-row[data-folder]");
+  if (projectRow) return { title: projectRow.querySelector(".project-title")?.innerText || "Project",
+    rows: [act("Open this project", () => pickProject(projectRow.dataset.folder))] };
   const overlay = target.closest("dialog, [popover]:popover-open");
   if (overlay) {
     const controls = [...overlay.querySelectorAll("button")].filter(b => b.offsetWidth && !b.closest("#contextMenu"));
+    const rows = controls.map(buttonAction);
+    if (!rows.length) rows.push(act("Close", () => overlay.matches("dialog") ? overlay.close() : overlay.hidePopover()));
     return { title: overlay.querySelector("h2")?.textContent || overlay.getAttribute("aria-label") || "Actions",
-      rows: controls.map(buttonAction) };
+      rows };
   }
   const takeRow = target.closest("[data-take][data-clip]");
   if (takeRow) {
     const clip = clipOf(takeRow.dataset.clip), take = clip?.takes.find(t => t.id === takeRow.dataset.take);
-    if (take) return { title: clip.name + " Â· Take " + (clip.takes.indexOf(take) + 1), rows: [
+    if (take) return { title: clip.name + " · Take " + (clip.takes.indexOf(take) + 1), rows: [
       act("Use this take", () => { selectClip(clip.id); chooseTake(clip, take); }),
       act("Append as a separate clip", () => placeTakeAsClip(clip, take.id)),
       act("Manage takes", () => openTakeManager(clip), { off: clip.kind === "footage" && clip.takes.length === 1 ? "Keep the source take" : "" }),
@@ -7597,7 +7645,7 @@ function actionsAt(target, x) {
     if (!item) return null;
     selectClip(item.clip, item.id);
     if (block.closest("#laneA") || block.classList.contains("wave")) {
-      return { title: clipOf(item.clip).name + " Â· Sound", rows: [
+      return { title: clipOf(item.clip).name + " · Sound", rows: [
         act("Edit clip volume", () => {
           showWorkspacePanel("inspector"); showTab("timeline");
           $("inspBody").querySelector('[data-key="Clip volume"]')?.focus();
@@ -7653,6 +7701,16 @@ function actionsAt(target, x) {
     act("Show note in inspector", () => { showWorkspacePanel("inspector"); showNoteInList(note.id); }),
     act(note.status === "resolved" ? "Reopen note" : "Resolve note", () => setNoteStatus(note, note.status === "resolved")),
     act("Delete note", () => removeNote(note), { danger: true })] };
+  const guide = target.closest(".mid-guide-row");
+  if (guide) {
+    const frame = guide.querySelector("input");
+    return { title: "Guide at frame " + frame.value, rows: [
+      act("Change source frame", () => { frame.focus(); frame.select(); }),
+      buttonAction(guide.querySelector("button")),
+    ] };
+  }
+  const check = target.closest("#tlContent button.soft-mark");
+  if (check) return { title: "Timeline check", rows: [buttonAction(check, "Inspect this frame")] };
   const marker = target.closest(".style-marker, .gap-bridge");
   if (marker) return { title: marker.classList.contains("style-marker") ? "Style marker" : "Gap",
     rows: [buttonAction(marker, marker.classList.contains("style-marker") ? "Edit this style marker" : "Generate a bridge")] };
@@ -7763,7 +7821,7 @@ function openContextMenu(found, x, y, host, keyboard = false) {
 }
 
 // Fields keep native text editing. A secondary press on a ruler, handle or clip must not begin a drag.
-const nativeContext = "input:not([type=button]):not([type=submit]), textarea, select, [contenteditable]:not([contenteditable=false])";
+const nativeContext = "input:not([type=button],[type=submit],[type=checkbox],[type=radio],[type=range]), textarea, [contenteditable]:not([contenteditable=false])";
 document.addEventListener("pointerdown", event => {
   if (event.button === 2 && state.project && !event.target.closest(nativeContext)) event.stopPropagation();
 }, true);
@@ -7791,6 +7849,12 @@ function requestContext(event, keyboard) {
   openContextMenu(found, keyboard ? at.left + 12 : event.clientX, keyboard ? at.bottom - 4 : event.clientY, host, keyboard);
 }
 document.addEventListener("contextmenu", event => requestContext(event, false));
+$("contextMenu").addEventListener("toggle", event => {
+  const menu = event.currentTarget;
+  if (event.newState === "closed" && !menu.matches(":popover-open") && menu.parentElement !== document.querySelector(".bar")) {
+    document.querySelector(".bar").append(menu);
+  }
+});
 document.addEventListener("keydown", event => {
   if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) requestContext(event, true);
 });
@@ -9461,7 +9525,7 @@ async function openExporter() {
   const scope = $("exporterSpan");
   $("exporterSpanRow").hidden = !span;
   scope.value = span ? "range" : "all";
-  if (span) scope.options[1].textContent = "Marked range, " + timecode(span.from) + " â€“ " + timecode(span.to - 1);
+  if (span) scope.options[1].textContent = "Marked range, " + timecode(span.from) + " – " + timecode(span.to - 1);
   scope.onchange = () => {
     const current = scope.value === "range" ? markedPlan : plan;
     const notes = [];
