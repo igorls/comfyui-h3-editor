@@ -163,6 +163,15 @@ test("whole-cut looping seeks back and resets extra sound to the same time", () 
   assert.equal(c.soundPlayers.get("music").paused, false);
 });
 
+test("picture audio starts the mixer even without any added sounds", () => {
+  const { c } = playback();
+  c.state.project.sounds = [];
+  let started = false;
+  c.resumeSoundMixer = () => { started = true; };
+  c.setPlaying(true);
+  assert.equal(started, true);
+});
+
 test("sound mix follows source gain points and both placement fades when seeking", () => {
   const { c } = playback();
   const sound = c.state.project.sounds[0];

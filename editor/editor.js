@@ -9004,7 +9004,7 @@ function setPlaying(on) {
     return;
   }
   // Whatever was shown while paused, the clip under the playhead starts at its own volume.
-  if (!viewing() && state.project?.sounds?.length) resumeSoundMixer();
+  if (!viewing()) resumeSoundMixer();
   relevel();
   const range = state.loop ? currentRange() : null;
   const start = range?.a || 0, end = range?.b || viewEnd();
