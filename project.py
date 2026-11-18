@@ -1016,6 +1016,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     hyperflow = is_hyperflow(unet)
     link = clip.get("link")
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
+    guides = clean_mid_guides(clip, length)
     graph = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
         "2": text_encoder_node(models["clip"], available, models.get("projection")),
@@ -1136,6 +1137,19 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
                 # A hold alone does not make the take arrive. The guide tells H3 what it must land on.
                 graph["8"] = {"class_type": "ImageFromBatch", "inputs": {"image": ["7", 0], "batch_index": 0, "length": 1}}
                 take_inputs.update({"mid_frames": str(length - hold), "mid_images.mid_image_0": ["8", 0]})
+    if guides:
+        # A bridge with a full hold uses its own landing guide. User guides are earlier
+        # in the generated span. Keep the images in the same order as their frame numbers.
+        pins = []
+        for index, guide in enumerate(guides):
+            node = str(200 + index)
+            graph[node] = still_node(guide)
+            pins.append((guide["frame"], [node, 0]))
+        if take_inputs["mid_frames"]:
+            pins.append((int(take_inputs["mid_frames"]), take_inputs["mid_images.mid_image_0"]))
+        take_inputs["mid_frames"] = ", ".join(str(frame) for frame, _ in pins)
+        for index, (_, image) in enumerate(pins):
+            take_inputs["mid_images.mid_image_%s" % index] = image
     track = clip.get("track")
     if track:
         # The picture is generated to this slice of the track, laid from the take's first frame.
@@ -2039,7 +2053,7 @@ HOLD = 39
 HANDOVER = 9
 MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
-               "first", "last", "language", "track", "bin", "profile", "loras", "style_markers")
+               "first", "last", "language", "track", "bin", "profile", "loras", "style_markers", "mid_guides")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
 PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "patches", "realism", "checkpoints", "text_encoder", "text_projection", "vae", "audio_vae", "sizes")
 # The model files set_project names, and their keys in the project's models. A projection only
@@ -2061,6 +2075,7 @@ REFMOD_PREFIX = "refmod:"
 # A cast member can have several pictures, the main one included. H3 takes this many pictures in one shot.
 CAST_PICTURES = 8
 H3_PICTURES = 9
+PICTURES = (".png", ".jpg", ".jpeg", ".webp")
 BIN_FIELDS = ("name",)
 LINK_MODES = ("extend_after", "extend_before", "bridge", "merge")
 # How a bridge reaches the next clip: on a short run of its first frames (see end_hold), on its first frame alone,
@@ -2074,7 +2089,7 @@ END_HOLD = 22
 # (it dissolved or cut instead), and at 153 in 4 of 6.
 BRIDGE_SECONDS = 6.375
 LINK_TITLES = {"extend_after": "After ", "extend_before": "Before ", "bridge": "Bridge from ", "merge": "Merge from "}
-SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers")
+SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides")
 
 
 def new_id(prefix):
@@ -2193,6 +2208,44 @@ def clean_asset(value, what):
     return {"file": value["file"], "subfolder": str(value.get("subfolder") or "")}
 
 
+def clean_mid_guides(clip, length=None):
+    """Validated authored guides in source-frame order. Linked shots reserve their held frames."""
+    rows = clip.get("mid_guides")
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise ValueError("mid_guides must be a list of pictures with frame, file and subfolder")
+    if not rows:
+        return []
+    if clip.get("kind") == "footage":
+        raise ValueError("mid-frame guides belong to generated clips")
+    link = clip.get("link") or {}
+    seconds = clip.get("seconds", 5)
+    length = length or (linked_length(link, seconds) if link else snap_frames(seconds))
+    first, last, limit = 1, length - 2, 8
+    if link.get("mode") in ("extend_after", "bridge"):
+        first = link["hold"]
+    if link.get("mode") == "extend_before":
+        last = length - link["hold"] - 1
+    if link.get("mode") == "bridge" and not arrives_on_pin(link):
+        last = length - end_hold(link) - 1
+        limit -= int(end_hold(link) == link["hold"])  # H3 Take has eight mid image sockets.
+    if len(rows) > limit:
+        raise ValueError("this shot takes up to %s mid-frame guides" % limit)
+    found = {}
+    for row in rows:
+        if not isinstance(row, dict) or type(row.get("frame")) is not int or not first <= row["frame"] <= last:
+            raise ValueError("mid-frame guides must be on generated frames %s to %s of this shot" % (first, last))
+        frame = row["frame"]
+        if frame in found:
+            raise ValueError("there is already a mid-frame guide at frame %s" % frame)
+        asset = clean_asset(row, "a mid-frame guide")
+        if not asset["file"].lower().endswith(PICTURES):
+            raise ValueError("mid-frame guides use PNG, JPEG or WebP pictures")
+        found[frame] = dict(asset, frame=frame)
+    return [found[frame] for frame in sorted(found)]
+
+
 def clean_clip_fields(fields):
     check_fields(fields, CLIP_FIELDS)
     out = dict(fields)
@@ -2290,6 +2343,8 @@ def add_clip(project, fields, start=None, place=True):
     clip = {"id": new_id("c"), "name": "Clip %s" % number, "action": "", "camera": "", "speaker": "",
             "dialogue": "", "sound": "", "music": "", "seconds": 5, "takes": [], "active": None}
     clip.update({k: v for k, v in fields.items() if v is not None or k == "seed"})
+    if "mid_guides" in fields:
+        clip["mid_guides"] = clean_mid_guides(clip)
     project.setdefault("clips", []).append(clip)
     item = place_clip(project, clip["id"], start) if place else None
     return clip, item
@@ -2301,6 +2356,8 @@ def update_clip(project, clip_id, fields):
     check_bin(project, fields)
     check_profile(project, fields)
     before = planned_frames(clip)
+    if "mid_guides" in fields or ("seconds" in fields and clip.get("mid_guides")):
+        fields["mid_guides"] = clean_mid_guides(dict(clip, **fields))
     for key, value in fields.items():
         if value is None and key in ("first", "last", "track", "bin", "profile", "loras"):
             clip.pop(key, None)
@@ -3503,6 +3560,8 @@ def merge_editor_save(base, mine, current):
     merged = merge(base, mine, current)
     existing = {clip["id"]: clip for clip in current.get("clips", [])}
     for clip in merged.get("clips", []):
+        if "mid_guides" in clip:
+            clip["mid_guides"] = clean_mid_guides(clip)
         stored = existing.get(clip["id"])
         if stored is None:
             continue
@@ -3770,6 +3829,8 @@ def describe(project):
             entry["error"] = clip["error"]
         if clip.get("style_markers"):
             entry["style_markers"] = clip["style_markers"]
+        if clip.get("mid_guides"):
+            entry["mid_guides"] = clip["mid_guides"]
         for name in ("speaker", "dialogue", "cast"):
             if clip.get(name):
                 entry[name] = clip[name]

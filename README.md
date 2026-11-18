@@ -165,7 +165,7 @@ selects nothing.
 **Clips and takes.** Every render of a clip is a take with its own seed and the
 prompt that made it. Run the pointer across a take's picture to look through
 it, flip between takes with `[` and `]`, keep a seed to render variations of
-one result, or restore a take's prompt and style markers. To cut between takes,
+one result, or restore a take's prompt, style markers and mid-frame guides. To cut between takes,
 expand the clip in **Clips** and drag individual takes onto the picture track.
 Click a take in that list, or choose **Add as clip** in the inspector, to append
 it to the cut. Each placement creates an independent clip using the existing
@@ -178,6 +178,13 @@ Rendered clips stay on disk: moving,
 trimming or splitting them never renders anything again. **Render all drafts**
 renders every clip that has no take yet, the ones that share a model one after
 another.
+
+**Mid-frame guides (experimental).** Select a generated shot and open **Shot → Mid-frame guides**.
+Move the playhead inside the shot and choose **Upload image** or **Use playhead frame**.
+You can also enter the destination source frame explicitly, including before the first render.
+The list shows each picture and its zero-based frame. Change the frame or remove the picture
+before generating another draft or final. All placements of the shot share its guides.
+Check the motion approaching and leaving each guide. Some checkpoints can pause or jump near it.
 
 **Cast and voices.** **Add** in the Cast panel adds a reference picture or a
 voice. Choose who is in each clip, and write @Name in **What happens** to place

@@ -289,9 +289,15 @@ function addClip() {
   document.querySelector("#inspector textarea.big")?.focus();
 }
 
+// Python's round uses the even integer for an exact half.
+function nearestEven(value) {
+  const lower = Math.floor(value);
+  return value - lower === 0.5 ? lower + lower % 2 : Math.round(value);
+}
+
 // Mirrors snap_frames and planned_frames in project.py: a clip is as long as its render will be.
 function snapFrames(seconds) {
-  return 5 + 17 * Math.max(1, Math.round((seconds * FPS - 5) / 17));
+  return 5 + 17 * Math.max(1, nearestEven((seconds * FPS - 5) / 17));
 }
 
 function plannedFrames(clip) {
@@ -334,6 +340,7 @@ function placeTakeAsClip(source, takeId, start = sceneEnd()) {
   clip.seed = take.seed ?? clip.seed;
   delete clip.error;
   if (take.saved) restoreTakeFields(clip, take.saved);
+  else delete clip.mid_guides; // Older independent takes predate authored interior guides.
   const range = linkedRange(clip.link, take.frames);
   if (clip.link) {
     // Keep the rendered cut, but stop this copy from changing the original linked edit on re-render.
@@ -365,9 +372,9 @@ const endHold = (link) => link.end_hold || link.hold;
 function linkedFrames(link, seconds) {
   const frames = seconds * FPS;
   if (link.mode === "bridge" && !arrivesOnPin(link)) {
-    return link.hold + JOINT * Math.max(endHold(link) === link.hold ? 2 : 1, Math.round((frames + endHold(link)) / JOINT));
+    return link.hold + JOINT * Math.max(endHold(link) === link.hold ? 2 : 1, nearestEven((frames + endHold(link)) / JOINT));
   }
-  return link.hold + JOINT * Math.max(1, Math.round(frames / JOINT));
+  return link.hold + JOINT * Math.max(1, nearestEven(frames / JOINT));
 }
 
 // Mirrors HANDOVER in project.py. A linked clip and its source both show the held frames. The timeline cuts from
@@ -783,6 +790,7 @@ function pickFile(input) {
   return new Promise((resolve) => {
     input.value = "";
     input.onchange = () => resolve(input.files[0] || null);
+    input.oncancel = () => resolve(null);
     input.click();
   });
 }
@@ -3876,9 +3884,16 @@ function drawInspector() {
   durationHint.setAttribute("aria-live", "polite");
   duration.input.setAttribute("aria-describedby", durationHint.id);
   function validateDuration() {
+    duration.input.setCustomValidity("");
+    if (duration.input.validity.valid && clip.mid_guides?.length) {
+      const { first, last } = midGuideLimits(clip, duration.input.valueAsNumber);
+      const outside = clip.mid_guides.find(g => g.frame < first || g.frame > last);
+      if (outside) duration.input.setCustomValidity("Move or remove the guide at frame " + outside.frame + " first.");
+    }
     const valid = duration.input.validity.valid;
     duration.input.setAttribute("aria-invalid", String(!valid));
-    durationHint.textContent = valid ? "" : "Enter 0.5 to 60 seconds. The shot is still " + clip.seconds + " s.";
+    durationHint.textContent = valid ? "" : (duration.input.validity.customError ? duration.input.validationMessage : "Enter 0.5 to 60 seconds.")
+      + " The shot is still " + clip.seconds + " s.";
     return valid;
   }
   duration.input.addEventListener("input", validateDuration);
@@ -3888,6 +3903,8 @@ function drawInspector() {
     clip.seconds = duration.input.valueAsNumber;
     resizePlanned(clip);
     line.textContent = clipStatus(clip).text + ", " + clipSeconds(clip);
+    const guideSection = $("inspector").querySelector(".mid-guides");
+    if (guideSection) updateGuideLimits(guideSection, clip);
     renderBin();
     save();
   });
@@ -3906,6 +3923,7 @@ function drawInspector() {
     ...(state.project.cast?.some((p) => p.file || p.refmod) ? castPicker(clip) : []),
     ...framesFor(clip),
   ], "shot"));
+  if (state.tab === "shot") parts.push(midGuidesSection(clip));
 
   const voiced = ["speaker", "dialogue", "sound", "music"].filter((k) => String(clip[k] || "").trim()).length;
   if (state.tab === "shot") parts.push(disclosure("Dialogue and sound", voiced > 0, voiced ? voiced + " set" : "", [
@@ -4057,12 +4075,13 @@ function drawInspector() {
   panel.replaceChildren(...parts);
 }
 
-const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers"];
+const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides"];
 
 function restoreTakeFields(clip, saved) {
   for (const name of SAVED_FIELDS) {
     if (name in saved) clip[name] = structuredClone(saved[name]);
   }
+  if (!saved.mid_guides?.length) delete clip.mid_guides;
 }
 
 function chooseTake(clip, take) {
@@ -4139,7 +4158,7 @@ function versions(clip) {
     restoreTakeFields(clip, current.saved);
     save();
     renderInspector();
-  }, !current.saved, "restore", "Put back the text this take was rendered from");
+  }, !current.saved, "restore", "Restore the shot text, timing, style markers and mid-frame guides from this take");
   button("Add as clip", () => {
     const item = placeTakeAsClip(clip, current.id);
     if (item) focusInBin('.clip[data-clip="' + CSS.escape(item.clip) + '"]');
@@ -4450,6 +4469,129 @@ function framesFor(clip) {
   row.className = "frames";
   row.append(...slots.map(([side, label]) => frameSlot(clip, side, label)));
   return [row];
+}
+
+function midGuideLimits(clip, seconds = clip.seconds) {
+  const link = clip.link;
+  const length = link ? linkedFrames(link, seconds) : snapFrames(seconds);
+  let first = 1, last = length - 2, limit = 8;
+  if (link?.mode === "extend_after" || link?.mode === "bridge") first = link.hold;
+  if (link?.mode === "extend_before") last = length - link.hold - 1;
+  if (link?.mode === "bridge" && !arrivesOnPin(link)) {
+    last = length - endHold(link) - 1;
+    if (endHold(link) === link.hold) limit--;
+  }
+  return { first, last, limit };
+}
+
+// Source frames are zero-based. A selected placement wins in a transition if it covers the
+// playhead, even when another placement of this same shot is also on screen.
+function guideFrameAtPlayhead(clip) {
+  if (viewing()) return viewing().id === clip.id ? Math.round(state.sourceFrame) : null;
+  const covers = (i) => i?.clip === clip.id && state.playhead >= i.start && state.playhead < itemEnd(i);
+  const item = state.project.timeline.find((i) => i.id === state.item && covers(i)) || state.project.timeline.find(covers);
+  return item ? Math.min(item.out - 1, Math.round(item.in + (state.playhead - item.start) * speedOf(item))) : null;
+}
+
+function updateGuideLimits(section, clip) {
+  const { first, last, limit } = midGuideLimits(clip);
+  section.querySelector(".hint").textContent = "Use up to " + limit + " guide pictures on source frames " + first + "–" + last
+    + ". A guide steers the next render near its frame. It can cause a brief hold or jump.";
+  for (const input of section.querySelectorAll("input")) {
+    input.min = first;
+    input.max = last;
+  }
+}
+
+function midGuidesSection(clip) {
+  const folder = state.folder;
+  const guides = clip.mid_guides || [];
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  const number = (label, value) => {
+    const input = document.createElement("input");
+    input.type = "number"; input.step = "1";
+    input.setAttribute("aria-label", label);
+    input.value = value;
+    return input;
+  };
+  const where = number("New guide source frame", "");
+  where.placeholder = "Playhead";
+  const bar = document.createElement("div");
+  bar.className = "mid-guide-add";
+  const label = document.createElement("label");
+  label.append("Source frame ", where);
+  const act = (label, run) => {
+    const button = document.createElement("button");
+    button.type = "button"; button.className = "quiet"; button.textContent = label;
+    button.onclick = run;
+    return button;
+  };
+  function check(current, frame, previous) {
+    const { first, last, limit } = midGuideLimits(current);
+    if (!Number.isInteger(frame) || frame < first || frame > last)
+      throw new Error("Move the playhead into this shot or enter a source frame from " + first + " to " + last + ".");
+    const existing = current.mid_guides || [];
+    if (!previous && existing.length >= limit) throw new Error("This shot takes up to " + limit + " mid-frame guides.");
+    if (existing.some((g) => g.frame === frame && g.frame !== previous?.frame)) throw new Error("This frame already has a guide.");
+  }
+  function change(previous, frame, asset) {
+    const current = clipOf(clip.id);
+    if (state.folder !== folder || !current) return;
+    const rows = current.mid_guides || [];
+    if (previous && !rows.some((g) => g.frame === previous.frame && g.file === previous.file && g.subfolder === previous.subfolder))
+      throw new Error("That guide changed. Select it again.");
+    if (asset) check(current, frame, previous);
+    checkpoint();
+    const next = rows.filter((g) => g.frame !== previous?.frame);
+    if (asset) next.push({ frame, file: asset.file, subfolder: asset.subfolder || "" });
+    if (next.length) current.mid_guides = next.sort((a, b) => a.frame - b.frame);
+    else delete current.mid_guides;
+    save();
+    renderInspector();
+  }
+  async function add(kind, file) {
+    try {
+      const frame = where.value === "" ? guideFrameAtPlayhead(clip) : Number(where.value);
+      check(clipOf(clip.id), frame, null);
+      let asset;
+      if (kind === "upload") {
+        file = file || await pickFile($("frameFile"));
+        if (!file || state.folder !== folder) return;
+        if (!/\.(png|jpe?g|webp)$/i.test(file.name)) throw new Error("Choose a PNG, JPEG or WebP guide picture.");
+        asset = await uploadPicture(file);
+      } else {
+        const selectedFrame = guideFrameAtPlayhead(clip);
+        const selectedTake = activeTake(clip);
+        const target = selectedFrame !== null && selectedTake ? { take: selectedTake, frame: selectedFrame } : noteTarget();
+        if (!target) throw new Error("Move the playhead to a rendered picture, or upload a guide image.");
+        asset = await postJson("/project/" + folder + "/grab", { file: target.take.file, subfolder: target.take.subfolder, frame: target.frame });
+      }
+      change(null, frame, asset);
+    } catch (error) { toast(error.message, true); }
+  }
+  bar.append(label, act("Upload image", () => add("upload")), act("Use playhead frame", () => add("grab")));
+  dropTarget(bar, (file) => add("upload", file));
+  const rows = guides.map((guide) => {
+    const row = document.createElement("div");
+    row.className = "mid-guide-row";
+    const picture = document.createElement("img");
+    picture.src = assetUrl(guide); picture.alt = "Guide at frame " + guide.frame;
+    const at = number("Guide source frame " + guide.frame, guide.frame);
+    at.onchange = () => {
+      try { change(guide, at.value === "" ? null : Number(at.value), guide); }
+      catch (error) { at.value = guide.frame; toast(error.message, true); }
+    };
+    const remove = iconButton("close", "Remove guide at frame " + guide.frame, () => {
+      try { change(guide, null, null); } catch (error) { toast(error.message, true); }
+    });
+    row.append(picture, "Frame", at, remove);
+    return row;
+  });
+  const section = disclosure("Mid-frame guides (experimental)", guides.length > 0, guides.length ? guides.length + " set" : "", [hint, bar, ...rows], "picture");
+  section.classList.add("mid-guides");
+  updateGuideLimits(section, clip);
+  return section;
 }
 
 function addStyleMarker(clip = null) {

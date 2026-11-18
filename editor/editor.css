@@ -211,6 +211,9 @@ button:disabled { opacity: 0.42; cursor: default; }
 .crop-zoom { display: flex; gap: 10px; align-items: center; }
 .crop-zoom input { flex: 1; }
 .crop-zoom output { min-width: 4ch; font-variant-numeric: tabular-nums; }
+.mid-guide-add, .mid-guide-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.mid-guide-add input, .mid-guide-row input { width: 82px; }
+.mid-guide-row img { width: 56px; height: 38px; object-fit: contain; background: #101214; border-radius: 3px; }
 .screen video { visibility: hidden; z-index: 1; }
 .screen video.show { visibility: visible; }
 .screen video.under { visibility: visible; z-index: 0; }

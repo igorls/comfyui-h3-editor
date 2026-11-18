@@ -955,7 +955,10 @@ async def save(request):
             base = current
         else:
             base = read_revision(folder, based_on) or store.UNKNOWN
-        merged = store.merge_editor_save(base, mine, current)
+        try:
+            merged = store.merge_editor_save(base, mine, current)
+        except ValueError as error:
+            return refused(plain(error))
         if merged != current:
             commit(folder, merged, "edit", client)
         else:
@@ -2126,7 +2129,7 @@ def asset_target(name, extension):
     return os.path.join(directory, file), {"file": file, "subfolder": "%s/%s/assets" % (store.ROOT, folder)}
 
 
-PICTURES = (".png", ".jpg", ".jpeg", ".webp")
+PICTURES = store.PICTURES
 SOUNDS = (".wav", ".mp3", ".flac", ".m4a", ".ogg", ".opus", ".aac")
 VIDEOS = (".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi")
 LONGEST_IMPORT = 900.0

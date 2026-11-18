@@ -22,8 +22,9 @@ function element() {
 
 test("placing an older take keeps its render, prompt and style markers independent", () => {
   const markers = [{ frame: 0, style: "Graphite" }, { frame: 87, style: "Paper" }, { frame: 174, style: "Clay" }];
+  const guides = [{ frame: 34, file: "pose.png", subfolder: "assets" }];
   const draft = { id: "draft", file: "draft.mp4", frames: 175, seed: 42,
-    saved: { action: "A rowboat", seconds: 7, style_markers: markers } };
+    saved: { action: "A rowboat", seconds: 7, style_markers: markers, mid_guides: guides } };
   const original = { id: "shot", name: "Shot", active: "final", action: "New prompt", seconds: 8,
     style_markers: [], error: "An unrelated failure", takes: [draft, { id: "final", file: "final.mp4", frames: 192 }] };
   const project = { clips: [original], timeline: [{ clip: "shot", start: 0, in: 10, out: 192 }] };
@@ -49,12 +50,39 @@ test("placing an older take keeps its render, prompt and style markers independe
   assert.equal(placed.action, "A rowboat");
   assert.equal(placed.error, undefined);
   assert.deepEqual(placed.style_markers, markers);
+  assert.deepEqual(placed.mid_guides, guides);
+  placed.mid_guides[0].frame++;
+  assert.equal(placed.takes[0].saved.mid_guides[0].frame, 34);
+  c.restoreTakeFields(placed, { action: "Old take" });
+  assert.equal(placed.mid_guides, undefined);
   placed.style_markers[1].style = "Ink";
   assert.equal(placed.takes[0].saved.style_markers[1].style, "Paper");
   assert.equal(original.active, "final");
   assert.equal(original.takes.length, 2);
   assert.equal(checkpoints, 1);
   assert.equal(saves, 1);
+});
+test("guide positions follow the selected placement, trim and fractional speed", () => {
+  const clip = { id: "a", seconds: 5 }, items = [
+    { id: "a1", clip: "a", start: 20, in: 10, out: 50, speed: 2 },
+    { id: "a2", clip: "a", start: 24, in: 30, out: 42, speed: 0.5 },
+  ];
+  const state = { project: { timeline: items }, playhead: 27, item: "a2" };
+  let viewer = null;
+  const c = vm.createContext({ state, FPS: 24, JOINT: 51, viewing: () => viewer,
+    itemEnd: i => i.start + Math.round((i.out - i.in) / i.speed), speedOf: i => i.speed,
+    endHold: link => link.end_hold || link.hold, arrivesOnPin: link => link.arrive === "pin" });
+  functions(c, ["nearestEven", "snapFrames", "linkedFrames", "midGuideLimits", "guideFrameAtPlayhead"]);
+  assert.equal(c.guideFrameAtPlayhead(clip), 32);
+  state.playhead = 47;
+  assert.equal(c.guideFrameAtPlayhead(clip), 41); // Last displayed half-speed frame, trim out is exclusive.
+  state.playhead = 48;
+  assert.equal(c.guideFrameAtPlayhead(clip), null);
+  viewer = clip; state.sourceFrame = 88;
+  assert.equal(c.guideFrameAtPlayhead(clip), 88);
+  assert.equal(c.guideFrameAtPlayhead({ id: "else" }), null);
+  assert.equal(c.midGuideLimits(clip, (5 + 17 * 2.5) / 24).last, 37);
+  assert.equal(c.midGuideLimits({ seconds: 5, link: { mode: "bridge", hold: 39 } }).limit, 7);
 });
 function video() {
   return { ...element(), currentTime: 0, paused: true, ended: false, readyState: 4, seeking: false,

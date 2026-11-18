@@ -106,6 +106,7 @@ the end) and `place` (default true). Returns `{"clip", "item"}`.
 | `cast` | Ids of the pictured cast members in this shot |
 | `seed` | A whole number repeats a result; `null` gives a new one at each render |
 | `first`, `last` | Picture assets the shot starts or ends on exactly. `null` removes one |
+| `mid_guides` | Experimental interior guides for a generated shot. Array of `{"frame":34,"file":"pose.png","subfolder":"h3take_projects/film/assets"}`. Set `[]` to clear. |
 | `track` | A sound asset plus `from`, the second of it at the clip's first frame. The picture is generated to that slice, and the take keeps the exact sound. `null` removes it |
 | `bin` | The id of the bin the clip is filed in. `null` takes it out |
 | `loras` | LoRAs only this clip samples with, as `set_project` `loras` describes. `null` clears them |
@@ -116,6 +117,20 @@ items, and later clips move with them. `remove_clip`: `clip`, together with all 
 timeline items. Its render files stay on disk, so older revisions still play. A render still
 running for it is thrown away when it finishes, so cancel it first. `place_clip`: `clip`,
 optional `start`. Returns a new `item`.
+
+For an interior guide, upload a picture through `/asset` or capture a take frame through
+`/grab`. Add its asset and destination frame to `fields.mid_guides` through `add_clip`
+or `update_clip`. Updates replace the whole list. Read the current list and send its
+project revision when editing one entry. The summary returns the guides sorted by frame.
+
+Frames are zero-based in the source shot. On the timeline use
+`min(item.out - 1, floor(item.in + (timelineFrame - item.start) * speed + 0.5))`
+inside the placement, with speed defaulting to 1. Each frame must be unique and strictly
+between the first and last generated frames of an ordinary shot (1 through length − 2).
+Linked shots also exclude held frames. Up to eight pictures fit, or seven for a bridge that
+already pins its full arrival hold. Shots sharing a source clip share its guides.
+Generating a draft or final saves the authored guides with that take. The model steers
+toward the pictures and may hold or jump near one. Review motion on both sides.
 
 ### Extra sound
 

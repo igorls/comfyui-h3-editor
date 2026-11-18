@@ -75,6 +75,18 @@ class ArchiveTest(unittest.TestCase):
         self.assertIn("assets/unused.png", paths)
         self.assertFalse(any(p.startswith(("history/", "preview/")) or p.endswith(".tmp") for p in paths))
 
+    def test_guides_on_a_shot_and_its_kept_take_follow_the_archive_and_duplicate(self):
+        clip = self.data["clips"][0]
+        folder = ROOT + "/Demo/assets"
+        clip["mid_guides"] = [{"frame": 12, "file": "current.png", "subfolder": folder}]
+        clip["takes"][1]["saved"] = {"mid_guides": [{"frame": 17, "file": "saved.png", "subfolder": folder}]}
+        for file in ("current.png", "saved.png"):
+            touch(self.base, "assets/" + file)
+        self.assertTrue({"assets/current.png", "assets/saved.png"} <= set(self.files("cut")))
+        duplicate = project_module.retarget(self.data, "Demo", "Copy")["clips"][0]
+        for guide in (duplicate["mid_guides"][0], duplicate["takes"][1]["saved"]["mid_guides"][0]):
+            self.assertEqual(guide["subfolder"], ROOT + "/Copy/assets")
+
     def test_the_cut_keeps_the_shown_takes_with_their_companions_and_drops_the_rest(self):
         paths = set(self.files("cut"))
         for end in ("_00001_.mp4", "_00001_.jpg", "_00001_.strip.jpg", "_00001_.peaks.json", ".hold.safetensors"):
