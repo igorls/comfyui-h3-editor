@@ -5,8 +5,18 @@ import math
 FRAMES = 39
 WIDTH, HEIGHT = 256, 384
 TILE, BODY = 64, 48
+EXPORT_SIZES = (64, 128, 256)
 PIVOT = (32, 59)
 MATTE_PREFIX = "background_removal:"
+
+
+def matte_model(available):
+    for entry in sorted(available or ()):
+        if entry.startswith(MATTE_PREFIX):
+            name = entry[len(MATTE_PREFIX):]
+            if name.replace("\\", "/").split("/")[-1].lower() == "birefnet.safetensors":
+                return name
+    return None
 DIRECTIONS = {
     "S": "south, down the screen",
     "E": "east, screen right",
@@ -175,16 +185,18 @@ def with_matte(frame, mask):
     return Image.fromarray((np.concatenate((color, coverage), axis=2) * 255).round().astype("uint8"))
 
 
-def strips(frames, poses, previous=None, masks_for=None, idle=False):
+def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=TILE):
     """Pick a loop once. Finish reuses the draft's phase, scale and ground contact in normalized source coordinates."""
     import numpy as np
     from PIL import Image
 
     if len(frames) != FRAMES:
         raise ValueError("Sprite Draft expects exactly 39 source frames")
+    if type(cell_size) is not int or cell_size not in EXPORT_SIZES:
+        raise ValueError("choose a sprite cell size of 64, 128 or 256 px")
     keyed = [
         cutout(frame.convert("RGB").resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)) for frame in frames
-    ] if previous is None or masks_for is None else []
+    ] if previous is None or (masks_for is None and cell_size == TILE) else []
     period = 2 * poses
     if previous is None:
         signatures = []
@@ -230,10 +242,10 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False):
     scale = BODY / layout["height"]
     # Bake the return into the PNG. Left-to-right playback works in engines without a ping-pong mode.
     order = list(range(poses)) + (list(range(poses - 2, 0, -1)) if idle else [])
-    atlas = Image.new("RGBA", (TILE * len(order), TILE))
+    atlas = Image.new("RGBA", (cell_size * len(order), cell_size))
     indices = [start + 2 * i for i in range(poses)]
     if masks_for is None:
-        selected = [keyed[n] for n in indices]
+        selected = [keyed[n] if cell_size == TILE else cutout(frames[n]) for n in indices]
     else:
         masks = masks_for(indices)
         if len(masks) != poses:
@@ -245,13 +257,15 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False):
         x = (layout["center"] - PIVOT[0] / scale) * sx
         y = (layout["ground"] - PIVOT[1] / scale) * sy
         box = (x, y, x + TILE * sx / scale, y + TILE * sy / scale)
-        fine = frame.convert("RGBa").transform((4 * TILE, 4 * TILE), Image.Transform.EXTENT, box, Image.Resampling.BILINEAR)
-        tile = fine.resize((TILE, TILE), Image.Resampling.LANCZOS).convert("RGBA")
-        coverage = fine.getchannel("a").resize((TILE, TILE), Image.Resampling.BOX)
+        # The crop stays in source coordinates. Only its output sampling density changes.
+        size = (cell_size, cell_size)
+        fine = frame.convert("RGBa").transform((4 * cell_size, 4 * cell_size), Image.Transform.EXTENT, box, Image.Resampling.BILINEAR)
+        tile = fine.resize(size, Image.Resampling.LANCZOS).convert("RGBA")
+        coverage = fine.getchannel("a").resize(size, Image.Resampling.BOX)
         tile.paste((0, 0, 0, 0), mask=coverage.point(lambda v: 0 if v else 255))
         tiles.append(tile)
     for column, index in enumerate(order):
-        atlas.paste(tiles[index], (TILE * column, 0))
+        atlas.paste(tiles[index], (cell_size * column, 0))
     rgba = np.asarray(atlas)
     visible = rgba[:, :, 3] >= 128
     pixels = rgba[:, :, :3][visible]

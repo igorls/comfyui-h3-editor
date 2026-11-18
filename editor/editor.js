@@ -4084,7 +4084,7 @@ function drawInspector() {
   ], "shot"));
   if (state.tab === "shot" && !clip.link) parts.push(spriteSection(clip));
   const spriteTake = activeTake(clip);
-  if (spriteTake?.sprite && ["shot", "takes"].includes(state.tab)) parts.push(spritePlayback(spriteTake));
+  if (spriteTake?.sprite && ["shot", "takes"].includes(state.tab)) parts.push(spritePlayback(clip, spriteTake));
   if (state.tab === "shot") {
     parts.push(midGuidesSection(clip));
     if (!placed && clip.style_markers?.length) parts.push(styleMarkersSection(clip));
@@ -4752,14 +4752,19 @@ function spriteSection(clip) {
   return disclosure("Sprite Draft", Boolean(config), config ? config.direction + " · " + config.poses + " poses" : "", children);
 }
 
-function spritePlayback(take) {
-  const sheet = take.sprite;
+const spriteExports = new Map();
+
+function spritePlayback(clip, take) {
+  let sheet = take.sprite;
+  const folder = state.folder;
+  const preference = ["h3take.sprite-size", folder, clip.id, take.id].join(".");
   const preview = document.createElement("div");
   preview.className = "sprite-loop";
   preview.style.width = preview.style.height = sheet.tile + "px";
   preview.role = "img";
   preview.setAttribute("aria-label", "Sprite loop at game size");
-  const animation = preview.animate([{ backgroundPositionX: "0px" }, { backgroundPositionX: -(sheet.tile * sheet.poses) + "px" }],
+  const frames = () => [{ backgroundPositionX: "0px" }, { backgroundPositionX: -(sheet.tile * sheet.poses) + "px" }];
+  const animation = preview.animate(frames(),
     { duration: 1000 * sheet.poses / sheet.fps, easing: "steps(" + sheet.poses + ", end)", iterations: Infinity });
   const play = document.createElement("button");
   play.type = "button";
@@ -4772,9 +4777,11 @@ function spritePlayback(take) {
   play.onclick = () => playback(animation.playState !== "running");
   const download = document.createElement("a");
   download.textContent = "Download PNG";
+  let outputStyle = "illustrated";
   function show(style) {
+    outputStyle = style;
     download.download = sheet[style];
-    download.href = viewUrl(sheet[style], take.subfolder);
+    download.href = viewUrl(sheet[style], sheet.subfolder || take.subfolder);
     preview.style.backgroundImage = "url(" + download.href + ")";
   }
   show("illustrated");
@@ -4785,8 +4792,52 @@ function spritePlayback(take) {
   controls.append(preview, play, download);
   const info = document.createElement("p");
   info.className = "hint";
-  info.textContent = sheet.fps + " fps" + (sheet.cutout ? " · " + sheet.cutout : "");
-  return section("Sprite loop", [style, controls, info]);
+  info.setAttribute("aria-live", "polite");
+  const describe = () => sheet.fps + " fps" + (sheet.cutout ? " · " + sheet.cutout : "");
+  info.textContent = describe();
+  let request = 0;
+  const size = spriteChoice("Export size", [64, 128, 256].map(n => [String(n), n + " px"]), String(sheet.tile), changeSize);
+  const select = size.querySelector("select");
+  async function changeSize(value) {
+    const ticket = ++request;
+    const tile = Number(value);
+    const key = preference + "." + tile;
+    try { localStorage.setItem(preference, value); } catch (_) {}
+    try {
+      let result = take.sprite;
+      if (tile !== result.tile) {
+        info.textContent = "Preparing " + tile + " px PNGs from this take…";
+        download.hidden = true;
+        if (!spriteExports.has(key)) {
+          const pending = postJson("/project/" + folder + "/sprite-export", { clip: clip.id, take: take.id, tile });
+          spriteExports.set(key, pending.catch(error => { spriteExports.delete(key); throw error; }));
+        }
+        result = await spriteExports.get(key);
+      }
+      if (ticket !== request) return;
+      sheet = result;
+      preview.style.width = preview.style.height = sheet.tile + "px";
+      animation.effect.setKeyframes(frames());
+      show(outputStyle);
+      info.textContent = describe();
+    } catch (error) {
+      if (ticket !== request) return;
+      select.value = String(sheet.tile);
+      if (select.isConnected) {
+        try { localStorage.setItem(preference, select.value); } catch (_) {}
+        info.textContent = error.message;
+      }
+    } finally {
+      if (ticket === request) download.hidden = false;
+    }
+  }
+  let remembered;
+  try { remembered = localStorage.getItem(preference); } catch (_) {}
+  if (["128", "256"].includes(remembered)) {
+    select.value = remembered;
+    changeSize(remembered);
+  }
+  return section("Sprite loop", [size, style, controls, info]);
 }
 
 function midGuideLimits(clip, seconds = clip.seconds) {

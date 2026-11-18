@@ -1795,6 +1795,86 @@ def comfy_queue():
     return {entry[1] for entry in running}, {entry[1] for entry in queued}
 
 
+SPRITE_EXPORTS = {}
+
+
+async def make_sprite_export(take, tile, folder, stem, names):
+    """Repack the saved movie. Only the clip decoder, optional matte and PNG writer enter the queue."""
+    from server import PromptServer
+
+    sheet = take["sprite"]
+    poses = sheet.get("source_poses", sheet["poses"])
+    prefix = stem + ".partial-" + uuid.uuid4().hex
+    graph = {"1": {"class_type": "H3LoadClip", "inputs": {
+        "file": "/".join(filter(None, (take.get("subfolder"), take["file"]))), "first": 0,
+        "last": store.sprite.FRAMES, "frames_only": True}},
+        "2": {"class_type": "H3SpriteSheet", "inputs": {
+            "images": ["1", 0], "poses": poses, "layout": json.dumps(sheet["layout"]), "cell_size": str(tile),
+            "idle": sheet["poses"] == 2 * poses - 2, "filename_prefix": folder + "/" + prefix}}}
+    if sheet.get("cutout") == "foreground model":
+        model = store.sprite.matte_model(available_models())
+        if not model:
+            raise Refused("This take used BiRefNet. Install its background removal model to export another size.")
+        graph["3"] = {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": model}}
+        graph["2"]["inputs"]["bg_model"] = ["3", 0]
+    temporary = {style: output_path(folder, prefix + "." + style + ".png") for style in names}
+    try:
+        job = await queue_prompt(graph)
+        queue = PromptServer.instance.prompt_queue
+        while True:
+            running, waiting = comfy_queue()
+            record = queue.get_history(prompt_id=job).get(job)
+            if record:
+                break
+            if job not in running and job not in waiting:
+                raise Refused("The sprite export left the queue before saving. Select the size again to retry.")
+            await asyncio.sleep(.25)
+        result = record.get("outputs", {}).get("2", {}).get("sprite")
+        if not result:
+            raise Refused(failure(record))
+        if result[0]["poses"] != sheet["poses"] or not all(os.path.isfile(p) for p in temporary.values()):
+            raise Refused("The export did not produce both PNGs with the original pose count.")
+        for style, path in temporary.items():
+            os.replace(path, output_path(folder, names[style]))
+    finally:
+        for path in temporary.values():
+            if os.path.isfile(path):
+                os.remove(path)
+
+
+async def sprite_export(request):
+    name = store.slug(request.match_info["name"])
+    body = await request.json()
+    tile = body.get("tile") if isinstance(body, dict) else None
+    if type(tile) is not int or tile not in store.sprite.EXPORT_SIZES:
+        return refused("Choose a sprite export size of 64, 128 or 256 px.")
+    data = read_project(name)
+    take = next((t for c in data["clips"] for t in c.get("takes", [])
+                 if t["id"] == body.get("take") and c["id"] == body.get("clip")), None)
+    if not take or not take.get("sprite"):
+        return refused("Choose an existing Sprite Draft take.", 404)
+    sheet = take["sprite"]
+    if tile == sheet["tile"]:
+        return web.json_response(dict(sheet, subfolder=take["subfolder"]))
+    folder = "%s/%s/clips" % (store.ROOT, name)
+    stem = os.path.splitext(os.path.basename(take["file"]))[0] + ".%dpx" % tile
+    names = {style: stem + "." + style + ".png" for style in ("illustrated", "indexed")}
+    if not all(os.path.isfile(output_path(folder, file)) for file in names.values()):
+        if not os.path.isfile(output_path(take.get("subfolder"), take["file"])):
+            return refused("The source movie for this take is missing.", 404)
+        key = (folder, stem)
+        if key not in SPRITE_EXPORTS:
+            task = asyncio.create_task(make_sprite_export(take, tile, folder, stem, names))
+            SPRITE_EXPORTS[key] = task
+            task.add_done_callback(lambda _: SPRITE_EXPORTS.pop(key, None))
+        try:
+            await asyncio.shield(SPRITE_EXPORTS[key])
+        except Refused as error:
+            return refused(error)
+    return web.json_response(dict(sheet, **names, tile=tile, subfolder=folder,
+                                  pivot=[v * tile // sheet["tile"] for v in sheet["pivot"]]))
+
+
 async def start_render(data, folder, clip_id, quality, seed=None, client_id=None, detail=None, upscaler=None, patches=None, edit=None):
     """Queue one render. patches is the installed patch nodes, for a batch that has read them already."""
     job, graph = store.plan_render(data, folder, clip_id, quality or "draft", seed, available_models(), detail, upscaler,
@@ -2488,6 +2568,7 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/restore", "restore"),
     ("POST", "/h3take/api/project/{name}/ops", "operations"),
     ("POST", "/h3take/api/project/{name}/render", "render"),
+    ("POST", "/h3take/api/project/{name}/sprite-export", "sprite_export"),
     ("POST", "/h3take/api/project/{name}/cancel", "cancel"),
     ("GET", "/h3take/api/project/{name}/wait", "wait"),
     ("POST", "/h3take/api/project/{name}/graph", "graph"),

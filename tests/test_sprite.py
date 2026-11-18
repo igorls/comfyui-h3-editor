@@ -191,3 +191,27 @@ class SpriteImageTest(unittest.TestCase):
             cells = [sheet.crop((i*64,0,(i+1)*64,64)).tobytes() for i in range(12)]
             self.assertEqual(cells[7:], cells[5:0:-1])
             self.assertNotEqual(cells[0], cells[-1])
+
+    def test_export_sizes_sample_source_detail_with_the_same_framing(self):
+        frame = Image.new("RGB", (512, 768), "white")
+        draw = ImageDraw.Draw(frame)
+        for x in range(190, 322):
+            draw.line((x, 200, x, 518), fill="black" if x % 8 < 4 else "gray")
+        layout = {"start": 8, "height": 160, "center": 128, "ground": 260}
+        small, _, _ = sprite.strips([frame] * 39, 7, layout)
+        for size in (128, 256):
+            full, indexed, reused = sprite.strips([frame] * 39, 7, layout, idle=True, cell_size=size)
+            self.assertEqual(reused, layout)
+            self.assertEqual(full.size, (12 * size, size))
+            self.assertEqual(indexed.size, full.size)
+            self.assertEqual(indexed.info["transparency"], 0)
+            self.assertLessEqual(np.asarray(indexed).max(), 15)
+            first = full.crop((0, 0, size, size))
+            bbox = first.getchannel("A").point(lambda a: 255 if a >= 128 else 0).getbbox()
+            self.assertLessEqual(abs(bbox[3] - 59 * size / 64), 1)
+            baseline = small.crop((0, 0, 64, 64)).resize(first.size, Image.Resampling.NEAREST)
+            center = (size // 2 - size // 16, size // 2, size // 2 + size // 16, size // 2 + 1)
+            self.assertGreater(np.asarray(first.crop(center))[..., 0].std(),
+                               np.asarray(baseline.crop(center))[..., 0].std() + 2)
+        with self.assertRaisesRegex(ValueError, "cell size"):
+            sprite.strips([frame] * 39, 7, layout, cell_size=96)

@@ -8,7 +8,7 @@ Each release is a tag on GitHub, `v` followed by the version.
 ## 0.13.0 (unreleased)
 
 - Experimental Sprite Draft adds a directional motion guide to independent shots. Choose a cardinal facing and an eye-level, RPG or overhead view. Preview the loop at game size and download transparent illustrated and indexed PNG strips. Finish draft keeps the selected take’s seed, loop timing, scale and pivot.
-- Sprite Draft can generate a planted idle loop at 6 fps. Auto cutout uses an installed BiRefNet model on the selected poses, removes the backdrop colour from soft edges and filters coverage at game size. The background key remains available.
+- Sprite Draft can generate a planted idle loop at 6 fps. Auto cutout uses an installed BiRefNet model on the selected poses, removes the backdrop colour from soft edges and filters coverage at game size. The background key remains available. Existing Sprite Draft takes export at 64, 128 and 256 px per cell from the saved video, with the original poses, timing and ground pivot. Both PNG styles are cached per size.
 
 - Crop or reframe a placement, export a marked timeline range, and mix sound with fades and volume points. The editor and agent API share the same project edits.
 - Choose additional aspect ratios, calculate a resolution by longest side or megapixels, and remove selected takes from a clip. Removed takes can be restored from history.

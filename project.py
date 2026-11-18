@@ -1251,9 +1251,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         if config.get("motion") == "idle":
             graph["211"]["inputs"]["idle"] = True
         if config.get("cutout") != "edge":
-            matte = next((name.removeprefix(sprite.MATTE_PREFIX) for name in sorted(available or ())
-                          if name.startswith(sprite.MATTE_PREFIX)
-                          and name.removeprefix(sprite.MATTE_PREFIX).replace("\\", "/").split("/")[-1].lower() == "birefnet.safetensors"), None)
+            matte = sprite.matte_model(available)
             if matte:
                 graph["212"] = {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": matte}}
                 graph["211"]["inputs"]["bg_model"] = ["212", 0]
