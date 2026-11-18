@@ -45,7 +45,14 @@ button:disabled { opacity: 0.42; cursor: default; }
 .sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .count { margin-left: 4px; color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
 
-.app { display: grid; grid-template-rows: 48px minmax(0, 1fr) 6px calc(var(--tl-h) + var(--tl-extra, 0px)); height: 100vh; }
+.app { --timeline-height: min(calc(var(--tl-h) + var(--tl-extra, 0px)), max(160px, calc(100dvh - 280px))); display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 48px minmax(0, 1fr) 6px var(--timeline-height); height: 100vh; }
+.workspace-panels { display: none; }
+.skip-timeline { position: fixed; z-index: 30; top: 5px; left: 8px; background: var(--raised); transform: translateY(-160%); }
+.skip-timeline:focus-visible { transform: none; }
+.footage-source { margin: 0 0 8px; overflow-wrap: anywhere; }
+.field-error { display: block; color: var(--danger); }
+.field-error:not(:empty) { margin-top: 4px; }
+.field input[aria-invalid="true"] { border-color: var(--danger); }
 .bar { display: flex; align-items: center; gap: 8px; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .bar select { min-width: 220px; padding: 5px 9px; background-color: var(--raised); border: 1px solid var(--line); border-radius: var(--radius); font-weight: 600; }
 /* The project picker: a button that names the open project beside a frame of it, and a list of every project. */
@@ -565,7 +572,7 @@ label.lora-name { cursor: pointer; }
 .zoom { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
 .zoom input { width: 120px; }
 
-.tl-body { display: grid; grid-template-columns: var(--head) minmax(0, 1fr); min-height: 0; border-top: 1px solid var(--line); }
+.tl-body { display: grid; grid-template-columns: var(--head) minmax(0, 1fr); grid-template-rows: minmax(calc(204px + var(--tl-extra, 0px)), 1fr); min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); }
 .tl-heads, .tl-content { display: grid; grid-template-rows: 28px 28px 34px minmax(64px, 2fr) minmax(40px, 1fr); }
 .style-marker { position: absolute; top: 3px; height: 22px; max-width: 140px; padding: 2px 7px; border: 1px solid var(--tungsten); border-radius: 4px; color: var(--text); background: var(--raised); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .style-marker:hover { background: var(--hover); }
@@ -883,6 +890,33 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--tungsten); 
   .work { grid-template-columns: var(--bin-w, 228px) 6px minmax(0, 1fr) 6px var(--insp-w, 340px); }
   .clip { grid-template-columns: 80px minmax(0, 1fr); }
   .thumb { width: 80px; }
+}
+@media (max-width: 960px) {
+  .app { height: 100dvh; grid-template-rows: auto minmax(0, 1fr) 6px var(--timeline-height); }
+  .bar { flex-wrap: wrap; gap: 4px; padding: 5px 8px; }
+  .bar .project-button { min-width: 0; width: clamp(110px, 29vw, 220px); }
+  .bar .release { display: none; }
+  .bar .queue:empty { display: none; }
+  .work { grid-template: auto minmax(0, 1fr) / minmax(0, 1fr); }
+  .workspace-panels { display: flex; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  .workspace-panels button { flex: 1; background: transparent; }
+  .workspace-panels button[aria-pressed="true"] { background: var(--raised); color: var(--tungsten); }
+  .work > .splitter-v,
+  .work:not([data-panel="clips"]) > .bin,
+  .work:not([data-panel="inspector"]) > .inspector,
+  .work:not([data-panel="viewer"]) > .stage { display: none; }
+  .tl-tools { min-width: 0; overflow-x: auto; gap: 6px; padding: 0 8px; }
+  .tl-tools > .spacer { flex: 1 0 0; }
+  .menu { max-width: calc(100vw - 16px); }
+}
+@media (max-width: 560px) {
+  :root { --head: 60px; }
+  .bar .project-shot { display: none; }
+  .bar .spacer { display: none; }
+  .bar .quiet, .bar .primary { padding-inline: 8px; }
+  .screen { margin: 6px 6px 0; }
+  .transport { gap: 3px; padding: 4px; }
+  .tl-head { padding-inline: 6px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }

@@ -277,12 +277,15 @@ function addClip() {
   if (bin) clip.bin = bin.id;
   state.project.clips.push(clip);
   placeOnTimeline(clip, sceneEnd());
+  setSource(null);
   state.clip = clip.id;
   state.person = null;
+  state.sound = state.effect = state.gap = state.bin = null;
   state.item = state.project.timeline.at(-1).id;
   state.tab = "shot";
   save();
   renderAll();
+  if (workspacePanels[0].offsetWidth) showWorkspacePanel("inspector");
   document.querySelector("#inspector textarea.big")?.focus();
 }
 
@@ -3847,11 +3850,14 @@ function drawInspector() {
 
   if (clip.kind === "footage") {
     const take = activeTake(clip);
+    const source = document.createElement("p");
+    source.className = "footage-source";
+    source.textContent = "Imported from " + (take?.source || take?.file || "a file");
     const about = document.createElement("p");
     about.className = "hint";
-    about.textContent = "Imported from " + (take?.source || "a file") + ". Footage plays as it is. Select it on the timeline and use Extend or Bridge to generate new shots from it.";
+    about.textContent = "On the timeline, use Generate to extend this footage or bridge to the next clip.";
     if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)));
-    else parts.push(section("Footage", [about]));
+    else parts.push(section("Footage", [source, about]));
     panel.replaceChildren(...parts);
     return;
   }
@@ -3859,13 +3865,34 @@ function drawInspector() {
 
   const timing = document.createElement("div");
   timing.className = "two";
+  const duration = plainField("Seconds", clip.seconds, { type: "number" });
+  Object.assign(duration.input, { min: "0.5", max: "60", step: "any", required: true });
+  duration.input.dataset.key = "Seconds";
+  const durationHint = document.createElement("small");
+  durationHint.id = "shotDurationHint";
+  durationHint.className = "field-error";
+  durationHint.setAttribute("aria-live", "polite");
+  duration.input.setAttribute("aria-describedby", durationHint.id);
+  function validateDuration() {
+    const valid = duration.input.validity.valid;
+    duration.input.setAttribute("aria-invalid", String(!valid));
+    durationHint.textContent = valid ? "" : "Enter 0.5 to 60 seconds. The shot is still " + clip.seconds + " s.";
+    return valid;
+  }
+  duration.input.addEventListener("input", validateDuration);
+  duration.input.addEventListener("change", () => {
+    if (!validateDuration() || duration.input.valueAsNumber === clip.seconds) return;
+    checkpoint();
+    clip.seconds = duration.input.valueAsNumber;
+    resizePlanned(clip);
+    line.textContent = clipStatus(clip).text + ", " + clipSeconds(clip);
+    renderBin();
+    save();
+  });
+  duration.wrap.append(durationHint);
   timing.append(
     field("Camera", clip.camera, (v) => (clip.camera = v), { placeholder: "Slow push in" }),
-    field("Seconds", clip.seconds, (v) => {
-      if (!(Number(v) >= 0.5 && Number(v) <= 60)) return;
-      clip.seconds = Number(v);
-      resizePlanned(clip);
-    }, { type: "number" }),
+    duration.wrap,
   );
   const happens = field("What happens", clip.action, (v) => (clip.action = v), { big: true, placeholder: "Describe what we see and hear, in the order it happens." });
   const happensLabel = happens.querySelector("span");
@@ -3938,9 +3965,10 @@ function drawInspector() {
     actions.append(cancel);
     foot.append(progress);
   } else {
-    for (const [quality, label, style] of [["draft", "Render draft", "quiet"], ["final", "Render final", "primary"]]) {
+    const primaryQuality = clip.takes.length ? "final" : "draft";
+    for (const [quality, label] of [["draft", "Render draft"], ["final", "Render final"]]) {
       const button = document.createElement("button");
-      button.className = style;
+      button.className = quality === primaryQuality ? "primary" : "quiet";
       button.textContent = label;
       button.addEventListener("click", () => renderClip(clip, quality));
       actions.append(button);
@@ -9189,6 +9217,19 @@ $("shortcuts").addEventListener("click", () => $("keys").showModal());
 $("keysClose").addEventListener("click", () => $("keys").close());
 bindSplitter();
 bindSideSplitters();
+const workspace = document.querySelector(".work");
+const workspacePanels = workspace.querySelectorAll(".workspace-panels button");
+function showWorkspacePanel(name) {
+  workspace.dataset.panel = name;
+  for (const panel of workspacePanels) panel.setAttribute("aria-pressed", String(panel.dataset.panel === name));
+}
+for (const button of workspacePanels) {
+  button.addEventListener("click", () => showWorkspacePanel(button.dataset.panel));
+}
+$("skipTimeline").addEventListener("click", () => {
+  const item = $("laneV").querySelector(".block.on") || $("laneV").querySelector(".block[data-item]");
+  (item || $("timeline")).focus();
+});
 $("toStart").addEventListener("click", () => seek(0));
 $("back").addEventListener("click", () => seek(here() - 1));
 $("forward").addEventListener("click", () => seek(here() + 1));
@@ -9313,6 +9354,7 @@ $("laneV").addEventListener("pointerdown", (event) => {
 });
 
 window.addEventListener("keydown", (event) => {
+  if (event.defaultPrevented) return;
   if (event.key === "Escape" && noting.active) {
     closeNote();
     drawNotes();
@@ -9320,6 +9362,7 @@ window.addEventListener("keydown", (event) => {
   }
   if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
   if (document.querySelector("dialog[open], [popover]:popover-open")) return;
+  if (event.code === "Space" && event.target.matches("button:focus-visible, summary:focus-visible, a:focus-visible")) return;
   const tab = event.target.closest?.("#inspTabs .insp-tab");
   if (tab && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
     // In the inspector's tabs the arrows move between tabs, as tabs do everywhere.
