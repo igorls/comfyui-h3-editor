@@ -78,6 +78,43 @@ def exercise(page, base, folder):
         page.keyboard.press("Escape")
 
 
+def exercise_style_markers(page, base, folder):
+    project_url = base + "/api/project/" + folder
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.reload()
+    expect(page.locator("#laneV .block").first).to_be_visible()
+    page.locator("#addStyleMarker").click()
+    editor = page.locator(".style-marker-editor")
+    expect(editor.get_by_label("Source frame")).to_have_value("0")
+    editor.get_by_label("Marker name").fill("Cool dusk")
+    editor.get_by_label("Source frame").fill("24")
+    editor.get_by_label("Style prompt").fill("Blue hour, warm windows")
+    editor.get_by_role("button", name="Save marker").click()
+    marker = page.get_by_role("button", name="Cool dusk, frame 24", exact=True)
+    expect(marker).to_be_visible()
+    marker.click(button="right")
+    menu = page.locator("#contextMenu:popover-open")
+    menu.get_by_role("menuitem", name="Edit style marker", exact=True).click()
+    expect(editor.get_by_label("Marker name")).to_be_focused()
+    expect(editor.get_by_label("Style prompt")).to_have_value("Blue hour, warm windows")
+    box = marker.bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + 30, y, steps=6)
+    page.mouse.up()
+    moved = page.locator("#laneStyle .style-marker")
+    expect(moved).not_to_have_attribute("data-style-frame", "24")
+    expect(editor.get_by_label("Source frame")).to_have_value(moved.get_attribute("data-style-frame"))
+    moved.click(button="right")
+    with page.expect_response(lambda response: response.request.method == "PUT"
+                              and response.url.split("?")[0] == project_url and response.ok
+                              and not response.request.post_data_json["clips"][0].get("style_markers")):
+        menu.get_by_role("menuitem", name="Remove style marker", exact=True).click()
+    expect(moved).to_have_count(0)
+    assert not request(project_url, "GET")["clips"][0].get("style_markers")
+
+
 def exercise_waveform(page, base, folder):
     project_url = base + "/api/project/" + folder
     request(project_url + "/ops", "POST", {"ops": [
@@ -197,12 +234,13 @@ def main():
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             exercise(page, base, folder)
+            exercise_style_markers(page, base, folder)
             exercise_waveform(page, base, folder)
             assert not errors, errors
             browser.close()
     finally:
         request(project_url, "DELETE")
-    print("Browser context menu and waveform checks passed.")
+    print("Browser context menus, style markers, and waveform checks passed.")
 
 
 if __name__ == "__main__":

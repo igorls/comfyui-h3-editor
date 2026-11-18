@@ -62,6 +62,7 @@ const state = {
   soundDisplay: "waveform",
   looks: [],
   lookSelection: null,
+  styleMarker: null,
   tab: "shot",
   folded: new Set(),
   expandedTakes: new Set(),
@@ -4061,7 +4062,10 @@ function drawInspector() {
   if (state.tab === "shot" && !clip.link) parts.push(spriteSection(clip));
   const spriteTake = activeTake(clip);
   if (spriteTake?.sprite && ["shot", "takes"].includes(state.tab)) parts.push(spritePlayback(spriteTake));
-  if (state.tab === "shot") parts.push(midGuidesSection(clip));
+  if (state.tab === "shot") {
+    parts.push(midGuidesSection(clip));
+    if (!placed && clip.style_markers?.length) parts.push(styleMarkersSection(clip));
+  }
 
   const voiced = ["speaker", "dialogue", "sound", "music"].filter((k) => String(clip[k] || "").trim()).length;
   if (state.tab === "shot") parts.push(disclosure("Dialogue and sound", voiced > 0, voiced ? voiced + " set" : "", [
@@ -4866,86 +4870,185 @@ function addStyleMarker(clip = null) {
   const length = plannedFrames(clip);
   const frame = Math.max(0, Math.min(length - 1, Math.round(viewing() === clip ? state.sourceFrame
     : item?.clip === clip.id ? item.in + (state.playhead - item.start) * speedOf(item) : 0)));
-  if ((clip.style_markers || []).some((marker) => marker.frame === frame)) {
-    state.tab = "timeline";
-    selectClip(clip.id, item?.clip === clip.id ? item.id : null);
-    return;
-  }
+  const placement = item?.clip === clip.id ? item : sorted().find(row => row.clip === clip.id);
+  if ((clip.style_markers || []).some(marker => marker.frame === frame)) return editStyleMarker(clip, frame, placement);
   if ((clip.style_markers || []).length >= 32) return toast("A clip holds up to 32 style markers.", true);
   checkpoint();
   const markers = clip.style_markers || (clip.style_markers = []);
   if (!markers.length && frame > 0) markers.push({ frame: 0, name: "Project look", style: state.project.style || "" });
-  markers.push({ frame, name: "New look", style: state.project.style || "" });
+  const preceding = markers.findLast(marker => marker.frame < frame);
+  markers.push({ frame, name: "New look", style: preceding?.style ?? state.project.style ?? "" });
   markers.sort((a, b) => a.frame - b.frame);
   save();
-  state.tab = "timeline";
-  selectClip(clip.id, item?.clip === clip.id ? item.id : null);
+  editStyleMarker(clip, frame, placement);
+}
+
+function editStyleMarker(clip, frame, item, seekMarker = false) {
+  state.styleMarker = { clip: clip.id, frame };
+  state.tab = item ? "timeline" : "shot";
+  selectClip(clip.id, item?.id ?? null);
+  if (seekMarker && item) seek(item.start + (frame - item.in) / speedOf(item));
+  showWorkspacePanel("inspector");
+  const editor = revealInspectorControl(".style-marker-editor input");
+  editor?.focus();
+}
+
+function removeStyleMarker(clip, frame) {
+  const current = clipOf(clip.id);
+  if (!current?.style_markers?.some(marker => marker.frame === frame)) return;
+  checkpoint();
+  current.style_markers = current.style_markers.filter(marker => marker.frame !== frame);
+  if (state.styleMarker?.clip === current.id && state.styleMarker.frame === frame) state.styleMarker = null;
+  save();
+  renderTimeline();
+  renderInspector();
 }
 
 function styleMarkersSection(clip) {
+  const markers = clip.style_markers || [];
   const hint = document.createElement("p");
   hint.className = "style-experiment";
-  hint.textContent = "Experimental: each marker is the destination of a smooth blend from the previous look, within this clip. Render again to see it. Each distinct style adds a model evaluation per sampling step (up to four). The first look supplies the sound.";
+  hint.textContent = "A marker sets the look the clip blends toward. Render the clip again after editing.";
   const add = document.createElement("button");
   add.className = "quiet";
   add.textContent = "Add at playhead";
-  add.addEventListener("click", () => addStyleMarker(clip));
-  const rows = (clip.style_markers || []).map((marker, index) => {
-    const row = document.createElement("div");
-    row.className = "style-marker-row";
-    const head = document.createElement("div");
-    head.className = "style-marker-head";
-    const name = document.createElement("b");
-    name.textContent = marker.name || "Style " + (index + 1);
-    const remove = document.createElement("button");
-    remove.className = "quiet";
-    remove.textContent = "Remove";
-    remove.setAttribute("aria-label", "Remove style marker " + (index + 1));
-    remove.addEventListener("click", () => {
-      checkpoint();
-      clip.style_markers = clip.style_markers.filter((other) => other !== marker);
-      save(); renderInspector(); renderTimeline();
-    });
-    head.append(name, remove);
-    const frame = field("Frame " + (index + 1), marker.frame, (value) => {
-      const at = Number(value);
-      if (!Number.isInteger(at) || at < 0 || at >= plannedFrames(clip) || clip.style_markers.some((other) => other !== marker && other.frame === at)) return;
-      marker.frame = at;
+  add.onclick = () => addStyleMarker(clip);
+  if (!markers.length) return section("Style markers (experimental)", [hint, add]);
+  const selected = (state.styleMarker?.clip === clip.id
+    ? markers.find(marker => marker.frame === state.styleMarker.frame) : null) || markers[0];
+  const markersList = document.createElement("div");
+  markersList.className = "style-marker-list";
+  markersList.setAttribute("aria-label", "Style markers");
+  markersList.append(...markers.map(marker => {
+    const button = document.createElement("button");
+    button.className = "quiet";
+    button.textContent = (marker.name || "Style") + " · " + marker.frame;
+    button.setAttribute("aria-pressed", String(marker === selected));
+    button.onclick = () => {
+      state.styleMarker = { clip: clip.id, frame: marker.frame };
+      renderInspector();
       renderStyleMarkers();
-    }, { type: "number" });
-    frame.querySelector("input").min = 0;
-    frame.querySelector("input").max = plannedFrames(clip) - 1;
-    const library = choice("Look " + (index + 1), [["", "Custom style"], ...state.looks.map((look) => [look.id, look.name])],
-      state.looks.find((look) => look.style === marker.style)?.id || "", (value) => {
-        const look = state.looks.find((look) => look.id === value);
-        if (!look) return;
-        marker.name = look.name;
-        marker.style = look.style;
-        renderInspector(); renderStyleMarkers();
-      });
-    const style = field("Style " + (index + 1), marker.style, (value) => { marker.style = value; }, { area: true });
-    row.append(head, frame, library, style);
-    return row;
-  });
-  return section("Style markers (experimental)", [hint, add, ...rows]);
+      revealInspectorControl(".style-marker-editor input")?.focus();
+    };
+    return button;
+  }));
+  const form = document.createElement("form");
+  form.className = "style-marker-editor";
+  const name = plainField("Marker name", selected.name || "Style");
+  name.input.maxLength = 80;
+  const frame = plainField("Source frame", selected.frame, { type: "number" });
+  Object.assign(frame.input, { min: 0, max: plannedFrames(clip) - 1, step: 1, required: true });
+  const style = plainField("Style prompt", selected.style, { area: true });
+  style.input.maxLength = 12000;
+  const library = document.createElement("select");
+  library.setAttribute("aria-label", "Look preset");
+  library.append(new Option("Choose a look…", ""), ...state.looks.map(look => new Option(look.name, look.id)));
+  library.onchange = () => {
+    const look = state.looks.find(row => row.id === library.value);
+    if (look) {
+      name.input.value = look.name;
+      style.input.value = look.style;
+    }
+  };
+  const actions = document.createElement("div");
+  actions.className = "style-marker-actions";
+  const apply = document.createElement("button");
+  apply.className = "primary";
+  apply.textContent = "Save marker";
+  const remove = trashButton("Remove style marker", () => removeStyleMarker(clip, selected.frame));
+  remove.type = "button";
+  actions.append(apply, remove);
+  const error = document.createElement("p");
+  error.className = "field-error";
+  error.setAttribute("role", "status");
+  form.oninput = () => { error.textContent = ""; };
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    const at = frame.input.valueAsNumber;
+    const current = clipOf(clip.id);
+    const marker = current?.style_markers?.find(point => point.frame === selected.frame);
+    if (!marker) return;
+    const others = current.style_markers.filter(point => point !== marker);
+    if (others.some(point => point.frame === at)) {
+      error.textContent = "Another marker is already at frame " + at + ".";
+      frame.input.focus();
+      return;
+    }
+    const styles = new Set([...others.map(point => point.style.trim()), style.input.value.trim()]);
+    if (at !== 0 && !others.some(point => point.frame === 0)) styles.add((state.project.style || "").trim());
+    if (styles.size > 4) {
+      error.textContent = "A clip can blend up to four distinct looks, including its starting look.";
+      return;
+    }
+    checkpoint();
+    Object.assign(marker, { name: name.input.value.trim() || "Style", frame: at, style: style.input.value.trim() });
+    current.style_markers.sort((a, b) => a.frame - b.frame);
+    state.styleMarker = { clip: clip.id, frame: at };
+    save();
+    renderTimeline();
+    renderInspector();
+    revealInspectorControl(".style-marker-editor input")?.focus();
+  };
+  const pair = document.createElement("div");
+  pair.className = "pair";
+  pair.append(name.wrap, frame.wrap);
+  form.append(pair, library, style.wrap, error, actions);
+  return section("Style markers (experimental)", [hint, add, markersList, form]);
 }
 
 function renderStyleMarkers() {
   const markers = [];
   for (const item of sorted()) {
     const clip = clipOf(item.clip);
-    for (const marker of clip?.style_markers || []) {
+    for (const [index, marker] of (clip?.style_markers || []).entries()) {
       if (marker.frame < item.in || marker.frame >= item.out) continue;
       const at = item.start + (marker.frame - item.in) / speedOf(item);
       const button = document.createElement("button");
       button.className = "style-marker";
+      button.dataset.styleItem = item.id;
+      button.dataset.styleFrame = marker.frame;
       button.style.left = px(at) + "px";
+      const next = clip.style_markers[index + 1];
+      button.style.maxWidth = Math.max(12, Math.min(140, px(((next?.frame ?? item.out) - marker.frame) / speedOf(item)) - 2)) + "px";
       button.textContent = marker.name || "Style";
-      button.title = clip.name + ", frame " + marker.frame + ": " + marker.style;
-      button.addEventListener("click", () => {
-        state.tab = "timeline";
-        selectClip(clip.id, item.id);
-        seek(at);
+      button.setAttribute("aria-label", (marker.name || "Style") + ", frame " + marker.frame);
+      button.setAttribute("aria-pressed", String(state.styleMarker?.clip === clip.id && state.styleMarker.frame === marker.frame));
+      button.title = "Drag to move, click to edit " + (marker.name || "style") + " at frame " + marker.frame;
+      button.addEventListener("click", () => editStyleMarker(clip, marker.frame, item, true));
+      button.addEventListener("pointerdown", event => {
+        if (event.button !== 0) return;
+        const folder = state.folder, origin = marker.frame;
+        const min = Math.max(item.in, (clip.style_markers[index - 1]?.frame ?? -1) + 1);
+        const max = Math.min(item.out - 1, (next?.frame ?? Infinity) - 1);
+        let frame = origin;
+        button.setPointerCapture(event.pointerId);
+        const move = nextEvent => {
+          if (nextEvent.pointerId !== event.pointerId || state.folder !== folder) return;
+          const delta = nextEvent.clientX - event.clientX;
+          frame = Math.abs(delta) < 3 ? origin
+            : Math.max(min, Math.min(max, Math.round(origin + delta * speedOf(item) / state.zoom)));
+          button.style.left = px(item.start + (frame - item.in) / speedOf(item)) + "px";
+          button.classList.toggle("dragging", frame !== origin);
+        };
+        const finish = endEvent => {
+          if (endEvent.pointerId !== event.pointerId) return;
+          button.removeEventListener("pointermove", move);
+          button.removeEventListener("pointerup", finish);
+          button.removeEventListener("lostpointercapture", finish);
+          button.classList.remove("dragging");
+          button.style.left = px(at) + "px";
+          if (endEvent.type !== "pointerup" || state.folder !== folder || frame === origin) return;
+          const current = clipOf(clip.id);
+          const live = current?.style_markers?.find(point => point.frame === origin);
+          if (!live || current.style_markers.some(point => point.frame === frame)) return;
+          checkpoint();
+          live.frame = frame;
+          save();
+          editStyleMarker(current, frame, item, true);
+        };
+        button.addEventListener("pointermove", move);
+        button.addEventListener("pointerup", finish);
+        button.addEventListener("lostpointercapture", finish);
       });
       markers.push(button);
     }
@@ -8325,9 +8428,20 @@ function actionsAt(target, x) {
   }
   const check = target.closest("#tlContent button.soft-mark");
   if (check) return { title: "Timeline check", rows: [buttonAction(check, "Inspect this frame")] };
-  const marker = target.closest(".style-marker, .gap-bridge");
-  if (marker) return { title: marker.classList.contains("style-marker") ? "Style marker" : "Gap",
-    rows: [buttonAction(marker, marker.classList.contains("style-marker") ? "Edit this style marker" : "Generate a bridge")] };
+  const styleMarker = target.closest("[data-style-item]");
+  if (styleMarker) {
+    const item = state.project.timeline.find(row => row.id === styleMarker.dataset.styleItem);
+    const clip = item && clipOf(item.clip);
+    const frame = Number(styleMarker.dataset.styleFrame);
+    const marker = clip?.style_markers?.find(point => point.frame === frame);
+    if (marker) return { title: (marker.name || "Style") + " · frame " + frame, rows: [
+      act("Edit style marker", () => editStyleMarker(clip, frame, item, true)),
+      act("Go to marker", () => { setSource(null); seek(item.start + (frame - item.in) / speedOf(item)); }),
+      act("Remove style marker", () => removeStyleMarker(clip, frame), { danger: true }),
+    ] };
+  }
+  const bridge = target.closest(".gap-bridge");
+  if (bridge) return { title: "Gap", rows: [buttonAction(bridge, "Generate a bridge")] };
   if (target.closest("#timeline")) return timelineSurfaceActions(target, x);
   const bin = binOf(target.closest(".bin-group")?.dataset.bin);
   if (bin) return { title: bin.name, rows: [
@@ -9302,6 +9416,7 @@ async function openProject(folder) {
   state.playhead = 0;
   state.range = state.sourceRange = null;
   state.lookSelection = null;
+  state.styleMarker = null;
   state.expandedTakes.clear();
   undo = [];
   redo = [];

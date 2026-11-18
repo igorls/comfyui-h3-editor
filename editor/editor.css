@@ -596,11 +596,18 @@ label.lora-name { cursor: pointer; }
 
 .tl-body { display: grid; grid-template-columns: var(--head) minmax(0, 1fr); grid-template-rows: minmax(calc(204px + var(--tl-extra, 0px)), 1fr); min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); }
 .tl-heads, .tl-content { display: grid; grid-template-rows: 28px 28px 34px minmax(64px, 2fr) minmax(40px, 1fr); }
-.style-marker { position: absolute; top: 3px; height: 22px; max-width: 140px; padding: 2px 7px; border: 1px solid var(--tungsten); border-radius: 4px; color: var(--text); background: var(--raised); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.style-marker { position: absolute; top: 3px; height: 22px; max-width: 140px; padding: 2px 6px; border: 1px solid var(--tungsten); border-radius: 4px; color: var(--text); background: var(--raised); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: grab; touch-action: none; }
 .style-marker:hover { background: var(--hover); }
-.style-marker-row { display: grid; gap: 8px; padding: 10px 0; border-top: 1px solid var(--line); }
-.style-marker-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.style-marker-row .field { margin-bottom: 0; }
+.style-marker[aria-pressed=true], .style-marker.dragging { background: var(--tungsten); color: var(--tungsten-ink); z-index: 1; }
+.style-marker.dragging { cursor: grabbing; }
+.style-marker-list, .style-marker-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.style-marker-list { margin-top: 10px; }
+.style-marker-list button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.style-marker-list button[aria-pressed=true] { color: var(--tungsten); }
+.style-marker-editor { display: grid; gap: 8px; margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.style-marker-editor .field { margin: 0; }
+.style-marker-editor select { width: 100%; min-height: 30px; background-color: var(--room); border: 1px solid var(--line); border-radius: var(--radius); padding-inline: 8px 28px; }
+.style-marker-editor .field-error:empty { display: none; }
 .style-experiment { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
 .lane.x { background: repeating-linear-gradient(135deg, transparent 0 9px, rgba(255, 255, 255, 0.018) 9px 10px); }
 .fx { position: absolute; top: 4px; bottom: 4px; display: flex; align-items: center; padding: 0 9px; border: 1px solid var(--line-hi); border-radius: 4px; background: #2f3a48; color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; cursor: grab; touch-action: none; }
