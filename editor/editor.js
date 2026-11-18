@@ -2205,6 +2205,23 @@ for (const id of ["clips", "cast"]) {
   toggle.addEventListener("click", () => setCollectionOpen(id, $(id).hidden));
 }
 
+function setClipsView(grid) {
+  $("clips").dataset.view = grid ? "grid" : "list";
+  $("clipsView").setAttribute("aria-pressed", String(grid));
+  $("clipsView").title = grid ? "Switch to list view" : "Switch to grid view";
+}
+
+let clipsView = "list";
+try { clipsView = localStorage.getItem("h3take.clipsView"); } catch (_) {}
+setClipsView(clipsView === "grid");
+$("clipsView").addEventListener("click", () => {
+  const list = $("clips");
+  setClipsView(list.dataset.view !== "grid");
+  if (list.hidden) setCollectionOpen("clips", true);
+  list.querySelector(".clip.on, .bin-head.on")?.scrollIntoView({ block: "nearest" });
+  try { localStorage.setItem("h3take.clipsView", list.dataset.view); } catch (_) {}
+});
+
 function section(title, children, iconName = "") {
   return disclosure(title, true, "", children, iconName);
 }
@@ -8461,7 +8478,8 @@ function actionsAt(target, x) {
     byId("castToggle", $("cast").hidden ? "Expand Cast" : "Collapse Cast"), "-",
     byId("addCast", "Add reference"), byId("addVoice", "Add voice"), byId("addFromCatalog", "From the catalog")] };
   if (target.closest(".bin")) return { title: "Clips", rows: [
-    byId("clipsToggle", $("clips").hidden ? "Expand Clips" : "Collapse Clips"), "-",
+    byId("clipsToggle", $("clips").hidden ? "Expand Clips" : "Collapse Clips"),
+    byId("clipsView", $("clipsView").title), "-",
     byId("newClip", "New clip"), byId("importClip", "Import footage"), byId("newBin", "New bin")] };
   if (target.closest("#inspector")) {
     const controls = [...$("inspTabs").querySelectorAll('[role="tab"]')];
