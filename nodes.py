@@ -7,7 +7,7 @@ import subprocess
 import folder_paths
 import numpy as np
 import torch
-from comfy_api.latest import InputImpl, io
+from comfy_api.latest import InputImpl, io, ui
 from PIL import Image, ImageOps
 
 from .latent_writer import carry_tail, encode_audio, encode_video, write_holds
@@ -18,6 +18,7 @@ from . import clipproj
 from . import media
 from . import holds
 from . import style_timeline
+from . import vosr2
 
 # Why a HyperFlow .gguf cannot load here (the gguf package, which this pack's requirements install),
 # or None. The INT8 safetensors files load either way.
@@ -330,6 +331,43 @@ def output_file(file):
     if not path.startswith(base + os.sep) or not os.path.exists(path):
         raise ValueError("no file at %s in the output folder" % file)
     return path
+
+
+class H3VOSR2Video(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id="H3VOSR2Video", display_name="H3 VOSR2 Video (experimental)", category="minimax/h3",
+                         description="Upscale a rendered video 2× frame by frame with the optional ComfyUI-VOSR2 pack.",
+                         inputs=[io.Custom("VOSR2_MODEL").Input("model"), io.String.Input("file"),
+                                 io.String.Input("filename_prefix", default="video/h3_vosr2")],
+                         is_output_node=True, outputs=[])
+
+    @classmethod
+    def execute(cls, model, file, filename_prefix):
+        import comfy.model_management
+        import nodes as comfy_nodes
+        from server import PromptServer
+
+        upscale = comfy_nodes.NODE_CLASS_MAPPINGS.get("VOSR2Upscale")
+        if upscale is None:
+            raise ValueError(vosr2.SETUP)
+        source = output_file(file)
+        folder, stem, counter, subfolder, _ = folder_paths.get_save_image_path(filename_prefix, folder_paths.get_output_directory())
+        name = "%s_%05d_.mp4" % (stem, counter)
+
+        def transform(rgb):
+            image = torch.from_numpy(rgb).unsqueeze(0).float().div_(255)
+            enlarged = upscale.execute(model=model, image=image, **vosr2.SETTINGS)[0]
+            return enlarged[0].detach().to("cpu").clamp(0, 1).mul_(255).round_().to(torch.uint8).contiguous().numpy()
+
+        server = PromptServer.instance
+        prompt_id = server.last_prompt_id
+
+        def progress(frame, total):
+            server.send_sync("h3take_upscale_frame", {"prompt_id": prompt_id, "value": frame, "max": total}, server.client_id)
+
+        vosr2.stream_video(source, os.path.join(folder, name), transform, comfy.model_management.throw_exception_if_processing_interrupted, progress)
+        return io.NodeOutput(ui=ui.PreviewVideo([ui.SavedResult(name, subfolder, io.FolderType.output)]))
 
 
 class H3LoadStill(io.ComfyNode):
@@ -655,10 +693,12 @@ class H3RefineLatent(io.ComfyNode):
 
 
 NODE_CLASS_MAPPINGS = {"H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3SaveHold": H3SaveHold, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
+                       "H3VOSR2Video": H3VOSR2Video,
                        "H3StyleGuider": H3StyleGuider,
                        "H3Lora": H3Lora, "H3LoadTake": H3LoadTake, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
                        "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
+                              "H3VOSR2Video": "H3 VOSR2 Video (experimental)",
                               "H3StyleGuider": "H3 Style Guider (experimental)",
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3LoadTake": "H3 Load Take", "H3RefineLatent": "H3 Refine Latent",
                               "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas", "H3SmallTextEncoder": "H3 Small Text Encoder"}

@@ -11,6 +11,7 @@ below. You can use them in your own workflows too.
 | H3 Load Clip | Reads frames and sound from a clip in the output folder, and the saved latents of those frames when they start on a multiple of 17 frames |
 | H3 Save Hold | Saves a sampled take's latents, picture and sound, beside its video, for clips that extend or bridge it. Connect `final` to save a refine pass's picture too |
 | H3 Load Still | Reads a picture from the output folder |
+| H3 VOSR2 Video (experimental) | Takes the optional VOSR2 model loader's bundle and a video in the output folder, doubles the picture frame by frame, and saves an MP4 with the original soundtrack |
 | H3 Load Sound | Reads a sound from the output folder, such as a cast voice |
 | H3 LoRA | Applies an H3 LoRA, wherever it can land on the model; see [models](models.md#loras) |
 | H3 Refine Latent | Prepares an upscaled H3 latent for a few more steps, keeping held frames and the sound |

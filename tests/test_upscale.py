@@ -1,6 +1,7 @@
 import unittest
 
 import project as store
+import vosr2
 from project import add_clip, add_pending, finish_render, new_project, plan_render
 
 FILES = {"relayvsr/relayvsr_x2_lightx2v_int8_convrot.safetensors", "relayvsr/relayvsr_flash_vae_x2_fp32.safetensors"}
@@ -18,6 +19,21 @@ def rendered(quality="final", frames=124):
 
 
 class UpscaleTest(unittest.TestCase):
+    def test_vosr2_is_explicit_and_can_stream_longer_clips(self):
+        project, clip = rendered(frames=300)
+        job, graph = plan_render(project, "Test", clip["id"], "upscale", available={vosr2.REGISTERED}, upscaler="vosr2")
+        self.assertEqual(graph["31"], {"class_type": "VOSR2ModelLoader", "inputs": {"model": "VOSR2", "dtype": "default"}})
+        self.assertEqual(graph["19"]["class_type"], "H3VOSR2Video")
+        self.assertEqual(graph["19"]["inputs"]["file"], "h3take_projects/Test/clips/x.mp4")
+        self.assertEqual(graph["19"]["inputs"]["model"], ["31", 0])
+        self.assertEqual((job["upscaler"], job["upscaled"], job["size"]), ("vosr2", clip["active"], [3840, 2176]))
+        self.assertNotIn("detail", job)
+        with self.assertRaisesRegex(ValueError, "RelayVSR"):
+            store.pick_upscaler(None, {vosr2.REGISTERED})
+        with self.assertRaisesRegex(ValueError, "ComfyUI-VOSR2"):
+            store.pick_upscaler("vosr2", set())
+        self.assertEqual(store.pick_upscaler(None, {vosr2.REGISTERED} | FILES)[0], "relayvsr")
+
     def test_an_upscale_reads_the_final_and_saves_a_take_at_twice_the_size(self):
         project, clip = rendered()
         job, graph = plan_render(project, "Test", clip["id"], "upscale", available=FILES)

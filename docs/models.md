@@ -183,6 +183,20 @@ size. You pick the upscaler among the ones whose two files are installed:
 
 Files in a subfolder of those folders are found too.
 
+**VOSR2 (experimental)** is an optional third choice under **Upscale 2x**. Install
+[ComfyUI-VOSR2](https://github.com/ylchen333/ComfyUI-VOSR2) from GitHub into
+`ComfyUI/custom_nodes`, install its requirements in ComfyUI's Python, and restart.
+Both **VOSR 2.0 Model Loader** and **VOSR 2.0 Upscale** must appear in ComfyUI.
+The wrapper downloads its roughly 7 GB model bundle from
+[CSWRY/VOSR](https://huggingface.co/CSWRY/VOSR) on first use. It also accepts
+a complete offline bundle in `models/vosr2/VOSR2/`; the wrapper README lists the files.
+
+Select VOSR2 explicitly on a final take. It doubles both dimensions, copies the
+source soundtrack and creates a new take. It runs the image upscaler on each
+frame with seed 42, wavelet colour alignment, 512-pixel DiT tiles and 1024-pixel
+VAE tiles. Frames stream through the model and encoder one at a time. Compare
+fine details during motion for flicker before choosing the take for the cut.
+
 Steps belong to the model, not the project: to render with other steps, add a
 checkpoint with the same file under [your own checkpoints](#your-own-checkpoints).
 

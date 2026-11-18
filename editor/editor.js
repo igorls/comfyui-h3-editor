@@ -334,7 +334,7 @@ function placeTakeAsClip(source, takeId, start = sceneEnd()) {
   const clip = structuredClone(source);
   const take = clip.takes[index];
   clip.id = uid("c");
-  clip.name += " · Take " + (index + 1);
+  clip.name += " Â· Take " + (index + 1);
   clip.takes = [take];
   clip.active = take.id;
   clip.seed = take.seed ?? clip.seed;
@@ -2043,7 +2043,7 @@ function clipRow(clip) {
       const row = document.createElement("button");
       row.className = "clip-take";
       const label = document.createElement("span");
-      label.textContent = "Take " + (index + 1) + " · " + take.quality;
+      label.textContent = "Take " + (index + 1) + " Â· " + take.quality;
       row.setAttribute("aria-label", "Append " + label.textContent + " from " + clip.name + " as a clip");
       row.title = "Drag onto the timeline, or click to append this take as a clip";
       row.append(label, icon("plus"));
@@ -3254,7 +3254,7 @@ function formatOptions(select, current) {
   const presets = [...(state.formatPresets || Object.keys(labels))];
   if (!presets.includes(current)) presets.push(current);
   select.replaceChildren(...presets.map((format) => new Option(labels[format] || format, format)),
-    new Option("Custom ratio…", "custom"));
+    new Option("Custom ratioâ€¦", "custom"));
   select.value = current;
 }
 
@@ -3404,7 +3404,7 @@ function lookFields() {
   const pick = document.createElement("select");
   pick.setAttribute("aria-label", "Style library");
   pick.dataset.key = "lookLibrary";
-  pick.append(new Option("Choose a look…", ""));
+  pick.append(new Option("Choose a lookâ€¦", ""));
   const matched = state.looks.find((look) => look.style === state.project.style);
   for (const builtin of [false, true]) {
     const group = document.createElement("optgroup");
@@ -3506,7 +3506,7 @@ function sizeChoices() {
     for (const row of table[quality]) {
       const option = document.createElement("option");
       option.value = row.id;
-      option.textContent = names[row.id] + ", " + row.out[0] + " × " + row.out[1];
+      option.textContent = names[row.id] + ", " + row.out[0] + " Ã— " + row.out[1];
       option.selected = row.id === current;
       if (row.id === "sharp" && relay && !relay.installed) {
         option.disabled = row.id !== current;
@@ -3565,14 +3565,14 @@ function sizeChoices() {
       return box;
     });
     const times = document.createElement("span");
-    times.textContent = "×";
+    times.textContent = "Ã—";
     sides.append(boxes[0], times, boxes[1]);
     says(mine);
     label.append(sides, note);
     const fromRatio = document.createElement("button");
     fromRatio.type = "button";
     fromRatio.className = "quiet small";
-    fromRatio.textContent = "Set by longest side or megapixels…";
+    fromRatio.textContent = "Set by longest side or megapixelsâ€¦";
     fromRatio.addEventListener("click", () => openSizeTarget(quality, mine, setSize));
     label.append(fromRatio);
     return label;
@@ -3582,9 +3582,9 @@ function sizeChoices() {
   const full = table.final.find((row) => row.id === "full");
   const sharp = table.final.find((row) => row.id === "sharp");
   hint.textContent = "New renders use these sizes. A smaller one needs less GPU memory and renders faster."
-    + (full ? " Full samples at " + full.width + " × " + full.height + ", then redraws its last steps at " + full.out[0] + " × " + full.out[1] + "." : "")
+    + (full ? " Full samples at " + full.width + " Ã— " + full.height + ", then redraws its last steps at " + full.out[0] + " Ã— " + full.out[1] + "." : "")
     + (sharp ? " Sharp samples at the same size once, enlarges the picture two times with RelayVSR and scales it down to "
-      + sharp.out[0] + " × " + sharp.out[1] + ": quicker than Full, with crisper edges and the smoother skin of the sampled size."
+      + sharp.out[0] + " Ã— " + sharp.out[1] + ": quicker than Full, with crisper edges and the smoother skin of the sampled size."
       + (relay && !relay.installed ? " It needs " + relay.missing.join(" and ") + " from " + relay.source + " on Hugging Face." : "") : "")
     + (own ? " Your own size takes any width and height from " + own.min + " to " + own.max + " in steps of " + own.step
       + ", and comes out as sampled." : "")
@@ -3610,7 +3610,7 @@ function openSizeTarget(quality, dimensions, setSize) {
       const reply = await fetchSize(ratio.value, { [method.value]: target.value });
       if (turn !== sequence) return;
       measured = reply.size;
-      result.textContent = measured.join(" × ") + " px · " + (measured[0] * measured[1] / 1e6).toFixed(2) + " MP";
+      result.textContent = measured.join(" Ã— ") + " px Â· " + (measured[0] * measured[1] / 1e6).toFixed(2) + " MP";
       apply.disabled = false;
     } catch (error) {
       if (turn === sequence) result.textContent = error.message;
@@ -3790,7 +3790,7 @@ function drawInspector() {
   if (person) tabs.push(["shot", "Cast member"]);
   else if (bin) tabs.push(["shot", "Bin"]);
   else if (sound) tabs.push(["shot", "Sound"]);
-  else if (clip && clip.kind === "footage") tabs.push(["shot", "Footage"]);
+  else if (clip && clip.kind === "footage") tabs.push(["shot", "Footage"], ["takes", "Takes", clip.takes.length]);
   else if (clip) tabs.push(["shot", "Shot"], ["takes", "Takes", clip.takes.length]);
   if (placed) tabs.push(["timeline", "Timeline"]);
   tabs.push(["project", "Project"]);
@@ -3867,7 +3867,20 @@ function drawInspector() {
     about.className = "hint";
     about.textContent = "On the timeline, use Generate to extend this footage or bridge to the next clip.";
     if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)));
-    else parts.push(section("Footage", [source, about]));
+    else if (state.tab === "shot") parts.push(section("Footage", [source, about]));
+    if (state.tab === "takes" && clip.takes.length) {
+      parts.push(section("Takes", versions(clip)));
+    }
+    if (job) {
+      const cancel = document.createElement("button");
+      cancel.className = "quiet";
+      cancel.textContent = "Cancel upscale";
+      cancel.onclick = () => cancelJob(job);
+      parts.push(cancel);
+    } else {
+      const upscale = upscaleControls(clip);
+      if (upscale) parts.push(upscale);
+    }
     panel.replaceChildren(...parts);
     return;
   }
@@ -4002,77 +4015,94 @@ function drawInspector() {
       finish.addEventListener("click", () => renderClip(clip, "finish"));
       actions.append(finish);
     }
-    const shown = activeTake(clip);
-    const upscalers = (state.upscalers || []).filter((row) => row.installed);
-    if (shown && shown.quality === "final" && !shown.upscaled && upscalers.length) {
-      // A finished final can be enlarged two times: a new take of the same picture and sound, at twice the size.
-      // Which upscaler is the user's choice, among the installed ones: they do very different things to a picture.
-      const shape = takeShape(shown);
-      const remembered = (key, fallback) => {
-        try {
-          return localStorage.getItem(key) || fallback;
-        } catch (_) {
-          return fallback;      // no storage: the choice lasts for this visit
-        }
-      };
-      const remember = (key, value) => {
-        try {
-          localStorage.setItem(key, value);
-        } catch (_) {
-          // Kept for this visit only.
-        }
-      };
-      const which = document.createElement("select");
-      which.setAttribute("aria-label", "Upscaler");
-      const chosen = remembered("h3.upscaler", upscalers[0].id);
-      for (const row of upscalers) {
-        const option = document.createElement("option");
-        option.value = row.id;
-        option.textContent = row.title;
-        option.selected = row.id === chosen;
-        which.append(option);
-      }
-      // RelayVSR only: how much of the detail it adds is kept. All of it sharpens most, and can age a face.
-      const detail = document.createElement("select");
-      detail.setAttribute("aria-label", "How much detail the upscale adds");
-      detail.title = "How much of the detail the upscaler adds is kept. More is sharper; on a face, all of it brings out pores and shine and can make it look older.";
-      const kept = remembered("h3.upscaleDetail", "0.5");
-      for (const [value, label] of [["0.25", "A little detail"], ["0.5", "Some detail"], ["0.75", "More detail"], ["1", "All detail"]]) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = label;
-        option.selected = value === kept;
-        detail.append(option);
-      }
-      detail.addEventListener("change", () => remember("h3.upscaleDetail", detail.value));
-      const button = document.createElement("button");
-      button.className = "quiet";
-      button.textContent = "Upscale 2x";
-      const settle = () => {
-        const row = upscalers.find((r) => r.id === which.value) || upscalers[0];
-        detail.hidden = !row.detail;
-        which.title = row.about;
-        button.title = "Enlarge this final to " + 2 * shape[0] + " x " + 2 * shape[1] + " with " + row.title + ". " + row.about
-          + " It becomes a new take; do it once the cut is settled.";
-      };
-      which.addEventListener("change", () => {
-        remember("h3.upscaler", which.value);
-        settle();
-      });
-      settle();
-      button.addEventListener("click", () => renderClip(clip, "upscale", detail.hidden ? undefined : Number(detail.value), which.value));
-      // Its own line under the render buttons: a choice made after a final, not a third way to render one.
-      upscale = document.createElement("div");
-      upscale.className = "actions upscale-row";
-      upscale.setAttribute("role", "group");
-      upscale.setAttribute("aria-label", "Upscale this final");
-      upscale.append(which, detail, button);
-    }
+    upscale = upscaleControls(clip);
   }
   foot.append(actions);
   if (upscale) foot.append(upscale);
   parts.push(foot);
   panel.replaceChildren(...parts);
+}
+
+function upscaleControls(clip) {
+  const shown = activeTake(clip);
+  const upscalers = (state.upscalers || []).filter((row) => row.installed || row.experimental);
+  if (!shown || shown.upscaled || (!["final", "footage"].includes(shown.quality) && clip.kind !== "footage") || !upscalers.length) return null;
+  const shape = takeShape(shown);
+  const remembered = (key, fallback) => {
+    try {
+      return localStorage.getItem(key) || fallback;
+    } catch (_) {
+      return fallback;      // no storage: the choice lasts for this visit
+    }
+  };
+  const remember = (key, value) => {
+    try {
+      localStorage.setItem(key, value);
+    } catch (_) {
+      // Kept for this visit only.
+    }
+  };
+  const which = document.createElement("select");
+  which.setAttribute("aria-label", "Upscaler");
+  const stable = upscalers.filter((row) => row.installed && !row.experimental);
+  const chosen = stable.find((row) => row.id === remembered("h3.upscaler", ""))?.id || stable[0]?.id || "";
+  if (!chosen) which.append(new Option("Choose an upscaler", ""));
+  for (const row of upscalers) {
+    const option = document.createElement("option");
+    option.value = row.id;
+    option.textContent = row.title + (row.installed ? "" : " Â· setup");
+    option.selected = row.id === chosen;
+    which.append(option);
+  }
+  // RelayVSR only: how much of the detail it adds is kept. All of it sharpens most, and can age a face.
+  const detail = document.createElement("select");
+  detail.setAttribute("aria-label", "How much detail the upscale adds");
+  detail.title = "How much of the detail the upscaler adds is kept. More is sharper; on a face, all of it brings out pores and shine and can make it look older.";
+  const kept = remembered("h3.upscaleDetail", "0.5");
+  for (const [value, label] of [["0.25", "A little detail"], ["0.5", "Some detail"], ["0.75", "More detail"], ["1", "All detail"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = value === kept;
+    detail.append(option);
+  }
+  detail.addEventListener("change", () => remember("h3.upscaleDetail", detail.value));
+  const button = document.createElement("button");
+  button.className = "quiet";
+  button.textContent = "Upscale 2x";
+  const note = document.createElement("p");
+  note.className = "hint upscale-note";
+  note.setAttribute("aria-live", "polite");
+  const settle = () => {
+    const row = upscalers.find((r) => r.id === which.value);
+    detail.hidden = !row?.detail;
+    button.disabled = !row?.installed;
+    which.title = row?.about || "Choose an upscaler";
+    button.title = row ? "Enlarge this final to " + 2 * shape[0] + " x " + 2 * shape[1] + " with " + row.title + ". " + row.about : "";
+    note.hidden = !row?.experimental;
+    note.textContent = row?.experimental ? row.about + " " + row.setup : "";
+    if (row?.experimental && !row.installed) {
+      const link = document.createElement("a");
+      link.href = row.source;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Wrapper setup";
+      note.append(" ", link);
+    }
+  };
+  which.addEventListener("change", () => {
+    if (stable.some((row) => row.id === which.value)) remember("h3.upscaler", which.value);
+    settle();
+  });
+  settle();
+  button.addEventListener("click", () => renderClip(clip, "upscale", detail.hidden ? undefined : Number(detail.value), which.value));
+  // Its own line under the render buttons: a choice made after a final, not a third way to render one.
+  const upscale = document.createElement("div");
+  upscale.className = "actions upscale-row";
+  upscale.setAttribute("role", "group");
+  upscale.setAttribute("aria-label", "Upscale this take");
+  upscale.append(which, detail, button, note);
+  return upscale;
 }
 
 const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides"];
@@ -4146,19 +4176,21 @@ function versions(clip) {
     tools.append(element);
     return element;
   };
-  button("Keep seed", () => {
-    checkpoint();
-    clip.seed = current.seed;
-    save();
-    renderInspector();
-    toast("Renders of this clip now use seed " + current.seed + ".");
-  }, false, "pin", "Render this clip again with the seed of the take shown");
-  button("Restore prompt", () => {
-    checkpoint();
-    restoreTakeFields(clip, current.saved);
-    save();
-    renderInspector();
-  }, !current.saved, "restore", "Restore the shot text, timing, style markers and mid-frame guides from this take");
+  if (clip.kind !== "footage") {
+    button("Keep seed", () => {
+      checkpoint();
+      clip.seed = current.seed;
+      save();
+      renderInspector();
+      toast("Renders of this clip now use seed " + current.seed + ".");
+    }, false, "pin", "Render this clip again with the seed of the take shown");
+    button("Restore prompt", () => {
+      checkpoint();
+      restoreTakeFields(clip, current.saved);
+      save();
+      renderInspector();
+    }, !current.saved, "restore", "Restore the shot text, timing, style markers and mid-frame guides from this take");
+  }
   button("Add as clip", () => {
     const item = placeTakeAsClip(clip, current.id);
     if (item) focusInBin('.clip[data-clip="' + CSS.escape(item.clip) + '"]');
@@ -4167,7 +4199,7 @@ function versions(clip) {
   const spacer = document.createElement("span");
   spacer.className = "spacer";
   tools.append(spacer);
-  button("Manage takes…", () => openTakeManager(clip), clip.kind === "footage" && clip.takes.length < 2,
+  button("Manage takesâ€¦", () => openTakeManager(clip), clip.kind === "footage" && clip.takes.length < 2,
     "", "Select takes to remove from this clip");
   return [takes, tools];
 }
@@ -4185,7 +4217,7 @@ function openTakeManager(clip) {
       ? "The newest remaining take will play in this clip. Its other independent placements keep their own takes."
       : "Remove versions from this clip. Their media files stay available to other placements and project history.";
   }
-  $("takeManagerTitle").textContent = "Manage takes · " + clip.name;
+  $("takeManagerTitle").textContent = "Manage takes Â· " + clip.name;
   list.replaceChildren();
   for (const [index, take] of clip.takes.entries()) {
     const row = document.createElement("label"), check = document.createElement("input");
@@ -4198,7 +4230,7 @@ function openTakeManager(clip) {
       image.alt = "";
       row.append(image);
     }
-    row.append("Take " + (index + 1) + " · " + take.quality + (take.id === active ? " · Active" : ""));
+    row.append("Take " + (index + 1) + " Â· " + take.quality + (take.id === active ? " Â· Active" : ""));
     list.append(row);
   }
   $("takeManagerClose").onclick = () => dialog.close();
@@ -4495,7 +4527,7 @@ function guideFrameAtPlayhead(clip) {
 
 function updateGuideLimits(section, clip) {
   const { first, last, limit } = midGuideLimits(clip);
-  section.querySelector(".hint").textContent = "Use up to " + limit + " guide pictures on source frames " + first + "–" + last
+  section.querySelector(".hint").textContent = "Use up to " + limit + " guide pictures on source frames " + first + "â€“" + last
     + ". A guide steers the next render near its frame. It can cause a brief hold or jump.";
   for (const input of section.querySelectorAll("input")) {
     input.min = first;
@@ -4780,7 +4812,7 @@ async function drawSpectrogram(canvas, item, take) {
   canvas.setAttribute("aria-label", "Sound spectrogram: low frequencies at the bottom, high frequencies at the top");
   const status = document.createElement("span");
   status.className = "sound-status";
-  status.textContent = "Loading spectrogram…";
+  status.textContent = "Loading spectrogramâ€¦";
   // drawWave is also called before an extra sound's canvas is attached to its block.
   queueMicrotask(() => { if (canvas.isConnected) canvas.after(status); });
   try {
@@ -5174,7 +5206,7 @@ function soundEnvelopePanel(sound) {
   });
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = "Drag points on the waveform or enter their source frames and levels. 100% plays at the sound’s volume.";
+  hint.textContent = "Drag points on the waveform or enter their source frames and levels. 100% plays at the soundâ€™s volume.";
   return section("Volume curve", [fades, list, add, hint]);
 }
 
@@ -6101,7 +6133,7 @@ function showEffectProgress() {
   }
   const label = document.querySelector("#inspBody .row button.primary");
   if (label && state.effect === job.id) label.textContent = "Rendering " + job.done + " of " + job.total + time;
-  document.title = percent + "% " + job.name + " · " + job.title;
+  document.title = percent + "% " + job.name + " Â· " + job.title;
 }
 
 // A VFX render runs in this page. Closing or reloading it would throw the render away, so the browser asks first.
@@ -6585,7 +6617,7 @@ function showRange() {
   $("markIn").classList.toggle("marked", Boolean(range));
   $("markOut").classList.toggle("marked", Boolean(range));
   $("clearRange").hidden = $("rangeLabel").hidden = !range;
-  $("rangeLabel").textContent = range ? timecode(range.a) + " – " + timecode(range.b - 1) : "";
+  $("rangeLabel").textContent = range ? timecode(range.a) + " â€“ " + timecode(range.b - 1) : "";
   $("rangeLabel").title = "In to Out, including the Out frame";
 }
 
@@ -6642,7 +6674,7 @@ function raterRows(rating) {
     const level = document.createElement("div");
     level.className = "level";
     if (row.error) {
-      num.textContent = "–";
+      num.textContent = "â€“";
       level.textContent = row.error;
     } else {
       const fill = document.createElement("i");
@@ -6653,7 +6685,7 @@ function raterRows(rating) {
       meter.setAttribute("aria-label", row.title + ": " + (row.of === 1 ? Math.round(row.part * 100) + "% likely" : row.score.toFixed(1) + " of " + row.of));
       // A check has two ends, so it reads as how likely the good one is. A scale reads as a level.
       num.textContent = row.of === 1 ? Math.round(row.part * 100) + "%" : row.score.toFixed(1) + " / " + row.of;
-      level.textContent = row.level + (row.of === 1 || row.confidence === null || row.confidence === undefined ? "" : " · " + Math.round(row.confidence * 100) + "% sure");
+      level.textContent = row.level + (row.of === 1 || row.confidence === null || row.confidence === undefined ? "" : " Â· " + Math.round(row.confidence * 100) + "% sure");
     }
     box.append(what, meter, num, level);
     return box;
@@ -6670,7 +6702,7 @@ function raterPast(span) {
   // Earlier ratings that looked at some of the same frames: how this stretch scored before.
   const past = (state.project.ratings || []).filter((r) => r.from < span.b && span.a < r.to).slice(0, 6);
   $("raterPast").textContent = past.length
-    ? "Earlier ratings here:\n" + past.map((r) => r.at.replace("T", " ") + "  " + timecode(r.from) + " to " + timecode(r.to) + "  " + (ratingMean(r) ?? "–") + "%").join("\n")
+    ? "Earlier ratings here:\n" + past.map((r) => r.at.replace("T", " ") + "  " + timecode(r.from) + " to " + timecode(r.to) + "  " + (ratingMean(r) ?? "â€“") + "%").join("\n")
     : "";
   return past;
 }
@@ -7553,7 +7585,7 @@ function actionsAt(target, x) {
   const takeRow = target.closest("[data-take][data-clip]");
   if (takeRow) {
     const clip = clipOf(takeRow.dataset.clip), take = clip?.takes.find(t => t.id === takeRow.dataset.take);
-    if (take) return { title: clip.name + " · Take " + (clip.takes.indexOf(take) + 1), rows: [
+    if (take) return { title: clip.name + " Â· Take " + (clip.takes.indexOf(take) + 1), rows: [
       act("Use this take", () => { selectClip(clip.id); chooseTake(clip, take); }),
       act("Append as a separate clip", () => placeTakeAsClip(clip, take.id)),
       act("Manage takes", () => openTakeManager(clip), { off: clip.kind === "footage" && clip.takes.length === 1 ? "Keep the source take" : "" }),
@@ -7565,7 +7597,7 @@ function actionsAt(target, x) {
     if (!item) return null;
     selectClip(item.clip, item.id);
     if (block.closest("#laneA") || block.classList.contains("wave")) {
-      return { title: clipOf(item.clip).name + " · Sound", rows: [
+      return { title: clipOf(item.clip).name + " Â· Sound", rows: [
         act("Edit clip volume", () => {
           showWorkspacePanel("inspector"); showTab("timeline");
           $("inspBody").querySelector('[data-key="Clip volume"]')?.focus();
@@ -7922,7 +7954,8 @@ function showLive(job) {
       });
     };
   }
-  live.textContent = (clipOf(job.clip)?.name || "Clip") + ": " + (job.stage || "Waiting in the queue") + (job.max ? ", step " + job.step + " of " + job.max : "");
+  live.textContent = (clipOf(job.clip)?.name || "Clip") + ": " + (job.stage || "Waiting in the queue")
+    + (job.max ? (job.upscaler === "vosr2" ? ", frame " : ", step ") + job.step + " of " + job.max : "");
 }
 
 setLiveSound(liveSound);
@@ -8382,7 +8415,7 @@ function finishOff(clip) {
 async function renderClip(clip, quality, detail, upscaler) {
   const folder = state.folder;
   if (jobFor(clip.id)) return;
-  if (!clip.action.trim()) {
+  if (quality !== "upscale" && !clip.action.trim()) {
     selectClip(clip.id);
     toast("Describe what happens in " + clip.name + " before rendering it.", true);
     return;
@@ -8499,13 +8532,14 @@ function onMessage({ type, data }) {
     renderInspector();
   }
   if (type === "executing" && data.node) {
-    job.stage = STAGES[data.node] || job.stage;
+    const vosr = job.upscaler === "vosr2" && { "31": "Loading VOSR2", "19": "Upscaling frames" }[data.node];
+    job.stage = vosr || STAGES[data.node] || job.stage;
     if (!STEPPED.has(String(data.node))) job.max = 0;
     showFrame();
-  } else if (type === "progress" && STEPPED.has(String(data.node))) {
+  } else if ((type === "progress" && STEPPED.has(String(data.node))) || type === "h3take_upscale_frame") {
     job.step = data.value;
     job.max = data.max;
-    job.stage = STAGES[data.node];
+    job.stage = type === "h3take_upscale_frame" ? "Upscaling frames" : STAGES[data.node];
     job.progress = data.value / data.max;
     updateQueue();
     const bar = document.querySelector(".block.rendering .bar");
@@ -9427,7 +9461,7 @@ async function openExporter() {
   const scope = $("exporterSpan");
   $("exporterSpanRow").hidden = !span;
   scope.value = span ? "range" : "all";
-  if (span) scope.options[1].textContent = "Marked range, " + timecode(span.from) + " – " + timecode(span.to - 1);
+  if (span) scope.options[1].textContent = "Marked range, " + timecode(span.from) + " â€“ " + timecode(span.to - 1);
   scope.onchange = () => {
     const current = scope.value === "range" ? markedPlan : plan;
     const notes = [];

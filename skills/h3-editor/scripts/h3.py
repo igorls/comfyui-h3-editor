@@ -201,7 +201,7 @@ def main():
     p.add_argument("--upscale", action="store_true", help="Enlarge each clip's final two times (a new take), instead of rendering.")
     p.add_argument("--seed", type=int)
     p.add_argument("--detail", type=float, help="With --upscale and RelayVSR: how much of the detail the upscaler adds is kept, 0 to 1. Default 0.5.")
-    p.add_argument("--upscaler", choices=["relayvsr", "seedvr2"], help="With --upscale: which upscaler. Default: the first one installed.")
+    p.add_argument("--upscaler", choices=["relayvsr", "seedvr2", "vosr2"], help="With --upscale: which upscaler. VOSR2 is experimental and must be chosen explicitly. Default: first installed video upscaler.")
     p = sub.add_parser("cuts", help="A score from 0 to 100 for every cut between two rendered clips, worst first.")
     p.add_argument("project")
     p.add_argument("--json", action="store_true", help="The raw scores as JSON.")

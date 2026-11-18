@@ -14,11 +14,13 @@ import uuid
 try:
     from . import holds
     from . import style_timeline
+    from . import vosr2
     from . import patches as patching
     from .prompting import compose_prompt, compose_reference_prompt
 except ImportError:
     import holds
     import style_timeline
+    import vosr2
     import patches as patching
     from prompting import compose_prompt, compose_reference_prompt
 
@@ -3330,15 +3332,20 @@ def upscaler_status(available=None):
         missing = [entry["files"][kind] for kind in ("model", "vae") if not files[kind]]
         rows.append({"id": name, "title": entry["title"], "about": entry["about"], "detail": entry["detail"], "installed": not missing,
                      "missing": missing, "source": entry["source"]})
-    return rows
+    return [*rows, vosr2.status(available)]
 
 
 def pick_upscaler(name, available=None):
     """The upscaler to use: the one asked for, or the first that is installed. Its files come back with it."""
     if name in (None, ""):
-        name = next((row["id"] for row in upscaler_status(available) if row["installed"]), next(iter(UPSCALERS)))
+        name = next((row["id"] for row in upscaler_status(available) if row["installed"] and not row.get("experimental")), next(iter(UPSCALERS)))
+    if name == "vosr2":
+        integration = vosr2.status(available)
+        if not integration["installed"]:
+            raise ValueError(integration["setup"] + " " + vosr2.SOURCE)
+        return name, {"model": "VOSR2"}
     if name not in UPSCALERS:
-        raise ValueError("upscaler must be one of %s" % ", ".join(UPSCALERS))
+        raise ValueError("upscaler must be one of %s" % ", ".join((*UPSCALERS, "vosr2")))
     files = upscaler_files(name, available)
     missing = [UPSCALERS[name]["files"][kind] for kind in ("model", "vae") if not files[kind]]
     if missing:
@@ -3350,6 +3357,10 @@ def pick_upscaler(name, available=None):
 def upscale_graph(folder, clip, take, source, name, files, detail=UPSCALE_DETAIL):
     """The graph that enlarges one take of a clip two times with the named upscaler and saves it as another take."""
     file = "%s/%s" % (source["subfolder"], source["file"]) if source.get("subfolder") else source["file"]
+    if name == "vosr2":
+        return {"31": {"class_type": "VOSR2ModelLoader", "inputs": {"model": files["model"], "dtype": "default"}},
+                "19": {"class_type": "H3VOSR2Video", "inputs": {"model": ["31", 0], "file": file,
+                       "filename_prefix": "%s/%s/clips/%s_%s" % (ROOT, folder, clip["id"], take)}}}
     graph = {
         "30": {"class_type": "H3LoadClip", "inputs": {"file": file, "first": 0, "last": 0}},
         "31": {"class_type": "UNETLoader", "inputs": {"unet_name": files["model"], "weight_dtype": "default"}},
@@ -3405,7 +3416,7 @@ def plan_upscale(project, folder, clip_id, available=None, detail=None, upscaler
         raise ValueError("%s is already upscaled. Choose the take it was made from to upscale again" % clip["name"])
     if source.get("quality") == "draft" and clip.get("kind") != "footage":
         raise ValueError("%s is a draft. Render a final first, then upscale it" % clip["name"])
-    if int(source.get("frames") or 0) > UPSCALE_MOST:
+    if upscaler != "vosr2" and int(source.get("frames") or 0) > UPSCALE_MOST:
         raise ValueError("%s is %s frames. Upscaling holds every enlarged frame in memory, so it takes up to %s at a time"
                          % (clip["name"], source.get("frames"), UPSCALE_MOST))
     name, files = pick_upscaler(upscaler, available)
@@ -3418,8 +3429,12 @@ def plan_upscale(project, folder, clip_id, available=None, detail=None, upscaler
            "size": [2 * width, 2 * height], "upscaled": source["id"], "upscaler": name,
            # The take keeps what made its picture, plus the upscaler. A batch groups it by the model it loads.
            "models": dict(source.get("models") or {}, video_upscaler=files["model"]), "loads": files["model"]}
-    if UPSCALERS[name]["detail"]:
+    if name != "vosr2" and UPSCALERS[name]["detail"]:
         job["detail"] = detail
+    if name == "vosr2":
+        job["models"]["video_upscaler_seed"] = vosr2.SETTINGS["seed"]
+    if clip.get("kind") == "footage" and source.get("source"):
+        job["source"] = source["source"]
     return job, upscale_graph(folder, clip, take, source, name, files, detail)
 
 
@@ -3497,7 +3512,7 @@ def finish_render(project, job_id, file, info):
     take = {"id": job["take"], "file": file["filename"], "subfolder": file.get("subfolder") or "",
             "poster": info["poster"], "frames": int(info["frames"]), "quality": job["quality"],
             "seed": job["seed"], "saved": job.get("saved")}
-    for key in ("models", "upscale", "size", "upscaled", "upscaler", "detail", "finished"):
+    for key in ("models", "upscale", "size", "upscaled", "upscaler", "detail", "finished", "source"):
         if job.get(key):
             take[key] = job[key]
     if info.get("strip"):

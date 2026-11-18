@@ -24,6 +24,7 @@ from . import lips as lipscore
 from . import scene as scenescore
 from . import detail as finescore
 from . import media
+from . import vosr2
 from . import looks
 from . import patches as patching
 from . import project as store
@@ -333,12 +334,14 @@ def refmods_status():
 def available_models():
     """The model files ComfyUI lists, for finding a checkpoint profile's files, and the RefMods on offer."""
     import folder_paths
+    import nodes as comfy_nodes
 
     names = set()
     for kind in ("diffusion_models", "unet_gguf", "loras", "latent_upscale_models", "text_encoders", "clip", "vae"):
         if kind in folder_paths.folder_names_and_paths:
             names.update(folder_paths.get_filename_list(kind))
     names.update(store.REFMOD_PREFIX + name for name in refmod_files() or [])
+    names.update(vosr2.capabilities(comfy_nodes.NODE_CLASS_MAPPINGS, folder_paths.models_dir))
     if store.PROJECTION_FOLDER in folder_paths.folder_names_and_paths:
         names.update(store.PROJECTION_PREFIX + name for name in folder_paths.get_filename_list(store.PROJECTION_FOLDER))
     return names

@@ -515,6 +515,15 @@ rendering. Renders run after the edits in the same batch. `cancel`: `clip` or `j
 It deletes matching queued jobs before interrupting a matching running job and returns `cancelled` as a list.
 Other projects' jobs are untouched.
 
+To enlarge the active final (or imported footage) with experimental VOSR2, use
+`{"op":"render","clip":"<id>","quality":"upscale","upscaler":"vosr2"}`.
+See its `upscalers` row in `GET /projects`: `installed` checks the optional
+wrapper's registered nodes and their interface, `weights_cached` checks the
+on-disk bundle, and `setup` explains the next step. The wrapper can fetch its
+roughly 7 GB weights on first use. An explicit VOSR2 selection processes frames
+at 2× with a fixed seed and copies the original audio. `wait` and the project
+summary report completion or failure. Inspect motion for flicker.
+
 A clip can have `style_markers: [{"frame": 0, "name": "Pencil", "style": "Monochrome pencil drawing"}, ...]`.
 Frames are relative to the generated take (before timeline trim and speed). Up to 32 markers and four distinct
 styles are supported. Markers blend across clip time and add model evaluations; see [style transitions](../../../docs/style-timeline.md).

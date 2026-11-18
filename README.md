@@ -52,7 +52,11 @@ made with it, shot by shot.
   and an agent skill teaches the whole workflow.
 - **RefMods, if you use them.** With the ComfyUI-MiniMaxH3Mod pack installed, a
   cast member can carry a RefMod, and the editor can make one from the member's
-  pictures. This is the one optional extra that needs another custom node pack.
+  pictures.
+- **Experimental VOSR2 upscaling.** Install the optional ComfyUI-VOSR2 pack,
+  then select VOSR2 under **Upscale 2x** on a final take or imported footage.
+  The editor keeps the original sound and saves the result as another take.
+  See [upscalers](docs/models.md#upscalers) for setup and model downloads.
 
 Everything else needs no other custom node pack.
 

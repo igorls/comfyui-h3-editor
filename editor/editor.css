@@ -371,6 +371,8 @@ details.section > summary .filled { margin-left: auto; color: var(--muted); font
 .upscale-row select { flex: 1 1 0; min-width: 0; padding: 5px 28px 5px 9px; background-color: var(--room); border: 1px solid var(--line); border-radius: var(--radius); text-overflow: ellipsis; }
 .upscale-row select:hover { border-color: var(--line-hi); }
 .upscale-row button { flex: none; }
+.upscale-note { flex-basis: 100%; margin: 0; }
+.upscale-note a { color: var(--text); }
 .writer-using { display: flex; align-items: center; gap: 10px; margin: 2px 0 4px; color: var(--muted); font-size: 12px; }
 .writer-using span { min-width: 0; overflow-wrap: anywhere; }
 .writer-using button { flex: none; margin-left: auto; padding: 4px 10px; font-size: 12px; }

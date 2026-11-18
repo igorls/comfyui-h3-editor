@@ -424,7 +424,9 @@ ids, and each clip's state. Before you export, check:
   folder, lists the stretches that are much softer than the rest, with their times;
 - for a 4K delivery, upscale last: `python scripts/h3.py render PROJECT CLIP --upscale` enlarges a clip's final two
   times (1920 x 1088 becomes 3840 x 2176) as a new take, in seconds. `--upscaler relayvsr` is fast and sharpens what is there; `--upscaler seedvr2`
-  is many times slower and redraws fine texture, which looks more like a larger picture and can change a face. Ask the
+  is many times slower and redraws fine texture, which looks more like a larger picture and can change a face.
+  Experimental `--upscaler vosr2` needs the optional ComfyUI-VOSR2 wrapper and may download its weights on first use.
+  Inspect motion for flicker. Ask the
   user which they want and show them one clip first. With RelayVSR, `--detail` (0 to 1, default 0.5) sets how much of
   the detail it adds is kept: look at a face after the first one, since high values add pores and shine
   that can make a person look older, and lower it if so. Do it once the cut is settled and every clip is
