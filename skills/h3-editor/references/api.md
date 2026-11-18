@@ -37,6 +37,7 @@ except the two uploads.
 | `GET /project/{name}/wait?timeout=600` | | The summary, plus `timed_out`, once nothing renders. `after=N` waits for a revision past N instead. Timeout is at most 1800 |
 | `POST /project/{name}/render` | `{"clip", "quality", "seed"?}` | `{"job", "revision", "project"}` |
 | `POST /project/{name}/render` with `edit` | `{"clip", "quality": "draft" or "final", "seed"?, "edit": {"take", "in", "out", "prompt", "first"?}}` | Edit 2–15 seconds of an imported or generated take with Ref2VA. `in` and `out` are source frames at 24 fps, with an exclusive end. Optional `first` is a picture asset from `/asset`. A full-length alternate take keeps the original audio and the picture outside the edit. The existing active take stays selected. |
+| `POST /project/{name}/render` with `edit.motion` | `{"clip", "quality": "draft" or "final", "seed"?, "edit": {"take", "in", "out", "prompt"?, "motion": {"character", "strength"?}}}` | Experimental pose-guided motion transfer from one performer in the same source range. `character` is a picture asset from `/asset`. `strength` defaults to 1.0, with a range of 0.1–2.0. `GET /projects` reports availability and the standard MiniMax H3 profile used in `motion`. Scene direction is optional. The output follows the same alternate-take rules. |
 | `POST /project/{name}/cancel` | `{"job"}` or `{"clip"}` | `{"cancelled", ...}` |
 | `POST /project/{name}/import` | multipart `file` with fields, or JSON `{"source": {"folder": "input" or "output", "subfolder"?, "file"}, ...}` | `{"clip", "item", "frames", "revision", "project"}` |
 | `POST /project/{name}/asset` | multipart `file`: PNG, JPEG or WebP, or WAV, MP3, FLAC, M4A, OGG, OPUS, AAC | `{"file", "subfolder"}`, an asset. With `?sound=1` on a sound, also `seconds`, its length, and `peaks`, as `add_sound` needs |
@@ -504,6 +505,8 @@ The editor saves a still of each note it writes, the frame with the drawing on i
 ### Renders
 
 `render`: `clip`, optional `quality` (`draft`, the default, `final`, or `finish`), optional `seed`.
+With `draft` or `final`, `edit` accepts the same prompt-edit or motion-transfer
+payload as the single-render endpoint.
 `finish` makes a final from the clip's active take, which must be a draft: its saved latents are enlarged and
 refined at the refine size in place of a new first pass, with the draft's seed, so the final keeps the draft's
 framing, motion and sound. The new take records `finished`, the draft's id. It is refused when the active take is

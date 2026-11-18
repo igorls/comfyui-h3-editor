@@ -231,6 +231,17 @@ optionally supply a replacement first frame. The result appears under **Takes**
 as a full-length alternate with the original sound and the picture outside the
 edit range intact.
 
+**Motion transfer (experimental).** Choose **Motion transfer** on an imported
+or generated take. Mark 2–15 seconds with one visible performer and choose a
+full-body character image. Adjust **Motion strength** to change how closely the
+render follows the tracked pose. Use **Scene direction** to describe the framing
+and background. The model regenerates the scene, so background details,
+hands, and foot contact can drift. The result is a new take with source audio.
+This mode uses the standard MiniMax H3 checkpoint (with Turbo when installed)
+and requires the native SDPose, RT-DETR, and H3 Fun ControlNet Union models.
+See the [ComfyUI pose-control workflow](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_fun_controlnet_union.json)
+for the model files and their installation folders.
+
 **Compare takes.** In **Takes**, click **Compare takes**, Ctrl-click or
 Command-click a second take, or drag it into the viewer. Play or step
 through both versions together and drag the divider to reveal either

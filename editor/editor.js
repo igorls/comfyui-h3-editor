@@ -15,6 +15,7 @@ const clientId = (() => {
 // What a render is doing, by the graph node running. A final's refine pass (80 to 91) comes after the sound is decoded,
 // and takes longer than the first pass on most cards: without its own labels it read as "Decoding the sound" throughout.
 const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the picture", 17: "Decoding the sound", 80: "Preparing the final size",
+  216: "Finding the performer", 218: "Tracking poses", 219: "Drawing the pose guide",
   82: "Enlarging", 83: "Enlarging", 90: "Refining at final size", 91: "Decoding the final picture", 18: "Assembling", 19: "Saving" };
 // The nodes that report steps: the first pass, and a final's refine pass.
 const STEPPED = new Set(["15", "90"]);
@@ -48,6 +49,7 @@ const state = {
   realism: null,
   sizes: null,
   upscalers: [],
+  motion: null,
   checkpoints: [],
   presets: [],
   refmods: { installed: false, files: [] },
@@ -496,6 +498,9 @@ function updateTools() {
   const holdable = item && itemLength(item) >= HOLD;
   $("extendBack").disabled = !holdable;
   $("editWithPrompt").disabled = !activeTake(clipOf(state.clip)) || Boolean(jobFor(state.clip));
+  const motionOff = motionUnavailable(clipOf(state.clip));
+  $("motionTransfer").disabled = Boolean(motionOff);
+  $("motionTransfer").title = motionOff;
   $("extendForward").disabled = !holdable;
   $("bridge").disabled = !bridgeable(item, next);
   $("bridgeHold").disabled = !bridgeable(item, next, "hold");
@@ -4311,7 +4316,8 @@ function versions(clip) {
     img.style.setProperty("--frame", String(shape));
     skim(img, take, "contain");
     const label = document.createElement("span");
-    label.textContent = "Take " + (index + 1) + (take.edit ? ", prompt edit · " : ", ") + take.quality;
+    const editLabel = take.edit?.motion ? ", motion transfer · " : take.edit ? ", prompt edit · " : ", ";
+    label.textContent = "Take " + (index + 1) + editLabel + take.quality;
     const madeWith = take.models?.profile_title || profileOf(take.models?.profile)?.title;
     const patched = (take.models?.patches || []).map((row) => patchOf(row.node)?.title || row.node);
     if (take.edit) label.title = take.edit.prompt;
@@ -4351,6 +4357,8 @@ function versions(clip) {
   compare.dataset.compareToggle = "";
   compare.setAttribute("aria-pressed", String(Boolean(comparison)));
   button("Edit with prompt", () => openPromptEdit(clip), Boolean(jobFor(clip.id)));
+  const motionOff = motionUnavailable(clip);
+  button("Motion transfer", () => openPromptEdit(clip, null, true), Boolean(motionOff), "", motionOff);
   if (clip.kind !== "footage") {
     button("Keep seed", () => {
       checkpoint();
@@ -7411,24 +7419,47 @@ function promptEditRange(clip, take, selected) {
 }
 
 let promptEditTarget = null;
-function openPromptEdit(clip, item) {
+function motionUnavailable(clip) {
+  if (!activeTake(clip)) return "Render or import a take first";
+  if (jobFor(clip.id)) return "The clip is rendering";
+  if (state.motion?.available) return "";
+  return "Motion transfer needs " + (state.motion?.missing?.join(", ") || "a compatible ComfyUI backend");
+}
+
+function openPromptEdit(clip, item, motion = false) {
   const take = activeTake(clip);
   if (!take || jobFor(clip.id)) return;
+  const unavailable = motion && motionUnavailable(clip);
+  if (unavailable) return toast(unavailable, true);
   const range = promptEditRange(clip, take, item);
   if (!range || range.b - range.a < 2 * FPS || range.b - range.a > 15 * FPS) {
     toast("Mark 2 to 15 seconds within this clip with In and Out, or trim it to that length.", true);
     return;
   }
-  promptEditTarget = { folder: state.folder, clip: clip.id, take: take.id, in: range.a, out: range.b };
+  promptEditTarget = { folder: state.folder, clip: clip.id, take: take.id, in: range.a, out: range.b, motion };
   $("promptEditForm").reset();
+  $("promptEditTitle").textContent = motion ? "Motion transfer" : "Edit with prompt";
+  $("promptEditTextLabel").textContent = motion ? "Scene direction (optional)" : "What should change?";
+  $("promptEditText").required = !motion;
+  $("promptEditText").placeholder = motion ? "Full-body shot in a charcoal dance studio with a gray floor."
+    : "Turn the scene into black and white. Keep the same framing and movement.";
+  $("promptEditImageLabel").textContent = motion ? "Character reference image" : "Replacement first frame (optional)";
+  $("promptEditFirst").required = motion;
+  $("motionStrengthField").hidden = !motion;
+  $("motionStrengthValue").value = "1.0";
   $("promptEditRange").textContent = clip.name + " · " + timecode(range.a) + " – " + timecode(range.b - 1)
     + " · " + ((range.b - range.a) / FPS).toFixed(2) + " s";
-  $("promptEditStatus").textContent = "The edit appears in Takes and keeps the source audio.";
+  $("promptEditStatus").textContent = motion
+    ? "Use footage of one performer and a clear full-body character image. Uses " + state.motion.model + " and keeps the source audio."
+    : "The edit appears in Takes and keeps the source audio.";
   $("promptEditStatus").classList.remove("bad");
   $("promptEdit").showModal();
 }
 
 $("promptEditCancel").addEventListener("click", () => $("promptEdit").close());
+$("motionStrength").addEventListener("input", event => {
+  $("motionStrengthValue").value = Number(event.target.value).toFixed(1);
+});
 $("promptEdit").addEventListener("cancel", event => {
   if ($("promptEditRender").disabled) event.preventDefault();
 });
@@ -7437,7 +7468,7 @@ $("promptEditForm").addEventListener("submit", async event => {
   const target = promptEditTarget;
   const status = $("promptEditStatus"), go = $("promptEditRender"), cancel = $("promptEditCancel");
   const prompt = $("promptEditText").value.trim();
-  if (!prompt) {
+  if (!target.motion && !prompt) {
     status.classList.add("bad");
     status.textContent = "Describe what should change.";
     $("promptEditText").focus();
@@ -7446,19 +7477,23 @@ $("promptEditForm").addEventListener("submit", async event => {
   const clip = clipOf(target.clip);
   go.disabled = cancel.disabled = true;
   status.classList.remove("bad");
-  status.textContent = "Queueing the prompt edit…";
+  const title = target.motion ? "Motion transfer" : "Prompt edit";
+  status.textContent = "Queueing " + title.toLowerCase() + "…";
   try {
     if (target.folder !== state.folder || !clip?.takes.some(take => take.id === target.take))
-      throw new Error("The source take is unavailable. Open Edit with prompt again.");
+      throw new Error("The source take is unavailable. Reopen the render dialog.");
     const edit = { take: target.take, in: target.in, out: target.out, prompt };
     const file = $("promptEditFirst").files[0];
-    if (file) edit.first = await uploadPicture(file);
-    if (target.folder !== state.folder) throw new Error("The project changed. Open Edit with prompt again.");
+    if (target.motion) {
+      if (!file) throw new Error("Choose a character reference image.");
+      edit.motion = { character: await uploadPicture(file), strength: Number($("motionStrength").value) };
+    } else if (file) edit.first = await uploadPicture(file);
+    if (target.folder !== state.folder) throw new Error("The project changed. Reopen the render dialog.");
     if (!await renderClip(clip, $("promptEditQuality").value, undefined, undefined, edit))
       throw new Error("The edit was not queued. Check whether the clip is already rendering.");
     $("promptEdit").close();
     if (clip.id === state.clip) showTab("takes");
-    toast("Prompt edit queued. The new take will appear in Takes.");
+    toast(title + " queued. The new take will appear in Takes.");
   } catch (error) {
     status.textContent = error.message;
     status.classList.add("bad");
@@ -8416,6 +8451,7 @@ function itemActions(item) {
   ];
   return [
     act("Edit with prompt", () => openPromptEdit(clip, item), { off: !rendered ? "Render a take first" : busy ? "The clip is rendering" : "" }),
+    act("Motion transfer", () => openPromptEdit(clip, item, true), { off: motionUnavailable(clip) }),
     ...generate, "-", ...render,
     act("Crop and reframe", () => openPlacementCrop(item), { off: rendered ? "" : "Render a take first" }),
     act("Split at the playhead", splitAtPlayhead, { key: "S", off: inside ? "" : "Move the playhead over this clip" }),
@@ -8440,6 +8476,7 @@ function clipActions(clip) {
     act("Open in viewer", () => { setSource(clip.id); showFrame(); showWorkspacePanel("viewer"); }),
     act("Open in inspector", () => { showTab("shot"); showWorkspacePanel("inspector"); }),
     act("Edit with prompt", () => openPromptEdit(clip), { off: !activeTake(clip) ? "Render a take first" : busy ? "The clip is rendering" : "" }),
+    act("Motion transfer", () => openPromptEdit(clip, null, true), { off: motionUnavailable(clip) }),
     ...render,
     act("Add to the end of the cut", () => {
       checkpoint();
@@ -9481,7 +9518,7 @@ function updateQueue() {
 function finishOff(clip) {
   const shown = activeTake(clip);
   if (!shown || shown.quality !== "draft") return "Choose a draft take to finish";
-  if (shown.edit) return "Open Edit with prompt and choose Final";
+  if (shown.edit) return "Open " + (shown.edit.motion ? "Motion transfer" : "Edit with prompt") + " and choose Final";
   if (clip.sprite && !shown.sprite) return "Choose a Sprite Draft take to finish with sprite settings";
   const final = state.project.sizes?.final;
   if (final === "sharp" && !shown.sprite) return "Choose Full, Large, Medium, Small or your own Final size to finish a draft";
@@ -9702,7 +9739,8 @@ async function openProject(folder) {
 }
 
 async function refreshProjects(selected) {
-  const { projects, titles, cards, profiles, finals, loras, patches, realism, checkpoints, samplers, schedulers, presets, refmods, encoders, sizes, upscalers, catalog } = await api("/projects");
+  const { projects, titles, cards, profiles, finals, loras, patches, realism, checkpoints, samplers, schedulers, presets, refmods, encoders, sizes, upscalers, catalog, motion } = await api("/projects");
+  state.motion = motion || null;
   state.encoders = encoders || { text_encoders: [], vaes: [], auto: {}, missing: [] };
   state.presets = presets || [];
   state.refmods = refmods || { installed: false, files: [] };
@@ -10695,6 +10733,7 @@ $("toTimeline").addEventListener("click", () => {
 $("split").addEventListener("click", splitAtPlayhead);
 $("extendBack").addEventListener("click", () => addLinked("extend_before"));
 $("editWithPrompt").addEventListener("click", () => openPromptEdit(clipOf(state.clip)));
+$("motionTransfer").addEventListener("click", () => openPromptEdit(clipOf(state.clip), null, true));
 $("extendForward").addEventListener("click", () => addLinked("extend_after"));
 $("bridge").addEventListener("click", () => addLinked("bridge"));
 $("bridgeHold").addEventListener("click", () => addLinked("bridge", "hold"));

@@ -343,6 +343,10 @@ def available_models():
     for kind in ("diffusion_models", "unet_gguf", "loras", "latent_upscale_models", "text_encoders", "clip", "vae"):
         if kind in folder_paths.folder_names_and_paths:
             names.update(folder_paths.get_filename_list(kind))
+    if all(name in comfy_nodes.NODE_CLASS_MAPPINGS for name in store.MOTION_NODES):
+        names.add("motion-nodes")
+        names.update("motion-checkpoints:" + name for name in folder_paths.get_filename_list("checkpoints"))
+        names.update("motion-control:" + name for name in folder_paths.get_filename_list("model_patches"))
     names.update(store.REFMOD_PREFIX + name for name in refmod_files() or [])
     names.update(vosr2.capabilities(comfy_nodes.NODE_CLASS_MAPPINGS, folder_paths.models_dir))
     if store.PROJECTION_FOLDER in folder_paths.folder_names_and_paths:
@@ -927,6 +931,7 @@ async def projects(request):
     available = available_models()
     cards = project_cards(names)
     return web.json_response({"projects": names, "titles": project_titles(names, cards), "cards": cards, "profiles": store.profile_status(available),
+                              "motion": store.motion_status(available),
                               "finals": store.finals_status(available),
                               "loras": lora_files(), "patches": patch_list(), "realism": store.lora_status(available), "presets": read_presets(), "catalog": read_catalog(), "refmods": refmods_status(), "encoders": encoder_choices(available), "sizes": store.size_choices(), "upscalers": store.upscaler_status(available), "release": pack_version(), **sampling_choices()})
 
@@ -1986,7 +1991,7 @@ async def operations(request):
                     clip_id = store._resolve(op.get("clip"), names, "clip")
                     planned, _ = store.plan_render(copy.deepcopy(work), folder, clip_id, op.get("quality") or "draft",
                                                    op.get("seed"), available_models(), op.get("detail"), op.get("upscaler"),
-                                                   patches)
+                                                   patches, op.get("edit"))
                     later.append((index, op, clip_id, planned.get("loads") or planned["models"]["unet"]))
                     results.append(None)
                 elif kind == "cancel":
@@ -2028,7 +2033,7 @@ async def operations(request):
             try:
                 if op["op"] == "render":
                     job = await start_render(work, folder, clip_id, op.get("quality"), op.get("seed"), op.get("client_id"), op.get("detail"), op.get("upscaler"),
-                                             patches)
+                                             patches, op.get("edit"))
                     results[index] = {"clip": clip_id, "job": job["id"], "take": job["take"]}
                 elif op["op"] == "make_refmod":
                     cast_id, name, graph = clip_id

@@ -59,6 +59,32 @@ class PromptEditTest(unittest.TestCase):
             with self.subTest(fields=fields), self.assertRaises(ValueError):
                 project_module.prompt_edit(shot, dict(edit, **fields))
 
+    def test_motion_uses_pose_control_and_a_soft_character_reference(self):
+        files = HYPERFLOW | BASE_TURBO | {
+            "motion-nodes",
+            project_module.MOTION_DETECTOR,
+            "motion-checkpoints:" + project_module.MOTION_POSE,
+            "motion-control:" + project_module.MOTION_CONTROL,
+        }
+        source = {"id": "original", "file": "source.mp4", "frames": 124, "size": [640, 352]}
+        project = new_project("Dance")
+        project["clips"] = [clip(name="Dance", profile="hyperflow", takes=[source], active="original")]
+        project["models"] = {"unet": PROFILES["hyperflow"]["unet"][0]}
+        edit = {"take": "original", "in": 20, "out": 96,
+                "motion": {"character": {"file": "character.png"}, "strength": 1.4}}
+        job, graph = plan_render(project, "dance", "c1", "draft", available=files, edit=edit)
+        self.assertEqual(graph["10"]["inputs"]["ref_images.ref_image_0"], ["214", 0])
+        self.assertNotIn("ref_videos.ref_video_0", graph["10"]["inputs"])
+        self.assertNotIn("start_image", graph["10"]["inputs"])
+        self.assertEqual(graph["218"]["inputs"]["bboxes"], ["216", 0])
+        self.assertEqual(graph["221"]["inputs"]["strength"], 1.4)
+        self.assertEqual(graph["9"]["inputs"]["model"], ["221", 0])
+        self.assertEqual(job["models"]["profile"], "h3_turbo")
+        self.assertEqual(job["edit"]["motion"]["profile"], "h3_turbo")
+        self.assertEqual(project["clips"][0]["profile"], "hyperflow")
+        with self.assertRaisesRegex(ValueError, "motion transfer needs"):
+            plan_render(project, "dance", "c1", "draft", available=HYPERFLOW, edit=edit)
+
 
 class PromptTest(unittest.TestCase):
     def test_three_core_fields_in_order(self):

@@ -700,6 +700,38 @@ def profile_status(available):
     return rows
 
 
+MOTION_POSE = "sdpose_wholebody_fp16.safetensors"
+MOTION_DETECTOR = "rt_detr_v4-x-hgnet_fp16.safetensors"
+MOTION_CONTROL = "minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors"
+MOTION_CONTROL_V2 = "minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors"
+MOTION_NODES = ("CheckpointLoaderSimple", "RTDETR_detect", "SDPoseKeypointExtractor",
+                "SDPoseDrawKeypoints", "ModelPatchLoader", "MiniMaxH3FunControlNetApply")
+
+
+def motion_status(available):
+    """The native pose graph uses the standard H3 block layout."""
+    files = available or ()
+
+    def model(folder, *names):
+        prefix = folder + ":"
+        candidates = [name[len(prefix):] for name in sorted(files) if name.startswith(prefix)]
+        return next((name for base in names for name in candidates
+                     if name.replace("\\", "/").rsplit("/", 1)[-1] == base), None)
+
+    pose = model("motion-checkpoints", MOTION_POSE)
+    control = model("motion-control", MOTION_CONTROL, MOTION_CONTROL_V2)
+    detector = pick_file([MOTION_DETECTOR.removesuffix(".safetensors") + "*"], available)
+    base = pick_file(PROFILES["h3"]["unet"], available)
+    profile = "h3_turbo" if pick_file([PROFILES["h3_turbo"]["lora"][0]], available) else "h3"
+    missing = []
+    if available is not None and "motion-nodes" not in files:
+        missing.append("the native ComfyUI pose and H3 ControlNet nodes")
+    missing.extend(label for found, label in ((pose, MOTION_POSE), (detector, MOTION_DETECTOR),
+                                               (control, MOTION_CONTROL), (base, PROFILES["h3"]["unet"][0])) if not found)
+    return {"available": not missing, "missing": missing, "profile": profile, "model": PROFILES[profile]["title"],
+            "pose": pose, "detector": detector, "control": control}
+
+
 def slug(name):
     """A safe folder name. Refuses anything that would leave the projects folder."""
     cleaned = re.sub(r"[^A-Za-z0-9 _-]", "", str(name or "")).strip().replace(" ", "_")
@@ -1000,6 +1032,26 @@ def still_node(asset):
     return {"class_type": "H3LoadStill", "inputs": {"file": file}}
 
 
+def wire_motion_transfer(graph, motion):
+    """Extract one person's poses from the chosen source frames and use a still for identity."""
+    graph["214"] = still_node(motion["character"])
+    graph["10"]["inputs"]["ref_images.ref_image_0"] = ["214", 0]
+    graph["215"] = dict(class_type="UNETLoader", inputs={"unet_name": motion["detector"], "weight_dtype": "default"})
+    graph["216"] = dict(class_type="RTDETR_detect", inputs={
+        "model": ["215", 0], "image": ["213", 0], "threshold": 0.5, "class_name": "person", "max_detections": 1})
+    graph["217"] = dict(class_type="CheckpointLoaderSimple", inputs={"ckpt_name": motion["pose"]})
+    graph["218"] = dict(class_type="SDPoseKeypointExtractor", inputs={
+        "model": ["217", 0], "vae": ["217", 2], "image": ["213", 0], "bboxes": ["216", 0], "batch_size": 8})
+    graph["219"] = dict(class_type="SDPoseDrawKeypoints", inputs={
+        "keypoints": ["218", 0], "draw_body": True, "draw_head": True, "draw_hands": True, "draw_feet": True,
+        "draw_face": False, "stick_width": 4, "face_point_size": 2, "score_threshold": 0.3})
+    graph["220"] = dict(class_type="ModelPatchLoader", inputs={"name": motion["control"]})
+    graph["221"] = dict(class_type="MiniMaxH3FunControlNetApply", inputs={
+        "model": graph["9"]["inputs"]["model"], "vae": ["3", 0], "model_patch": ["220", 0], "control_video": ["219", 0],
+        "strength": motion["strength"], "start_percent": 0.0, "end_percent": 1.0})
+    graph["9"]["inputs"]["model"] = ["221", 0]
+
+
 def render_graph(project, folder, clip, take, quality, seed, available=None, patches=None, finish=None, edit=None):
     """One clip as a ComfyUI graph, saved as its own file in the project.
 
@@ -1114,13 +1166,21 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             "file": "/".join(filter(None, (edit["subfolder"], edit["file"]))),
             "first": edit["in"], "last": edit["out"], "reference_only": True,
         })
-        take_inputs["ref_videos.ref_video_0"] = ["213", 0]
-        take_inputs["prompt"] = (
-            "Edit <Video 1>. Preserve its motion, timing and framing wherever the requested change allows.\n"
-            + ("<Picture 1> is the replacement first frame. Carry its visual changes through the shot.\n"
-               if clip.get("first") else "")
-            + edit["prompt"]
-        )
+        if edit.get("motion"):
+            wire_motion_transfer(graph, edit["motion"])
+            take_inputs["prompt"] = (
+                "<Picture 1> defines the performer's face, hair, body and outfit. "
+                "The performer follows the pose guide's choreography and timing in a continuous full-body shot.\n"
+                + edit["prompt"]
+            )
+        else:
+            take_inputs["ref_videos.ref_video_0"] = ["213", 0]
+            take_inputs["prompt"] = (
+                "Edit <Video 1>. Preserve its motion, timing and framing wherever the requested change allows.\n"
+                + ("<Picture 1> is the replacement first frame. Carry its visual changes through the shot.\n"
+                   if clip.get("first") else "")
+                + edit["prompt"]
+            )
     if config and not config.get("motion"):
         guide = config.get("guide")
         if guide:
@@ -3561,7 +3621,7 @@ def plan_upscale(project, folder, clip_id, available=None, detail=None, upscaler
     return job, upscale_graph(folder, clip, take, source, name, files, detail)
 
 
-def prompt_edit(clip, edit):
+def prompt_edit(clip, edit, available=None):
     if not isinstance(edit, dict):
         raise ValueError("send an edit with a source take, in and out frames, and a prompt")
     source = next((take for take in clip.get("takes", []) if take["id"] == edit.get("take")), None)
@@ -3572,14 +3632,27 @@ def prompt_edit(clip, edit):
         raise ValueError("the edit range must fall inside the source take")
     if not 2 * FPS <= last - first <= 15 * FPS:
         raise ValueError("select between 2 and 15 seconds of the source take")
-    prompt = edit.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 12000:
+    motion = edit.get("motion")
+    prompt = edit.get("prompt", "")
+    if not isinstance(prompt, str) or (motion is None and not prompt.strip()) or len(prompt) > 12000:
         raise ValueError("write an edit prompt of up to 12,000 characters")
     picture = clean_asset(edit.get("first"), "the replacement first frame")
     info = {"take": source["id"], "in": first, "out": last, "prompt": prompt.strip(),
             "file": source["file"], "subfolder": source.get("subfolder", ""), "frames": source["frames"]}
     if picture:
         info["first"] = picture
+    if motion is not None:
+        if not isinstance(motion, dict) or picture:
+            raise ValueError("motion transfer takes a character image and a motion strength")
+        character = clean_asset(motion.get("character"), "the character image")
+        if not character:
+            raise ValueError("choose a character image for motion transfer")
+        settings = motion_status(available)
+        if not settings["available"]:
+            raise ValueError("motion transfer needs " + ", ".join(settings["missing"]))
+        info["motion"] = {k: settings[k] for k in ("pose", "detector", "control", "profile")}
+        info["motion"].update(character=character, strength=clean_strength(motion.get("strength", 1), (0.1, 2.0),
+                                                                            "motion strength"))
     return source, info
 
 
@@ -3595,9 +3668,15 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
     clip = find_clip(project, clip_id)
     original = clip
     if edit is not None:
-        source, edit = prompt_edit(clip, edit)
+        source, edit = prompt_edit(clip, edit, available)
         clip = {"id": clip_id, "name": clip["name"], "profile": clip.get("profile"), "loras": clip.get("loras"),
                 "action": edit["prompt"], "first": edit.get("first")}
+        if edit.get("motion"):
+            clip["profile"] = edit["motion"]["profile"]
+            # Keep text encoder and VAE choices while using the known-compatible standard H3 checkpoint.
+            project = dict(project, models={key: value for key, value in (project.get("models") or {}).items()
+                                            if key not in ("unet", "unet_text")})
+            clip["action"] = clip["action"] or "A full-body performance."
     finish = None
     if quality == FINISH_QUALITY:
         finish = active_take(clip)
