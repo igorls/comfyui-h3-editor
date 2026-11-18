@@ -22,7 +22,7 @@ const STEPPED = new Set(["15", "90"]);
 import { VfxRuntime } from "./vfx-runtime.js";
 import { cropWindow, editCrop } from "./crop.js";
 import * as writer from "./writer.js";
-import { curveLevel, soundEnvelope, resumeSoundMixer, setSoundLevel, disconnectSound } from "./sound-envelope.js";
+import { curveLevel, soundEnvelope, resumeSoundMixer, setMediaLevel, setSoundLevel, disconnectSound } from "./sound-envelope.js?v=track";
 
 const state = {
   folder: null,
@@ -1453,6 +1453,7 @@ function fitTimeline() {
 }
 
 function selectClip(clipId, itemId = null) {
+  if (state.tab === "track") state.tab = clipId ? "shot" : "project";
   if (itemId || clipId !== state.source) setSource(null);
   state.clip = clipId;
   state.item = itemId;
@@ -3805,7 +3806,7 @@ function renderTabs(tabs) {
     tab.setAttribute("aria-selected", String(state.tab === id));
     tab.tabIndex = state.tab === id ? 0 : -1;
     const mark = { Shot: "shot", Footage: "shot", Takes: "takes", Timeline: "timeline", Project: "project",
-      "Cast member": "person", Bin: "project", Sound: "wave", VFX: "sparkle" }[label];
+      "Cast member": "person", Bin: "project", Sound: "wave", Track: "wave", VFX: "sparkle" }[label];
     if (mark) tab.append(icon(mark));
     const words = document.createElement("span");
     words.className = "insp-label";
@@ -3877,6 +3878,12 @@ function renderInspector() {
 
 function drawInspector() {
   const panel = $("inspBody");
+  if (audioTrackMode !== null && ["track", "project"].includes(state.tab)) {
+    renderTabs([["track", "Track"], ["project", "Project"]]);
+    if (state.tab === "track") renderAudioTrack(panel, audioTrackMode);
+    else renderScene(panel, true);
+    return;
+  }
   const effect = effectOf(state.effect);
   if (effect) {
     const own = "x" + effect.id;
@@ -5077,6 +5084,57 @@ const soundOf = (id) => (state.project?.sounds || []).find((s) => s.id === id) |
 const soundPlayers = new Map();
 const trackMix = new Map();
 const trackDisplay = new Map();
+let audioTrackMode = null;
+const trackName = track => track ? "Sound " + (track + 1) : "Sound";
+const trackRow = track => state.project?.audio_tracks?.[track];
+const audioDb = gain => gain > 0 ? Math.max(-60, 20 * Math.log10(gain)) : -60;
+const audioGain = db => db <= -60 ? 0 : Number(Math.min(2, 10 ** (db / 20)).toFixed(6));
+
+function trackEnvelope(row) {
+  const frames = Math.max(1, sceneEnd());
+  const last = row.gain_points?.at(-1)?.frame ?? 0;
+  return { ...row, track: true, start: 0, frames, seconds: Math.max(frames, last) / FPS };
+}
+
+function editableTrack(track) {
+  const tracks = state.project.audio_tracks ||= {};
+  return tracks[track] ||= { gain: 1, gain_points: [] };
+}
+
+function gainHeight(sound, gain) {
+  if (!sound.track) return gain;
+  const db = audioDb(gain);
+  return db < 0 ? 0.75 * (1 + db / 60) : Math.min(1, 0.75 + db / 24);
+}
+
+function gainAtHeight(sound, height) {
+  if (!sound.track) return height;
+  return audioGain(height < 0.75 ? 80 * height - 60 : 24 * (height - 0.75));
+}
+
+function trackVolume(track, frame = state.playhead) {
+  const row = trackRow(track);
+  return row ? (row.gain ?? 1) * curveLevel({ ...row, track: true }, frame) : 1;
+}
+
+function monitoredTrack(track, frame) {
+  return trackAudible(track) ? heard() * trackVolume(track, frame) : 0;
+}
+
+function openTrackVolume(track) {
+  if (audioTrackMode === track) {
+    audioTrackMode = null;
+    state.tab = "project";
+  } else {
+    if (viewing()) setSource(null);
+    audioTrackMode = track;
+    state.tab = "track";
+    showWorkspacePanel("inspector");
+  }
+  renderTimeline();
+  renderInspector();
+  showFrame();
+}
 
 function trackAudible(track) {
   if (!trackMix.size) return true;
@@ -5097,9 +5155,14 @@ function changeSoundDisplay(track) {
 function soundTrackHead(head, track) {
   head.classList.add("sound-head");
   head.dataset.track = track;
-  const label = track ? "Sound " + (track + 1) : "Sound";
+  const label = trackName(track);
   const name = document.createElement("span");
   name.textContent = label;
+  const title = document.createElement("div");
+  title.className = "sound-head-title";
+  const automation = iconButton("settings", "Track volume for " + label, () => openTrackVolume(track));
+  automation.dataset.trackControl = "automation";
+  title.append(name, automation);
   const display = iconButton("wave", label + " display", () => changeSoundDisplay(track));
   display.dataset.trackControl = "display";
   const controls = [display];
@@ -5124,7 +5187,7 @@ function soundTrackHead(head, track) {
   const bar = document.createElement("div");
   bar.className = "sound-tools";
   bar.append(...controls);
-  head.replaceChildren(name, bar);
+  head.replaceChildren(title, bar);
 }
 
 function updateTrackHeads() {
@@ -5133,6 +5196,9 @@ function updateTrackHeads() {
   for (const head of active) {
     const track = Number(head.dataset.track);
     const mix = trackMix.get(track);
+    const automation = head.querySelector('[data-track-control="automation"]');
+    automation.setAttribute("aria-pressed", String(audioTrackMode === track));
+    automation.classList.toggle("has-automation", Boolean(trackRow(track)?.gain_points?.length));
     const spectrum = (trackDisplay.get(track) || state.soundDisplay) === "spectrogram";
     const display = head.querySelector('[data-track-control="display"]');
     display.replaceChildren(icon(spectrum ? "spectrum" : "wave"));
@@ -5177,7 +5243,9 @@ function layoutSoundLanes(count) {
 
 function renderSounds() {
   const sounds = (state.project.sounds || []).filter((s) => s && typeof s.file === "string");
-  const lanes = layoutSoundLanes(sounds.length ? Math.min(SOUND_LANES, Math.max(...sounds.map((s) => s.lane || 0)) + 1) : 0);
+  const count = Math.max(0, audioTrackMode ?? 0, ...Object.keys(state.project.audio_tracks || {}).map(Number),
+    ...sounds.map(sound => (sound.lane || 0) + 1));
+  const lanes = layoutSoundLanes(Math.min(SOUND_LANES, count));
   const focused = document.activeElement?.dataset?.sound || null;
   const made = lanes.map(() => []);
   for (const sound of sounds) {
@@ -5200,9 +5268,7 @@ function renderSounds() {
     name.className = "name";
     name.textContent = sound.name;
     block.append(canvas, name);
-    if (selected || sound.fade_in || sound.fade_out || sound.gain_points?.length) {
-      drawSoundEnvelope(block, sound, selected);
-    }
+    drawSoundEnvelope(block, sound, selected);
     for (const side of ["l", "r"]) {
       const edge = document.createElement("div");
       edge.className = "edge " + side;
@@ -5213,10 +5279,35 @@ function renderSounds() {
     (made[Math.min(lanes.length - 1, sound.lane || 0)] || made[0]).push(block);
   }
   lanes.forEach((lane, n) => lane.replaceChildren(...made[n]));
+  renderTrackAutomation(lanes);
   if (focused) document.querySelector('.wave.sound[data-sound="' + CSS.escape(focused) + '"]')?.focus();
 }
 
+function renderTrackAutomation(lanes) {
+  document.querySelectorAll(".lane.track-automation-on").forEach(lane => lane.classList.remove("track-automation-on"));
+  const track = audioTrackMode;
+  if (track === null) return;
+  const lane = track ? lanes[track - 1] : $("laneA");
+  if (!lane) return;
+  lane.classList.add("track-automation-on");
+  const block = document.createElement("div");
+  block.className = "track-automation";
+  block.dataset.automationTrack = track;
+  const sound = trackEnvelope(trackRow(track) || {});
+  block.style.width = Math.max(1, px(sound.frames)) + "px";
+  block.title = "Track volume. Click the curve or Alt/Option-click to add a point.";
+  const live = () => editableTrack(track);
+  bindWavePoints(block, live, trackEnvelope, () => {
+    state.tab = "track";
+    renderTimeline();
+    renderInspector();
+  });
+  drawSoundEnvelope(block, sound, true, live, trackEnvelope);
+  lane.append(block);
+}
+
 function selectSound(id) {
+  if (state.tab === "track") state.tab = "shot";
   setSource(null);
   state.effect = null;
   state.sound = id;
@@ -5243,7 +5334,7 @@ function addGainPoint(row, sound, position, gain) {
     Math.round(first + position * sound.frames * (sound.rate || 1))));
   if (row.gain_points?.some(point => point.frame === frame)) return toast("There is already a point at this frame.");
   checkpoint();
-  const level = Math.round((gain ?? curveLevel(sound, frame)) * 100) / 100;
+  const level = Math.round((gain ?? curveLevel(sound, frame)) * (sound.track ? 1e5 : 100)) / (sound.track ? 1e5 : 100);
   row.gain_points = [...row.gain_points || [], { frame, gain: level }].sort((a, b) => a.frame - b.frame);
   save();
   relevel();
@@ -5251,7 +5342,7 @@ function addGainPoint(row, sound, position, gain) {
 }
 
 function bindWavePoints(block, live, read, select) {
-  block.title = "Alt/Option-click to add a volume point. Select the waveform to show its fade handles.";
+  block.title = "Alt/Option-click to add a volume point. Drag the handles at either end to adjust fades.";
   block.addEventListener("pointerdown", event => {
     if (event.button !== 0 || event.target.closest("circle, [data-fade], .edge")) return;
     const line = event.target.classList.contains("gain-line-hit");
@@ -5261,12 +5352,33 @@ function bindWavePoints(block, live, read, select) {
     event.stopImmediatePropagation();
     event.preventDefault();
     const bounds = block.querySelector(".sound-envelope")?.getBoundingClientRect() || block.getBoundingClientRect();
-    const gain = line && !event.altKey ? undefined : Math.max(0, Math.min(1, (bounds.bottom - event.clientY) / bounds.height));
-    if (addGainPoint(row, read(row), waveformPosition(block, event.clientX), gain)) select();
+    const sound = read(row);
+    const height = Math.max(0, Math.min(1, (bounds.bottom - event.clientY) / bounds.height));
+    const gain = line && !event.altKey ? undefined : gainAtHeight(sound, height);
+    if (addGainPoint(row, sound, waveformPosition(block, event.clientX), gain)) select();
   });
 }
 
-function waveformPointAction(block, x, live, read) {
+function waveformPointAction(block, target, x, live, read) {
+  const point = target.closest("[data-gain-frame]");
+  const fade = target.closest("[data-fade]")?.dataset.fade;
+  if (point || fade) {
+    const frame = point ? Number(point.dataset.gainFrame) : null;
+    const label = point ? "Remove volume point" : fade === "fade_in" ? "Reset fade in" : "Reset fade out";
+    return act(label, () => {
+      const row = live();
+      if (!row) return;
+      const index = row.gain_points?.findIndex(entry => entry.frame === frame) ?? -1;
+      if (point ? index < 0 : !row[fade]) return;
+      checkpoint();
+      if (point) row.gain_points.splice(index, 1);
+      else row[fade] = 0;
+      save();
+      relevel();
+      renderTimeline();
+      renderInspector();
+    }, { danger: Boolean(point) });
+  }
   const position = Number.isFinite(x) ? waveformPosition(block, x) : null;
   return act(position === null ? "Add volume point at playhead" : "Add volume point here", () => {
     const row = live();
@@ -5297,7 +5409,7 @@ function dragEnvelope(event, block, live, read, change) {
     edit();
     relevel();
     block.querySelector(".sound-envelope")?.remove();
-    drawSoundEnvelope(block, read(row), true, live, read);
+    drawSoundEnvelope(block, read(row), block.matches(".on, .track-automation"), live, read);
   };
   const end = (next) => {
     if (next.pointerId !== event.pointerId) return;
@@ -5340,7 +5452,7 @@ function drawSoundEnvelope(block, sound, editable, liveSound = () => soundOf(sou
     const line = document.createElementNS(ns, "polyline");
     line.classList.add(style);
     line.setAttribute("points", [...sample].sort((a, b) => a - b).map(at =>
-      (100 * at / sound.frames) + "," + (100 - 100 * level(at))).join(" "));
+      (100 * at / sound.frames) + "," + (100 - 100 * gainHeight(sound, level(at)))).join(" "));
     path.append(line);
     return line;
   };
@@ -5358,9 +5470,15 @@ function drawSoundEnvelope(block, sound, editable, liveSound = () => soundOf(sou
     const x = (point.frame - first) / span;
     if (x < 0 || x > 1) continue;
     const dot = document.createElementNS(ns, "circle");
+    dot.dataset.gainFrame = point.frame;
     dot.setAttribute("cx", (x * 100) + "%");
-    dot.setAttribute("cy", (100 - 100 * point.gain) + "%");
+    const height = gainHeight(sound, point.gain);
+    dot.setAttribute("cy", (100 - 100 * height) + "%");
     dot.setAttribute("r", 4);
+    const title = document.createElementNS(ns, "title");
+    const level = sound.track ? audioDb(point.gain).toFixed(1) + " dB" : Math.round(100 * point.gain) + "%";
+    title.textContent = "Volume point · " + level + " · Right-click to remove";
+    dot.append(title);
     dot.addEventListener("pointerdown", (event) => {
       const bounds = graph.getBoundingClientRect();
       const min = Math.max(Math.ceil(first - 1e-6), (points[index - 1]?.frame ?? -1) + 1);
@@ -5372,7 +5490,8 @@ function drawSoundEnvelope(block, sound, editable, liveSound = () => soundOf(sou
         if (current < 0) return;
         const next = {
           frame: Math.max(min, Math.min(max, Math.round(point.frame + (ev.clientX - event.clientX) / bounds.width * span))),
-          gain: Math.round(100 * Math.max(0, Math.min(1, point.gain + (event.clientY - ev.clientY) / bounds.height))) / 100,
+          gain: Math.round((sound.track ? 1e5 : 100) * gainAtHeight(sound,
+            Math.max(0, Math.min(1, height + (event.clientY - ev.clientY) / bounds.height)))) / (sound.track ? 1e5 : 100),
         };
         if (next.frame === frame && next.gain === row.gain_points[current].gain) return;
         return () => { frame = next.frame; row.gain_points[current] = next; };
@@ -5380,14 +5499,18 @@ function drawSoundEnvelope(block, sound, editable, liveSound = () => soundOf(sou
     });
     graph.append(dot);
   }
-  if (editable) for (const [key, label, direction, side] of [
-    ["fade_in", "Fade in", 1, 6], ["fade_out", "Fade out", -1, 94],
+  const handlesOverlap = Math.abs(sound.frames - Math.min(sound.frames, sound.fade_in || 0)
+    - Math.min(sound.frames, sound.fade_out || 0)) < sound.frames * 0.1;
+  if (!sound.track) for (const [key, label, direction] of [
+    ["fade_in", "Fade in", 1], ["fade_out", "Fade out", -1],
   ]) {
     const fade = Math.min(sound.frames, sound[key] || 0);
     const handle = document.createElementNS(ns, "rect");
     handle.dataset.fade = key;
-    handle.setAttribute("x", (side + direction * 88 * fade / sound.frames) + "%");
-    handle.setAttribute("y", key === "fade_in" ? "22%" : "68%");
+    const position = direction === 1 ? fade / sound.frames : 1 - fade / sound.frames;
+    // Keep the whole handle inside the block, including at a zero-length fade.
+    handle.style.x = "calc(" + (100 * position) + "% + " + (5 - 10 * position) + "px)";
+    handle.setAttribute("y", key === "fade_out" && handlesOverlap ? "68%" : "22%");
     handle.setAttribute("width", 10);
     handle.setAttribute("height", 8);
     handle.setAttribute("rx", 2);
@@ -5395,8 +5518,7 @@ function drawSoundEnvelope(block, sound, editable, liveSound = () => soundOf(sou
     title.textContent = label + " · " + fade + " frames";
     handle.append(title);
     handle.addEventListener("pointerdown", event => {
-      const width = graph.getBoundingClientRect().width * 0.88;
-      if (!width) return;
+      const width = Math.max(1, graph.getBoundingClientRect().width - 10);
       dragEnvelope(event, block, liveSound, read, (row, next) => {
         const delta = direction * (next.clientX - event.clientX) / width * sound.frames;
         const value = Math.max(0, Math.min(sound.frames, Math.round(fade + delta)));
@@ -5571,6 +5693,48 @@ function clipEnvelopePanel(item, take) {
     () => state.project.timeline.find(row => row.id === item.id), row => clipEnvelope(row, take));
 }
 
+function renderAudioTrack(panel, track) {
+  const head = document.createElement("div");
+  head.className = "inspector-head";
+  const title = document.createElement("h2");
+  title.textContent = trackName(track) + " · Track volume";
+  head.append(title);
+  const fader = document.createElement("div");
+  fader.className = "track-fader";
+  const level = document.createElement("input");
+  const number = document.createElement("input");
+  const db = Math.round(audioDb(trackRow(track)?.gain ?? 1) * 10) / 10;
+  Object.assign(level, { type: "range", min: "-60", max: "6", step: "0.1", value: db });
+  Object.assign(number, { type: "number", min: "-60", max: "6", step: "0.1", value: db });
+  level.setAttribute("aria-label", "Track fader in decibels");
+  number.setAttribute("aria-label", "Track level in decibels");
+  let dragging = false;
+  function adjust(value, duringDrag = false) {
+    const row = editableTrack(track);
+    const gain = audioGain(value);
+    if (gain === (row.gain ?? 1)) return;
+    if (!dragging) checkpoint();
+    row.gain = gain;
+    level.value = number.value = value;
+    relevel();
+    if (!duringDrag) save();
+  }
+  level.oninput = () => { adjust(level.valueAsNumber, true); dragging = true; };
+  level.onchange = () => { if (dragging) save(); dragging = false; };
+  number.onchange = () => {
+    if (number.value && number.validity.valid) adjust(number.valueAsNumber);
+    else number.value = level.value;
+  };
+  const unit = document.createElement("span");
+  unit.textContent = "dB";
+  fader.append(level, number, unit);
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Track points stay at their timeline frames when you move clips.";
+  panel.replaceChildren(head, section("Track fader", [fader, hint]),
+    soundEnvelopePanel(trackEnvelope(trackRow(track) || {}), () => editableTrack(track), trackEnvelope));
+}
+
 function soundEnvelopePanel(sound, live = () => soundOf(sound.id), read = row => row) {
   const edit = (change) => {
     const row = live();
@@ -5581,13 +5745,13 @@ function soundEnvelopePanel(sound, live = () => soundOf(sound.id), read = row =>
     renderTimeline();
     renderInspector();
   };
-  const number = (label, value, min, max, apply) => {
+  const number = (label, value, min, max, apply, step = 1) => {
     const field = document.createElement("label");
     field.className = "field";
     const text = document.createElement("span");
     text.textContent = label;
     const input = document.createElement("input");
-    Object.assign(input, { type: "number", value, min, max, step: 1 });
+    Object.assign(input, { type: "number", value, min, max, step });
     input.addEventListener("change", () => {
       if (input.value !== "" && input.validity.valid) apply(Number(input.value));
       else input.value = value;
@@ -5597,7 +5761,7 @@ function soundEnvelopePanel(sound, live = () => soundOf(sound.id), read = row =>
   };
   const fades = document.createElement("div");
   fades.className = "pair";
-  for (const [key, label] of [["fade_in", "Fade in (frames)"], ["fade_out", "Fade out (frames)"]]) {
+  if (!sound.track) for (const [key, label] of [["fade_in", "Fade in (frames)"], ["fade_out", "Fade out (frames)"]]) {
     fades.append(number(label, Math.min(sound.frames, sound[key] || 0), 0, sound.frames, (v) => edit((s) => { s[key] = v; })));
   }
   const list = document.createElement("div");
@@ -5608,9 +5772,11 @@ function soundEnvelopePanel(sound, live = () => soundOf(sound.id), read = row =>
     const row = document.createElement("div");
     row.className = "gain-point";
     const update = (field, value) => edit((s) => { s.gain_points[i] = { ...s.gain_points[i], [field]: value }; });
-    row.append(number("Source frame", point.frame, (points[i - 1]?.frame ?? -1) + 1,
-      (points[i + 1]?.frame ?? length + 1) - 1, (v) => update("frame", v)),
-    number("Level (%)", Math.round(point.gain * 100), 0, 100, (v) => update("gain", v / 100)),
+    row.append(number(sound.track ? "Timeline frame" : "Source frame", point.frame, (points[i - 1]?.frame ?? -1) + 1,
+      (points[i + 1]?.frame ?? length + 1) - 1, (v) => update("frame", v)));
+    row.append(sound.track
+      ? number("Level (dB)", Number(audioDb(point.gain).toFixed(1)), -60, 6, v => update("gain", audioGain(v)), 0.1)
+      : number("Level (%)", Math.round(point.gain * 100), 0, 100, (v) => update("gain", v / 100)),
     trashButton("Remove gain point at source frame " + point.frame, () => edit((s) => s.gain_points.splice(i, 1))));
     list.append(row);
   }
@@ -5631,8 +5797,9 @@ function soundEnvelopePanel(sound, live = () => soundOf(sound.id), read = row =>
   });
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = "Click the curve or Alt/Option-click the waveform to add a point. Drag points to adjust time and level, or drag the handles at the top to fade the ends.";
-  return section("Volume curve", [fades, list, add, hint]);
+  hint.textContent = sound.track ? "Alt/Option-click to add a point. Drag to adjust it. Right-click to remove it."
+    : "Click the curve or Alt/Option-click the waveform to add a point. Right-click a point to remove it. Drag the end handles to adjust fades.";
+  return section(sound.track ? "Track keyframes" : "Volume curve", [...(sound.track ? [] : [fades]), list, add, hint]);
 }
 
 // Keeps each extra sound in step with the playhead while the cut plays, and silent otherwise.
@@ -5654,11 +5821,12 @@ function syncSounds() {
       soundPlayers.set(sound.id, player);
     }
     const at = (state.playhead - sound.start) / FPS;
-    if (!running || at < 0 || at >= sound.frames / FPS || sound.gain === 0 || !trackAudible((sound.lane || 0) + 1)) {
+    const lane = (sound.lane || 0) + 1;
+    if (!running || at < 0 || at >= sound.frames / FPS || sound.gain === 0 || !trackAudible(lane)) {
       if (!player.paused) player.pause();
       continue;
     }
-    setSoundLevel(player, sound, at * FPS, heard());
+    setSoundLevel(player, sound, at * FPS, monitoredTrack(lane), monitoredTrack(lane, state.playhead + 1));
     const wanted = (sound.offset || 0) + at;
     if (player.paused) {
       player.currentTime = wanted;
@@ -5912,9 +6080,7 @@ function renderTimeline() {
       const canvas = document.createElement("canvas");
       wave.append(canvas);
       drawWave(canvas, item, take, waveHeight, item.id === state.item, trackDisplay.get(0));
-      if (item.id === state.item || item.fade_in || item.fade_out || item.gain_points?.length) {
-        drawSoundEnvelope(wave, read(item), item.id === state.item, live, read);
-      }
+      drawSoundEnvelope(wave, read(item), item.id === state.item, live, read);
     }
     waves.push(wave);
   }
@@ -8069,18 +8235,26 @@ function actionsAt(target, x) {
       act("Manage takes", () => openTakeManager(clip), { off: clip.kind === "footage" && clip.takes.length === 1 ? "Keep the source take" : "" }),
     ] };
   }
+  const automation = target.closest("[data-automation-track]");
+  if (automation) {
+    const track = Number(automation.dataset.automationTrack);
+    return { title: trackName(track) + " · Track volume", rows: [
+      waveformPointAction(automation, target, x, () => editableTrack(track), trackEnvelope),
+      act("Back to clip volume", () => { state.tab = "track"; openTrackVolume(track); }),
+    ] };
+  }
   const block = target.closest("#laneV [data-item], #laneA [data-item]");
   if (block) {
     const item = state.project.timeline.find((i) => i.id === block.dataset.item);
     if (!item) return null;
     const isAudio = block.closest("#laneA");
     const take = isAudio && activeTake(clipOf(item.clip));
-    const addPoint = take && waveformPointAction(block, x,
+    const envelopeAction = take && waveformPointAction(block, target, x,
       () => state.project.timeline.find(row => row.id === item.id), row => clipEnvelope(row, take));
     selectClip(item.clip, item.id);
     if (isAudio) {
       return { title: clipOf(item.clip).name + " · Sound", rows: [
-        ...(addPoint ? [addPoint] : []),
+        ...(envelopeAction ? [envelopeAction] : []),
         act("Edit fades and volume curve", () => {
           showWorkspacePanel("inspector"); showTab("timeline");
           revealInspectorControl(".gain-points")?.scrollIntoView({ block: "nearest" });
@@ -8117,9 +8291,9 @@ function actionsAt(target, x) {
   if (sound) {
     const found = (state.project.sounds || []).find((s) => s.id === sound.dataset.sound);
     if (!found) return null;
-    const addPoint = waveformPointAction(sound, x, () => soundOf(found.id), row => row);
+    const envelopeAction = waveformPointAction(sound, target, x, () => soundOf(found.id), row => row);
     selectSound(found.id);
-    return { title: found.name || "Sound", rows: [addPoint, act("Edit fades and volume", () => {
+    return { title: found.name || "Sound", rows: [envelopeAction, act("Edit fades and volume", () => {
       showWorkspacePanel("inspector"); showTab("shot");
       revealInspectorControl(".gain-points")?.scrollIntoView({ block: "nearest" });
     }), act("Remove from the sound lane", () => removeSound(found.id), { key: "Delete", danger: true })] };
@@ -8214,7 +8388,8 @@ function timelineSurfaceActions(target, x) {
     const track = lane === $("laneA") ? 0 : Number(lane.dataset.lane) + 1;
     const controls = document.querySelector('.sound-head[data-track="' + track + '"]');
     return { title: controls.querySelector("span").textContent, rows: [at("Add sound here", addSound),
-      ...[...controls.querySelectorAll("button")].map((button, i) => buttonAction(button, i === 0 ? button.title : undefined)), ...timeline] };
+      ...[...controls.querySelectorAll("button")].map(button =>
+        buttonAction(button, button.dataset.trackControl === "display" ? button.title : undefined)), ...timeline] };
   }
   const gap = gapAt(frame);
   const rows = [byId("newClip", "New clip at end"), byId("importClip", "Import footage")];
@@ -8396,7 +8571,9 @@ function setMix(video, mix, item) {
   const take = placement && activeTake(clipOf(placement.clip));
   const envelope = take && (placement.fade_in || placement.fade_out || placement.gain_points?.length)
     ? soundEnvelope(clipEnvelope(placement, take), state.playhead - placement.start) : 1;
-  video.volume = Math.min(1, mix * (video._gain ?? 1) * envelope) * (viewing() || trackAudible(0) ? heard() : 0);
+  const level = mix * (video._gain ?? 1) * envelope;
+  setMediaLevel(video, level * (viewing() ? heard() : monitoredTrack(0)),
+    level * (viewing() ? heard() : monitoredTrack(0, state.playhead + 1)));
 }
 
 // After the viewer's volume or a clip's volume changed: everything that sounds takes its level again.
@@ -8406,7 +8583,7 @@ function relevel() {
   $("motion").volume = heard();
   for (const [id, player] of soundPlayers) {
     const sound = (state.project?.sounds || []).find((s) => s.id === id);
-    if (sound) setSoundLevel(player, sound, state.playhead - sound.start, trackAudible((sound.lane || 0) + 1) ? heard() : 0);
+    if (sound) setSoundLevel(player, sound, state.playhead - sound.start, monitoredTrack((sound.lane || 0) + 1));
   }
 }
 
@@ -9112,6 +9289,7 @@ async function openProject(folder) {
   state.folder = folder;
   trackMix.clear();
   trackDisplay.clear();
+  audioTrackMode = null;
   state.project = await api("/project/" + folder);
   await ensureFormatChoices(state.project);
   drawProjectPicker();

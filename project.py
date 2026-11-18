@@ -1628,6 +1628,11 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
         join("tailv", "taila")
         cursor = timeline_end
 
+    picture_track = audio_track_filter(project, 0)
+    if picture_track:
+        chains.append("[%s]%s[track0]" % (audio, picture_track[1:]))
+        audio = "track0"
+
     extra = []
     for row in project.get("sounds") or []:
         if row.get("id") not in (sound_paths or {}) or row.get("start", 0) >= cursor or not row.get("gain", 1.0):
@@ -1638,9 +1643,10 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
         # At 48 kHz each timeline frame is exactly 2,000 samples.
         delay = row.get("start", 0) * (48000 // FPS)
         delay_arg = str(delay // 48) if delay % 48 == 0 else "%dS" % delay
-        chains.append("[%s:a]atrim=start=%.8f:end=%.8f,asetpts=PTS-STARTPTS,volume=%.3f,%s%s,adelay=%s:all=1[s%s]" % (
+        chains.append("[%s:a]atrim=start=%.8f:end=%.8f,asetpts=PTS-STARTPTS,volume=%.3f,%s%s%s,adelay=%s:all=1[s%s]" % (
             number, offset, offset + row["frames"] / float(FPS), float(row.get("gain", 1.0)), SOUND_FORMAT,
-            sound_envelope_filter(row), delay_arg, number))
+            sound_envelope_filter(row), audio_track_filter(project, (row.get("lane") or 0) + 1, row.get("start", 0)),
+            delay_arg, number))
         extra.append("s%s" % number)
     if extra:
         # A packet cut by atrim can be short. FFmpeg 6's amix can stop early when that
@@ -1696,6 +1702,8 @@ def slice_project(project, first, last):
     if first < 0 or last <= first:
         raise ValueError("a range runs from a frame to a later one")
     out = copy.deepcopy(project)
+    if out.get("audio_tracks"):
+        out["_audio_track_origin"] = project.get("_audio_track_origin", 0) + first
     items = []
     for item in ordered(project):
         start, end = item["start"], item_end(item)
@@ -1769,7 +1777,7 @@ def sound_frame(value, limit, field):
     return value
 
 
-def clean_gain_points(points, limit):
+def clean_gain_points(points, limit, gain_range=(0, 1), digits=2):
     if not isinstance(points, list) or len(points) > GAIN_POINT_LIMIT:
         raise ValueError("gain_points must be a list of up to %d points" % GAIN_POINT_LIMIT)
     result = []
@@ -1777,11 +1785,56 @@ def clean_gain_points(points, limit):
         if not isinstance(point, dict) or set(point) != {"frame", "gain"}:
             raise ValueError("each gain point needs a source frame and gain")
         result.append({"frame": sound_frame(point["frame"], limit, "gain point frame"),
-                       "gain": clean_strength(point["gain"], (0, 1), "gain point")})
+                       "gain": clean_strength(point["gain"], gain_range, "gain point", digits)})
     result.sort(key=lambda p: p["frame"])
     if any(a["frame"] == b["frame"] for a, b in zip(result, result[1:])):
         raise ValueError("gain points must have different frames")
     return result
+
+
+def clean_audio_tracks(tracks):
+    lanes = {str(lane) for lane in range(SOUND_LANES + 1)}
+    if not isinstance(tracks, dict) or not tracks.keys() <= lanes:
+        raise ValueError("audio tracks must be keyed by lane number from 0 to %d" % SOUND_LANES)
+    result = {}
+    for key, track in tracks.items():
+        check_fields(track, ("gain", "gain_points"))
+        gain = clean_strength(track.get("gain", 1), SOUND_GAIN, "track gain", 6)
+        points = clean_gain_points(track.get("gain_points", []), 2**31 - 1, SOUND_GAIN, 6)
+        if gain != 1 or points:
+            result[key] = {"gain": gain, "gain_points": points}
+    return result
+
+
+def gain_curve_expression(points, position):
+    """Piecewise-linear gain with constant values outside the first and last points."""
+    if len(points) == 1:
+        return "%g" % points[0]["gain"]
+
+    def segment(lo, hi):
+        if hi == lo + 1:
+            left, right = points[lo], points[hi]
+            delta = right["gain"] - left["gain"]
+            if not delta:
+                return "%g" % left["gain"]
+            return "(%g+%g*clip((%s-%d)/%d,0,1))" % (
+                left["gain"], delta, position, left["frame"], right["frame"] - left["frame"])
+        mid = (lo + hi) // 2
+        return "if(lt(%s,%d),%s,%s)" % (position, points[mid]["frame"], segment(lo, mid), segment(mid, hi))
+
+    return segment(0, len(points) - 1)
+
+
+def audio_track_filter(project, lane, start=0):
+    track = (project.get("audio_tracks") or {}).get(str(lane))
+    if not track:
+        return ""
+    gain = track.get("gain", 1)
+    points = track.get("gain_points", [])
+    if not points:
+        return ",volume=%g" % gain if gain != 1 else ""
+    position = "(t*%d+%d)" % (FPS, project.get("_audio_track_origin", 0) + start)
+    return ",aeval=exprs='val(ch)*%g*%s':c=same" % (gain, gain_curve_expression(points, position))
 
 
 def sound_envelope_filter(sound):
@@ -1796,21 +1849,8 @@ def sound_envelope_filter(sound):
             points.insert(0, {"frame": 0, "gain": 1})
         if points[-1]["frame"] < limit:
             points.append({"frame": limit, "gain": 1})
-        # Choose the segment with a balanced tree, so a long envelope has a small evaluation depth.
         pos = "(t*%g+%.8f)" % (FPS * sound.get("rate", 1), sound.get("offset", 0) * FPS)
-
-        def segment(lo, hi):
-            if hi == lo + 1:
-                left, right = points[lo], points[hi]
-                delta = right["gain"] - left["gain"]
-                if not delta:
-                    return "%g" % left["gain"]
-                return "(%g+%g*clip((%s-%d)/%d,0,1))" % (
-                    left["gain"], delta, pos, left["frame"], right["frame"] - left["frame"])
-            mid = (lo + hi) // 2
-            return "if(lt(%s,%d),%s,%s)" % (pos, points[mid]["frame"], segment(lo, mid), segment(mid, hi))
-
-        factors.append(segment(0, len(points) - 1))
+        factors.append(gain_curve_expression(points, pos))
     frames = sound.get("_fade_frames", sound["frames"])
     head = sound.get("_fade_from", 0)
     for key in ("fade_in", "fade_out"):
@@ -2887,10 +2927,10 @@ def accept_take(project, clip_id, take):
     return clip
 
 
-def clean_strength(value, limits, what):
+def clean_strength(value, limits, what, digits=2):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not limits[0] <= value <= limits[1]:
         raise ValueError("%s must be a number from %g to %g" % (what, limits[0], limits[1]))
-    return round(float(value), 2)
+    return round(float(value), digits)
 
 
 def clean_loras(value, owner="a project"):
@@ -3639,6 +3679,8 @@ def _merge_lists(base, mine, theirs, keep_theirs=False):
 def merge_editor_save(base, mine, current):
     """Only explicit operations change an existing clip's take list. A newly placed copy keeps its own take."""
     merged = merge(base, mine, current)
+    if "audio_tracks" in merged:
+        merged["audio_tracks"] = clean_audio_tracks(merged["audio_tracks"])
     existing = {clip["id"]: clip for clip in current.get("clips", [])}
     for clip in merged.get("clips", []):
         if clip.get("sprite") is not None:
@@ -3954,6 +3996,7 @@ def describe(project):
               for s in sorted(project.get("sounds") or [], key=lambda s: (s.get("lane", 0), s.get("start", 0)))]
     return {
         "sounds": sounds,
+        "audio_tracks": project.get("audio_tracks") or {},
         "effects": [{"effect": e["id"], "name": e.get("name", ""), "start": e["start"], "frames": e["frames"],
                      "at": timecode(e["start"]), "state": "waiting for an open editor to render it" if e.get("queued") is True else
                      "rendering" if e.get("queued") else "not rendered" if not active_take(e) else
@@ -4071,6 +4114,15 @@ def apply_op(project, op, names):
         sound_id = _resolve(op.get("sound"), names, "sound")
         update_sound(project, sound_id, op.get("fields") or {})
         result = {"sound": sound_id}
+    elif kind == "set_audio_track":
+        lane = sound_frame(op.get("lane"), SOUND_LANES, "audio track")
+        key = str(lane)
+        tracks = dict(project.get("audio_tracks") or {})
+        updates = op.get("fields") or {}
+        check_fields(updates, ("gain", "gain_points"))
+        tracks[key] = {**tracks.get(key, {}), **updates}
+        project["audio_tracks"] = clean_audio_tracks(tracks)
+        result = {"lane": lane}
     elif kind == "remove_sound":
         sound_id = _resolve(op.get("sound"), names, "sound")
         remove_sound(project, sound_id)

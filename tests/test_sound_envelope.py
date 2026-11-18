@@ -70,6 +70,12 @@ class SoundEnvelopeTest(unittest.TestCase):
 
             full, full_clip = mix(data, "full.mp4")
             part, part_clip = mix(project.slice_project(data, 16, 56), "range.mp4")
+            project.apply_op(data, {"op": "set_audio_track", "lane": 0, "fields": {
+                "gain": 0.5, "gain_points": [{"frame": 10, "gain": 1}, {"frame": 40, "gain": 0.5}]}}, {})
+            project.apply_op(data, {"op": "set_audio_track", "lane": 1, "fields": {
+                "gain_points": [{"frame": 10, "gain": 1}, {"frame": 40, "gain": 0.25}]}}, {})
+            automated, automated_clip = mix(data, "track.mp4")
+            range_track, range_clip = mix(project.slice_project(data, 16, 56), "track-range.mp4")
 
         def level(samples, frame):
             center = frame * 2000
@@ -83,6 +89,13 @@ class SoundEnvelopeTest(unittest.TestCase):
         self.assertAlmostEqual(level(part_clip, 39), 0.25, delta=0.025)
         self.assertAlmostEqual(level(full_clip, 20), 0.5 * (1 - 0.5 * 20 / 24) * 20 / 24, delta=0.025)
         self.assertAlmostEqual(level(part_clip, 4), level(full_clip, 20), delta=0.025)
+        # Fader and keyframes multiply the clip envelope. The added track uses the same cut clock.
+        for frame in (24, 36, 48):
+            ramp = min(1, (frame - 10) / 30)
+            self.assertAlmostEqual(level(automated_clip, frame), level(full_clip, frame) * 0.5 * (1 - 0.5 * ramp), delta=0.025)
+            self.assertAlmostEqual(level(automated, frame), level(full, frame) * (1 - 0.75 * ramp), delta=0.035)
+            self.assertAlmostEqual(level(range_clip, frame - 16), level(automated_clip, frame), delta=0.025)
+            self.assertAlmostEqual(level(range_track, frame - 16), level(automated, frame), delta=0.025)
         # Positions in the placed sound, with independently calculated linear gains.
         for at, gain in ((6, 0.7 * 0.5), (9, 0.85 * 0.75), (12, 1), (18, 0.625), (24, 0.25),
                          (36, 0.5 * 12 / 18), (42, 0.5625 * 6 / 18)):

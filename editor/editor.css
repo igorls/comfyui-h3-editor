@@ -628,6 +628,17 @@ label.lora-name { cursor: pointer; }
 .tl-heads { background: var(--panel); border-right: 1px solid var(--line); }
 .tl-head { display: flex; align-items: center; padding: 0 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
 .tl-head.sound-head { flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; padding: 0 5px; line-height: 12px; }
+.sound-head-title { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 16px; }
+.sound-head-title button { width: 20px; height: 16px; padding: 0; background: transparent; }
+.sound-head-title button .ic { width: 13px; height: 13px; }
+.sound-head-title button[aria-pressed=true] { color: var(--tungsten); background: var(--raised); }
+.sound-head-title button.has-automation { color: var(--tungsten); }
+.track-automation { position: absolute; inset: 0 auto 0 0; z-index: 4; background: color-mix(in srgb, var(--panel) 55%, transparent); }
+.track-automation-on .wave .sound-envelope { visibility: hidden; }
+.track-fader { display: grid; align-items: center; grid-template-columns: minmax(48px, 1fr) 66px auto; gap: 8px; margin-bottom: 10px; }
+.track-fader input { min-width: 0; }
+.track-fader input[type=number] { background: var(--room); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 6px; }
+.track-fader span { color: var(--muted); font-size: 12px; }
 .sound-tools { display: flex; gap: 2px; }
 .sound-tools button { display: grid; place-items: center; width: 23px; height: 20px; padding: 0; font-size: 11px; font-weight: 650; }
 .sound-tools .ic { width: 13px; height: 13px; }

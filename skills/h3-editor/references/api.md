@@ -143,6 +143,7 @@ sound. Upload the file with `POST /project/{name}/asset?sound=1`, which also ret
 |---|---|---|
 | `add_sound` | `asset`: `{"file", "subfolder"}`, `seconds`, optional `fields` | Returns `{"sound"}`. It starts at frame 0 on lane 0 and plays its whole length unless `fields` say otherwise |
 | `update_sound` | `sound`, `fields` | |
+| `set_audio_track` | `lane`, `fields`: `gain`, `gain_points` | Lane 0 carries picture audio. Lane 1 corresponds to Sound 2, and so on. Gain 1 is unity. Track levels range from 0 to 2. Points use absolute timeline frames and hold their first and last levels outside the keyed span. Send `{"gain":1,"gain_points":[]}` to reset the track. |
 | `remove_sound` | `sound` | The file stays in the project's assets |
 
 `fields`: `name`; `start`, the timeline frame it begins at; `offset`, the second of the file it

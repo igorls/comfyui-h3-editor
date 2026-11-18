@@ -3,14 +3,15 @@
 export function curveLevel(sound, sourceFrame) {
   const points = sound.gain_points;
   if (!points?.length) return 1;
-  let from = { frame: 0, gain: 1 };
+  let from = sound.track ? points[0] : { frame: 0, gain: 1 };
+  if (sound.track && sourceFrame <= from.frame) return from.gain;
   const length = Math.max(1, Math.round(sound.seconds * 24));
   for (const to of points) {
     if (sourceFrame === to.frame) return to.gain;
     if (sourceFrame < to.frame) return from.gain + (to.gain - from.gain) * (sourceFrame - from.frame) / (to.frame - from.frame);
     from = to;
   }
-  if (from.frame >= length) return from.gain;
+  if (sound.track || from.frame >= length) return from.gain;
   return from.gain + (1 - from.gain) * Math.min(1, (sourceFrame - from.frame) / (length - from.frame));
 }
 
@@ -34,9 +35,13 @@ export function resumeSoundMixer() {
   if (mixer.state === "suspended") mixer.resume().catch(() => {});
 }
 
-export function setSoundLevel(player, sound, frame, monitor) {
+export function setSoundLevel(player, sound, frame, monitor, nextMonitor = monitor) {
   const base = (sound.gain ?? 1) * monitor;
-  const level = base * soundEnvelope(sound, frame);
+  setMediaLevel(player, base * soundEnvelope(sound, frame),
+    (sound.gain ?? 1) * nextMonitor * soundEnvelope(sound, frame + 1));
+}
+
+export function setMediaLevel(player, level, next = level) {
   let link = connections.get(player);
   if (!link && mixer?.state === "running") {
     const source = mixer.createMediaElementSource(player);
@@ -54,7 +59,7 @@ export function setSoundLevel(player, sound, frame, monitor) {
   param.cancelScheduledValues(now);
   param.setValueAtTime(level, now);
   // Ramp between picture frames as well, including on slow display refreshes.
-  param.linearRampToValueAtTime(base * soundEnvelope(sound, frame + 1), now + 1 / 24);
+  param.linearRampToValueAtTime(next, now + 1 / 24);
 }
 
 export function disconnectSound(player) {
