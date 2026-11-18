@@ -284,9 +284,10 @@ function addClip() {
   state.item = state.project.timeline.at(-1).id;
   state.tab = "shot";
   save();
+  setCollectionOpen("clips", true);
   renderAll();
   if (workspacePanels[0].offsetWidth) showWorkspacePanel("inspector");
-  document.querySelector("#inspector textarea.big")?.focus();
+  revealInspectorControl("textarea.big")?.focus();
 }
 
 // Python's round uses the even integer for an exact half.
@@ -621,7 +622,7 @@ function addLinked(mode, arrive = "short") {
   state.tab = "shot";
   save();
   renderAll();
-  document.querySelector("#inspector textarea.big")?.focus();
+  revealInspectorControl("textarea.big")?.focus();
 }
 
 const assetUrl = (asset) => viewUrl(asset.file, asset.subfolder);
@@ -646,6 +647,7 @@ async function importFootage() {
     await flush();
     const result = await api("/project/" + state.folder + "/import", { method: "POST", body: form });
     if (!unsaved()) adopt(result.project);
+    setCollectionOpen("clips", true);
     selectClip(result.clip, result.item);
     toast(file.name + " is on the timeline.");
   } catch (error) {
@@ -663,6 +665,7 @@ async function addVoiceMember() {
     state.project.cast = state.project.cast || [];
     const person = { id: uid("p"), name: "Narrator" + (state.project.cast.some((p) => p.name === "Narrator") ? " " + (state.project.cast.length + 1) : ""), description: "", voice };
     state.project.cast.push(person);
+    setCollectionOpen("cast", true);
     state.person = person.id;
     state.clip = null;
     state.item = null;
@@ -804,6 +807,7 @@ async function addCastMember() {
     state.project.cast = state.project.cast || [];
     const person = { id: uid("p"), name: "Person " + (state.project.cast.length + 1), description: "", ...asset };
     state.project.cast.push(person);
+    setCollectionOpen("cast", true);
     state.person = person.id;
     state.clip = null;
     state.item = null;
@@ -1114,6 +1118,7 @@ function addRefmodMember() {
   state.project.cast = state.project.cast || [];
   const person = { id: uid("p"), name: "Person " + (state.project.cast.length + 1), description: "", refmod: { file, strength: 1 } };
   state.project.cast.push(person);
+  setCollectionOpen("cast", true);
   state.person = person.id;
   state.clip = null;
   state.item = null;
@@ -1250,9 +1255,9 @@ function openPerson(id) {
       image.className = "portrait";
       image.alt = person.name;
       image.src = assetUrl(person);
-      left.push(section("Pictures", [image, morePictures(person)], "picture"));
+      left.push(dialogSection("Pictures", [image, morePictures(person)], "picture"));
     }
-    left.push(section("About", [
+    left.push(dialogSection("About", [
       field("Name", person.name, (v) => {
         person.name = v.trim() || person.name;
         $("panelDialogTitle").textContent = person.name;
@@ -1262,8 +1267,8 @@ function openPerson(id) {
         ? field("What they look like", person.description, (v) => (person.description = v), { big: true })
         : field("How they sound", person.description, (v) => (person.description = v), { area: true, placeholder: "A warm, calm female narrator" }),
     ], "person"));
-    const right = [section("Voice", [voiceSection(person)], "speech")];
-    if (state.refmods.installed || person.refmod) right.push(section("RefMod", refmodSection(person), "layers"));
+    const right = [dialogSection("Voice", [voiceSection(person)], "speech")];
+    if (state.refmods.installed || person.refmod) right.push(dialogSection("RefMod", refmodSection(person), "layers"));
     const columns = [left, right].map((parts) => {
       const column = document.createElement("div");
       column.className = "panel-column";
@@ -1537,6 +1542,7 @@ function addBin() {
   const bin = { id: uid("b"), name: "Bin " + number };
   state.project.bins.push(bin);
   save();
+  setCollectionOpen("clips", true);
   selectBin(bin.id);
   const name = $("inspector").querySelector('[data-key="name"]');
   if (!name) return;
@@ -2092,7 +2098,7 @@ function field(label, value, onInput, { big = false, area = false, type = "text"
   return wrap;
 }
 
-function section(title, children, iconName = "") {
+function dialogSection(title, children, iconName = "") {
   const box = document.createElement("section");
   box.className = "section";
   const head = document.createElement("h3");
@@ -2102,21 +2108,40 @@ function section(title, children, iconName = "") {
   return box;
 }
 
-// Which folding sections the user opened or closed, by name, kept in this browser. A section the
-// user has not touched opens when it holds something.
+// Sidebar preferences are local to the browser and do not affect project data.
 let opened = {};
 try { opened = JSON.parse(localStorage.getItem("h3take.opened") || "{}") || {}; } catch (_) {}
 
-function disclosure(title, open, note, children, iconName = "") {
+function rememberSection(key, open) {
+  if (opened[key] === open) return;
+  opened[key] = open;
+  try { localStorage.setItem("h3take.opened", JSON.stringify(opened)); } catch (_) {}
+}
+
+function setCollectionOpen(id, open) {
+  const toggle = $(id + "Toggle");
+  toggle.setAttribute("aria-expanded", String(open));
+  $(id).hidden = !open;
+  rememberSection("collection-" + id, open);
+}
+
+for (const id of ["clips", "cast"]) {
+  const toggle = $(id + "Toggle");
+  setCollectionOpen(id, opened["collection-" + id] !== false);
+  toggle.addEventListener("click", () => setCollectionOpen(id, $(id).hidden));
+}
+
+function section(title, children, iconName = "") {
+  return disclosure(title, true, "", children, iconName);
+}
+
+function disclosure(title, open, note, children, iconName = "", key = title) {
   const box = document.createElement("details");
   box.className = "section";
-  box.open = title in opened ? Boolean(opened[title]) : open;
+  box.dataset.section = key;
+  box.open = Object.hasOwn(opened, key) ? Boolean(opened[key]) : open;
   const summary = document.createElement("summary");
-  summary.addEventListener("click", () => {
-    // The click comes before the section folds or opens.
-    opened[title] = !box.open;
-    try { localStorage.setItem("h3take.opened", JSON.stringify(opened)); } catch (_) {}
-  });
+  summary.addEventListener("click", () => rememberSection(key, !box.open));
   if (iconName) summary.append(icon(iconName));
   summary.append(title);
   if (note) {
@@ -2127,6 +2152,17 @@ function disclosure(title, open, note, children, iconName = "") {
   }
   box.append(summary, ...children);
   return box;
+}
+
+// Follow a command that points to a control even if its owning section was folded.
+function revealInspectorControl(selector) {
+  const control = $("inspBody").querySelector(selector);
+  const box = control?.closest("details.section");
+  if (box && !box.open) {
+    box.open = true;
+    rememberSection(box.dataset.section, true);
+  }
+  return control;
 }
 
 const fileName = (file) => file.replaceAll("\\", "/").split("/").pop().replace(/\.(safetensors|gguf|ckpt|pt|pth)$/i, "");
@@ -3884,7 +3920,7 @@ function drawInspector() {
       parts.push(cancel);
     } else {
       const upscale = upscaleControls(clip);
-      if (upscale) parts.push(upscale);
+        if (upscale) parts.push(section("Upscale", [upscale]));
     }
     panel.replaceChildren(...parts);
     return;
@@ -7704,7 +7740,7 @@ function viewerActions() {
     const { first, last } = midGuideLimits(clip);
     rows.push(act("Use as a mid-frame guide", () => {
       showTab("shot");
-      $("inspBody").querySelector(".capture-mid-guide")?.click();
+      revealInspectorControl(".capture-mid-guide")?.click();
     }, { off: off || (frame === null || frame < first || frame > last ? "Move the playhead to an interior frame of this shot" : "") }));
   }
   rows.push("-", act("Note on this frame", startNote, { key: "N", off: shown ? "" : "The viewer shows no rendered frame" }));
@@ -7762,7 +7798,7 @@ function actionsAt(target, x) {
       return { title: clipOf(item.clip).name + " · Sound", rows: [
         act("Edit clip volume", () => {
           showWorkspacePanel("inspector"); showTab("timeline");
-          $("inspBody").querySelector('[data-key="Clip volume"]')?.focus();
+          revealInspectorControl('[data-key="Clip volume"]')?.focus();
         }),
         act(gainOf(item) ? "Mute this placement" : "Restore placement volume", () => {
           checkpoint();
@@ -7795,7 +7831,7 @@ function actionsAt(target, x) {
     selectSound(found.id);
     return { title: found.name || "Sound", rows: [act("Edit fades and volume", () => {
       showWorkspacePanel("inspector"); showTab("shot");
-      $("inspBody").querySelector(".gain-points")?.scrollIntoView({ block: "nearest" });
+      revealInspectorControl(".gain-points")?.scrollIntoView({ block: "nearest" });
     }), act("Remove from the sound lane", () => removeSound(found.id), { key: "Delete", danger: true })] };
   }
   const member = target.closest("#cast [data-person]");
@@ -7836,15 +7872,20 @@ function actionsAt(target, x) {
     act("Delete bin", () => deleteBin(bin), { danger: true }),
   ] };
   if (target.closest("#cast, .cast-head")) return { title: "Cast", rows: [
+    byId("castToggle", $("cast").hidden ? "Expand Cast" : "Collapse Cast"), "-",
     byId("addCast", "Add reference"), byId("addVoice", "Add voice"), byId("addFromCatalog", "From the catalog")] };
   if (target.closest(".bin")) return { title: "Clips", rows: [
+    byId("clipsToggle", $("clips").hidden ? "Expand Clips" : "Collapse Clips"), "-",
     byId("newClip", "New clip"), byId("importClip", "Import footage"), byId("newBin", "New bin")] };
   if (target.closest("#inspector")) {
     const controls = [...$("inspTabs").querySelectorAll('[role="tab"]')];
     const section = target.closest(".section, .inspector-foot, .inspector-head");
     const actions = section ? [...section.querySelectorAll("button")].filter(b => b.offsetWidth) : [];
+    const summary = section?.querySelector(":scope > summary");
+    if (summary) actions.unshift(summary);
     return { title: section?.querySelector("h3, summary")?.textContent || "Inspector",
-      rows: [...actions.map(buttonAction), ...(actions.length ? ["-"] : []), ...controls.map(b => buttonAction(b, "Show " + b.title))] };
+      rows: [...actions.map(b => buttonAction(b, b === summary ? (section.open ? "Collapse section" : "Expand section") : undefined)),
+        ...(actions.length ? ["-"] : []), ...controls.map(b => buttonAction(b, "Show " + b.title))] };
   }
   const splitter = target.closest('[role="separator"]');
   if (splitter) return { title: splitter.getAttribute("aria-label"), rows: [
@@ -10209,7 +10250,7 @@ function removeNote(note) {
 function showNoteInList(id) {
   noting.selected = id;
   showTab("project");
-  requestAnimationFrame(() => document.querySelector('.note-row[data-note="' + CSS.escape(id) + '"]')?.scrollIntoView({ block: "nearest" }));
+  requestAnimationFrame(() => revealInspectorControl('.note-row[data-note="' + CSS.escape(id) + '"]')?.scrollIntoView({ block: "nearest" }));
 }
 
 function notesSection() {
@@ -10251,7 +10292,7 @@ function notesSection() {
   const hint = document.createElement("p");
   hint.className = "hint";
   hint.textContent = "Stop on a frame and press N to write a note. Agents read them with h3.py notes, each with a picture of its frame.";
-  return section("Notes" + (open.length ? ", " + open.length + " open" : ""), [...rows, hint], "note");
+  return disclosure("Notes", true, open.length ? open.length + " open" : "", [...rows, hint], "note");
 }
 
 // Marks on the ruler where each note's frame is in the cut.

@@ -124,7 +124,10 @@ button:disabled { opacity: 0.42; cursor: default; }
 .bar, .timeline, .transport, .panel-head, .splitter, .splitter-v, .clips, .cast { user-select: none; -webkit-user-select: none; }
 .bin, .inspector { background: var(--panel); min-height: 0; }
 .bin { container-type: inline-size; display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 12px 8px 12px 12px; overflow: hidden; }
-.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; padding-right: 4px; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; padding-right: 4px; }
+.collection-toggle { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 6px; margin-left: -6px; background: transparent; font: inherit; }
+.collection-toggle .count { margin-left: 0; }
+.bin > [hidden] { display: none !important; }
 
 .clips { flex: 1 1 62%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
 .clip { flex: none; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; align-items: center; width: 100%; padding: 5px; text-align: left; background: transparent; border: 1px solid transparent; }
@@ -173,7 +176,7 @@ button:disabled { opacity: 0.42; cursor: default; }
 .icon.delete:hover { color: var(--danger); background: var(--raised); }
 .icon.delete svg { width: 18px; height: 18px; }
 
-.cast-head { flex: none; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.cast-head { flex: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 .cast { flex: 0 1 auto; max-height: 38%; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 8px; padding-right: 4px; }
 .person { padding: 0; background: transparent; border: 1px solid transparent; overflow: hidden; text-align: left; }
 .person:hover { background: var(--raised); }
@@ -330,12 +333,19 @@ button:disabled { opacity: 0.42; cursor: default; }
 .label-action { padding: 0; background: transparent; color: var(--muted); font-size: 12px; text-decoration: underline; text-decoration-color: var(--line-hi); text-underline-offset: 3px; }
 .label-action:hover { color: var(--text); text-decoration-color: var(--text); }
 #inspBody > .row { display: flex; gap: 8px; padding: 12px 16px 16px; }
-details.section > summary { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; cursor: pointer; font-size: 13px; font-weight: 600; list-style: none; }
+details.section { padding: 0 16px; scroll-margin-top: 42px; }
+details.section[open] { padding-bottom: 12px; }
+details.section > summary { display: flex; align-items: center; gap: 8px; min-height: 39px; margin-inline: -16px; padding: 0 16px; cursor: pointer; font-size: 13px; font-weight: 600; list-style: none; }
+details.section[open] > summary { margin-bottom: 4px; }
+details.section > :last-child:not(summary) { margin-bottom: 0; }
 details.section > summary::-webkit-details-marker { display: none; }
-details.section > summary::before { content: ""; width: 7px; height: 7px; border-right: 1.6px solid var(--muted); border-bottom: 1.6px solid var(--muted); transform: rotate(-45deg); transition: transform 0.15s ease-out; }
-details.section[open] > summary::before { transform: rotate(45deg); }
-details.section:not([open]) { padding-bottom: 6px; }
-details.section > summary .filled { margin-left: auto; color: var(--muted); font-weight: 400; }
+details.section > summary:hover, .collection-toggle:hover { background: var(--raised); }
+details.section > summary:focus-visible { outline-offset: -2px; }
+details.section > summary::after, .collection-toggle::before { content: ""; flex: none; width: 7px; height: 7px; border-right: 1.6px solid var(--muted); border-bottom: 1.6px solid var(--muted); transform: rotate(-45deg); }
+details.section > summary::after { margin-left: auto; }
+details.section[open] > summary::after, .collection-toggle[aria-expanded="true"]::before { transform: translateY(-2px) rotate(45deg); }
+details.section > summary .filled { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 400; }
+details.section > summary:has(.filled)::after { margin-left: 4px; }
 .inspector-foot { position: sticky; bottom: 0; margin-top: auto; padding: 10px 16px 12px; background: var(--panel); border-top: 1px solid var(--line); }
 .inspector-foot .actions { margin: 0; }
 .foot-status { margin: 0 0 8px; color: var(--live); font-variant-numeric: tabular-nums; }

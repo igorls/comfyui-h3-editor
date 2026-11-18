@@ -48,6 +48,22 @@ def exercise(page, base, folder):
     expect(page.locator("#keys")).to_be_visible()
     page.keyboard.press("Escape")
 
+    page.get_by_role("tab", name="Project").click()
+    format_section = page.locator('#inspBody details[data-section="Format"]')
+    heading = format_section.locator("summary")
+    heading.focus()
+    page.keyboard.press("Space")
+    expect(format_section).not_to_have_attribute("open", "")
+    page.locator("#clipsToggle").click()
+    page.reload()
+    expect(format_section).to_be_visible()
+    expect(format_section).not_to_have_attribute("open", "")
+    expect(page.locator("#clips")).to_be_hidden()
+    expect(page.locator("#importClip")).to_be_visible()
+    heading.click(button="right")
+    menu.get_by_role("menuitem", name="Expand section").click()
+    expect(format_section).to_have_attribute("open", "")
+
     for width, height in [(1440, 900), (1024, 640), (390, 844)]:
         page.set_viewport_size({"width": width, "height": height})
         page.locator("#ruler").click(button="right", position={"x": 8, "y": 6})
