@@ -694,9 +694,13 @@ label.lora-name { cursor: pointer; }
 .wave.sound .edge.r { right: 0; }
 .wave.sound .edge:hover { background: rgba(87, 189, 176, 0.35); }
 .wave.sound:focus-visible { outline-offset: -2px; }
-.sound-envelope { position: absolute; inset: 5px 0; width: 100%; height: calc(100% - 10px); overflow: visible; pointer-events: none; }
+.sound-envelope { position: absolute; z-index: 1; inset: 5px 0; width: 100%; height: calc(100% - 10px); overflow: visible; pointer-events: none; }
 .sound-envelope polyline { fill: none; stroke: var(--tungsten); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.sound-envelope circle { fill: var(--tungsten); stroke: var(--room); stroke-width: 1; cursor: crosshair; pointer-events: all; }
+.sound-envelope .gain-output { opacity: 0.55; stroke-dasharray: 3 3; }
+.sound-envelope .gain-line-hit { stroke: transparent; stroke-width: 9; cursor: crosshair; pointer-events: stroke; }
+.sound-envelope circle { fill: var(--tungsten); stroke: var(--room); stroke-width: 1; cursor: grab; pointer-events: all; touch-action: none; }
+.sound-envelope [data-fade] { fill: var(--text); stroke: var(--room); stroke-width: 1; transform: translate(-5px, -4px); cursor: ew-resize; pointer-events: all; touch-action: none; }
+.sound-envelope [data-fade]:hover { fill: var(--tungsten); }
 .gain-points { display: grid; gap: 6px; max-height: 220px; overflow: auto; }
 .gain-point { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; align-items: end; }
 .gain-point input { min-width: 0; width: 100%; }

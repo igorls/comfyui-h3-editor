@@ -5208,6 +5208,7 @@ function renderSounds() {
       edge.className = "edge " + side;
       block.append(edge);
     }
+    bindWavePoints(block, () => soundOf(sound.id), row => row, () => selectSound(sound.id));
     bindSound(block, sound.id);
     (made[Math.min(lanes.length - 1, sound.lane || 0)] || made[0]).push(block);
   }
@@ -5225,6 +5226,93 @@ function selectSound(id) {
   state.person = null;
   state.bin = null;
   renderAll();
+}
+
+function waveformPosition(block, x) {
+  const bounds = block.getBoundingClientRect();
+  return Math.max(0, Math.min(1, (x - bounds.left) / bounds.width));
+}
+
+function addGainPoint(row, sound, position, gain) {
+  if ((row.gain_points?.length || 0) >= 64) return toast("This clip already has 64 volume points.");
+  const first = (sound.offset || 0) * FPS;
+  const earliest = Math.ceil(first - 1e-6);
+  const last = Math.min(Math.round(sound.seconds * FPS), Math.floor(first + sound.frames * (sound.rate || 1) + 1e-6));
+  if (last < earliest) return toast("There is no editable source frame here.");
+  const frame = Math.max(earliest, Math.min(last,
+    Math.round(first + position * sound.frames * (sound.rate || 1))));
+  if (row.gain_points?.some(point => point.frame === frame)) return toast("There is already a point at this frame.");
+  checkpoint();
+  const level = Math.round((gain ?? curveLevel(sound, frame)) * 100) / 100;
+  row.gain_points = [...row.gain_points || [], { frame, gain: level }].sort((a, b) => a.frame - b.frame);
+  save();
+  relevel();
+  return true;
+}
+
+function bindWavePoints(block, live, read, select) {
+  block.title = "Alt/Option-click to add a volume point. Select the waveform to show its fade handles.";
+  block.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || event.target.closest("circle, [data-fade], .edge")) return;
+    const line = event.target.classList.contains("gain-line-hit");
+    if (!event.altKey && !line) return;
+    const row = live();
+    if (!row) return;
+    event.stopImmediatePropagation();
+    event.preventDefault();
+    const bounds = block.querySelector(".sound-envelope")?.getBoundingClientRect() || block.getBoundingClientRect();
+    const gain = line && !event.altKey ? undefined : Math.max(0, Math.min(1, (bounds.bottom - event.clientY) / bounds.height));
+    if (addGainPoint(row, read(row), waveformPosition(block, event.clientX), gain)) select();
+  });
+}
+
+function waveformPointAction(block, x, live, read) {
+  const position = Number.isFinite(x) ? waveformPosition(block, x) : null;
+  return act(position === null ? "Add volume point at playhead" : "Add volume point here", () => {
+    const row = live();
+    if (!row) return;
+    const sound = read(row);
+    const at = position ?? (state.playhead - sound.start) / sound.frames;
+    if (at < 0 || at > 1) return toast("Place the playhead inside this sound first.");
+    if (addGainPoint(row, sound, at)) {
+      renderTimeline();
+      renderInspector();
+    }
+  });
+}
+
+function dragEnvelope(event, block, live, read, change) {
+  if (event.button !== 0) return;
+  event.stopPropagation();
+  event.preventDefault();
+  const folder = state.folder;
+  let changed = false;
+  const move = (next) => {
+    if (next.pointerId !== event.pointerId || state.folder !== folder || !block.isConnected) return;
+    const row = live();
+    const edit = row && change(row, next);
+    if (!edit) return;
+    if (!changed) checkpoint();
+    changed = true;
+    edit();
+    relevel();
+    block.querySelector(".sound-envelope")?.remove();
+    drawSoundEnvelope(block, read(row), true, live, read);
+  };
+  const end = (next) => {
+    if (next.pointerId !== event.pointerId) return;
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+    if (changed && state.folder === folder) {
+      save();
+      renderTimeline();
+      renderInspector();
+    }
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
 }
 
 function drawSoundEnvelope(block, sound, editable, liveSound = () => soundOf(sound.id), read = row => row) {
@@ -5248,10 +5336,23 @@ function drawSoundEnvelope(block, sound, editable, liveSound = () => soundOf(sou
   path.setAttribute("height", "100%");
   path.setAttribute("viewBox", "0 0 100 100");
   path.setAttribute("preserveAspectRatio", "none");
-  const plot = document.createElementNS(ns, "polyline");
-  plot.setAttribute("points", [...sample].sort((a, b) => a - b).map((at) =>
-    (100 * at / sound.frames) + "," + (100 - 100 * soundEnvelope(sound, at))).join(" "));
-  path.append(plot);
+  const plot = (level, style) => {
+    const line = document.createElementNS(ns, "polyline");
+    line.classList.add(style);
+    line.setAttribute("points", [...sample].sort((a, b) => a - b).map(at =>
+      (100 * at / sound.frames) + "," + (100 - 100 * level(at))).join(" "));
+    path.append(line);
+    return line;
+  };
+  if (editable) {
+    if (sound.fade_in || sound.fade_out) plot(at => soundEnvelope(sound, at), "gain-output");
+    const line = plot(at => curveLevel(sound, first + at * (sound.rate || 1)), "gain-line");
+    const hit = line.cloneNode();
+    hit.classList.replace("gain-line", "gain-line-hit");
+    path.append(hit);
+  } else {
+    plot(at => soundEnvelope(sound, at), "gain-line");
+  }
   graph.append(path);
   if (editable) for (const [index, point] of points.entries()) {
     const x = (point.frame - first) / span;
@@ -5261,37 +5362,49 @@ function drawSoundEnvelope(block, sound, editable, liveSound = () => soundOf(sou
     dot.setAttribute("cy", (100 - 100 * point.gain) + "%");
     dot.setAttribute("r", 4);
     dot.addEventListener("pointerdown", (event) => {
-      event.stopPropagation();
-      event.preventDefault();
       const bounds = graph.getBoundingClientRect();
-      const min = Math.max(Math.ceil(first), (points[index - 1]?.frame ?? -1) + 1);
-      const max = Math.min(Math.floor(first + span), Math.round(sound.seconds * FPS),
+      const min = Math.max(Math.ceil(first - 1e-6), (points[index - 1]?.frame ?? -1) + 1);
+      const max = Math.min(Math.floor(first + span + 1e-6), Math.round(sound.seconds * FPS),
         (points[index + 1]?.frame ?? Infinity) - 1);
-      checkpoint();
-      const move = (ev) => {
-        if (ev.pointerId !== event.pointerId) return;
-        const live = liveSound();
-        if (!live?.gain_points?.[index]) return;
-        live.gain_points[index] = {
-          frame: Math.max(min, Math.min(max, Math.round(first + (ev.clientX - bounds.left) / bounds.width * span))),
-          gain: Math.round(100 * Math.max(0, Math.min(1, (bounds.bottom - ev.clientY) / bounds.height))) / 100,
+      let frame = point.frame;
+      dragEnvelope(event, block, liveSound, read, (row, ev) => {
+        const current = row.gain_points?.findIndex(point => point.frame === frame) ?? -1;
+        if (current < 0) return;
+        const next = {
+          frame: Math.max(min, Math.min(max, Math.round(point.frame + (ev.clientX - event.clientX) / bounds.width * span))),
+          gain: Math.round(100 * Math.max(0, Math.min(1, point.gain + (event.clientY - ev.clientY) / bounds.height))) / 100,
         };
-        block.querySelector(".sound-envelope")?.remove();
-        drawSoundEnvelope(block, read(live), true, liveSound, read);
-      };
-      const end = (ev) => {
-        if (ev.pointerId !== event.pointerId) return;
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", end);
-        window.removeEventListener("pointercancel", end);
-        save();
-        renderInspector();
-      };
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", end);
-      window.addEventListener("pointercancel", end);
+        if (next.frame === frame && next.gain === row.gain_points[current].gain) return;
+        return () => { frame = next.frame; row.gain_points[current] = next; };
+      });
     });
     graph.append(dot);
+  }
+  if (editable) for (const [key, label, direction, side] of [
+    ["fade_in", "Fade in", 1, 6], ["fade_out", "Fade out", -1, 94],
+  ]) {
+    const fade = Math.min(sound.frames, sound[key] || 0);
+    const handle = document.createElementNS(ns, "rect");
+    handle.dataset.fade = key;
+    handle.setAttribute("x", (side + direction * 88 * fade / sound.frames) + "%");
+    handle.setAttribute("y", key === "fade_in" ? "22%" : "68%");
+    handle.setAttribute("width", 10);
+    handle.setAttribute("height", 8);
+    handle.setAttribute("rx", 2);
+    const title = document.createElementNS(ns, "title");
+    title.textContent = label + " · " + fade + " frames";
+    handle.append(title);
+    handle.addEventListener("pointerdown", event => {
+      const width = graph.getBoundingClientRect().width * 0.88;
+      if (!width) return;
+      dragEnvelope(event, block, liveSound, read, (row, next) => {
+        const delta = direction * (next.clientX - event.clientX) / width * sound.frames;
+        const value = Math.max(0, Math.min(sound.frames, Math.round(fade + delta)));
+        if (value === (row[key] || 0)) return;
+        return () => { row[key] = value; };
+      });
+    });
+    graph.append(handle);
   }
   block.append(graph);
 }
@@ -5511,16 +5624,14 @@ function soundEnvelopePanel(sound, live = () => soundOf(sound.id), read = row =>
     const s = read(row);
     const position = Math.round(state.playhead - s.start);
     if (position < 0 || position > s.frames) return toast("Place the playhead inside this sound first.");
-    const frame = Math.max(0, Math.min(length, Math.round(position * (s.rate || 1) + (s.offset || 0) * FPS)));
-    if (s.gain_points?.some((p) => p.frame === frame)) return toast("There is already a point at this frame.");
-    edit((row) => {
-      const gain = Math.round(curveLevel(s, frame) * 100) / 100;
-      row.gain_points = [...row.gain_points || [], { frame, gain }].sort((a, b) => a.frame - b.frame);
-    });
+    if (addGainPoint(row, s, position / s.frames)) {
+      renderTimeline();
+      renderInspector();
+    }
   });
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = "Drag points on the waveform or enter their source frames and levels. 100% plays at the sound’s volume.";
+  hint.textContent = "Click the curve or Alt/Option-click the waveform to add a point. Drag points to adjust time and level, or drag the handles at the top to fade the ends.";
   return section("Volume curve", [fades, list, add, hint]);
 }
 
@@ -5784,7 +5895,9 @@ function renderTimeline() {
     wave.setAttribute("role", "button");
     wave.setAttribute("aria-label", "Clip audio for " + clip.name);
     const editAudio = () => { selectClip(clip.id, item.id); showTab("timeline"); };
-    wave.addEventListener("click", editAudio);
+    wave.addEventListener("click", event => {
+      if (!event.altKey && !event.target.closest(".sound-envelope")) editAudio();
+    });
     wave.addEventListener("keydown", event => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
@@ -5793,12 +5906,14 @@ function renderTimeline() {
     wave.style.left = block.style.left;
     wave.style.width = block.style.width;
     if (take) {
+      const live = () => state.project.timeline.find(row => row.id === item.id);
+      const read = row => clipEnvelope(row, take);
+      bindWavePoints(wave, live, read, editAudio);
       const canvas = document.createElement("canvas");
       wave.append(canvas);
       drawWave(canvas, item, take, waveHeight, item.id === state.item, trackDisplay.get(0));
       if (item.id === state.item || item.fade_in || item.fade_out || item.gain_points?.length) {
-        drawSoundEnvelope(wave, clipEnvelope(item, take), item.id === state.item,
-          () => state.project.timeline.find(row => row.id === item.id), row => clipEnvelope(row, take));
+        drawSoundEnvelope(wave, read(item), item.id === state.item, live, read);
       }
     }
     waves.push(wave);
@@ -7958,9 +8073,14 @@ function actionsAt(target, x) {
   if (block) {
     const item = state.project.timeline.find((i) => i.id === block.dataset.item);
     if (!item) return null;
+    const isAudio = block.closest("#laneA");
+    const take = isAudio && activeTake(clipOf(item.clip));
+    const addPoint = take && waveformPointAction(block, x,
+      () => state.project.timeline.find(row => row.id === item.id), row => clipEnvelope(row, take));
     selectClip(item.clip, item.id);
-    if (block.closest("#laneA") || block.classList.contains("wave")) {
+    if (isAudio) {
       return { title: clipOf(item.clip).name + " · Sound", rows: [
+        ...(addPoint ? [addPoint] : []),
         act("Edit fades and volume curve", () => {
           showWorkspacePanel("inspector"); showTab("timeline");
           revealInspectorControl(".gain-points")?.scrollIntoView({ block: "nearest" });
@@ -7997,8 +8117,9 @@ function actionsAt(target, x) {
   if (sound) {
     const found = (state.project.sounds || []).find((s) => s.id === sound.dataset.sound);
     if (!found) return null;
+    const addPoint = waveformPointAction(sound, x, () => soundOf(found.id), row => row);
     selectSound(found.id);
-    return { title: found.name || "Sound", rows: [act("Edit fades and volume", () => {
+    return { title: found.name || "Sound", rows: [addPoint, act("Edit fades and volume", () => {
       showWorkspacePanel("inspector"); showTab("shot");
       revealInspectorControl(".gain-points")?.scrollIntoView({ block: "nearest" });
     }), act("Remove from the sound lane", () => removeSound(found.id), { key: "Delete", danger: true })] };
