@@ -1000,7 +1000,7 @@ def still_node(asset):
     return {"class_type": "H3LoadStill", "inputs": {"file": file}}
 
 
-def render_graph(project, folder, clip, take, quality, seed, available=None, patches=None, finish=None):
+def render_graph(project, folder, clip, take, quality, seed, available=None, patches=None, finish=None, edit=None):
     """One clip as a ComfyUI graph, saved as its own file in the project.
 
     available is the set of model files ComfyUI lists, used to find a profile's files.
@@ -1027,12 +1027,14 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         # The project asked for finals at the size they are sampled at.
         size.pop("refine", None)
     models = project_models(project, available, clip)
-    references = has_references(project, clip)
+    references = bool(edit) or has_references(project, clip)
     # A family's fl2va model takes a prompt alone. Anything with references goes to its ref2va model.
     unet = models["unet"] if references or not models.get("unet_text") else models["unet_text"]
     hyperflow = is_hyperflow(unet)
     link = clip.get("link")
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
+    if edit:
+        length = 5 + 17 * math.ceil((edit["out"] - edit["in"] - 5) / 17)
     if config:
         length = sprite.FRAMES
     guides = clean_mid_guides(clip, length)
@@ -1107,6 +1109,18 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         model = [node, 0]
     graph["5"]["inputs"]["model"] = model
     take_inputs = graph["10"]["inputs"]
+    if edit:
+        graph["213"] = dict(class_type="H3LoadClip", inputs={
+            "file": "/".join(filter(None, (edit["subfolder"], edit["file"]))),
+            "first": edit["in"], "last": edit["out"], "reference_only": True,
+        })
+        take_inputs["ref_videos.ref_video_0"] = ["213", 0]
+        take_inputs["prompt"] = (
+            "Edit <Video 1>. Preserve its motion, timing and framing wherever the requested change allows.\n"
+            + ("<Picture 1> is the replacement first frame. Carry its visual changes through the shot.\n"
+               if clip.get("first") else "")
+            + edit["prompt"]
+        )
     if config and not config.get("motion"):
         guide = config.get("guide")
         if guide:
@@ -1243,6 +1257,9 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             if matte:
                 graph["212"] = {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": matte}}
                 graph["211"]["inputs"]["bg_model"] = ["212", 0]
+    if edit:
+        # The finished take contains source frames around the edit, so the sampler's latents don't line up.
+        graph.pop("20")
     return graph
 
 
@@ -3546,19 +3563,50 @@ def plan_upscale(project, folder, clip_id, available=None, detail=None, upscaler
     return job, upscale_graph(folder, clip, take, source, name, files, detail)
 
 
-def plan_render(project, folder, clip_id, quality, seed=None, available=None, detail=None, upscaler=None, patches=None):
+def prompt_edit(clip, edit):
+    if not isinstance(edit, dict):
+        raise ValueError("send an edit with a source take, in and out frames, and a prompt")
+    source = next((take for take in clip.get("takes", []) if take["id"] == edit.get("take")), None)
+    if not source:
+        raise ValueError("choose an existing rendered take to edit")
+    first, last = edit.get("in"), edit.get("out")
+    if type(first) is not int or type(last) is not int or not 0 <= first < last <= source["frames"]:
+        raise ValueError("the edit range must fall inside the source take")
+    if not 2 * FPS <= last - first <= 15 * FPS:
+        raise ValueError("select between 2 and 15 seconds of the source take")
+    prompt = edit.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 12000:
+        raise ValueError("write an edit prompt of up to 12,000 characters")
+    picture = clean_asset(edit.get("first"), "the replacement first frame")
+    info = {"take": source["id"], "in": first, "out": last, "prompt": prompt.strip(),
+            "file": source["file"], "subfolder": source.get("subfolder", ""), "frames": source["frames"]}
+    if picture:
+        info["first"] = picture
+    return source, info
+
+
+def plan_render(project, folder, clip_id, quality, seed=None, available=None, detail=None, upscaler=None, patches=None, edit=None):
     """The graph for a new take, and the job that will turn its file into a take. detail and upscaler are for an upscale only.
 
     patches is the installed patch nodes by id, as project_patches takes them.
     """
+    if edit is not None and quality not in QUALITIES:
+        raise ValueError("choose draft or final for a prompt edit")
     if quality == UPSCALE_QUALITY:
         return plan_upscale(project, folder, clip_id, available, detail, upscaler)
     clip = find_clip(project, clip_id)
+    original = clip
+    if edit is not None:
+        source, edit = prompt_edit(clip, edit)
+        clip = {"id": clip_id, "name": clip["name"], "profile": clip.get("profile"), "loras": clip.get("loras"),
+                "action": edit["prompt"], "first": edit.get("first")}
     finish = None
     if quality == FINISH_QUALITY:
         finish = active_take(clip)
         if not finish or finish.get("quality") != "draft":
             raise ValueError("%s has no draft to finish. Render a draft, or choose one of its draft takes" % clip["name"])
+        if finish.get("edit"):
+            raise ValueError("use Edit with prompt and choose Final to render a prompt edit at final quality")
         # The final keeps the draft's seed: the refine pass draws its noise from it.
         quality, seed = "final", finish.get("seed")
         if finish.get("sprite"):
@@ -3576,7 +3624,7 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
     if seed in (None, ""):
         seed = random.randrange(2 ** 31)
     take = new_id("t")
-    graph = render_graph(project, folder, clip, take, quality, int(seed), available, patches, finish)
+    graph = render_graph(project, folder, clip, take, quality, int(seed), available, patches, finish, edit)
     job = {"clip": clip_id, "take": take, "quality": quality, "seed": int(seed),
            "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
            "models": dict(render_models(graph), profile=project_profile(project, available, clip)[0],
@@ -3598,6 +3646,12 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
     if clip.get("track"):
         # Once rendered, the take's sound is replaced by this exact slice of the track.
         job["track"] = dict(clip["track"], seconds=graph["10"]["inputs"]["length"] / float(FPS))
+    if edit:
+        job["edit"] = edit
+        job["size"] = list(take_size(project, source))
+        job["saved"] = {k: copy.deepcopy(original.get(k)) for k in SAVED_FIELDS}
+        if source.get("source"):
+            job["source"] = source["source"]
     return job, graph
 
 
@@ -3632,6 +3686,12 @@ def finish_render(project, job_id, file, info):
         take["sprite"] = info["sprite"]
     if info.get("strip"):
         take["strip"] = info["strip"]
+    if job.get("edit"):
+        take["edit"] = {key: value for key, value in job["edit"].items() if key not in ("file", "subfolder", "frames")}
+        clip = find_clip(project, job["clip"])
+        clip.setdefault("takes", []).append(take)
+        clip.pop("error", None)
+        return clip
     return accept_take(project, job["clip"], take)
 
 

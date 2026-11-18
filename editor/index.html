@@ -169,6 +169,7 @@
       </div>
       <button id="generate" class="quiet menu-button" aria-haspopup="menu" popovertarget="generateMenu">Generate<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
       <div id="generateMenu" class="menu" popover role="menu" aria-label="Generate from the selected clip">
+        <button id="editWithPrompt" role="menuitem"><b>Edit with prompt</b><span>Generate a new take from the selected video</span></button>
         <button id="extendBack" role="menuitem"><b>Extend back</b><span>Generate what happens before the selected clip</span></button>
         <button id="extendForward" role="menuitem"><b>Extend forward</b><span>Generate what happens after the selected clip</span></button>
         <button id="bridge" role="menuitem"><b>Bridge to next</b><span>Generate what leads from the selected clip into the start of the next one</span></button>
@@ -280,6 +281,20 @@
     <div class="opener-bar" role="progressbar" aria-labelledby="openerTitle" aria-valuemin="0" aria-valuemax="100"><i id="openerFill"></i></div>
     <p id="openerResult" class="hint" aria-live="polite"></p>
   </div>
+</dialog>
+
+<dialog id="promptEdit" class="keys exporter" aria-labelledby="promptEditTitle">
+  <form id="promptEditForm">
+    <div class="keys-head"><h2 id="promptEditTitle">Edit with prompt</h2><button id="promptEditCancel" class="quiet" type="button">Cancel</button></div>
+    <div class="exporter-body">
+      <p id="promptEditRange" class="exporter-summary"></p>
+      <label class="field"><span>What should change?</span><textarea id="promptEditText" rows="4" maxlength="12000" required autofocus placeholder="Turn the scene into black and white. Keep the same framing and movement."></textarea></label>
+      <label class="field"><span>Replacement first frame (optional)</span><input id="promptEditFirst" type="file" accept="image/png,image/jpeg,image/webp"></label>
+      <label class="choice"><span>Render quality</span><select id="promptEditQuality"><option value="draft">Draft</option><option value="final">Final</option></select></label>
+      <p id="promptEditStatus" class="hint" aria-live="polite">The edit appears in Takes and keeps the source audio.</p>
+    </div>
+    <div class="exporter-foot"><span class="spacer"></span><button id="promptEditRender" class="primary" type="submit">Render new take</button></div>
+  </form>
 </dialog>
 
 <dialog id="cropper" class="keys exporter" aria-labelledby="cropTitle">

@@ -36,6 +36,7 @@ except the two uploads.
 | `POST /project/{name}/ops` | `{"ops": [...], "revision"?}` | `{"results", "revision", "summary"}` |
 | `GET /project/{name}/wait?timeout=600` | | The summary, plus `timed_out`, once nothing renders. `after=N` waits for a revision past N instead. Timeout is at most 1800 |
 | `POST /project/{name}/render` | `{"clip", "quality", "seed"?}` | `{"job", "revision", "project"}` |
+| `POST /project/{name}/render` with `edit` | `{"clip", "quality": "draft" or "final", "seed"?, "edit": {"take", "in", "out", "prompt", "first"?}}` | Edit 2–15 seconds of an imported or generated take with Ref2VA. `in` and `out` are source frames at 24 fps, with an exclusive end. Optional `first` is a picture asset from `/asset`. A full-length alternate take keeps the original audio and the picture outside the edit. The existing active take stays selected. |
 | `POST /project/{name}/cancel` | `{"job"}` or `{"clip"}` | `{"cancelled", ...}` |
 | `POST /project/{name}/import` | multipart `file` with fields, or JSON `{"source": {"folder": "input" or "output", "subfolder"?, "file"}, ...}` | `{"clip", "item", "frames", "revision", "project"}` |
 | `POST /project/{name}/asset` | multipart `file`: PNG, JPEG or WebP, or WAV, MP3, FLAC, M4A, OGG, OPUS, AAC | `{"file", "subfolder"}`, an asset. With `?sound=1` on a sound, also `seconds`, its length, and `peaks`, as `add_sound` needs |

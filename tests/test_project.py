@@ -23,6 +23,43 @@ def clip(**extra):
     return base
 
 
+class PromptEditTest(unittest.TestCase):
+    def test_renders_only_the_range_and_attaches_an_inactive_full_length_take(self):
+        for kind in ("footage", "generated"):
+            with self.subTest(kind=kind):
+                source = {"id": "original", "file": "source.mp4", "subfolder": "h3take_projects/test/clips",
+                          "frames": 124, "size": [640, 352]}
+                original = clip(name="Test shot", kind=kind, takes=[source], active=source["id"])
+                project = new_project("Test")
+                project["clips"] = [original]
+                project["timeline"] = [{"id": "i1", "clip": "c1", "start": 0, "in": 12, "out": 110}]
+                before = copy.deepcopy(project["timeline"])
+                job, graph = plan_render(project, "test", "c1", "draft", available=HYPERFLOW, edit={
+                    "take": "original", "in": 20, "out": 96, "prompt": "Make the jacket red.",
+                    "first": {"file": "frame.png", "subfolder": "h3take_projects/test/assets"},
+                })
+                conditioning = graph["10"]["inputs"]
+                self.assertEqual((conditioning["checkpoint"], conditioning["anchor"], conditioning["length"]),
+                                 ("ref2va", "start", 90))
+                self.assertEqual(conditioning["ref_videos.ref_video_0"], ["213", 0])
+                self.assertEqual((graph["213"]["inputs"]["first"], graph["213"]["inputs"]["last"]), (20, 96))
+                self.assertNotIn("20", graph)
+                job["id"] = "render"
+                project_module.add_pending(project, job)
+                project_module.finish_render(project, "render", {"filename": "edited.mp4"},
+                                             {"poster": "edited.jpg", "frames": 124})
+                self.assertEqual(original["active"], "original")
+                self.assertEqual(original["takes"][-1]["edit"]["out"], 96)
+                self.assertEqual(project["timeline"], before)
+
+    def test_rejects_a_missing_take_or_invalid_source_range(self):
+        shot = clip(takes=[{"id": "original", "frames": 400, "file": "source.mp4"}])
+        edit = {"take": "original", "in": 0, "out": 90, "prompt": "Change the sky"}
+        for fields in ({"take": "stale"}, {"out": 47}, {"out": 361}, {"out": 401}, {"in": True}):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                project_module.prompt_edit(shot, dict(edit, **fields))
+
+
 class PromptTest(unittest.TestCase):
     def test_three_core_fields_in_order(self):
         text = compose_prompt("Live-action, cinematic", "A keeper walks.")

@@ -1795,10 +1795,10 @@ def comfy_queue():
     return {entry[1] for entry in running}, {entry[1] for entry in queued}
 
 
-async def start_render(data, folder, clip_id, quality, seed=None, client_id=None, detail=None, upscaler=None, patches=None):
+async def start_render(data, folder, clip_id, quality, seed=None, client_id=None, detail=None, upscaler=None, patches=None, edit=None):
     """Queue one render. patches is the installed patch nodes, for a batch that has read them already."""
     job, graph = store.plan_render(data, folder, clip_id, quality or "draft", seed, available_models(), detail, upscaler,
-                                   installed_patches() if patches is None else patches)
+                                   installed_patches() if patches is None else patches, edit)
     job["id"] = await queue_prompt(graph, client_id)
     store.add_pending(data, job)
     return job
@@ -1850,7 +1850,7 @@ async def render(request):
         data = read_project(folder)
         try:
             job = await start_render(data, folder, body.get("clip"), body.get("quality"), body.get("seed"),
-                                     body.get("client_id"), body.get("detail"), body.get("upscaler"))
+                                     body.get("client_id"), body.get("detail"), body.get("upscaler"), edit=body.get("edit"))
         except (ValueError, KeyError) as error:
             return refused(plain(error))
         except Refused as error:
@@ -2018,6 +2018,43 @@ async def lay_track(path, track):
             os.remove(temporary)
 
 
+async def assemble_prompt_edit(rendered, edit):
+    """Replace exactly the requested source frames, retaining the original audio stream."""
+    source = output_path(edit["subfolder"], edit["file"])
+    first, last, total = edit["in"], edit["out"], edit["frames"]
+    original = await video_info(source, count=False)
+    if (await video_info(rendered))["frames"] < last - first:
+        raise web.HTTPInternalServerError(text="the generated video is shorter than the selected edit range")
+    width, height = original["width"], original["height"]
+    filters, segments = [], []
+    if first:
+        filters.append(f"[1:v]trim=end_frame={first},setsar=1,setpts=PTS-STARTPTS[prefix]")
+        segments.append("[prefix]")
+    filters.append(
+        f"[0:v]trim=end_frame={last - first},scale={width}:{height}:force_original_aspect_ratio=decrease:"
+        f"force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS[edit]"
+    )
+    segments.append("[edit]")
+    if last < total:
+        filters.append(f"[1:v]trim=start_frame={last},setsar=1,setpts=PTS-STARTPTS[suffix]")
+        segments.append("[suffix]")
+    filters.append("".join(segments) + f"concat=n={len(segments)}:v=1:a=0,setpts=N/({store.FPS}*TB)[picture]")
+    target = os.path.splitext(rendered)[0] + "_edit.mp4"
+    temporary = target + ".tmp.mp4"
+    try:
+        await run(["ffmpeg", "-y", "-v", "error", "-i", rendered, "-i", source,
+                   "-filter_complex", ";".join(filters), "-map", "[picture]", "-map", "1:a:0?",
+                   "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy",
+                   "-movflags", "+faststart", temporary])
+        if (await video_info(temporary))["frames"] != total:
+            raise web.HTTPInternalServerError(text="the edit did not match the source frame count")
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return target
+
+
 def saved_file(entry):
     for value in ((entry or {}).get("outputs") or {}).get("19", {}).values():
         if isinstance(value, list):
@@ -2084,12 +2121,15 @@ async def watch_once():
             entry = queue.get_history(prompt_id=job["id"]).get(job["id"])
             file = saved_file(entry)
             sheets = ((entry or {}).get("outputs") or {}).get("211", {}).get("sprite")
-            expects_sheet = (job.get("saved") or {}).get("sprite") is not None
+            expects_sheet = not job.get("edit") and (job.get("saved") or {}).get("sprite") is not None
             if not file or (expects_sheet and not sheets):
                 finished.append((job, None, None, failure(entry)))
                 continue
             try:
                 path = output_path(file.get("subfolder"), file["filename"])
+                if job.get("edit"):
+                    path = await assemble_prompt_edit(path, job["edit"])
+                    file = dict(file, filename=os.path.basename(path))
                 if job.get("track"):
                     await lay_track(path, job["track"])
                 info = await probe_file(path)

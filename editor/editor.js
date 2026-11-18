@@ -490,6 +490,7 @@ function updateTools() {
   const next = item && followingItem(item);
   const holdable = item && itemLength(item) >= HOLD;
   $("extendBack").disabled = !holdable;
+  $("editWithPrompt").disabled = !activeTake(clipOf(state.clip)) || Boolean(jobFor(state.clip));
   $("extendForward").disabled = !holdable;
   $("bridge").disabled = !bridgeable(item, next);
   $("bridgeHold").disabled = !bridgeable(item, next, "hold");
@@ -4299,10 +4300,11 @@ function versions(clip) {
     img.style.setProperty("--frame", String(shape));
     skim(img, take, "contain");
     const label = document.createElement("span");
-    label.textContent = "Take " + (index + 1) + ", " + take.quality;
+    label.textContent = "Take " + (index + 1) + (take.edit ? ", prompt edit · " : ", ") + take.quality;
     const madeWith = take.models?.profile_title || profileOf(take.models?.profile)?.title;
     const patched = (take.models?.patches || []).map((row) => patchOf(row.node)?.title || row.node);
-    if (madeWith) label.title = "Made with " + madeWith + (take.models?.steps ? ", " + take.models.steps + " steps, " + take.models.sampler : "")
+    if (take.edit) label.title = take.edit.prompt;
+    else if (madeWith) label.title = "Made with " + madeWith + (take.models?.steps ? ", " + take.models.steps + " steps, " + take.models.sampler : "")
       + (patched.length ? ", patched with " + patched.join(", ") : "");
     const seed = document.createElement("small");
     seed.textContent = "Seed " + take.seed;
@@ -4323,6 +4325,7 @@ function versions(clip) {
     tools.append(element);
     return element;
   };
+  button("Edit with prompt", () => openPromptEdit(clip), Boolean(jobFor(clip.id)));
   if (clip.kind !== "footage") {
     button("Keep seed", () => {
       checkpoint();
@@ -7316,6 +7319,78 @@ function currentRange() {
   return boundedRange(viewing() ? state.sourceRange : state.range, viewEnd());
 }
 
+function promptEditRange(clip, take, selected) {
+  if (viewing()?.id === clip.id && state.sourceRange) return boundedRange(state.sourceRange, take.frames);
+  const placements = sorted().filter(item => item.clip === clip.id);
+  const item = selected || placements.find(item => item.id === state.item) || placements[0];
+  if (!item) return { a: 0, b: take.frames };
+  if (!state.range) return boundedRange({ a: item.in, b: item.out }, take.frames);
+  const a = Math.max(state.range.a, item.start), b = Math.min(state.range.b, itemEnd(item));
+  if (a >= b) return null;
+  const speed = speedOf(item);
+  return boundedRange({
+    a: Math.min(item.out, item.in + Math.round((a - item.start) * speed)),
+    b: b === itemEnd(item) ? item.out : Math.min(item.out, item.in + Math.round((b - item.start) * speed)),
+  }, take.frames);
+}
+
+let promptEditTarget = null;
+function openPromptEdit(clip, item) {
+  const take = activeTake(clip);
+  if (!take || jobFor(clip.id)) return;
+  const range = promptEditRange(clip, take, item);
+  if (!range || range.b - range.a < 2 * FPS || range.b - range.a > 15 * FPS) {
+    toast("Mark 2 to 15 seconds within this clip with In and Out, or trim it to that length.", true);
+    return;
+  }
+  promptEditTarget = { folder: state.folder, clip: clip.id, take: take.id, in: range.a, out: range.b };
+  $("promptEditForm").reset();
+  $("promptEditRange").textContent = clip.name + " · " + timecode(range.a) + " – " + timecode(range.b - 1)
+    + " · " + ((range.b - range.a) / FPS).toFixed(2) + " s";
+  $("promptEditStatus").textContent = "The edit appears in Takes and keeps the source audio.";
+  $("promptEditStatus").classList.remove("bad");
+  $("promptEdit").showModal();
+}
+
+$("promptEditCancel").addEventListener("click", () => $("promptEdit").close());
+$("promptEdit").addEventListener("cancel", event => {
+  if ($("promptEditRender").disabled) event.preventDefault();
+});
+$("promptEditForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const target = promptEditTarget;
+  const status = $("promptEditStatus"), go = $("promptEditRender"), cancel = $("promptEditCancel");
+  const prompt = $("promptEditText").value.trim();
+  if (!prompt) {
+    status.classList.add("bad");
+    status.textContent = "Describe what should change.";
+    $("promptEditText").focus();
+    return;
+  }
+  const clip = clipOf(target.clip);
+  go.disabled = cancel.disabled = true;
+  status.classList.remove("bad");
+  status.textContent = "Queueing the prompt edit…";
+  try {
+    if (target.folder !== state.folder || !clip?.takes.some(take => take.id === target.take))
+      throw new Error("The source take is unavailable. Open Edit with prompt again.");
+    const edit = { take: target.take, in: target.in, out: target.out, prompt };
+    const file = $("promptEditFirst").files[0];
+    if (file) edit.first = await uploadPicture(file);
+    if (target.folder !== state.folder) throw new Error("The project changed. Open Edit with prompt again.");
+    if (!await renderClip(clip, $("promptEditQuality").value, undefined, undefined, edit))
+      throw new Error("The edit was not queued. Check whether the clip is already rendering.");
+    $("promptEdit").close();
+    if (clip.id === state.clip) showTab("takes");
+    toast("Prompt edit queued. The new take will appear in Takes.");
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add("bad");
+  } finally {
+    go.disabled = cancel.disabled = false;
+  }
+});
+
 function markIn() {
   const end = viewEnd();
   if (!end) return;
@@ -8264,6 +8339,7 @@ function itemActions(item) {
     "-",
   ];
   return [
+    act("Edit with prompt", () => openPromptEdit(clip, item), { off: !rendered ? "Render a take first" : busy ? "The clip is rendering" : "" }),
     ...generate, "-", ...render,
     act("Crop and reframe", () => openPlacementCrop(item), { off: rendered ? "" : "Render a take first" }),
     act("Split at the playhead", splitAtPlayhead, { key: "S", off: inside ? "" : "Move the playhead over this clip" }),
@@ -8287,6 +8363,7 @@ function clipActions(clip) {
   return [
     act("Open in viewer", () => { setSource(clip.id); showFrame(); showWorkspacePanel("viewer"); }),
     act("Open in inspector", () => { showTab("shot"); showWorkspacePanel("inspector"); }),
+    act("Edit with prompt", () => openPromptEdit(clip), { off: !activeTake(clip) ? "Render a take first" : busy ? "The clip is rendering" : "" }),
     ...render,
     act("Add to the end of the cut", () => {
       checkpoint();
@@ -9241,16 +9318,17 @@ function updateQueue() {
 function finishOff(clip) {
   const shown = activeTake(clip);
   if (!shown || shown.quality !== "draft") return "Choose a draft take to finish";
+  if (shown.edit) return "Open Edit with prompt and choose Final";
   if (clip.sprite && !shown.sprite) return "Choose a Sprite Draft take to finish with sprite settings";
   const final = state.project.sizes?.final;
   if (final === "sharp" && !shown.sprite) return "Choose Full, Large, Medium, Small or your own Final size to finish a draft";
   return "";
 }
 
-async function renderClip(clip, quality, detail, upscaler) {
+async function renderClip(clip, quality, detail, upscaler, edit) {
   const folder = state.folder;
   if (jobFor(clip.id)) return;
-  if (quality !== "upscale" && !(quality === "finish" && activeTake(clip)?.sprite) && !clip.action.trim()) {
+  if (!edit && quality !== "upscale" && !(quality === "finish" && activeTake(clip)?.sprite) && !clip.action.trim()) {
     selectClip(clip.id);
     toast("Describe what happens in " + clip.name + " before rendering it.", true);
     return;
@@ -9261,13 +9339,16 @@ async function renderClip(clip, quality, detail, upscaler) {
     const body = { clip: clip.id, quality, client_id: clientId };
     if (detail !== undefined) body.detail = detail;
     if (upscaler) body.upscaler = upscaler;
+    if (edit) body.edit = edit;
     const result = await postJson("/project/" + folder + "/render", body);
     if (folder !== state.folder) return;
     state.jobs.set(result.job.id, { ...result.job, step: 0, max: 0, progress: 0 });
     if (!unsaved()) adopt(result.project);
     updateQueue();
     renderAll();
+    return true;
   } catch (error) {
+    if (edit) throw error;
     toast(error.message, true);
   }
 }
@@ -10450,6 +10531,7 @@ $("toTimeline").addEventListener("click", () => {
 });
 $("split").addEventListener("click", splitAtPlayhead);
 $("extendBack").addEventListener("click", () => addLinked("extend_before"));
+$("editWithPrompt").addEventListener("click", () => openPromptEdit(clipOf(state.clip)));
 $("extendForward").addEventListener("click", () => addLinked("extend_after"));
 $("bridge").addEventListener("click", () => addLinked("bridge"));
 $("bridgeHold").addEventListener("click", () => addLinked("bridge", "hold"));

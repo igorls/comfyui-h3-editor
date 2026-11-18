@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import subprocess
+from itertools import islice
 
 import folder_paths
 import numpy as np
@@ -440,14 +441,30 @@ class H3LoadClip(io.ComfyNode):
                 io.String.Input("file", tooltip="Path inside the output folder."),
                 io.Int.Input("first", default=0, min=0, max=100000),
                 io.Int.Input("last", default=0, min=0, max=100000, tooltip="Stops before this frame. 0 reads to the end."),
+                io.Boolean.Input("reference_only", default=False, optional=True,
+                                 tooltip="Read just a short picture reference, without sound or held latents."),
             ],
             outputs=[io.Image.Output(display_name="frames"), io.Audio.Output(display_name="audio"),
                      io.Latent.Output(display_name="hold", tooltip="These frames as the latents they were sampled in, when the clip saved them and the frames start on a multiple of 17. Their sound comes along when they also start on a multiple of 3 frames. Connect it to H3 Take's source_hold or end_hold.")],
         )
 
     @classmethod
-    def execute(cls, file, first, last) -> io.NodeOutput:
+    def execute(cls, file, first, last, reference_only=False) -> io.NodeOutput:
         path = output_file(file)
+        if reference_only:
+            import av
+
+            if not 2 * FPS <= last - first <= 15 * FPS:
+                raise ValueError("a video reference needs 2 to 15 seconds")
+            with av.open(path) as container:
+                stream = container.streams.video[0]
+                scale = min(1, 768 / max(stream.width, stream.height))
+                width, height = (max(2, round(side * scale / 2) * 2) for side in (stream.width, stream.height))
+                images = [frame.reformat(width, height, format="rgb24").to_ndarray()
+                          for frame in islice(container.decode(stream), first, last)]
+            if len(images) != last - first:
+                raise ValueError("the source video ends before the selected reference range")
+            return io.NodeOutput(torch.from_numpy(np.stack(images)).float().div_(255), None, None)
         video = InputImpl.VideoFromFile(path).get_components()
         frames = video.images
         stop = last or frames.shape[0]

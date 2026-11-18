@@ -224,6 +224,13 @@ track, so a long talking performance can be built from short shots.
 **Your own footage.** **Import** brings in a video or a picture, fitted to the
 project's format. You can trim it, and extend or bridge from it like a render.
 
+**Edit with prompt.** Choose this in **Generate**, the clip's context menu, or
+**Takes** on imported footage or a generated clip. It uses the marked In/Out
+range or the clip's current trim (2–15 seconds). Describe the change and
+optionally supply a replacement first frame. The result appears under **Takes**
+as a full-length alternate with the original sound and the picture outside the
+edit range intact.
+
 **Music and narration.** **Add sound** on the timeline lays a sound file under
 the cut at the playhead, on a lane of its own. Drag it to move it, up or down to
 change its lane, and drag its ends to trim it; its volume is in the panel on
