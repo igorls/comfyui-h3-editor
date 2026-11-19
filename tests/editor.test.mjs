@@ -22,6 +22,18 @@ test("sprite slots preserve the saved character, camera and direction when a cli
   assert.equal(pickedSprite(slots, {}, "rpg", "run", "NE"), null);
   assert.deepEqual(spriteSlots(project, "prowler", "level", "run").E, { clips: [clip], takes: [] });
 });
+test("named motions keep separate direction slots and use each take's recorded animation", () => {
+  const cast = ["herald"];
+  const original = { camera: "rpg", direction: "NE", motion: "prompt", animation: "Wing stretch" };
+  const take = { id: "stretch", sprite: { poses: 7 }, saved: { sprite: original, cast } };
+  const clip = { id: "hover", cast, sprite: { ...original, animation: "Hover" }, takes: [take] };
+  const legacy = { id: "guided", cast, sprite: { camera: "rpg", direction: "NE", guide: { file: "pose.mp4" } } };
+  const project = { clips: [clip, legacy] };
+  assert.deepEqual(spriteSlots(project, "herald", "rpg", "Wing stretch").NE, { clips: [], takes: [{ clip, take }] });
+  assert.deepEqual(spriteSlots(project, "herald", "rpg", "Hover").NE, { clips: [clip], takes: [] });
+  assert.deepEqual(spriteSlots(project, "herald", "rpg", "custom").NE, { clips: [legacy], takes: [] });
+});
+
 function functions(context, names) {
   for (const name of names) {
     const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));

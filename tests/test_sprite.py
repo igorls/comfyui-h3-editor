@@ -82,6 +82,19 @@ class SpriteProjectTest(unittest.TestCase):
         self.assertNotIn("212", graph)
         self.assertNotIn("cutout", graph["210"]["inputs"])
 
+    def test_named_animation_uses_the_same_action_for_each_facing_and_snapshots_it(self):
+        for facing, description in sprite.DIRECTIONS.items():
+            project.update_clip(self.project, self.id, {
+                "sprite": {"direction": facing, "motion": "prompt", "animation": "Wing stretch"}})
+            job, graph = self.plan()
+            self.assertEqual(job["saved"]["sprite"]["animation"], "Wing stretch")
+            self.assertEqual(job["saved"]["action"], self.clip["action"])
+            text = graph["10"]["inputs"]["prompt"]
+            self.assertIn(self.clip["action"], text)
+            self.assertIn(description, text)
+            self.assertNotIn("210", graph)
+            self.assertTrue(graph["211"]["inputs"]["full_action"])
+
     def test_finish_uses_selected_take_after_shot_changes(self):
         project.update_clip(self.project, self.id, {"sprite": {"direction": "W", "poses": 8}})
         draft, draft_graph = self.plan()
@@ -126,6 +139,8 @@ class SpriteProjectTest(unittest.TestCase):
             {"guide": {"file": "a.mp4"}, "motion": "prompt"},
             {"guide": {"file": "a.mp4"}, "motion": "idle"},
             {"motion": "bad"}, {"cutout": "bad"},
+            {"animation": "Wing stretch"}, {"motion": "prompt", "animation": " Run "},
+            {"motion": "prompt", "animation": "idle"}, {"motion": "prompt", "animation": ""},
         ):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 sprite.settings(value)
@@ -225,6 +240,32 @@ class SpriteImageTest(unittest.TestCase):
             cells = [sheet.crop((i*64,0,(i+1)*64,64)).tobytes() for i in range(12)]
             self.assertEqual(cells[7:], cells[5:0:-1])
             self.assertNotEqual(cells[0], cells[-1])
+
+    def test_named_gesture_keeps_the_widest_pose_and_reuses_the_chosen_indices(self):
+        frames = []
+        for i in range(39):
+            f = Image.new("RGB", (256, 384), "white")
+            draw = ImageDraw.Draw(f)
+            draw.rectangle((105, 114, 149, 240), fill="navy")
+            spread = max(0, 96 - 12 * abs(i - 10))
+            draw.rectangle((105 - spread, 150, 149 + spread, 163), fill="maroon")
+            frames.append(f)
+        sheet, _, layout = sprite.strips(frames, 7, full_action=True)
+        self.assertLessEqual(min(abs(i - 10) for i in layout["indices"]), 1)
+        self.assertLess(layout["indices"][-1], 30)
+        widths = []
+        for i in range(7):
+            cell = sheet.crop((64 * i, 0, 64 * (i+1), 64))
+            l, _, r, _ = cell.getchannel("A").point(lambda x: 255 if x >= 128 else 0).getbbox()
+            self.assertTrue(0 < l < r < 64)
+            widths.append(r - l)
+        self.assertGreater(max(widths), 3 * widths[0])
+        resized, _, reused = sprite.strips(frames, 7, layout, cell_size=128)
+        self.assertEqual(reused, layout)
+        self.assertEqual(resized.size, (896, 128))
+        for bad in ([0] * 7, [-1, 3, 5, 7, 10, 14, 17], [0, 3, 5, 7, 10, 14, 39]):
+            with self.assertRaises(ValueError):
+                sprite.strips(frames, 7, dict(layout, indices=bad))
 
     def test_export_sizes_sample_source_detail_with_the_same_framing(self):
         frame = Image.new("RGB", (512, 768), "white")

@@ -59,6 +59,7 @@
   border: 1px solid var(--line-hi);
   border-radius: 4px;
 }
+#spriteMotion { max-width: min(20ch, 45vw); }
 #spritePeople {
   display: grid;
   gap: 3px;

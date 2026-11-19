@@ -378,6 +378,8 @@ Press ? in the editor for this list.
 
 Choose **Sprites** beside **Video** to review a character's animations. Add a reference sheet or use an existing cast member. Choose the camera, four or eight directions, and a motion. Click a direction to compare its takes in sync. Focus the game preview and move with WASD, the arrow keys, or by holding a point on the ground.
 
+Choose **Add animation…** to name a loop and describe the movement once for this character. Select a direction and click **New draft**. Each direction uses the shared motion prompt, character references and selected camera. **Edit prompt…** changes the description for subsequent drafts. Existing takes retain their original prompt. The atlas lists each named animation by direction, such as `Wing stretch_NE`.
+
 **New draft** queues one seed for the selected direction. Click a take to use it for that slot. **Preview mirrored** reflects the opposite direction. Click **Use mirrored** to keep it. **Edit take** opens the source shot in Video, and **Open in Sprites** returns from its Sprite Draft controls. **Finish this take** refines the selected draft.
 
 **Export atlas** packs available loops for that character and camera into a ZIP containing a PNG and an Animwright-format JSON file. Each loop records its frame rectangles, ground anchor, frame rate, source take, seed and mirror choice. The export size and indexed or illustrated style apply to the whole atlas.

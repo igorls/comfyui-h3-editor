@@ -1894,8 +1894,10 @@ async def sprite_atlas(request):
     tile, style, picks = body.get("tile"), body.get("style"), body.get("picks")
     if type(tile) is not int or tile not in store.sprite.EXPORT_SIZES or style not in ("illustrated", "indexed"):
         return refused("Choose an export size and style.")
-    if not isinstance(picks, list) or not 1 <= len(picks) <= 24:
-        return refused("Choose between one and 24 animation slots.")
+    if not isinstance(picks, list) or not picks:
+        return refused("Choose at least one animation slot.")
+    if len(picks) * tile * tile * 4 > store.sprite.MAX_ATLAS_PIXELS:
+        return refused("This atlas is too large. Choose a smaller export size.")
     project = read_project(name)
     rows = []
     seen = set()
@@ -1904,7 +1906,7 @@ async def sprite_atlas(request):
             if not isinstance(pick, dict):
                 raise ValueError("Invalid sprite selection.")
             key = (pick.get("motion"), pick.get("direction"))
-            if key[0] not in ("idle", "run", "custom") or key[1] not in store.sprite.DIRECTIONS or key in seen:
+            if not isinstance(key[0], str) or key[1] not in store.sprite.DIRECTIONS or key in seen:
                 raise ValueError("Choose each motion and direction once.")
             seen.add(key)
             clip = store.find_clip(project, pick.get("clip"))
@@ -1914,7 +1916,9 @@ async def sprite_atlas(request):
             config = (take.get("saved") or {}).get("sprite") or clip.get("sprite") or {}
             facing = config.get("direction", "S")
             mirror = pick.get("mirror", False)
-            motion = "idle" if config.get("motion") == "idle" else "custom" if config.get("guide") or config.get("motion") == "prompt" else "run"
+            motion = config.get("animation") or (
+                "idle" if config.get("motion") == "idle" else
+                "custom" if config.get("guide") or config.get("motion") == "prompt" else "run")
             if key[0] != motion or type(mirror) is not bool:
                 raise ValueError("The selection does not match the motion of the saved take.")
             expected = facing.translate(str.maketrans("EW", "WE")) if mirror else facing

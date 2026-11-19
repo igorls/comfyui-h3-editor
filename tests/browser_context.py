@@ -312,6 +312,48 @@ def exercise_project_header(page):
     workspace.get_by_role("button", name="Video", exact=True).click()
 
 
+def exercise_sprite_animation(page, project_url):
+    request(project_url + "/ops", "POST", {"ops": [{"op": "add_cast", "fields": {
+        "name": "Herald", "refmod": {"file": "qa-character.safetensors"}}}]})
+    page.reload()
+    page.locator("#spritesMode").click()
+    page.get_by_role("button", name="Herald", exact=True).click()
+    page.get_by_role("button", name="Add animation…").click()
+    form = page.get_by_role("dialog", name="Add animation")
+    name = form.get_by_label("Animation name")
+    name.fill("Run")
+    form.get_by_label("Motion prompt").fill("Spreads both wings, then folds them.")
+    form.get_by_role("button", name="Add animation", exact=True).click()
+    assert not name.evaluate("el => el.validity.valid")
+    name.fill("Wing stretch")
+    form.get_by_role("button", name="Add animation", exact=True).click()
+    select = page.get_by_label("Animation", exact=True)
+    expect(select).to_have_value("Wing stretch")
+    # Stop at the GPU boundary. Project saves and clip creation use the real server.
+    page.route("**/render", lambda route: route.fulfill(status=400, json={"error": "QA render boundary"}))
+    def draft(direction):
+        page.locator("#spriteCompass").get_by_role("button", name=direction + " empty", exact=True).click()
+        with page.expect_response(lambda r: r.url.endswith("/render")):
+            page.get_by_role("button", name="New " + direction + " draft").click()
+    draft("S")
+    page.get_by_role("button", name="Edit prompt…").click()
+    form = page.get_by_role("dialog", name="Edit animation prompt")
+    prompt = "Raise both wings, pause, then return to rest."
+    form.get_by_label("Motion prompt").fill(prompt)
+    form.get_by_role("button", name="Save prompt").click()
+    draft("NE")
+    project = request(project_url, "GET")
+    clips = [c for c in project["clips"] if (c.get("sprite") or {}).get("animation") == "Wing stretch"]
+    assert {c["sprite"]["direction"] for c in clips} == {"S", "NE"}
+    assert all(c["sprite"]["motion"] == "prompt" and c["action"] == prompt for c in clips)
+    assert project["sprite_workspaces"][clips[0]["cast"][0]]["animations"] == [{"id": "Wing stretch", "prompt": prompt}]
+    page.reload()
+    page.locator("#spritesMode").click()
+    page.get_by_role("button", name="Herald", exact=True).click()
+    expect(select).to_have_value("Wing stretch")
+    assert page.locator("#spritesRoom").evaluate("el => el.scrollWidth <= el.clientWidth + 1")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="QA server URL ending in /h3take")
@@ -332,6 +374,7 @@ def main():
             footage = exercise_waveform(page, base, folder)
             exercise_viewer_controls(page, footage)
             exercise_project_header(page)
+            exercise_sprite_animation(page, project_url)
             assert not errors, errors
             browser.close()
     finally:

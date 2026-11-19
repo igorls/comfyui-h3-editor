@@ -1,9 +1,9 @@
 const ids = ["NW", "N", "NE", "W", "", "E", "SW", "S", "SE"];
-const motions = ["idle", "run", "custom"];
+const presets = new Map([["idle", "Idle"], ["run", "Run"], ["custom", "Custom motion"]]);
 const $ = (id) => document.getElementById(id);
 const opposite = (direction) => direction.replace(/[EW]/, (c) => (c === "E" ? "W" : "E"));
 const directions = (count) => ids.filter((d) => d && (count === 8 || d.length === 1));
-const motionOf = (s) => (s.motion === "idle" ? "idle" : s.guide || s.motion === "prompt" ? "custom" : "run");
+const motionOf = (s) => s.animation || (s.motion === "idle" ? "idle" : s.guide || s.motion === "prompt" ? "custom" : "run");
 const actorOf = (clip, cast) => cast?.[0] || clip.sprite_group || "clip-" + clip.id;
 const slotKey = (camera, motion, direction) => [camera, motion, direction].join("/");
 function cutoutLabel(sheet) {
@@ -38,6 +38,24 @@ export function spriteSlots(project, actor, camera, motion) {
     }
   }
   return slots;
+}
+
+// Include saved takes even when their source shot has since changed character or motion.
+function animationsFor(project, actor) {
+  const animations = new Map([["idle", null], ["run", null]]);
+  function include(clip, config, cast, action) {
+    if (!config || actorOf(clip, cast) !== actor) return;
+    const key = motionOf(config);
+    if (!animations.has(key)) animations.set(key, config.animation ? action : null);
+  }
+  for (const clip of project.clips) {
+    include(clip, clip.sprite, clip.cast, clip.action);
+    for (const t of clip.takes || []) {
+      if (t.sprite) include(clip, t.saved?.sprite || clip.sprite, t.saved?.cast ?? clip.cast, t.saved?.action ?? clip.action);
+    }
+  }
+  for (const { id, prompt } of project.sprite_workspaces?.[actor]?.animations || []) animations.set(id, prompt);
+  return animations;
 }
 
 export function pickedSprite(slots, prefs, camera, motion, dir) {
@@ -76,6 +94,7 @@ export function installSprites(editor) {
     count = 8,
     slots,
     prefs,
+    animations,
     frames = [];
   let paused = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let clock = 0,
@@ -124,7 +143,7 @@ export function installSprites(editor) {
     prefs = project().sprite_workspaces?.[actor] || {};
     camera = prefs.camera || "rpg";
     count = prefs.count || 8;
-    motion = "run";
+    motion = prefs.motion || "run";
     dir = "S";
     audition = null;
   }
@@ -228,9 +247,18 @@ export function installSprites(editor) {
       }
       refs.append(button("Edit references", () => editor.editCast(cast.id)));
     }
+    animations = animationsFor(project(), actor);
+    if (!animations.has(motion)) motion = "run";
     slots = spriteSlots(project(), actor, camera, motion);
     frames = [];
-    $("spriteMotion").value = motion;
+    const motionSelect = $("spriteMotion");
+    const options = Array.from(animations.keys());
+    if (motionSelect.length !== options.length || options.some((m, i) => motionSelect.options[i].value !== m)) {
+      motionSelect.replaceChildren(...options.map((m) => new Option(presets.get(m) || m, m)));
+    }
+    motionSelect.value = motion;
+    $("spriteAddMotion").disabled = !actor;
+    $("spriteEditMotion").hidden = presets.has(motion);
     $("spriteCamera").value = camera;
     $("spriteCount").value = String(count);
     const compass = $("spriteCompass");
@@ -317,7 +345,7 @@ export function installSprites(editor) {
   }
   function exportPicks() {
     const out = [];
-    for (const m of motions) {
+    for (const m of animations.keys()) {
       const s = spriteSlots(project(), actor, camera, m);
       for (const h of directions(count)) {
         const row = pickedSprite(s, prefs, camera, m, h);
@@ -453,8 +481,58 @@ export function installSprites(editor) {
   $("spriteMotion").onchange = (e) => {
     motion = e.target.value;
     audition = null;
+    if (actor) remember((p) => (p.motion = motion));
     refresh();
   };
+  const motionDialog = $("spriteMotionDialog");
+  const nameInput = $("spriteMotionName");
+  const promptInput = $("spriteMotionPrompt");
+  function editMotion(editing) {
+    const owner = actor, projectFolder = folder;
+    nameInput.readOnly = editing;
+    nameInput.value = editing ? motion : "";
+    promptInput.value = editing ? animations.get(motion) || "" : "";
+    nameInput.setCustomValidity("");
+    promptInput.setCustomValidity("");
+    $("spriteMotionTitle").textContent = editing ? "Edit animation prompt" : "Add animation";
+    $("spriteMotionSave").textContent = editing ? "Save prompt" : "Add animation";
+    $("spriteMotionForm").onsubmit = (e) => {
+      e.preventDefault();
+      if (folder !== projectFolder || actor !== owner) return motionDialog.close();
+      const name = nameInput.value.trim(), prompt = promptInput.value.trim();
+      if (!editing) {
+        const taken = [...presets.keys(), ...presets.values(), ...animations.keys()];
+        const duplicate = taken.some((m) => m.toLowerCase() === name.toLowerCase());
+        nameInput.setCustomValidity(duplicate ? "Choose a different animation name." : "");
+        if (!name) nameInput.setCustomValidity("Enter an animation name.");
+      }
+      promptInput.setCustomValidity(prompt ? "" : "Describe the motion.");
+      if (!e.target.reportValidity()) return;
+      remember((p) => {
+        const definitions = (p.animations ||= []);
+        const existing = definitions.find((def) => def.id === name);
+        if (existing) existing.prompt = prompt;
+        else definitions.push({ id: name, prompt });
+        if (editing) {
+          for (const clip of project().clips) {
+            if (actorOf(clip, clip.cast) === actor && clip.sprite?.animation === name) clip.action = prompt;
+          }
+        }
+        p.motion = name;
+      });
+      motion = name;
+      audition = null;
+      motionDialog.close();
+      refresh();
+    };
+    motionDialog.showModal();
+    (editing ? promptInput : nameInput).focus();
+  }
+  nameInput.oninput = () => nameInput.setCustomValidity("");
+  promptInput.oninput = () => promptInput.setCustomValidity("");
+  $("spriteMotionCancel").onclick = () => motionDialog.close();
+  $("spriteAddMotion").onclick = () => editMotion(false);
+  $("spriteEditMotion").onclick = () => editMotion(true);
   $("spriteCount").onchange = (e) => {
     count = Number(e.target.value);
     if (count === 4 && dir.length === 2) dir = "S";
@@ -524,7 +602,7 @@ export function installSprites(editor) {
       const old = chosen();
       if (old && !prefs.picks?.[slotKey(camera, motion, dir)]) select(old);
       let clip = slots[dir].clips[0];
-      if (!clip) clip = editor.makeClip(actor, roster().get(actor).name, camera, motion, dir);
+      if (!clip) clip = editor.makeClip(actor, roster().get(actor).name, camera, motion, dir, animations.get(motion));
       refresh();
       await editor.render(clip, "draft", Math.floor(Math.random() * 2147483648));
     } finally {

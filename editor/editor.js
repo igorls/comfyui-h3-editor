@@ -4751,6 +4751,7 @@ function spriteSection(clip) {
           const next = { ...config };
           delete next.guide;
           delete next.motion;
+          if (key !== "prompt") delete next.animation;
           if (key === "prompt" || key === "idle") next.motion = key;
           else if (key) next.guide = JSON.parse(key);
           update(next);
@@ -11482,15 +11483,16 @@ const spritesRoom = installSprites({
     setSource(clip.id);
     showSource(clip);
   },
-  makeClip(actor, name, camera, motion, direction) {
+  makeClip(actor, name, camera, motion, direction, motionPrompt) {
     checkpoint();
     const cast = state.project.cast?.some(p => p.id === actor) ? [actor] : [];
     const clip = { id: uid("c"), name: [name, motion, direction].join(" · "), cast,
-      action: motion === "idle" ? "Stand in place and breathe." : "Run in place with a steady stride.",
+      action: motionPrompt ?? (motion === "idle" ? "Stand in place and breathe." : "Run in place with a steady stride."),
       camera: "", speaker: "", dialogue: "", sound: "", music: "", seconds: 5, takes: [], active: null,
       sprite: { camera, direction, poses: 7 } };
     if (!cast.length) clip.sprite_group = actor;
     if (motion === "idle") clip.sprite.motion = "idle";
+    if (motionPrompt) Object.assign(clip.sprite, { motion: "prompt", animation: motion });
     state.project.clips.push(clip);
     save();
     return clip;

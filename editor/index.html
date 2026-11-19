@@ -183,7 +183,9 @@
     <section class="sprite-desk">
       <h2 id="spriteTitle">Sprites</h2>
       <div class="sprite-toolbar">
-        <label>Animation <select id="spriteMotion"><option value="idle">Idle</option><option value="run" selected>Run</option><option value="custom">Custom motion</option></select></label>
+        <label>Animation <select id="spriteMotion" aria-label="Animation"></select></label>
+        <button class="quiet" id="spriteAddMotion">Add animation…</button>
+        <button class="quiet" id="spriteEditMotion" hidden>Edit prompt…</button>
         <label>Camera <select id="spriteCamera"><option value="rpg">Orthographic · 45°</option><option value="overhead">Overhead · 90°</option><option value="level">Eye level</option></select></label>
         <label>Directions <select id="spriteCount"><option>4</option><option selected>8</option></select></label>
       </div>
@@ -269,6 +271,17 @@
 <dialog id="panelDialog" class="keys panel-dialog" aria-labelledby="panelDialogTitle">
   <div class="keys-head"><h2 id="panelDialogTitle"></h2><button id="panelDialogClose" class="quiet">Close</button></div>
   <div id="panelDialogBody" class="panel-dialog-body"></div>
+</dialog>
+<dialog id="spriteMotionDialog" class="keys exporter" aria-labelledby="spriteMotionTitle">
+  <form id="spriteMotionForm">
+    <div class="keys-head"><h2 id="spriteMotionTitle">Add animation</h2><button id="spriteMotionCancel" class="quiet" type="button">Cancel</button></div>
+    <div class="exporter-body">
+      <label class="field"><span>Animation name</span><input id="spriteMotionName" required maxlength="64" autocomplete="off" placeholder="Wing stretch"></label>
+      <label class="field"><span>Motion prompt</span><textarea id="spriteMotionPrompt" required rows="4" aria-describedby="spriteMotionHint" placeholder="Spreads both wings, holds, then folds them back to rest."></textarea></label>
+      <p class="hint" id="spriteMotionHint">Describe one loop. Each direction uses this prompt and its own facing.</p>
+    </div>
+    <div class="exporter-foot"><button id="spriteMotionSave" class="primary" type="submit">Add animation</button></div>
+  </form>
 </dialog>
 <dialog id="creator" class="keys exporter" aria-labelledby="creatorTitle">
   <form id="creatorForm" method="dialog">

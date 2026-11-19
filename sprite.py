@@ -6,6 +6,7 @@ FRAMES = 39
 WIDTH, HEIGHT = 256, 384
 TILE, BODY = 64, 48
 EXPORT_SIZES = (64, 128, 256)
+MAX_ATLAS_PIXELS = 32 * 1024 * 1024
 PIVOT = (32, 59)
 MATTE_PREFIX = "background_removal:"
 
@@ -37,7 +38,7 @@ CAMERAS = {
 def settings(value):
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) - {"direction", "camera", "poses", "guide", "motion", "cutout"}:
+    if not isinstance(value, dict) or set(value) - {"direction", "camera", "poses", "guide", "motion", "cutout", "animation"}:
         raise ValueError("unknown sprite setting")
     direction, camera, poses = value.get("direction", "S"), value.get("camera", "rpg"), value.get("poses", 7)
     if direction not in tuple(DIRECTIONS) or camera not in tuple(CAMERAS):
@@ -49,6 +50,12 @@ def settings(value):
         if value["motion"] not in ("prompt", "idle") or value.get("guide") is not None:
             raise ValueError("choose one sprite motion source")
         out["motion"] = value["motion"]
+    if "animation" in value:
+        name = value["animation"]
+        if (out.get("motion") != "prompt" or not isinstance(name, str) or not name.strip()
+                or len(name) > 64 or name != name.strip() or name.lower() in ("run", "idle", "custom", "custom motion")):
+            raise ValueError("Choose a distinct name for the prompted sprite animation.")
+        out["animation"] = name
     if "cutout" in value:
         if value["cutout"] not in ("auto", "edge"):
             raise ValueError("choose auto or edge sprite cutout")
@@ -192,7 +199,23 @@ def with_matte(frame, mask):
     return Image.fromarray((np.concatenate((color, coverage), axis=2) * 255).round().astype("uint8"))
 
 
-def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=TILE):
+def action_indices(signatures, poses):
+    """Sample one prompted action across its moving span, including the return and any pause inside it."""
+    import numpy as np
+
+    change = np.abs(np.diff(signatures, axis=0)).mean(axis=(1, 2))
+    travel = np.r_[0.0, np.cumsum(change)]
+    first, last = 0, len(signatures) - 1
+    if travel[-1] > 0:
+        # Discard small amounts of drift in the holds before and after the gesture.
+        first = max(0, int(np.searchsorted(travel, .03 * travel[-1])) - 2)
+        last = min(last, int(np.searchsorted(travel, .97 * travel[-1])) + 2)
+    first = min(first, len(signatures) - poses)
+    last = max(last, first + poses - 1)
+    return np.linspace(first, last, poses).round().astype(int).tolist()
+
+
+def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=TILE, full_action=False):
     """Pick a loop once. Finish reuses the draft's phase, scale and ground contact in normalized source coordinates."""
     import numpy as np
     from PIL import Image
@@ -221,14 +244,25 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
             )
             return edge, float(np.abs(signatures[start] - signatures[start + period]).mean())
 
-        start = min(range(6, FRAMES - period), key=cost)
-        seen = [b for b in boxes[start : start + period] if b]
+        if full_action:
+            indices = action_indices(signatures, poses)
+            start = indices[0]
+            seen = [boxes[i] for i in indices if boxes[i]]
+        else:
+            start = min(range(6, FRAMES - period), key=cost)
+            seen = [b for b in boxes[start : start + period] if b]
         if not seen:
             raise ValueError("No sprite silhouette was visible against the background")
         height = float(np.median([b[3] - b[1] for b in seen]))
         center = float(np.median([(b[0] + b[2]) / 2 for b in seen]))
         ground = float(np.percentile([b[3] for b in seen], 90))
         layout = {"start": start, "height": height, "center": center, "ground": ground}
+        if full_action:
+            # Give extended limbs room in every pose, using one crop for the whole take.
+            left, right = min(b[0] for b in seen), max(b[2] for b in seen)
+            layout["center"] = (left + right) / 2
+            layout["height"] = max(height, (right - left) * BODY / (TILE - 2))
+            layout["indices"] = indices
     else:
         layout = previous
         if not isinstance(layout, dict) or not all(
@@ -238,7 +272,7 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
         start = layout["start"]
         if (
             type(start) is not int
-            or not 0 <= start < FRAMES - period
+            or not 0 <= start < (FRAMES if "indices" in layout else FRAMES - period)
             or not all(
                 isinstance(layout[k], (int, float)) and math.isfinite(layout[k])
                 for k in ("height", "center", "ground")
@@ -246,11 +280,15 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
             or layout["height"] <= 0
         ):
             raise ValueError("Invalid sprite draft layout")
+    indices = layout.get("indices", [start + 2 * i for i in range(poses)])
+    if (not isinstance(indices, list) or len(indices) != poses
+            or any(type(i) is not int or not 0 <= i < FRAMES for i in indices)
+            or indices != sorted(set(indices)) or indices[0] != start):
+        raise ValueError("Invalid sprite pose indices")
     scale = BODY / layout["height"]
     # Bake the return into the PNG. Left-to-right playback works in engines without a ping-pong mode.
     order = list(range(poses)) + (list(range(poses - 2, 0, -1)) if idle else [])
     atlas = Image.new("RGBA", (cell_size * len(order), cell_size))
-    indices = [start + 2 * i for i in range(poses)]
     if masks_for is None:
         selected = [keyed[n] if cell_size == TILE else cutout(frames[n]) for n in indices]
     else:
@@ -303,7 +341,10 @@ def pack_atlas(rows, tile, style):
     from PIL import Image, ImageOps
 
     width = max(sheet["poses"] for _, _, sheet, _ in rows) * tile
-    atlas = Image.new("RGBA", (width, len(rows) * tile))
+    height = len(rows) * tile
+    if width * height > MAX_ATLAS_PIXELS:
+        raise ValueError("This atlas is too large. Choose a smaller export size.")
+    atlas = Image.new("RGBA", (width, height))
     animations = {}
     for row, (name, path, sheet, source) in enumerate(rows):
         count = sheet["poses"]
