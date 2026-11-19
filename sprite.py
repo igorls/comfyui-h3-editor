@@ -215,7 +215,43 @@ def action_indices(signatures, poses):
     return np.linspace(first, last, poses).round().astype(int).tolist()
 
 
-def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=TILE, full_action=False):
+def playback_fps(layout, poses, idle, export_24fps=False):
+    if export_24fps:
+        return 24
+    if "indices" in layout:
+        indices = layout["indices"]
+        return round(24 * (poses - 1) / (indices[-1] - indices[0]), 2)
+    return 6 if idle else 12
+
+
+def playback_indices(layout, poses, idle, export_24fps):
+    """Map output cells to saved movie frames, keeping the authored loop duration."""
+    start = layout["start"]
+    indices = layout.get("indices", [start + 2 * i for i in range(poses)])
+    if (not isinstance(indices, list) or len(indices) != poses
+            or any(type(i) is not int or not 0 <= i < FRAMES for i in indices)
+            or indices != sorted(set(indices)) or indices[0] != start):
+        raise ValueError("Invalid sprite pose indices")
+    cycle = indices + indices[-2:0:-1] if idle else indices
+    if not export_24fps:
+        return cycle
+    if not idle and "indices" not in layout:
+        return list(range(start, start + 2 * poses))
+    count = round(len(cycle) * 24 / playback_fps(layout, poses, idle))
+    if not idle:
+        # One-shot gestures hold their final pose for the last authored cell.
+        return [min(start + i, indices[-1]) for i in range(count)]
+    # Follow both legs at the authored idle speed. Use actual in-between frames
+    # and hold each source pose where the slower motion needs extra ticks.
+    sequence = []
+    for i in range(count):
+        cell, remainder = divmod(i * len(cycle), count)
+        left, right = cycle[cell], cycle[(cell + 1) % len(cycle)]
+        sequence.append(left + (1 if right >= left else -1) * (abs(right - left) * remainder // count))
+    return sequence
+
+
+def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=TILE, full_action=False, export_24fps=False):
     """Pick a loop once. Finish reuses the draft's phase, scale and ground contact in normalized source coordinates."""
     import numpy as np
     from PIL import Image
@@ -280,24 +316,19 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
             or layout["height"] <= 0
         ):
             raise ValueError("Invalid sprite draft layout")
-    indices = layout.get("indices", [start + 2 * i for i in range(poses)])
-    if (not isinstance(indices, list) or len(indices) != poses
-            or any(type(i) is not int or not 0 <= i < FRAMES for i in indices)
-            or indices != sorted(set(indices)) or indices[0] != start):
-        raise ValueError("Invalid sprite pose indices")
+    order = playback_indices(layout, poses, idle, export_24fps)
+    indices = list(dict.fromkeys(order))
     scale = BODY / layout["height"]
-    # Bake the return into the PNG. Left-to-right playback works in engines without a ping-pong mode.
-    order = list(range(poses)) + (list(range(poses - 2, 0, -1)) if idle else [])
     atlas = Image.new("RGBA", (cell_size * len(order), cell_size))
     if masks_for is None:
         selected = [keyed[n] if cell_size == TILE else cutout(frames[n]) for n in indices]
     else:
         masks = masks_for(indices)
-        if len(masks) != poses:
+        if len(masks) != len(indices):
             raise ValueError("expected one foreground mask per sprite pose")
         selected = [with_matte(frames[n], mask) for n, mask in zip(indices, masks)]
-    tiles = []
-    for frame in selected:
+    tiles = {}
+    for source_index, frame in zip(indices, selected):
         sx, sy = frame.width / WIDTH, frame.height / HEIGHT
         x = (layout["center"] - PIVOT[0] / scale) * sx
         y = (layout["ground"] - PIVOT[1] / scale) * sy
@@ -308,7 +339,7 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
         tile = fine.resize(size, Image.Resampling.LANCZOS).convert("RGBA")
         coverage = fine.getchannel("a").resize(size, Image.Resampling.BOX)
         tile.paste((0, 0, 0, 0), mask=coverage.point(lambda v: 0 if v else 255))
-        tiles.append(tile)
+        tiles[source_index] = tile
     for column, index in enumerate(order):
         atlas.paste(tiles[index], (cell_size * column, 0))
     rgba = np.asarray(atlas)
@@ -340,23 +371,31 @@ def pack_atlas(rows, tile, style):
     import numpy as np
     from PIL import Image, ImageOps
 
-    width = max(sheet["poses"] for _, _, sheet, _ in rows) * tile
-    height = len(rows) * tile
-    if width * height > MAX_ATLAS_PIXELS:
-        raise ValueError("This atlas is too large. Choose a smaller export size.")
-    atlas = Image.new("RGBA", (width, height))
+    counts = [sheet["poses"] for _, _, sheet, _ in rows]
+    columns, height = max(counts), len(rows)
+    compact = columns * height * tile * tile > MAX_ATLAS_PIXELS
+    if compact:
+        cells = sum(counts)
+        if cells * tile * tile > MAX_ATLAS_PIXELS:
+            raise ValueError("This atlas is too large. Choose a smaller export size.")
+        # Mixed 24 fps loops can waste most of each short row. Wrap their
+        # cells and keep the exact location of every frame in the manifest.
+        columns = 1 << (math.isqrt(cells - 1)).bit_length()
+        height = math.ceil(cells / columns)
+    atlas = Image.new("RGBA", (columns * tile, height * tile))
     animations = {}
-    for row, (name, path, sheet, source) in enumerate(rows):
+    offset = 0
+    for name, path, sheet, source in rows:
         count = sheet["poses"]
-        y = row * tile
         frames = []
         spans = []
         with Image.open(path) as strip:
             if strip.size != (count * tile, tile):
                 raise ValueError("The saved sprite strip does not match its take.")
             for index in range(count):
-                x = index * tile
-                frame = strip.crop((x, 0, x + tile, tile)).convert("RGBA")
+                row, col = divmod(offset + index, columns)
+                x, y = col * tile, row * tile
+                frame = strip.crop((index * tile, 0, (index + 1) * tile, tile)).convert("RGBA")
                 if source["mirrored"]:
                     frame = ImageOps.mirror(frame)
                 atlas.paste(frame, (x, y))
@@ -367,6 +406,7 @@ def pack_atlas(rows, tile, style):
                     feet = np.flatnonzero(alpha[max(0, bottom - int(tile * .05)):bottom + 1].any(axis=0))
                     spans.append(int(feet[-1] - feet[0] + 1))
                 frames.append(dict(x=x, y=y, w=tile, h=tile))
+        offset += count if compact else columns
         pivot_x, pivot_y = sheet["pivot"]
         direction = name.rsplit("_", 1)[1]
         view = "side" if direction in ("E", "W") else "back" if "N" in direction else "front"

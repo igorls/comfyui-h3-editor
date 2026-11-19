@@ -506,11 +506,13 @@ class H3SpriteSheet(io.ComfyNode):
                     io.Boolean.Input("idle", default=False, optional=True),
                     io.Boolean.Input("full_action", default=False, optional=True,
                                      tooltip="Sample a prompted gesture from beginning to end."),
-                    io.Combo.Input("cell_size", options=[str(n) for n in sprite.EXPORT_SIZES], optional=True), *optional],
+                    io.Combo.Input("cell_size", options=[str(n) for n in sprite.EXPORT_SIZES], optional=True),
+                    io.Boolean.Input("export_24fps", default=False, optional=True), *optional],
             outputs=[], is_output_node=True)
 
     @classmethod
-    def execute(cls, images, poses, filename_prefix, layout="", idle=False, bg_model=None, cell_size="64", full_action=False):
+    def execute(cls, images, poses, filename_prefix, layout="", idle=False, bg_model=None, cell_size="64", full_action=False,
+                export_24fps=False):
         base = os.path.realpath(folder_paths.get_output_directory())
         dest = os.path.realpath(os.path.join(base, filename_prefix))
         if os.path.commonpath((base, dest)) != base or dest == base:
@@ -522,12 +524,9 @@ class H3SpriteSheet(io.ComfyNode):
         cell_size = int(cell_size)
         full, indexed, transform = sprite.strips(frames, poses, json.loads(layout) if layout else None,
                                                 masks_for if bg_model is not None else None, idle=idle, cell_size=cell_size,
-                                                full_action=full_action)
+                                                full_action=full_action, export_24fps=export_24fps)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        fps = 6 if idle else 12
-        if "indices" in transform:
-            indices = transform["indices"]
-            fps = round(24 * (poses - 1) / (indices[-1] - indices[0]), 2)
+        fps = sprite.playback_fps(transform, poses, idle, export_24fps)
         metadata = {"poses": full.width // cell_size, "source_poses": poses, "fps": fps,
                     "tile": cell_size, "pivot": [v * cell_size // sprite.TILE for v in sprite.PIVOT], "layout": transform,
                     "cutout": "foreground model" if bg_model is not None else "background key"}

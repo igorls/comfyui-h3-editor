@@ -27,7 +27,7 @@ made with it, shot by shot.
 - **Set how loud each clip is.** A clip on the timeline has its own volume,
   from silent to twice as loud, and the export applies it. The viewer has a
   volume of its own beside the play controls, which changes only what you hear.
-- **Make a game sprite (experimental).** In an independent shot, open **Sprite Draft**, choose a facing and camera, and select a jog, a planted idle, the shot prompt or an imported motion guide. Select your character in Cast. Sprite Draft prefers installed HyperFlow H3 Flash, then H3 Turbo. Render a draft and inspect the 64-pixel cells. Auto cutout uses BiRefNet when installed in ComfyUI’s `background_removal` model folder and otherwise uses the background key. In **Sprite loop → Export size**, choose **64**, **128** or **256 px** per cell and download the illustrated or indexed PNG. The first export at a new size uses the saved take and its original crop. The editor reuses both PNGs on subsequent downloads. **Finish draft** refines the selected motion with the same loop and pivot.
+- **Make a game sprite (experimental).** In an independent shot, open **Sprite Draft**, choose a facing and camera, and select a jog, a planted idle, the shot prompt or an imported motion guide. Select your character in Cast. Sprite Draft prefers installed HyperFlow H3 Flash, then H3 Turbo. Render a draft and inspect the 64-pixel cells. Auto cutout uses BiRefNet when installed in ComfyUI’s `background_removal` model folder and otherwise uses the background key. In **Sprite loop → Export size**, choose **64**, **128** or **256 px** per cell and download the illustrated or indexed PNG. Set **Frame rate** to **24 fps** for the frames between the sampled poses. The export uses the saved take and its original crop. The editor reuses both PNGs on subsequent downloads. **Finish draft** refines the selected motion with the same loop and pivot.
 - **Try fast, finish large.** Drafts are small and quick. Finals are refined at
   up to 1920 pixels, with a realism LoRA for natural skin.
 - **Pick the model, per project or per clip.** HyperFlow H3 Flash, MiniMax H3,
@@ -382,7 +382,7 @@ Choose **Add animation…** to name a loop and describe the movement once for th
 
 **New draft** queues one seed for the selected direction. Click a take to use it for that slot. **Preview mirrored** reflects the opposite direction. Click **Use mirrored** to keep it. **Edit take** opens the source shot in Video, and **Open in Sprites** returns from its Sprite Draft controls. **Finish this take** refines the selected draft.
 
-**Export atlas** packs available loops for that character and camera into a ZIP containing a PNG and an Animwright-format JSON file. Each loop records its frame rectangles, ground anchor, frame rate, source take, seed and mirror choice. The export size and indexed or illustrated style apply to the whole atlas.
+**Export atlas** packs available loops for that character and camera into a ZIP containing a PNG and an Animwright-format JSON file. Each loop records its frame rectangles, ground anchor, frame rate, source take, seed and mirror choice. Export size, output style and frame rate apply to the whole atlas. **Original per loop** keeps each motion’s timing. Choose **24 fps** to include intermediate frames from the saved takes at the same playback speed. A seven-pose run becomes 14 frames, and a two-second idle becomes 48 frames.
 
 ### Test an atlas without installing H3 Editor
 
