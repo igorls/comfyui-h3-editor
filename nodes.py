@@ -504,11 +504,13 @@ class H3SpriteSheet(io.ComfyNode):
             inputs=[io.Image.Input("images"), io.Int.Input("poses", default=7, min=4, max=12),
                     io.String.Input("filename_prefix"), io.String.Input("layout", default=""),
                     io.Boolean.Input("idle", default=False, optional=True),
+                    io.Boolean.Input("full_action", default=False, optional=True,
+                                     tooltip="Sample a prompted gesture from beginning to end."),
                     io.Combo.Input("cell_size", options=[str(n) for n in sprite.EXPORT_SIZES], optional=True), *optional],
             outputs=[], is_output_node=True)
 
     @classmethod
-    def execute(cls, images, poses, filename_prefix, layout="", idle=False, bg_model=None, cell_size="64"):
+    def execute(cls, images, poses, filename_prefix, layout="", idle=False, bg_model=None, cell_size="64", full_action=False):
         base = os.path.realpath(folder_paths.get_output_directory())
         dest = os.path.realpath(os.path.join(base, filename_prefix))
         if os.path.commonpath((base, dest)) != base or dest == base:
@@ -519,9 +521,14 @@ class H3SpriteSheet(io.ComfyNode):
 
         cell_size = int(cell_size)
         full, indexed, transform = sprite.strips(frames, poses, json.loads(layout) if layout else None,
-                                                masks_for if bg_model is not None else None, idle=idle, cell_size=cell_size)
+                                                masks_for if bg_model is not None else None, idle=idle, cell_size=cell_size,
+                                                full_action=full_action)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        metadata = {"poses": full.width // cell_size, "source_poses": poses, "fps": 6 if idle else 12,
+        fps = 6 if idle else 12
+        if "indices" in transform:
+            indices = transform["indices"]
+            fps = round(24 * (poses - 1) / (indices[-1] - indices[0]), 2)
+        metadata = {"poses": full.width // cell_size, "source_poses": poses, "fps": fps,
                     "tile": cell_size, "pivot": [v * cell_size // sprite.TILE for v in sprite.PIVOT], "layout": transform,
                     "cutout": "foreground model" if bg_model is not None else "background key"}
         for label, sheet in (("illustrated", full), ("indexed", indexed)):

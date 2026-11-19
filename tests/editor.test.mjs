@@ -2,11 +2,38 @@
 // The editor has no bundler; extracting top-level functions keeps these tests dependency-free.
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { pickedSprite, spriteSlots } from "../editor/sprites.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { curveLevel, soundEnvelope, setSoundLevel, resumeSoundMixer, disconnectSound } from "../editor/sound-envelope.js";
 
 const source = readFileSync(new URL("../editor/editor.js", import.meta.url), "utf8");
+
+test("sprite slots preserve the saved character, camera and direction when a clip changes", () => {
+  const old = { direction: "NW", camera: "rpg" };
+  const take = { id: "original", sprite: { poses: 7 }, saved: { sprite: old, cast: ["herald"] } };
+  const clip = { id: "run", active: take.id, sprite: { direction: "E", camera: "level" }, cast: ["prowler"], takes: [take] };
+  const project = { clips: [clip] };
+  const slots = spriteSlots(project, "herald", "rpg", "run");
+  const prefs = { picks: { "rpg/run/NE": { clip: clip.id, take: take.id, mirror: true } } };
+  assert.equal(slots.NW.clips.length, 0);
+  assert.equal(pickedSprite(slots, prefs, "rpg", "run", "NE").take, take);
+  assert.equal(pickedSprite(slots, prefs, "rpg", "run", "NE").mirror, true);
+  assert.equal(pickedSprite(slots, {}, "rpg", "run", "NE"), null);
+  assert.deepEqual(spriteSlots(project, "prowler", "level", "run").E, { clips: [clip], takes: [] });
+});
+test("named motions keep separate direction slots and use each take's recorded animation", () => {
+  const cast = ["herald"];
+  const original = { camera: "rpg", direction: "NE", motion: "prompt", animation: "Wing stretch" };
+  const take = { id: "stretch", sprite: { poses: 7 }, saved: { sprite: original, cast } };
+  const clip = { id: "hover", cast, sprite: { ...original, animation: "Hover" }, takes: [take] };
+  const legacy = { id: "guided", cast, sprite: { camera: "rpg", direction: "NE", guide: { file: "pose.mp4" } } };
+  const project = { clips: [clip, legacy] };
+  assert.deepEqual(spriteSlots(project, "herald", "rpg", "Wing stretch").NE, { clips: [], takes: [{ clip, take }] });
+  assert.deepEqual(spriteSlots(project, "herald", "rpg", "Hover").NE, { clips: [clip], takes: [] });
+  assert.deepEqual(spriteSlots(project, "herald", "rpg", "custom").NE, { clips: [legacy], takes: [] });
+});
+
 function functions(context, names) {
   for (const name of names) {
     const start = source.search(new RegExp(`^(?:async )?function ${name}\\(`, "m"));

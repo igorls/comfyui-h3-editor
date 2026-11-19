@@ -1310,6 +1310,8 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             "layout": json.dumps(layout) if layout else ""}}
         if config.get("motion") == "idle":
             graph["211"]["inputs"]["idle"] = True
+        if config.get("animation"):
+            graph["211"]["inputs"]["full_action"] = True
         if config.get("cutout") != "edge":
             matte = sprite.matte_model(available)
             if matte:

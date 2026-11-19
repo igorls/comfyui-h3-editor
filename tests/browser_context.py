@@ -292,6 +292,91 @@ def exercise_waveform(page, base, folder):
     return imported.json()["clip"]
 
 
+def exercise_project_header(page):
+    project = page.get_by_role("group", name="Project controls")
+    workspace = page.get_by_role("group", name="Workspace controls")
+    for width in (1101, 390):
+        page.set_viewport_size({"width": width, "height": 844})
+        top, lower = project.bounding_box(), workspace.bounding_box()
+        assert top["y"] + top["height"] <= lower["y"] + 1
+        assert lower["x"] + lower["width"] <= width
+        expect(project.get_by_role("button", name="Project", exact=True)).to_be_visible()
+        expect(workspace.get_by_role("button", name="Video", exact=True)).to_be_visible()
+    workspace.get_by_role("button", name="Sprites", exact=True).click()
+    with page.context.expect_page() as opened:
+        workspace.get_by_role("link", name="Sprite test room").click()
+    room = opened.value
+    expect(room.locator("#status")).to_have_text("Calibration marker")
+    expect(room.locator("#facing option")).to_have_count(8)
+    room.close()
+    workspace.get_by_role("button", name="Video", exact=True).click()
+
+
+def exercise_sprite_animation(page, project_url):
+    request(project_url + "/ops", "POST", {"ops": [{"op": "add_cast", "fields": {
+        "name": "Herald", "refmod": {"file": "qa-character.safetensors"}}}]})
+    page.reload()
+    page.locator("#spritesMode").click()
+    page.get_by_role("button", name="Herald", exact=True).click()
+    page.get_by_role("button", name="Add animation…").click()
+    form = page.get_by_role("dialog", name="Add animation")
+    name = form.get_by_label("Animation name")
+    name.fill("Run")
+    form.get_by_label("Motion prompt").fill("Spreads both wings, then folds them.")
+    form.get_by_role("button", name="Add animation", exact=True).click()
+    assert not name.evaluate("el => el.validity.valid")
+    name.fill("Wing stretch")
+    form.get_by_role("button", name="Add animation", exact=True).click()
+    select = page.get_by_label("Animation", exact=True)
+    expect(select).to_have_value("Wing stretch")
+    # Stop at the GPU boundary. Project saves and clip creation use the real server.
+    page.route("**/render", lambda route: route.fulfill(status=400, json={"error": "QA render boundary"}))
+    def draft(direction):
+        page.locator("#spriteCompass").get_by_role("button", name=direction + " empty", exact=True).click()
+        with page.expect_response(lambda r: r.url.endswith("/render")):
+            page.get_by_role("button", name="New " + direction + " draft").click()
+    draft("S")
+    page.get_by_role("button", name="Edit prompt…").click()
+    form = page.get_by_role("dialog", name="Edit animation prompt")
+    prompt = "Raise both wings, pause, then return to rest."
+    form.get_by_label("Motion prompt").fill(prompt)
+    form.get_by_role("button", name="Save prompt").click()
+    draft("NE")
+    project = request(project_url, "GET")
+    clips = [c for c in project["clips"] if (c.get("sprite") or {}).get("animation") == "Wing stretch"]
+    assert {c["sprite"]["direction"] for c in clips} == {"S", "NE"}
+    assert all(c["sprite"]["motion"] == "prompt" and c["action"] == prompt for c in clips)
+    assert project["sprite_workspaces"][clips[0]["cast"][0]]["animations"] == [{"id": "Wing stretch", "prompt": prompt}]
+    page.reload()
+    page.locator("#spritesMode").click()
+    page.get_by_role("button", name="Herald", exact=True).click()
+    expect(select).to_have_value("Wing stretch")
+    assert page.locator("#spritesRoom").evaluate("el => el.scrollWidth <= el.clientWidth + 1")
+    # An empty direction stays selectable and keeps keyboard focus when its buttons are redrawn.
+    direction = page.locator("#spriteCompass").get_by_role("button", name="NE empty", exact=True)
+    direction.focus()
+    direction.press("Enter")
+    expect(direction).to_be_focused()
+    expect(page.locator("#spriteCoverage")).to_have_text("0 of 8 directions have takes")
+    page.set_viewport_size({"width": 1127, "height": 860})
+    page.get_by_role("button", name="Edit take", exact=True).click()
+    section = page.locator('[data-section="Sprite Draft"]')
+    fields = section.get_by_role("combobox")
+    expect(fields).to_have_count(5)
+    for width in (340, 250):
+        page.locator(".work").evaluate("(e,w) => e.style.setProperty('--insp-w',w+'px')", width)
+        boxes = [field.bounding_box() for field in fields.all()]
+        assert all(a["y"] + a["height"] <= b["y"] for a, b in zip(boxes, boxes[1:]))
+        assert page.locator("#inspector").evaluate("e => e.scrollWidth <= e.clientWidth + 1")
+    with page.expect_response(lambda r: r.request.method == "PUT" and "/api/project/" in r.url):
+        section.get_by_label("Loop poses").select_option("8")
+    ne_id = next(c["id"] for c in clips if c["sprite"]["direction"] == "NE")
+    stored = next(c for c in request(project_url, "GET")["clips"] if c["id"] == ne_id)
+    assert stored["sprite"]["poses"] == 8
+    section.get_by_role("button", name="Open in Sprites").click()
+    expect(page.locator("#spriteTakesTitle")).to_have_text("NE takes")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="QA server URL ending in /h3take")
@@ -311,6 +396,8 @@ def main():
             exercise_style_markers(page, base, folder)
             footage = exercise_waveform(page, base, folder)
             exercise_viewer_controls(page, footage)
+            exercise_project_header(page)
+            exercise_sprite_animation(page, project_url)
             assert not errors, errors
             browser.close()
     finally:
