@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>H3 Editor</title>
 <link rel="stylesheet" href="/h3take/editor-files/editor.css?v=__VERSION__">
+<link rel="stylesheet" href="/h3take/editor-files/sprites.css?v=__VERSION__">
 </head>
 <body>
 <div class="app" id="app">
@@ -29,6 +30,9 @@
       <button id="projectDelete" role="menuitem"><b>Delete</b><span>Move this project to the trash folder</span></button>
     </div>
     <button id="newProject" class="quiet">New project</button>
+    <nav class="workspace-switch" aria-label="Project workspace">
+      <button id="videoMode" aria-pressed="true">Video</button><button id="spritesMode" aria-pressed="false" disabled>Sprites</button>
+    </nav>
     <span class="release" title="The version of H3 Editor this is">H3 Editor __RELEASE__</span>
     <div class="spacer"></div>
     <button id="checks" class="checks-chip" aria-haspopup="true" popovertarget="checksPanel" hidden></button>
@@ -163,6 +167,41 @@
       <div class="insp-tabs" id="inspTabs" role="tablist" aria-label="Inspector sections"></div>
       <div class="insp-body" id="inspBody" role="tabpanel"></div>
     </aside>
+  </main>
+  <main id="spritesRoom" aria-label="Sprites workspace" hidden>
+    <aside class="sprite-roster">
+      <div class="sprite-toolbar"><h2>Characters</h2><button class="quiet" id="spriteAdd">Add character</button></div>
+      <div id="spritePeople"></div>
+      <div id="spriteRefs"></div>
+    </aside>
+    <section class="sprite-desk">
+      <h2 id="spriteTitle">Sprites</h2>
+      <div class="sprite-toolbar">
+        <label>Animation <select id="spriteMotion"><option value="idle">Idle</option><option value="run" selected>Run</option><option value="custom">Custom motion</option></select></label>
+        <label>Camera <select id="spriteCamera"><option value="rpg">Orthographic · 45°</option><option value="overhead">Overhead · 90°</option><option value="level">Eye level</option></select></label>
+        <label>Directions <select id="spriteCount"><option>4</option><option selected>8</option></select></label>
+      </div>
+      <div class="sprite-stage">
+        <section><h3>Directions</h3><div id="spriteCompass"></div></section>
+        <section><h3>Game preview</h3>
+          <canvas id="spriteArena" width="600" height="220" tabindex="0" aria-label="Game preview. Use WASD or arrow keys to move."></canvas>
+          <div class="sprite-toolbar"><span>WASD or arrow keys</span><button id="spriteGround" class="quiet">Load ground image</button><button id="spritePlain" class="quiet">Plain ground</button></div>
+          <input id="spriteGroundFile" type="file" accept="image/*" hidden>
+        </section>
+      </div>
+      <div class="sprite-toolbar">
+        <h3 id="spriteTakesTitle">Takes</h3>
+        <button class="quiet" id="spritePlay">Pause</button><button class="quiet" id="spriteStep">Next pose</button>
+        <button class="quiet" id="spriteDraft">New draft</button><button class="quiet" id="spriteMirror">Mirror</button>
+        <button class="quiet" id="spriteEdit">Edit take</button><button class="primary" id="spriteFinish">Finish this take</button>
+      </div>
+      <div id="spriteTakes"></div>
+      <div class="sprite-toolbar sprite-delivery">
+        <label>Export size <select id="spriteTile"><option value="64">64 px</option><option value="128">128 px</option><option value="256">256 px</option></select></label>
+        <label>Output style <select id="spriteStyle"><option value="illustrated">Illustrated</option><option value="indexed">Indexed</option></select></label>
+        <button id="spriteAtlas" class="quiet">Export atlas</button><span id="spriteStatus" role="status"></span>
+      </div>
+    </section>
   </main>
 
   <div class="splitter" id="splitter" role="separator" aria-orientation="horizontal" aria-label="Resize the timeline" tabindex="0"></div>

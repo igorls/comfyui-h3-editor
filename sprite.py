@@ -22,6 +22,10 @@ DIRECTIONS = {
     "E": "east, screen right",
     "N": "north, up the screen, back visible",
     "W": "west, screen left",
+    "NE": "northeast, diagonally up-right and away, rear three-quarter view",
+    "NW": "northwest, diagonally up-left and away, rear three-quarter view",
+    "SE": "southeast, diagonally down-right and toward the viewer, front three-quarter view",
+    "SW": "southwest, diagonally down-left and toward the viewer, front three-quarter view",
 }
 CAMERAS = {
     "rpg": "45 degrees above the ground, visible top planes and foreshortened legs",
@@ -37,7 +41,7 @@ def settings(value):
         raise ValueError("unknown sprite setting")
     direction, camera, poses = value.get("direction", "S"), value.get("camera", "rpg"), value.get("poses", 7)
     if direction not in tuple(DIRECTIONS) or camera not in tuple(CAMERAS):
-        raise ValueError("choose a cardinal sprite direction and a level, rpg or overhead camera")
+        raise ValueError("choose a compass direction and a level, rpg or overhead camera")
     if type(poses) is not int or not 4 <= poses <= 12:
         raise ValueError("a sprite cycle needs 4 to 12 poses at 12 fps")
     out = {"direction": direction, "camera": camera, "poses": poses}
@@ -103,10 +107,13 @@ def jog(direction, camera, poses):
     from PIL import Image, ImageDraw
 
     pitch = math.radians({"rpg": 45, "level": 0, "overhead": 90}[camera])
+    dx = int("E" in direction) - int("W" in direction)
+    dz = int("S" in direction) - int("N" in direction)
+    length = math.hypot(dx, dz)
 
     def project(j):
         f, h, r = j
-        x, z = {"S": (-r, f), "E": (f, r), "N": (r, -f), "W": (-f, -r)}[direction]
+        x, z = (f * dx - r * dz) / length, (f * dz + r * dx) / length
         return (round(128 + x), round(192 - (h - 120) * math.cos(pitch) + z * math.sin(pitch)))
 
     cycle = []
@@ -136,10 +143,10 @@ def jog(direction, camera, poses):
                 )
             )
         nose = (22, 226 + bob, 0)
-        if direction != "N" and camera != "overhead":
+        if dz >= 0 and camera != "overhead":
             limbs.append((neck, nose, "#0055ff"))
         for side in (-1, 1):
-            if (direction, side) in (("E", -1), ("W", 1)):
+            if dz <= 0 and dx * side == -1:
                 continue
             ear = (3, 231 + bob, 13 * side)
             limbs.append((neck, ear, "#aa00ff"))
@@ -284,3 +291,58 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
     indexed.putpalette([0, 0, 0] + cols + [0] * 720)
     indexed.info["transparency"] = 0
     return atlas, indexed, layout
+
+
+def pack_atlas(rows, tile, style):
+    """Pack chosen strips, reflecting individual poses about their ground pivot."""
+    import io
+    import json
+    import zipfile
+    import numpy as np
+    from PIL import Image, ImageOps
+
+    width = max(sheet["poses"] for _, _, sheet, _ in rows) * tile
+    atlas = Image.new("RGBA", (width, len(rows) * tile))
+    animations = {}
+    for row, (name, path, sheet, source) in enumerate(rows):
+        count = sheet["poses"]
+        y = row * tile
+        frames = []
+        spans = []
+        with Image.open(path) as strip:
+            if strip.size != (count * tile, tile):
+                raise ValueError("The saved sprite strip does not match its take.")
+            for index in range(count):
+                x = index * tile
+                frame = strip.crop((x, 0, x + tile, tile)).convert("RGBA")
+                if source["mirrored"]:
+                    frame = ImageOps.mirror(frame)
+                atlas.paste(frame, (x, y))
+                alpha = np.asarray(frame.getchannel("A")) > 128
+                occupied = np.flatnonzero(alpha.sum(axis=1) > 1)
+                if len(occupied):
+                    bottom = occupied[-1]
+                    feet = np.flatnonzero(alpha[max(0, bottom - int(tile * .05)):bottom + 1].any(axis=0))
+                    spans.append(int(feet[-1] - feet[0] + 1))
+                frames.append(dict(x=x, y=y, w=tile, h=tile))
+        pivot_x, pivot_y = sheet["pivot"]
+        direction = name.rsplit("_", 1)[1]
+        view = "side" if direction in ("E", "W") else "back" if "N" in direction else "front"
+        animations[name] = dict(view=view, direction=direction, fps=sheet["fps"],
+                                loop=dict(start=0, end=count - 1, mode="cycle"),
+                                frame_size=dict(w=tile, h=tile), frames=frames,
+                                anchor=dict(x=tile - pivot_x if source["mirrored"] else pivot_x, y=pivot_y,
+                                            span=round(float(np.percentile(spans, 90)), 1) if spans else 0),
+                                ground_speed=0, steps=[], waived=[],
+                                **source)
+    if style == "indexed":
+        atlas = atlas.quantize(colors=256, method=Image.Quantize.FASTOCTREE)
+    manifest = dict(format="animwright/1", name="Sprites", image="sprites.png", height=BODY * tile // TILE,
+                    generated=dict(tool="H3 Editor", backend="h3", ai_generated=True, waived_gates=[]),
+                    size=dict(w=atlas.width, h=atlas.height), animations=animations, rejected=[])
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with archive.open("sprites.png", "w") as image:
+            atlas.save(image, format="PNG")
+        archive.writestr("sprites.json", json.dumps(manifest, indent=2))
+    return data.getvalue()

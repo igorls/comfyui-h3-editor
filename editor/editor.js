@@ -21,6 +21,7 @@ const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the pic
 const STEPPED = new Set(["15", "90"]);
 
 import { VfxRuntime } from "./vfx-runtime.js";
+import { installSprites } from "./sprites.js";
 import { cropWindow, editCrop } from "./crop.js";
 import * as writer from "./writer.js";
 import { curveLevel, soundEnvelope, resumeSoundMixer, setMediaLevel, setSoundLevel, disconnectSound } from "./sound-envelope.js?v=track";
@@ -4738,7 +4739,8 @@ function spriteSection(clip) {
     hint.className = "hint";
     hint.textContent = "Choose character views in Cast. For another motion guide, import at least 39 frames at 24 fps.";
     children.push(
-      spriteChoice("Facing", [["S", "South"], ["E", "East"], ["N", "North"], ["W", "West"]],
+      spriteChoice("Facing", [["S", "South"], ["E", "East"], ["N", "North"], ["W", "West"],
+        ["NE", "Northeast"], ["NW", "Northwest"], ["SE", "Southeast"], ["SW", "Southwest"]],
         config.direction, direction => update({ ...config, direction })),
       spriteChoice("View", [["rpg", "RPG · 45°"], ["overhead", "Overhead · 90°"], ["level", "Eye level"]],
         config.camera, camera => update({ ...config, camera })),
@@ -4756,6 +4758,13 @@ function spriteSection(clip) {
       spriteChoice("Cutout", [["auto", "Auto · prefer BiRefNet"], ["edge", "Background key"]],
         config.cutout || "auto", cutout => update({ ...config, cutout })), hint,
     );
+  }
+  if (config) {
+    const open = document.createElement("button");
+    open.className = "quiet";
+    open.textContent = "Open in Sprites";
+    open.onclick = () => spritesRoom.openClip(clip);
+    children.push(open);
   }
   return disclosure("Sprite Draft", Boolean(config), config ? config.direction + " · " + config.poses + " poses" : "", children);
 }
@@ -9525,7 +9534,7 @@ function finishOff(clip) {
   return "";
 }
 
-async function renderClip(clip, quality, detail, upscaler, edit) {
+async function renderClip(clip, quality, detail, upscaler, edit, seed) {
   const folder = state.folder;
   if (jobFor(clip.id)) return;
   if (!edit && quality !== "upscale" && !(quality === "finish" && activeTake(clip)?.sprite) && !clip.action.trim()) {
@@ -9537,6 +9546,7 @@ async function renderClip(clip, quality, detail, upscaler, edit) {
     await flush();
     if (folder !== state.folder) return;
     const body = { clip: clip.id, quality, client_id: clientId };
+    if (seed !== undefined) body.seed = seed;
     if (detail !== undefined) body.detail = detail;
     if (upscaler) body.upscaler = upscaler;
     if (edit) body.edit = edit;
@@ -9687,6 +9697,7 @@ function renderAll() {
   renderTimeline();
   showFrame();
   restoreFocus(focus);
+  spritesRoom.refresh();
 }
 
 // A re-render must not take the caret away from someone typing in the inspector.
@@ -9934,9 +9945,13 @@ async function start() {
   } catch (_) {}
   let remembered = null;
   try { remembered = localStorage.getItem("h3take.project"); } catch (_) {}
+  const entry = new URLSearchParams(location.search);
+  remembered = entry.get("project") || remembered;
   const projects = await refreshProjects(remembered);
   if (!projects.length) await createProject("First scene");
   else await openProject(projects.includes(remembered) ? remembered : projects[0]);
+  $("spritesMode").disabled = false;
+  if (entry.get("workspace") === "sprites") spritesRoom.openClip(null);
   try {
     state.looks = (await api("/looks")).looks;
     renderInspector();
@@ -10889,6 +10904,7 @@ $("laneV").addEventListener("pointerdown", (event) => {
 
 window.addEventListener("keydown", (event) => {
   if (event.defaultPrevented) return;
+  if (spritesRoom.isOpen()) return;
   if (event.key === "Escape" && noting.active) {
     if (document.querySelector("dialog[open], [popover]:popover-open")) return;
     closeNote();
@@ -11448,5 +11464,47 @@ function bindNoteLayer() {
   for (const video of [$("videoA"), $("videoB")]) video.addEventListener("seeked", () => drawNotes());
 }
 bindNoteLayer();
+
+const spritesRoom = installSprites({
+  state, checkpoint, save() { save(); void flush(); }, toast, viewUrl, jobFor, uploadPicture, addCast: addCastMember, editCast: openPerson,
+  stopVideo() { if (state.playing) setPlaying(false); },
+  restoreVideo() { renderAll(); },
+  activate(clip, take) { if (clip.active !== take.id) chooseTake(clip, take); },
+  editClip(clip, take) {
+    if (take && take.id !== clip.active) chooseTake(clip, take);
+    state.tab = "shot";
+    selectClip(clip.id);
+    setSource(clip.id);
+    showSource(clip);
+  },
+  makeClip(actor, name, camera, motion, direction) {
+    checkpoint();
+    const cast = state.project.cast?.some(p => p.id === actor) ? [actor] : [];
+    const clip = { id: uid("c"), name: [name, motion, direction].join(" · "), cast,
+      action: motion === "idle" ? "Stand in place and breathe." : "Run in place with a steady stride.",
+      camera: "", speaker: "", dialogue: "", sound: "", music: "", seconds: 5, takes: [], active: null,
+      sprite: { camera, direction, poses: 7 } };
+    if (!cast.length) clip.sprite_group = actor;
+    if (motion === "idle") clip.sprite.motion = "idle";
+    state.project.clips.push(clip);
+    save();
+    return clip;
+  },
+  render(clip, quality, seed) { return renderClip(clip, quality, undefined, undefined, undefined, seed); },
+  async download(name, options) {
+    const folder = state.folder;
+    await flush();
+    if (folder !== state.folder) return;
+    const response = await fetch("/h3take/api/project/" + encodeURIComponent(folder) + "/sprite-atlas", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(options),
+    });
+    if (!response.ok) throw new Error((await response.json()).error || "Could not export sprites");
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.download = name + "-" + options.tile + "px-" + options.style + ".zip";
+    link.href = url; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  },
+});
 
 start().catch((error) => toast(error.message, true));

@@ -1,0 +1,196 @@
+.workspace-switch {
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.workspace-switch button {
+  background: transparent;
+  padding: 4px 9px;
+}
+.workspace-switch [aria-pressed="true"] {
+  background: var(--raised);
+  color: var(--tungsten-hi);
+}
+.app.sprites-open {
+  grid-template-rows: 48px minmax(0, 1fr);
+}
+.sprites-open :is(.work, #splitter, #timeline, #skipTimeline, #renderMenuButton, #export) {
+  display: none;
+}
+#spritesRoom:not([hidden]) {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  overflow: auto;
+}
+.sprite-roster {
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  padding: 16px 12px;
+}
+.sprite-desk {
+  padding: 18px 22px;
+  max-width: 1480px;
+  min-width: 0;
+}
+#spriteTitle {
+  font-size: 23px;
+  margin-bottom: 12px;
+}
+.sprite-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+}
+.sprite-toolbar h2,
+.sprite-toolbar h3 {
+  margin: 0 auto 0 0;
+}
+.sprite-toolbar label {
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sprite-toolbar select {
+  background: var(--raised);
+  padding: 4px;
+  border: 1px solid var(--line-hi);
+  border-radius: 4px;
+}
+#spritePeople {
+  display: grid;
+  gap: 3px;
+  margin: 16px 0 22px;
+}
+#spritePeople button {
+  text-align: left;
+}
+#spritesRoom button[aria-pressed="true"] {
+  outline: 2px solid var(--tungsten);
+  outline-offset: -2px;
+}
+#spriteRefs img {
+  width: 46px;
+  height: 55px;
+  object-fit: contain;
+  background: #eee;
+  margin: 0 4px 6px 0;
+}
+#spriteRefs button {
+  display: block;
+}
+.sprite-stage {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 22px;
+  margin: 18px 0;
+  padding: 14px 0;
+  border-block: 1px solid var(--line);
+}
+#spriteCompass {
+  display: grid;
+  grid-template: repeat(3, 64px) / repeat(3, 64px);
+  gap: 4px;
+}
+#spriteCompass button {
+  position: relative;
+  padding: 0;
+  background: var(--raised);
+  border: 1px solid var(--line);
+}
+#spriteCompass span {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-size: 11px;
+  background: var(--panel);
+  padding: 0 2px;
+}
+.sprite-frame {
+  display: inline-block;
+  width: 64px;
+  height: 64px;
+  image-rendering: pixelated;
+  background-repeat: no-repeat;
+}
+#spriteArena {
+  display: block;
+  width: 100%;
+  height: 208px;
+  touch-action: none;
+  background: #45494c;
+  margin-bottom: 8px;
+}
+#spriteTakes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin: 12px 0 24px;
+}
+#spriteTakes button {
+  background: #e9e4d8;
+  color: #24272a;
+  display: grid;
+  gap: 5px;
+  justify-items: center;
+  min-width: 108px;
+  padding: 10px;
+}
+#spriteTakes .sprite-frame {
+  background-color: #65696b;
+}
+.sprite-film {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: 288px;
+  background: #555b5b;
+}
+.sprite-film i {
+  width: 32px;
+  height: 32px;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+.sprite-delivery {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+@media (max-width: 850px) {
+  .app.sprites-open {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  #spritesRoom:not([hidden]) {
+    grid-template-columns: minmax(0, 1fr);
+    display: block;
+  }
+  .sprite-roster {
+    border-bottom: 1px solid var(--line);
+  }
+  #spritePeople {
+    display: flex;
+    flex-wrap: wrap;
+    margin: 8px 0;
+  }
+  #spriteRefs {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  #spriteRefs img {
+    width: 31px;
+    height: 36px;
+  }
+  .sprite-desk {
+    padding: 12px;
+  }
+}
+@media (max-width: 560px) {
+  .sprite-stage {
+    grid-template-columns: 1fr;
+  }
+  #spriteArena {
+    height: 160px;
+  }
+}

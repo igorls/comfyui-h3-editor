@@ -374,6 +374,14 @@ Press ? in the editor for this list.
 | The live preview is a still | Add `taeh3.safetensors` |
 | ComfyUI runs out of memory | Pick a smaller **Final size** in the Project tab, try one of HyperFlow's GGUF files, which come in smaller sizes, use [a smaller text encoder](docs/models.md#a-smaller-text-encoder), or render the finals on a Colab GPU with `colab/h3_editor.ipynb`. So far the editor has been tested on one 96 GB GPU only |
 
+## Sprites workspace
+
+Choose **Sprites** beside **Video** to review a character's animations. Add a reference sheet or use an existing cast member. Choose the camera, four or eight directions, and a motion. Click a direction to compare its takes in sync. Focus the game preview and move with WASD, the arrow keys, or by holding a point on the ground.
+
+**New draft** queues one seed for the selected direction. Click a take to use it for that slot. **Preview mirrored** reflects the opposite direction. Click **Use mirrored** to keep it. **Edit take** opens the source shot in Video, and **Open in Sprites** returns from its Sprite Draft controls. **Finish this take** refines the selected draft.
+
+**Export atlas** packs available loops for that character and camera into a ZIP containing a PNG and an Animwright-format JSON file. Each loop records its frame rectangles, ground anchor, frame rate, source take, seed and mirror choice. The export size and indexed or illustrated style apply to the whole atlas.
+
 ## Develop
 
 `python -m unittest discover -s tests` runs from the repo root. The writer,
