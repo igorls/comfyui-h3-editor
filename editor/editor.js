@@ -9511,14 +9511,19 @@ function updateQueue() {
     chip = document.createElement("button");
     chip.className = "queue-chip";
     chip.title = "Show the clip that is rendering";
+    chip.append(document.createElement("span"));
     chip.addEventListener("click", () => {
       const job = front();
       if (!job || !clipOf(job.clip)) return;
+      if (spritesRoom.isOpen()) {
+        if (clipOf(job.clip).sprite) return spritesRoom.openClip(clipOf(job.clip));
+        $("videoMode").click();
+      }
       selectClip(job.clip, state.project.timeline.find((i) => i.clip === job.clip)?.id ?? null);
     });
     box.append(chip);
   }
-  chip.textContent = parts.join(", ");
+  chip.firstElementChild.textContent = parts.join(", ");
 }
 
 // Renders are queued by the server, which also attaches the finished take to the project.

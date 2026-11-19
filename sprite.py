@@ -298,6 +298,7 @@ def pack_atlas(rows, tile, style):
     import io
     import json
     import zipfile
+    from pathlib import Path
     import numpy as np
     from PIL import Image, ImageOps
 
@@ -345,4 +346,11 @@ def pack_atlas(rows, tile, style):
         with archive.open("sprites.png", "w") as image:
             atlas.save(image, format="PNG")
         archive.writestr("sprites.json", json.dumps(manifest, indent=2))
+        template = (Path(__file__).parent / "editor" / "sprite-test.html").read_text(encoding="utf-8")
+        # The browser can open the extracted ZIP from disk without a fetch for the manifest.
+        prefix, slot = template.split('<script id="bundled-atlas" type="application/json">', 1)
+        _, suffix = slot.split("</script>", 1)
+        payload = json.dumps(manifest).replace("<", "\\u003c")
+        archive.writestr("preview.html", prefix + '<script id="bundled-atlas" type="application/json">'
+                         + payload + "</script>" + suffix)
     return data.getvalue()

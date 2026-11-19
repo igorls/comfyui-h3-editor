@@ -292,6 +292,26 @@ def exercise_waveform(page, base, folder):
     return imported.json()["clip"]
 
 
+def exercise_project_header(page):
+    project = page.get_by_role("group", name="Project controls")
+    workspace = page.get_by_role("group", name="Workspace controls")
+    for width in (1101, 390):
+        page.set_viewport_size({"width": width, "height": 844})
+        top, lower = project.bounding_box(), workspace.bounding_box()
+        assert top["y"] + top["height"] <= lower["y"] + 1
+        assert lower["x"] + lower["width"] <= width
+        expect(project.get_by_role("button", name="Project", exact=True)).to_be_visible()
+        expect(workspace.get_by_role("button", name="Video", exact=True)).to_be_visible()
+    workspace.get_by_role("button", name="Sprites", exact=True).click()
+    with page.context.expect_page() as opened:
+        workspace.get_by_role("link", name="Sprite test room").click()
+    room = opened.value
+    expect(room.locator("#status")).to_have_text("Calibration marker")
+    expect(room.locator("#facing option")).to_have_count(8)
+    room.close()
+    workspace.get_by_role("button", name="Video", exact=True).click()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="QA server URL ending in /h3take")
@@ -311,6 +331,7 @@ def main():
             exercise_style_markers(page, base, folder)
             footage = exercise_waveform(page, base, folder)
             exercise_viewer_controls(page, footage)
+            exercise_project_header(page)
             assert not errors, errors
             browser.close()
     finally:

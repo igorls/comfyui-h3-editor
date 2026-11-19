@@ -159,7 +159,11 @@ class SpriteImageTest(unittest.TestCase):
             rows = [("run_NE", path, dict(poses=2, pivot=[27, 59], fps=12), dict(mirrored=True))]
             for style in ("illustrated", "indexed"):
                 with zipfile.ZipFile(io.BytesIO(sprite.pack_atlas(rows, 64, style))) as archive:
-                    meta = json.loads(archive.read("sprites.json"))["animations"]["run_NE"]
+                    manifest = json.loads(archive.read("sprites.json"))
+                    preview = archive.read("preview.html").decode()
+                    embedded = preview.split('<script id="bundled-atlas" type="application/json">', 1)[1]
+                    self.assertEqual(json.loads(embedded.split("</script>", 1)[0]), manifest)
+                    meta = manifest["animations"]["run_NE"]
                     with Image.open(io.BytesIO(archive.read("sprites.png"))) as image:
                         if style == "indexed":
                             self.assertEqual(image.mode, "P")

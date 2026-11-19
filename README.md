@@ -382,6 +382,10 @@ Choose **Sprites** beside **Video** to review a character's animations. Add a re
 
 **Export atlas** packs available loops for that character and camera into a ZIP containing a PNG and an Animwright-format JSON file. Each loop records its frame rectangles, ground anchor, frame rate, source take, seed and mirror choice. The export size and indexed or illustrated style apply to the whole atlas.
 
+### Test an atlas without installing H3 Editor
+
+Open [the sprite test room](editor/sprite-test.html) in a browser from a checkout or downloaded copy of this repository. Its built-in calibration marker moves in eight directions. Choose **Open PNG and JSON** to test your own exported atlas, or extract an H3 sprite ZIP and open its included `preview.html`. The room runs offline without a game, GPU, model weights or server. Switch between checkerboard, light and dark grounds to inspect the cutout, and turn on the pivot to check ground contact at native size.
+
 ## Develop
 
 `python -m unittest discover -s tests` runs from the repo root. The writer,

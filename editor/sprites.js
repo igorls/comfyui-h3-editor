@@ -6,6 +6,11 @@ const directions = (count) => ids.filter((d) => d && (count === 8 || d.length ==
 const motionOf = (s) => (s.motion === "idle" ? "idle" : s.guide || s.motion === "prompt" ? "custom" : "run");
 const actorOf = (clip, cast) => cast?.[0] || clip.sprite_group || "clip-" + clip.id;
 const slotKey = (camera, motion, direction) => [camera, motion, direction].join("/");
+function cutoutLabel(sheet) {
+  if (sheet.cutout === "foreground model") return "BiRefNet";
+  if (sheet.cutout === "background key") return "Background key";
+  return "Cutout unrecorded";
+}
 function button(label, action, pressed) {
   const b = document.createElement("button");
   b.type = "button";
@@ -246,6 +251,7 @@ export function installSprites(editor) {
       label.textContent = h;
       const row = chosen(h);
       if (row) b.append(frame(row));
+      if (row) b.title = h + " · " + cutoutLabel(row.take.sprite);
       b.append(label);
       b.setAttribute("aria-label", h + (row?.mirror ? " mirrored" : row ? "" : " empty"));
       compass.append(b);
@@ -278,6 +284,9 @@ export function installSprites(editor) {
       }
       b.prepend(frame(row));
       b.append(film);
+      const method = document.createElement("small");
+      method.textContent = cutoutLabel(row.take.sprite);
+      b.append(method);
       takes.append(b);
     }
     if (!rows.length) takes.textContent = pending ? "Rendering…" : "No takes for this direction.";

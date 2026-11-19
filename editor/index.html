@@ -10,49 +10,55 @@
 <body>
 <div class="app" id="app">
   <button class="skip-timeline" id="skipTimeline">Skip to timeline</button>
-  <header class="bar">
-    <h1 class="sr">H3 Editor</h1>
-    <button id="project" class="project-button" type="button" aria-label="Project" title="Open another project" aria-haspopup="listbox" aria-expanded="false" popovertarget="projectList"><span id="projectShot" class="project-shot empty"></span><span id="projectName" class="project-name"></span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
-    <div id="projectList" class="menu project-list" popover aria-label="Projects">
-      <div class="project-find">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L20 20"/></svg>
-        <input id="projectFind" type="text" role="combobox" aria-label="Find a project" aria-controls="projectRows" aria-expanded="true" aria-autocomplete="list" placeholder="Find a project" autocomplete="off" spellcheck="false">
-        <span id="projectCount" class="project-count"></span>
+  <header class="editor-header">
+    <div class="bar project-bar" role="group" aria-label="Project controls">
+      <h1 class="sr">H3 Editor</h1>
+      <button id="project" class="project-button" type="button" aria-label="Project" title="Open another project" aria-haspopup="listbox" aria-expanded="false" popovertarget="projectList"><span id="projectShot" class="project-shot empty"></span><span id="projectName" class="project-name"></span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+      <div id="projectList" class="menu project-list" popover aria-label="Projects">
+        <div class="project-find">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L20 20"/></svg>
+          <input id="projectFind" type="text" role="combobox" aria-label="Find a project" aria-controls="projectRows" aria-expanded="true" aria-autocomplete="list" placeholder="Find a project" autocomplete="off" spellcheck="false">
+          <span id="projectCount" class="project-count"></span>
+        </div>
+        <div id="projectRows" class="project-rows" role="listbox" aria-label="Projects, the open one first, then the last changed"></div>
       </div>
-      <div id="projectRows" class="project-rows" role="listbox" aria-label="Projects, the open one first, then the last changed"></div>
+      <button id="projectMore" class="tool" aria-label="Rename, duplicate or delete this project" title="Rename, duplicate or delete this project" aria-haspopup="menu" popovertarget="projectMenu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/></svg></button>
+      <div id="projectMenu" class="menu" popover role="menu" aria-label="This project">
+        <button id="projectRename" role="menuitem"><b>Rename</b><span>Give this project another name</span></button>
+        <button id="projectDuplicate" role="menuitem"><b>Duplicate</b><span>A copy with its clips, takes and pictures, to try another cut</span></button>
+        <button id="projectDownload" role="menuitem"><b>Download as zip</b><span>Take this project to another machine, with its takes</span></button>
+        <button id="projectOpen" role="menuitem"><b>Open a project zip</b><span>Carry on with a project downloaded here or elsewhere</span></button>
+        <button id="projectDelete" role="menuitem"><b>Delete</b><span>Move this project to the trash folder</span></button>
+      </div>
+      <button id="newProject" class="quiet">New project</button>
+      <span class="release" title="The version of H3 Editor this is">H3 Editor __RELEASE__</span>
+      <div class="spacer"></div>
+      <button id="shortcuts" class="tool tip-end" aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts (?)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6.5" width="18" height="11" rx="2"/><path d="M7 10.5h.01M10.3 10.5h.01M13.7 10.5h.01M17 10.5h.01M8.5 14h7"/></svg></button>
+      <button id="close" class="tool tip-end" aria-label="Back to the graph" data-tip="Back to the graph"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button>
     </div>
-    <button id="projectMore" class="tool" aria-label="Rename, duplicate or delete this project" title="Rename, duplicate or delete this project" aria-haspopup="menu" popovertarget="projectMenu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/></svg></button>
-    <div id="projectMenu" class="menu" popover role="menu" aria-label="This project">
-      <button id="projectRename" role="menuitem"><b>Rename</b><span>Give this project another name</span></button>
-      <button id="projectDuplicate" role="menuitem"><b>Duplicate</b><span>A copy with its clips, takes and pictures, to try another cut</span></button>
-      <button id="projectDownload" role="menuitem"><b>Download as zip</b><span>Take this project to another machine, with its takes</span></button>
-      <button id="projectOpen" role="menuitem"><b>Open a project zip</b><span>Carry on with a project downloaded here or elsewhere</span></button>
-      <button id="projectDelete" role="menuitem"><b>Delete</b><span>Move this project to the trash folder</span></button>
+    <div class="bar workspace-bar" role="group" aria-label="Workspace controls">
+      <nav class="workspace-switch" aria-label="Project workspace">
+        <button id="videoMode" aria-pressed="true">Video</button><button id="spritesMode" aria-pressed="false" disabled>Sprites</button>
+      </nav>
+      <a class="test-room-link" href="/h3take/editor-files/sprite-test.html" target="_blank" rel="noopener">Sprite test room</a>
+      <div class="spacer"></div>
+      <button id="checks" class="checks-chip" aria-haspopup="true" popovertarget="checksPanel" hidden></button>
+      <div id="checksPanel" class="menu checks-panel" popover aria-label="Checks">
+        <div class="checks-head"><h2>Checks</h2><span id="checksSummary" class="checks-summary"></span></div>
+        <div id="checksList" class="checks-list"></div>
+        <p class="checks-foot">Measured from the pictures as clips render: cuts, takes that cut, fade or stop inside, soft clips, drift, VFX edges and your ratings.</p>
+      </div>
+      <div id="contextMenu" class="menu context-menu" popover role="menu" aria-label="Actions" tabindex="-1"></div>
+      <button id="renderMenuButton" class="quiet menu-button" aria-haspopup="menu" popovertarget="renderMenu">Render<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+      <div id="renderMenu" class="menu" popover role="menu" aria-label="Batch renders">
+        <button id="renderAll" role="menuitem"><b>Render all drafts</b><span>Timeline clips that have no take yet</span></button>
+        <button id="renderFinals" role="menuitem"><b>Render all finals</b><span>Timeline clips whose selected take is not a final</span></button>
+        <button id="cancelFinals" role="menuitem" disabled><b>Cancel all finals</b><span>Stop queued and running finals in this project</span></button>
+        <button id="cancelRenders" role="menuitem" disabled><b>Cancel all renders</b><span>Stop queued and running renders in this project</span></button>
+      </div>
+      <button id="export" class="primary">Export</button>
+      <div id="queue" class="queue"></div>
     </div>
-    <button id="newProject" class="quiet">New project</button>
-    <nav class="workspace-switch" aria-label="Project workspace">
-      <button id="videoMode" aria-pressed="true">Video</button><button id="spritesMode" aria-pressed="false" disabled>Sprites</button>
-    </nav>
-    <span class="release" title="The version of H3 Editor this is">H3 Editor __RELEASE__</span>
-    <div class="spacer"></div>
-    <button id="checks" class="checks-chip" aria-haspopup="true" popovertarget="checksPanel" hidden></button>
-    <div id="checksPanel" class="menu checks-panel" popover aria-label="Checks">
-      <div class="checks-head"><h2>Checks</h2><span id="checksSummary" class="checks-summary"></span></div>
-      <div id="checksList" class="checks-list"></div>
-      <p class="checks-foot">Measured from the pictures as clips render: cuts, takes that cut, fade or stop inside, soft clips, drift, VFX edges and your ratings.</p>
-    </div>
-    <div id="contextMenu" class="menu context-menu" popover role="menu" aria-label="Actions" tabindex="-1"></div>
-    <div id="queue" class="queue"></div>
-    <button id="renderMenuButton" class="quiet menu-button" aria-haspopup="menu" popovertarget="renderMenu">Render<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
-    <div id="renderMenu" class="menu" popover role="menu" aria-label="Batch renders">
-      <button id="renderAll" role="menuitem"><b>Render all drafts</b><span>Timeline clips that have no take yet</span></button>
-      <button id="renderFinals" role="menuitem"><b>Render all finals</b><span>Timeline clips whose selected take is not a final</span></button>
-      <button id="cancelFinals" role="menuitem" disabled><b>Cancel all finals</b><span>Stop queued and running finals in this project</span></button>
-      <button id="cancelRenders" role="menuitem" disabled><b>Cancel all renders</b><span>Stop queued and running renders in this project</span></button>
-    </div>
-    <button id="export" class="primary">Export</button>
-    <button id="shortcuts" class="tool tip-end" aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts (?)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6.5" width="18" height="11" rx="2"/><path d="M7 10.5h.01M10.3 10.5h.01M13.7 10.5h.01M17 10.5h.01M8.5 14h7"/></svg></button>
-    <button id="close" class="tool tip-end" aria-label="Back to the graph" data-tip="Back to the graph"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button>
   </header>
 
   <main class="work" data-panel="viewer">

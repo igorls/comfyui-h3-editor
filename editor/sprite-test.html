@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Sprite test room · H3 Editor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font:
+          15px/1.45 system-ui,
+          "Segoe UI",
+          sans-serif;
+        color: #eeeae3;
+        background: #1b1e23;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0 auto;
+        max-width: 1060px;
+        padding: clamp(14px, 3vw, 36px);
+      }
+      header,
+      .controls {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px 16px;
+      }
+      header {
+        justify-content: space-between;
+        border-bottom: 1px solid #464b51;
+        padding-bottom: 14px;
+      }
+      h1 {
+        font-size: clamp(22px, 3vw, 30px);
+        margin: 0;
+      }
+      .controls {
+        margin: 16px 0;
+      }
+      button,
+      select,
+      .file {
+        font: inherit;
+        border: 1px solid #626972;
+        color: inherit;
+        background: #2b3036;
+        padding: 5px 9px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      select {
+        margin-left: 4px;
+      }
+      :focus-visible,
+      .file:focus-within {
+        outline: 2px solid #e8b062;
+        outline-offset: 2px;
+      }
+      .file {
+        position: relative;
+      }
+      .file input {
+        position: absolute;
+        opacity: 0;
+        inset: 0;
+        width: 100%;
+        cursor: pointer;
+      }
+      canvas {
+        width: 100%;
+        height: clamp(240px, 47vh, 500px);
+        display: block;
+        touch-action: none;
+        image-rendering: pixelated;
+      }
+      #stage[data-ground="grid"] {
+        background: repeating-conic-gradient(#55595d 0 25%, #65696c 0 50%) 0 0 / 32px 32px;
+      }
+      #stage[data-ground="light"] {
+        background: #eee;
+      }
+      #stage[data-ground="dark"] {
+        background: #1b1d1f;
+      }
+      #status {
+        color: #eed0a4;
+      }
+      .instructions {
+        color: #b9bec4;
+      }
+      button:disabled {
+        opacity: 0.5;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Sprite test room</h1>
+      <label class="file"
+        >Open PNG and JSON<input
+          id="files"
+          type="file"
+          accept=".png,.json"
+          multiple
+          aria-label="Open atlas PNG and JSON"
+      /></label>
+    </header>
+    <div class="controls">
+      <label
+        >Motion
+        <select id="motion"></select
+      ></label>
+      <label
+        >Facing
+        <select id="facing"></select
+      ></label>
+      <label
+        >Ground
+        <select id="ground">
+          <option value="grid">Checkerboard</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select></label
+      >
+      <label
+        >Scale
+        <select id="scale">
+          <option value="1">1× · native</option>
+          <option value="2">2×</option>
+        </select></label
+      >
+      <label><input type="checkbox" id="pivot" checked /> Show pivot</label>
+    </div>
+    <canvas
+      id="stage"
+      tabindex="0"
+      data-ground="grid"
+      aria-label="Movement preview. Use WASD, arrow keys, or hold a point on the ground."
+    ></canvas>
+    <div class="controls">
+      <button id="play" type="button">Pause</button><button id="step" type="button">Next pose</button
+      ><output id="frame"></output>
+    </div>
+    <p id="status" role="status"></p>
+    <p class="instructions">
+      Click the ground and move with WASD or arrow keys, or press and hold a point. To test an exported
+      atlas, select its PNG and JSON together.
+    </p>
+    <script id="bundled-atlas" type="application/json">
+      null
+    </script>
+    <script>
+      "use strict";
+      const byId = (id) => document.getElementById(id);
+      const stage = byId("stage"),
+        ctx = stage.getContext("2d");
+      const headings = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+      const pressed = new Set();
+      const keys = {
+        w: "N",
+        s: "S",
+        a: "W",
+        d: "E",
+        arrowup: "N",
+        arrowdown: "S",
+        arrowleft: "W",
+        arrowright: "E",
+      };
+      let library,
+        motion,
+        facing,
+        age = 0,
+        last = 0,
+        px = 0.5,
+        py = 0.58,
+        pointer = null,
+        loading = 0;
+      let playing = !matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      function calibration() {
+        // An original registration mark with a transparent hole, a fine edge and a direction pointer.
+        const size = 32,
+          count = 4,
+          image = document.createElement("canvas"),
+          animations = {};
+        image.width = count * size;
+        image.height = headings.length * 2 * size;
+        const pen = image.getContext("2d");
+        for (const [m, action] of ["idle", "run"].entries()) {
+          for (const [i, direction] of headings.entries()) {
+            const y = (m * headings.length + i) * size,
+              frames = [];
+            for (let n = 0; n < count; n++) {
+              const x = n * size,
+                lift = (action === "run" ? [0, -2, 0, -1] : [0, 0, -1, 0])[n];
+              pen.save();
+              pen.translate(x + 16, y + 18 + lift);
+              pen.rotate((i * Math.PI) / 4);
+              pen.fillStyle = "#f1bd6d";
+              pen.beginPath();
+              pen.moveTo(0, -13);
+              pen.lineTo(9, 8);
+              pen.lineTo(0, 4);
+              pen.lineTo(-9, 8);
+              pen.closePath();
+              pen.fill();
+              pen.clearRect(-2, -3, 4, 4);
+              pen.fillStyle = "#e4edf1";
+              pen.fillRect(-1, -13, 2, 3);
+              pen.restore();
+              frames.push({ x, y, w: size, h: size });
+            }
+            animations[action + "_" + direction] = {
+              direction,
+              fps: m ? 10 : 5,
+              frames,
+              anchor: { x: 16, y: 28 },
+            };
+          }
+        }
+        return { image, animations, name: "Calibration marker" };
+      }
+      function options(select, values, choice) {
+        select.replaceChildren(...values.map((v) => new Option(v, v)));
+        select.value = values.includes(choice) ? choice : values[0];
+      }
+      function install(source) {
+        library = source;
+        age = 0;
+        px = 0.5;
+        py = 0.58;
+        options(byId("motion"), Object.keys(source.moves), "run");
+        chooseMotion();
+      }
+      function chooseMotion() {
+        motion = byId("motion").value;
+        options(
+          byId("facing"),
+          headings.filter((d) => library.moves[motion][d]),
+          facing || "S",
+        );
+        facing = byId("facing").value;
+        age = 0;
+        describe();
+      }
+      function describe() {
+        byId("status").textContent = library.name;
+        byId("play").textContent = playing ? "Pause" : "Play";
+      }
+      function prepare(image, animations, name) {
+        const moves = Object.create(null);
+        if (!animations || typeof animations !== "object") throw Error("The JSON has no animations.");
+        for (const [key, loop] of Object.entries(animations)) {
+          const split = key.lastIndexOf("_"),
+            action = key.slice(0, split),
+            d = loop?.direction || key.slice(split + 1);
+          if (!headings.includes(d) || split < 1) continue;
+          const validFrame = (r) =>
+            r &&
+            [r.x, r.y, r.w, r.h].every(Number.isSafeInteger) &&
+            r.x >= 0 &&
+            r.y >= 0 &&
+            r.w > 0 &&
+            r.h > 0 &&
+            r.x + r.w <= image.width &&
+            r.y + r.h <= image.height;
+          if (
+            !Array.isArray(loop.frames) ||
+            !loop.frames.length ||
+            !loop.frames.every(validFrame) ||
+            !Number.isFinite(loop.fps) ||
+            loop.fps <= 0 ||
+            !Number.isFinite(loop.anchor?.x) ||
+            !Number.isFinite(loop.anchor?.y)
+          ) {
+            throw Error("Invalid frame bounds, timing or pivot in " + key + ".");
+          }
+          (moves[action] ||= Object.create(null))[d] = loop;
+        }
+        if (!Object.keys(moves).length) throw Error("The atlas has no directional sprite loops.");
+        return { image, moves, name };
+      }
+      async function loadArt(src) {
+        const image = new Image();
+        image.src = src;
+        await image.decode();
+        return image;
+      }
+      byId("files").onchange = async (e) => {
+        const ticket = ++loading,
+          files = Array.from(e.target.files);
+        e.target.value = "";
+        const png = files.find((f) => /\.png$/i.test(f.name)),
+          json = files.find((f) => /\.json$/i.test(f.name));
+        if (!png || !json || files.length !== 2) {
+          byId("status").textContent = "Choose one atlas PNG and its JSON together.";
+          return;
+        }
+        const url = URL.createObjectURL(png);
+        try {
+          const [image, meta] = await Promise.all([loadArt(url), json.text().then(JSON.parse)]);
+          const next = prepare(image, meta.animations, png.name);
+          if (ticket === loading) install(next);
+        } catch (error) {
+          if (ticket === loading) byId("status").textContent = "Could not open atlas. " + error.message;
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      byId("motion").onchange = chooseMotion;
+      byId("facing").onchange = (e) => {
+        facing = e.target.value;
+        age = 0;
+        describe();
+      };
+      byId("ground").onchange = (e) => (stage.dataset.ground = e.target.value);
+      byId("play").onclick = () => {
+        playing = !playing;
+        describe();
+      };
+      byId("step").onclick = () => {
+        const loop = library.moves[motion][facing];
+        if (!loop) return;
+        playing = false;
+        age = (Math.floor(age * loop.fps) + 1.0001) / loop.fps;
+        describe();
+      };
+      stage.onkeydown = (e) => {
+        const key = keys[e.key.toLowerCase()];
+        if (key) {
+          e.preventDefault();
+          pressed.add(key);
+        }
+      };
+      stage.onkeyup = (e) => {
+        const key = keys[e.key.toLowerCase()];
+        if (key) {
+          e.preventDefault();
+          pressed.delete(key);
+        }
+      };
+      const stop = () => {
+        pressed.clear();
+        pointer = null;
+      };
+      stage.onblur = stop;
+      window.addEventListener("blur", stop);
+      function point(e) {
+        const b = stage.getBoundingClientRect();
+        pointer = { x: e.clientX - b.left, y: e.clientY - b.top };
+      }
+      stage.onpointerdown = (e) => {
+        stage.focus();
+        stage.setPointerCapture(e.pointerId);
+        point(e);
+      };
+      stage.onpointermove = (e) => {
+        if (pointer) point(e);
+      };
+      stage.onpointerup = stage.onpointercancel = () => (pointer = null);
+      function tick(now) {
+        const dt = last ? Math.min((now - last) / 1000, 0.05) : 0;
+        last = now;
+        const w = stage.clientWidth,
+          h = stage.clientHeight;
+        if (stage.width !== w || stage.height !== h) {
+          stage.width = w;
+          stage.height = h;
+        }
+        let dx = Number(pressed.has("E")) - Number(pressed.has("W")),
+          dy = Number(pressed.has("S")) - Number(pressed.has("N"));
+        if (!dx && !dy && pointer) {
+          const a = pointer.x - px * w,
+            b = pointer.y - py * h;
+          dx = Math.abs(a) > 3 ? Math.sign(a) : 0;
+          dy = Math.abs(b) > 3 ? Math.sign(b) : 0;
+        }
+        if (dx || dy) {
+          const d = (dy < 0 ? "N" : dy > 0 ? "S" : "") + (dx < 0 ? "W" : dx > 0 ? "E" : "");
+          if (d !== facing) {
+            facing = d;
+            byId("facing").value = d;
+          }
+          const speed = (dt * 95) / Math.hypot(dx, dy);
+          px = Math.min(0.98, Math.max(0.02, px + (dx * speed) / w));
+          py = Math.min(0.98, Math.max(0.02, py + (dy * speed) / h));
+        }
+        if (playing) age += dt;
+        ctx.clearRect(0, 0, w, h);
+        const x = Math.round(px * w),
+          y = Math.round(py * h);
+        const loop = library.moves[motion][facing];
+        if (loop) {
+          const n = Math.floor(age * loop.fps) % loop.frames.length,
+            f = loop.frames[n],
+            s = Number(byId("scale").value);
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(
+            library.image,
+            f.x,
+            f.y,
+            f.w,
+            f.h,
+            Math.round(x - loop.anchor.x * s),
+            Math.round(y - loop.anchor.y * s),
+            f.w * s,
+            f.h * s,
+          );
+          byId("frame").value =
+            facing + " · Pose " + (n + 1) + " of " + loop.frames.length + " · " + loop.fps + " fps";
+        } else byId("frame").value = "No " + motion + " take facing " + facing;
+        if (byId("pivot").checked) {
+          ctx.fillStyle = "#1b2025";
+          ctx.fillRect(x - 7, y - 1, 15, 3);
+          ctx.fillRect(x - 1, y - 7, 3, 15);
+          ctx.fillStyle = "#78e5ce";
+          ctx.fillRect(x - 6, y, 13, 1);
+          ctx.fillRect(x, y - 6, 1, 13);
+        }
+        requestAnimationFrame(tick);
+      }
+      const marker = calibration();
+      install(prepare(marker.image, marker.animations, marker.name));
+      const bundled = JSON.parse(byId("bundled-atlas").textContent);
+      if (bundled) {
+        const ticket = loading;
+        loadArt("sprites.png")
+          .then((image) => {
+            if (ticket === loading) install(prepare(image, bundled.animations, "sprites.png"));
+          })
+          .catch(() => {
+            if (ticket === loading)
+              byId("status").textContent = "Open the extracted folder with sprites.png beside this page.";
+          });
+      }
+      requestAnimationFrame(tick);
+    </script>
+  </body>
+</html>

@@ -45,7 +45,7 @@ button:disabled { opacity: 0.42; cursor: default; }
 .sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .count { margin-left: 4px; color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
 
-.app { --timeline-height: min(calc(var(--tl-h) + var(--tl-extra, 0px)), max(160px, calc(100dvh - 280px))); display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 48px minmax(0, 1fr) 6px var(--timeline-height); height: 100vh; }
+.app { --timeline-height: min(calc(var(--tl-h) + var(--tl-extra, 0px)), max(160px, calc(100dvh - 280px))); display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) 6px var(--timeline-height); height: 100vh; }
 .workspace-panels { display: none; }
 .skip-timeline { position: fixed; z-index: 30; top: 5px; left: 8px; background: var(--raised); transform: translateY(-160%); }
 .skip-timeline:focus-visible { transform: none; }
@@ -111,6 +111,19 @@ button:disabled { opacity: 0.42; cursor: default; }
 .checks-empty { margin: 0; padding: 6px 10px 10px; color: var(--muted); }
 .checks-foot { margin: 4px 0 0; padding: 8px 10px 6px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 .queue { margin-right: 2px; }
+.editor-header .bar { min-width: 0; gap: 6px; }
+.project-bar { min-height: 40px; }
+.workspace-bar { min-height: 37px; padding-block: 3px; background: var(--room); }
+.editor-header .bar .spacer { display: block; min-width: 0; }
+.workspace-bar .queue { min-width: 0; max-width: min(35vw, 480px); }
+.workspace-bar .queue-chip { max-width: 100%; }
+.queue-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.checks-chip[hidden] { display: none; }
+.test-room-link { display: none; color: var(--muted); padding: 4px 6px; }
+.sprites-open .test-room-link { display: inline; }
+@media (max-width: 600px) {
+  .workspace-bar:has(.queue-chip) .queue { flex: 1 0 100%; max-width: 100%; }
+}
 .release { margin-left: 4px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; user-select: text; }
 .queue-chip { display: flex; align-items: center; gap: 8px; padding: 5px 10px; background: transparent; border: 1px solid var(--line); color: var(--live); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .queue-chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
@@ -1047,6 +1060,12 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--tungsten); 
   .bar .quiet, .bar .primary { padding-inline: 8px; }
   .screen { margin: 6px 6px 0; }
   .tl-head { padding-inline: 6px; }
+}
+@media (max-width: 960px) and (max-height: 700px) {
+  /* Share one scroller when the two collection headers would squeeze out the clip list. */
+  .work[data-panel="clips"] .bin { overflow-y: auto; }
+  .work[data-panel="clips"] .bin > :is(.panel-head, .clips, .cast) { flex: none; }
+  .work[data-panel="clips"] .bin > :is(.clips, .cast) { overflow: visible; max-height: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
