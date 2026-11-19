@@ -652,7 +652,7 @@ export function installSprites(editor) {
     refresh();
     $("spriteStatus").textContent = "Packing " + picks.length + " animation slots…";
     try {
-      await editor.download(name, { tile: Number($("spriteTile").value), style: style(), picks });
+      await editor.download(name, { tile: Number($("spriteTile").value), fps: Number($("spriteFps").value) || null, style: style(), picks });
     } catch (error) {
       editor.toast(error.message, true);
     } finally {

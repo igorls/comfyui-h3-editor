@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import numpy as np
@@ -153,6 +154,55 @@ class SpriteProjectTest(unittest.TestCase):
 
 
 class SpriteImageTest(unittest.TestCase):
+    def test_24fps_run_extracts_each_source_frame_and_reuses_the_crop(self):
+        frames = []
+        for n in range(sprite.FRAMES):
+            frame = Image.new("RGB", (256, 384), "white")
+            ImageDraw.Draw(frame).rectangle((95, 110, 155, 250), fill=(25 + n * 4, 65, 145))
+            frames.append(frame)
+        layout = {"start": 6, "height": 140, "center": 125, "ground": 250}
+        original, _, _ = sprite.strips(frames, 7, layout)
+        dense, indexed, saved = sprite.strips(frames, 7, layout, export_24fps=True)
+        self.assertEqual(saved, layout)
+        self.assertEqual(dense.size, (14 * 64, 64))
+        self.assertEqual(indexed.size, dense.size)
+        for i in range(14):
+            cell = dense.crop((64 * i, 0, 64 * (i + 1), 64))
+            self.assertEqual(cell.getpixel((32, 40)), (25 + (6 + i) * 4, 65, 145, 255))
+            if i % 2 == 0:
+                self.assertEqual(cell.tobytes(), original.crop((32*i, 0, 32*i + 64, 64)).tobytes())
+
+    def test_24fps_idle_and_named_gesture_preserve_their_playback_duration(self):
+        idle = sprite.playback_indices({"start": 6}, 7, True, True)
+        self.assertEqual(idle[::2], list(range(6, 19)) + list(range(17, 6, -1)))
+        self.assertEqual(idle[1::2], idle[::2])
+        self.assertEqual(len(idle) / 24, 12 / 6)
+        layout = {"start": 2, "indices": [2, 6, 11, 15, 19, 24, 28]}
+        gesture = sprite.playback_indices(layout, 7, False, True)
+        self.assertEqual(gesture, list(range(2, 29)) + [28] * 3)
+        fps = sprite.playback_fps(layout, 7, False)
+        self.assertLessEqual(abs(len(gesture) / 24 - 7 / fps), 0.5 / 24)
+
+    def test_long_and_short_atlas_loops_wrap_with_valid_frame_rectangles(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(sprite, "MAX_ATLAS_PIXELS", 8*64*64):
+            rows = []
+            for name, count in [("run_N", 3), ("run_E", 3), ("run_W", 1)]:
+                path = Path(tmp) / (name + ".png")
+                strip = Image.new("RGBA", (count * 64, 64))
+                for i in range(count):
+                    strip.putpixel((i * 64, 0), (50 + len(rows), i, 20, 255))
+                strip.save(path)
+                rows.append((name, path, dict(poses=count, pivot=[32, 59], fps=24), dict(mirrored=False)))
+            with zipfile.ZipFile(io.BytesIO(sprite.pack_atlas(rows, 64, "illustrated"))) as archive:
+                meta = json.loads(archive.read("sprites.json"))
+                with Image.open(io.BytesIO(archive.read("sprites.png"))) as image:
+                    self.assertEqual(image.size, (256, 128))
+                    for row, (name, _, sheet, _) in enumerate(rows):
+                        frames = meta["animations"][name]["frames"]
+                        self.assertEqual(len(frames), sheet["poses"])
+                        for i, f in enumerate(frames):
+                            self.assertEqual(image.getpixel((f["x"], f["y"])), (50 + row, i, 20, 255))
+
     def test_orthographic_guides_are_periodic_and_directional(self):
         signatures = set()
         for camera in sprite.CAMERAS:

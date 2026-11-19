@@ -4785,8 +4785,8 @@ function spritePlayback(clip, take) {
   preview.role = "img";
   preview.setAttribute("aria-label", "Sprite loop at game size");
   const frames = () => [{ backgroundPositionX: "0px" }, { backgroundPositionX: -(sheet.tile * sheet.poses) + "px" }];
-  const animation = preview.animate(frames(),
-    { duration: 1000 * sheet.poses / sheet.fps, easing: "steps(" + sheet.poses + ", end)", iterations: Infinity });
+  const timing = () => ({ duration: 1000 * sheet.poses / sheet.fps, easing: "steps(" + sheet.poses + ", end)", iterations: Infinity });
+  const animation = preview.animate(frames(), timing());
   const play = document.createElement("button");
   play.type = "button";
   play.className = "quiet";
@@ -4818,51 +4818,63 @@ function spritePlayback(clip, take) {
   const info = document.createElement("p");
   info.className = "hint";
   info.setAttribute("aria-live", "polite");
-  const describe = () => sheet.fps + " fps" + (sheet.cutout ? " · " + sheet.cutout : "");
+  const describe = () => sheet.poses + " frames · " + sheet.fps + " fps" + (sheet.cutout ? " · " + sheet.cutout : "");
   info.textContent = describe();
   let request = 0;
-  const size = spriteChoice("Export size", [64, 128, 256].map(n => [String(n), n + " px"]), String(sheet.tile), changeSize);
-  const select = size.querySelector("select");
-  async function changeSize(value) {
+  const size = spriteChoice("Export size", [64, 128, 256].map(n => [String(n), n + " px"]), String(sheet.tile), changeExport);
+  const rate = spriteChoice("Frame rate", [["", "Original · " + sheet.fps + " fps"], ["24", "24 fps"]], "", changeExport);
+  const tileSelect = size.querySelector("select");
+  const rateSelect = rate.querySelector("select");
+  let appliedRate = "";
+  function remember() {
+    try {
+      localStorage.setItem(preference, tileSelect.value);
+      localStorage.setItem(preference + ".fps", rateSelect.value);
+    } catch (_) {}
+  }
+  async function changeExport() {
     const ticket = ++request;
-    const tile = Number(value);
-    const key = preference + "." + tile;
-    try { localStorage.setItem(preference, value); } catch (_) {}
+    const tile = Number(tileSelect.value), fps = Number(rateSelect.value) || null;
+    const key = [preference, tile, fps || "original"].join(".");
+    remember();
     try {
       let result = take.sprite;
-      if (tile !== result.tile) {
+      if (tile !== result.tile || fps) {
         info.textContent = "Preparing " + tile + " px PNGs from this take…";
         download.hidden = true;
         if (!spriteExports.has(key)) {
-          const pending = postJson("/project/" + folder + "/sprite-export", { clip: clip.id, take: take.id, tile });
+          const pending = postJson("/project/" + folder + "/sprite-export", { clip: clip.id, take: take.id, tile, fps });
           spriteExports.set(key, pending.catch(error => { spriteExports.delete(key); throw error; }));
         }
         result = await spriteExports.get(key);
       }
       if (ticket !== request) return;
       sheet = result;
+      appliedRate = rateSelect.value;
       preview.style.width = preview.style.height = sheet.tile + "px";
       animation.effect.setKeyframes(frames());
+      animation.effect.updateTiming(timing());
       show(outputStyle);
       info.textContent = describe();
     } catch (error) {
       if (ticket !== request) return;
-      select.value = String(sheet.tile);
-      if (select.isConnected) {
-        try { localStorage.setItem(preference, select.value); } catch (_) {}
+      tileSelect.value = String(sheet.tile);
+      rateSelect.value = appliedRate;
+      if (tileSelect.isConnected) {
+        remember();
         info.textContent = error.message;
       }
     } finally {
       if (ticket === request) download.hidden = false;
     }
   }
-  let remembered;
-  try { remembered = localStorage.getItem(preference); } catch (_) {}
-  if (["128", "256"].includes(remembered)) {
-    select.value = remembered;
-    changeSize(remembered);
-  }
-  return section("Sprite loop", [size, style, stage, controls, info]);
+  try {
+    const remembered = localStorage.getItem(preference);
+    if (["64", "128", "256"].includes(remembered)) tileSelect.value = remembered;
+    if (localStorage.getItem(preference + ".fps") === "24") rateSelect.value = "24";
+  } catch (_) {}
+  if (Number(tileSelect.value) !== sheet.tile || rateSelect.value) changeExport();
+  return section("Sprite loop", [size, rate, style, stage, controls, info]);
 }
 
 function midGuideLimits(clip, seconds = clip.seconds) {
@@ -11515,7 +11527,7 @@ const spritesRoom = installSprites({
     if (!response.ok) throw new Error((await response.json()).error || "Could not export sprites");
     const url = URL.createObjectURL(await response.blob());
     const link = document.createElement("a");
-    link.download = name + "-" + options.tile + "px-" + options.style + ".zip";
+    link.download = name + "-" + options.tile + "px-" + options.style + (options.fps ? "-" + options.fps + "fps" : "") + ".zip";
     link.href = url; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   },

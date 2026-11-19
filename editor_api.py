@@ -1803,7 +1803,14 @@ def comfy_queue():
 SPRITE_EXPORTS = {}
 
 
-async def make_sprite_export(take, tile, folder, stem, names):
+def sprite_export_fps(body):
+    fps = body.get("fps")
+    if fps is not None and (type(fps) is not int or fps != 24):
+        raise ValueError("Choose the original frame rate or 24 fps.")
+    return fps
+
+
+async def make_sprite_export(take, variant, folder, stem, names, export_24fps):
     """Repack the saved movie. Only the clip decoder, optional matte and PNG writer enter the queue."""
     from server import PromptServer
 
@@ -1814,12 +1821,13 @@ async def make_sprite_export(take, tile, folder, stem, names):
         "file": "/".join(filter(None, (take.get("subfolder"), take["file"]))), "first": 0,
         "last": store.sprite.FRAMES, "frames_only": True}},
         "2": {"class_type": "H3SpriteSheet", "inputs": {
-            "images": ["1", 0], "poses": poses, "layout": json.dumps(sheet["layout"]), "cell_size": str(tile),
+            "images": ["1", 0], "poses": poses, "layout": json.dumps(sheet["layout"]), "cell_size": str(variant["tile"]),
+            "export_24fps": export_24fps,
             "idle": sheet["poses"] == 2 * poses - 2, "filename_prefix": folder + "/" + prefix}}}
     if sheet.get("cutout") == "foreground model":
         model = store.sprite.matte_model(available_models())
         if not model:
-            raise Refused("This take used BiRefNet. Install its background removal model to export another size.")
+            raise Refused("This take used BiRefNet. Install its background removal model to export this variant.")
         graph["3"] = {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": model}}
         graph["2"]["inputs"]["bg_model"] = ["3", 0]
     temporary = {style: output_path(folder, prefix + "." + style + ".png") for style in names}
@@ -1832,13 +1840,14 @@ async def make_sprite_export(take, tile, folder, stem, names):
             if record:
                 break
             if job not in running and job not in waiting:
-                raise Refused("The sprite export left the queue before saving. Select the size again to retry.")
+                raise Refused("The sprite export left the queue before saving. Retry the export.")
             await asyncio.sleep(.25)
         result = record.get("outputs", {}).get("2", {}).get("sprite")
         if not result:
             raise Refused(failure(record))
-        if result[0]["poses"] != sheet["poses"] or not all(os.path.isfile(p) for p in temporary.values()):
-            raise Refused("The export did not produce both PNGs with the original pose count.")
+        if (any(result[0].get(k) != variant[k] for k in ("poses", "fps", "tile"))
+                or not all(os.path.isfile(p) for p in temporary.values())):
+            raise Refused("The export did not produce both PNGs with the requested timing and size.")
         for style, path in temporary.items():
             os.replace(path, output_path(folder, names[style]))
     finally:
@@ -1859,31 +1868,36 @@ async def sprite_export(request):
     if not take or not take.get("sprite"):
         return refused("Choose an existing Sprite Draft take.", 404)
     try:
-        return web.json_response(await sized_sprite(name, take, tile))
+        return web.json_response(await sized_sprite(name, take, tile, sprite_export_fps(body)))
     except FileNotFoundError as error:
         return refused(error, 404)
-    except Refused as error:
+    except (ValueError, Refused) as error:
         return refused(error)
 
 
-async def sized_sprite(name, take, tile):
+async def sized_sprite(name, take, tile, fps=None):
     sheet = take["sprite"]
-    if tile == sheet["tile"]:
+    if tile == sheet["tile"] and fps is None:
         return dict(sheet, subfolder=take["subfolder"])
     folder = "%s/%s/clips" % (store.ROOT, name)
     stem = os.path.splitext(os.path.basename(take["file"]))[0] + ".%dpx" % tile
+    if fps is not None:
+        stem += ".24fps"
     names = {style: stem + "." + style + ".png" for style in ("illustrated", "indexed")}
+    variant = dict(sheet, **names, tile=tile, subfolder=folder,
+                   pivot=[v * tile // sheet["tile"] for v in sheet["pivot"]])
+    if fps is not None:
+        variant.update(fps=fps, poses=round(sheet["poses"] * fps / sheet["fps"]))
     if not all(os.path.isfile(output_path(folder, file)) for file in names.values()):
         if not os.path.isfile(output_path(take.get("subfolder"), take["file"])):
             raise FileNotFoundError("The source movie for this take is missing.")
         key = (folder, stem)
         if key not in SPRITE_EXPORTS:
-            task = asyncio.create_task(make_sprite_export(take, tile, folder, stem, names))
+            task = asyncio.create_task(make_sprite_export(take, variant, folder, stem, names, fps is not None))
             SPRITE_EXPORTS[key] = task
             task.add_done_callback(lambda _: SPRITE_EXPORTS.pop(key, None))
         await asyncio.shield(SPRITE_EXPORTS[key])
-    return dict(sheet, **names, tile=tile, subfolder=folder,
-                pivot=[v * tile // sheet["tile"] for v in sheet["pivot"]])
+    return variant
 
 
 async def sprite_atlas(request):
@@ -1902,6 +1916,7 @@ async def sprite_atlas(request):
     rows = []
     seen = set()
     try:
+        fps = sprite_export_fps(body)
         for pick in picks:
             if not isinstance(pick, dict):
                 raise ValueError("Invalid sprite selection.")
@@ -1924,7 +1939,7 @@ async def sprite_atlas(request):
             expected = facing.translate(str.maketrans("EW", "WE")) if mirror else facing
             if expected != key[1]:
                 raise ValueError("The selected take faces a different direction.")
-            sheet = await sized_sprite(name, take, tile)
+            sheet = await sized_sprite(name, take, tile, fps)
             rows.append(("_".join(key), output_path(sheet["subfolder"], sheet[style]), sheet,
                          dict(clip=clip["id"], take=take["id"], seed=take.get("seed"), source_direction=facing, mirrored=mirror)))
         archive_bytes = await asyncio.to_thread(store.sprite.pack_atlas, rows, tile, style)
