@@ -3,3 +3,5 @@
 docs/
 tests/
 .github/
+tools/flash_pose_bench/
+tools/motion_transfer_bench.py
