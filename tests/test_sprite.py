@@ -80,7 +80,7 @@ class SpriteProjectTest(unittest.TestCase):
 
     def test_finish_uses_selected_take_after_shot_changes(self):
         project.update_clip(self.project, self.id, {"sprite": {"direction": "W", "poses": 8}})
-        draft, _ = self.plan()
+        draft, draft_graph = self.plan()
         layout = {"start": 8, "height": 150.0, "center": 128, "ground": 300}
         take = dict(
             id=draft["take"],
@@ -102,6 +102,12 @@ class SpriteProjectTest(unittest.TestCase):
         self.assertEqual(graph["15"]["class_type"], "H3LoadTake")
         self.assertEqual(json.loads(graph["211"]["inputs"]["layout"]), layout)
         self.assertEqual(graph["211"]["inputs"]["poses"], 8)
+        sampler = graph[graph["91"]["inputs"]["samples"][0]]
+        guider = graph[sampler["inputs"]["guider"][0]]
+        conditioning = graph[guider["inputs"]["conditioning"][0]]["inputs"]
+        self.assertIn("facing west", conditioning["prompt"])
+        self.assertEqual(conditioning["prompt"], draft_graph["10"]["inputs"]["prompt"])
+        self.assertEqual(graph[conditioning["ref_videos.ref_video_0"][0]], draft_graph["210"])
         self.assertEqual(job["saved"]["sprite"]["direction"], "W")
         self.assertEqual(self.clip["sprite"]["direction"], "N")
 

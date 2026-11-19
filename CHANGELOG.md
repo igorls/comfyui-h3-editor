@@ -5,7 +5,7 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
-## 0.13.0 (unreleased)
+## 0.13.0, 2026-11-18
 
 - Experimental Sprite Draft adds a directional motion guide to independent shots. Choose a cardinal facing and an eye-level, RPG or overhead view. Preview the loop at game size and download transparent illustrated and indexed PNG strips. Finish draft keeps the selected take’s seed, loop timing, scale and pivot.
 - Sprite Draft can generate a planted idle loop at 6 fps. Auto cutout uses an installed BiRefNet model on the selected poses, removes the backdrop colour from soft edges and filters coverage at game size. The background key remains available. Existing Sprite Draft takes export at 64, 128 and 256 px per cell from the saved video, with the original poses, timing and ground pivot. Both PNG styles are cached per size.
@@ -16,6 +16,9 @@ Each release is a tag on GitHub, `v` followed by the version.
 - Try the optional VOSR2 2× upscaler on imported footage and final takes. Choosing it explicitly produces a separate take and preserves the source audio. Fine texture can flicker between frames.
 - Open contextual actions with right-click or Shift+F10 on the bin, viewer, timeline, inspector and dialogs. Extend and Bridge appear together on timeline clips. Compact windows can switch between Clips and cast, Viewer and Inspector.
 - Short footage imports now use a poster frame inside the clip. Shot duration errors show the value the project kept.
+- Edit a 2–15 second range with a prompt and compare two takes with a synchronized swipe. The clips panel also offers a grid view.
+- Edit track volume, fades and volume points on the waveform. Drag style markers directly on the Look lane.
+- Experimental motion transfer uses a source performance and a character reference to generate a new take with the source audio. It requires the pose and ControlNet models listed in the README.
 
 ## 0.12.0, 2026-11-17
 
