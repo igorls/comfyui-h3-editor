@@ -4689,9 +4689,13 @@ function framesFor(clip) {
 
 function spriteChoice(label, options, value, choose) {
   const wrap = document.createElement("label");
+  wrap.className = "choice";
+  const title = document.createElement("span");
+  title.textContent = label;
   const select = document.createElement("select");
+  select.dataset.key = "Sprite " + label;
   select.setAttribute("aria-label", label);
-  wrap.append(label, select);
+  wrap.append(title, select);
   for (const [id, title] of options) select.append(new Option(title, id));
   select.value = value;
   select.onchange = () => choose(select.value);
@@ -4703,6 +4707,7 @@ function spriteSection(clip) {
   const label = document.createElement("label");
   const toggle = document.createElement("input");
   toggle.type = "checkbox";
+  toggle.dataset.key = "Enable Sprite Draft";
   toggle.checked = Boolean(config);
   label.className = "sprite-enable";
   label.append(toggle, "Enable Sprite Draft");
@@ -4759,8 +4764,6 @@ function spriteSection(clip) {
       spriteChoice("Cutout", [["auto", "Auto · prefer BiRefNet"], ["edge", "Background key"]],
         config.cutout || "auto", cutout => update({ ...config, cutout })), hint,
     );
-  }
-  if (config) {
     const open = document.createElement("button");
     open.className = "quiet";
     open.textContent = "Open in Sprites";
@@ -4786,6 +4789,7 @@ function spritePlayback(clip, take) {
     { duration: 1000 * sheet.poses / sheet.fps, easing: "steps(" + sheet.poses + ", end)", iterations: Infinity });
   const play = document.createElement("button");
   play.type = "button";
+  play.className = "quiet";
   function playback(running) {
     if (running) animation.play();
     else animation.pause();
@@ -4806,8 +4810,11 @@ function spritePlayback(clip, take) {
   const style = spriteChoice("Output style", [["illustrated", "Illustrated"], ["indexed", "Indexed · 15 colors"]],
     "illustrated", show);
   const controls = document.createElement("div");
-  controls.className = "sprite-transport";
-  controls.append(preview, play, download);
+  controls.className = "sprite-loop-actions";
+  controls.append(play, download);
+  const stage = document.createElement("div");
+  stage.className = "sprite-loop-stage";
+  stage.append(preview);
   const info = document.createElement("p");
   info.className = "hint";
   info.setAttribute("aria-live", "polite");
@@ -4855,7 +4862,7 @@ function spritePlayback(clip, take) {
     select.value = remembered;
     changeSize(remembered);
   }
-  return section("Sprite loop", [size, style, controls, info]);
+  return section("Sprite loop", [size, style, stage, controls, info]);
 }
 
 function midGuideLimits(clip, seconds = clip.seconds) {

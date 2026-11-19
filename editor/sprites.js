@@ -73,6 +73,7 @@ export function installSprites(editor) {
   const room = $("spritesRoom"),
     stage = $("spriteArena");
   const ctx = stage.getContext("2d");
+  $("spriteReferencePanel").open = !matchMedia("(max-width: 720px)").matches;
   const keys = new Set(),
     pictures = new Map();
   let pointer = null;
@@ -209,6 +210,7 @@ export function installSprites(editor) {
   }
   function refresh() {
     if (!open() || !project()) return;
+    const focusKey = document.activeElement?.dataset.spriteFocus;
     if (folder !== editor.state.folder) reset();
     const people = roster();
     const background = project().sprite_ground;
@@ -224,19 +226,22 @@ export function installSprites(editor) {
     const person = people.get(actor);
     const cast = project().cast?.find((p) => p.id === actor);
     $("spritePeople").replaceChildren(
-      ...Array.from(people.values(), (p) =>
-        button(
+      ...Array.from(people.values(), (p) => {
+        const b = button(
           p.name,
           () => {
             pickActor(p.id);
             refresh();
           },
           p.id === actor,
-        ),
-      ),
+        );
+        b.dataset.spriteFocus = "actor:" + p.id;
+        return b;
+      }),
     );
     $("spriteTitle").textContent = person?.name || "Add a character reference to start";
     const refs = $("spriteRefs");
+    $("spriteReferencePanel").hidden = !cast;
     refs.replaceChildren();
     if (cast) {
       for (const asset of [cast, ...(cast.pictures || [])].filter((a) => a.file)) {
@@ -245,7 +250,9 @@ export function installSprites(editor) {
         img.src = editor.viewUrl(asset.file, asset.subfolder);
         refs.append(img);
       }
-      refs.append(button("Edit references", () => editor.editCast(cast.id)));
+      const edit = button("Edit references", () => editor.editCast(cast.id));
+      edit.dataset.spriteFocus = "references";
+      refs.append(edit);
     }
     animations = animationsFor(project(), actor);
     if (!animations.has(motion)) motion = "run";
@@ -263,8 +270,10 @@ export function installSprites(editor) {
     $("spriteCount").value = String(count);
     const compass = $("spriteCompass");
     compass.replaceChildren();
+    const headings = directions(count);
+    let filled = 0;
     for (const [pos, h] of ids.entries()) {
-      if (!directions(count).includes(h)) continue;
+      if (!headings.includes(h)) continue;
       const b = button(
         "",
         () => {
@@ -278,12 +287,21 @@ export function installSprites(editor) {
       const label = document.createElement("span");
       label.textContent = h;
       const row = chosen(h);
-      if (row) b.append(frame(row));
-      if (row) b.title = h + " · " + cutoutLabel(row.take.sprite);
+      b.dataset.spriteFocus = "direction:" + h;
+      b.classList.toggle("empty", !row);
+      if (row) {
+        filled++;
+        b.append(frame(row));
+        b.title = h + " · " + cutoutLabel(row.take.sprite);
+      } else {
+        b.title = h + " · No selected take";
+      }
       b.append(label);
       b.setAttribute("aria-label", h + (row?.mirror ? " mirrored" : row ? "" : " empty"));
       compass.append(b);
     }
+    $("spriteCoverage").textContent = filled + " of " + count + " directions have takes";
+    $("spritePlain").disabled = !background?.file;
     const show = current(),
       picked = chosen(),
       pending = slots[dir].clips.find((c) => editor.jobFor(c.id));
@@ -297,7 +315,11 @@ export function installSprites(editor) {
         " · " +
         row.take.seed;
       const selected = picked?.take.id === row.take.id && !!picked?.mirror === !!row.mirror;
-      const b = button(label, () => select(row), selected);
+      const b = button("", () => select(row), selected);
+      b.dataset.spriteFocus = (row.mirror ? "mirror:" : "take:") + row.clip.id + ":" + row.take.id;
+      const caption = document.createElement("span");
+      caption.className = "sprite-take-label";
+      caption.textContent = label;
       const film = document.createElement("span");
       film.className = "sprite-film";
       film.setAttribute("aria-hidden", "true");
@@ -310,11 +332,9 @@ export function installSprites(editor) {
         if (row.mirror) tile.style.transform = "scaleX(-1)";
         film.append(tile);
       }
-      b.prepend(frame(row));
-      b.append(film);
       const method = document.createElement("small");
       method.textContent = cutoutLabel(row.take.sprite);
-      b.append(method);
+      b.append(frame(row), caption, method, film);
       takes.append(b);
     }
     if (!rows.length) takes.textContent = pending ? "Rendering…" : "No takes for this direction.";
@@ -341,6 +361,7 @@ export function installSprites(editor) {
       ? "Queued or rendering"
       : slots[dir].clips.find((c) => c.error)?.error ||
         (audition?.mirror ? "Previewing mirror" : audition ? "Previewing editor take" : "");
+    if (focusKey) room.querySelector('[data-sprite-focus="' + CSS.escape(focusKey) + '"]')?.focus({ preventScroll: true });
     paint();
   }
   function exportPicks() {

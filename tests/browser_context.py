@@ -352,6 +352,29 @@ def exercise_sprite_animation(page, project_url):
     page.get_by_role("button", name="Herald", exact=True).click()
     expect(select).to_have_value("Wing stretch")
     assert page.locator("#spritesRoom").evaluate("el => el.scrollWidth <= el.clientWidth + 1")
+    # An empty direction stays selectable and keeps keyboard focus when its buttons are redrawn.
+    direction = page.locator("#spriteCompass").get_by_role("button", name="NE empty", exact=True)
+    direction.focus()
+    direction.press("Enter")
+    expect(direction).to_be_focused()
+    expect(page.locator("#spriteCoverage")).to_have_text("0 of 8 directions have takes")
+    page.set_viewport_size({"width": 1127, "height": 860})
+    page.get_by_role("button", name="Edit take", exact=True).click()
+    section = page.locator('[data-section="Sprite Draft"]')
+    fields = section.get_by_role("combobox")
+    expect(fields).to_have_count(5)
+    for width in (340, 250):
+        page.locator(".work").evaluate("(e,w) => e.style.setProperty('--insp-w',w+'px')", width)
+        boxes = [field.bounding_box() for field in fields.all()]
+        assert all(a["y"] + a["height"] <= b["y"] for a, b in zip(boxes, boxes[1:]))
+        assert page.locator("#inspector").evaluate("e => e.scrollWidth <= e.clientWidth + 1")
+    with page.expect_response(lambda r: r.request.method == "PUT" and "/api/project/" in r.url):
+        section.get_by_label("Loop poses").select_option("8")
+    ne_id = next(c["id"] for c in clips if c["sprite"]["direction"] == "NE")
+    stored = next(c for c in request(project_url, "GET")["clips"] if c["id"] == ne_id)
+    assert stored["sprite"]["poses"] == 8
+    section.get_by_role("button", name="Open in Sprites").click()
+    expect(page.locator("#spriteTakesTitle")).to_have_text("NE takes")
 
 
 def main():

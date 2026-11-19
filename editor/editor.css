@@ -440,7 +440,7 @@ details.section[open] > summary::after, .collection-toggle[aria-expanded="true"]
 details.section > summary .filled { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 400; }
 details.section > summary:has(.filled)::after { margin-left: 4px; }
 .inspector-foot { position: sticky; bottom: 0; margin-top: auto; padding: 10px 16px 12px; background: var(--panel); border-top: 1px solid var(--line); }
-.inspector-foot .actions { margin: 0; }
+.inspector-foot .actions { margin: 0; flex-wrap: wrap; }
 .foot-status { margin: 0 0 8px; color: var(--live); font-variant-numeric: tabular-nums; }
 
 .mod-mark { display: grid; place-items: center; width: 100%; aspect-ratio: 1; border-radius: 4px; border: 1px dashed var(--line); background: var(--room); color: var(--muted); font-size: 11px; }
@@ -1071,7 +1071,14 @@ input[type="range"]:active::-webkit-slider-thumb { background: var(--tungsten); 
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 
-.sprite-enable, .sprite-transport { display: flex; align-items: center; gap: .65rem; flex-wrap: wrap; }
+.sprite-enable { display: flex; align-items: center; gap: 8px; width: fit-content; margin-bottom: 12px; }
 .sprite-enable input { width: auto; }
-.sprite-loop { flex: none; background-repeat: no-repeat; image-rendering: pixelated; background-color: #777; }
-.sprite-transport { margin-top: .5rem; }
+.section[data-section^="Sprite "] > .choice { min-width: 0; margin-bottom: 8px; }
+.section[data-section^="Sprite "] > .choice select { min-height: 31px; text-overflow: ellipsis; }
+.sprite-loop-stage { max-width: 100%; overflow: auto; background: #484f57; border-radius: 4px; }
+.sprite-loop { margin-inline: auto; background-repeat: no-repeat; image-rendering: pixelated; }
+.sprite-loop-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0 4px; }
+.sprite-loop-actions a { color: var(--text); text-underline-offset: 3px; }
+@container (max-width: 265px) {
+  .inspector .section[data-section^="Sprite "] > .choice { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+}

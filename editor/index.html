@@ -40,7 +40,7 @@
       <nav class="workspace-switch" aria-label="Project workspace">
         <button id="videoMode" aria-pressed="true">Video</button><button id="spritesMode" aria-pressed="false" disabled>Sprites</button>
       </nav>
-      <a class="test-room-link" href="/h3take/editor-files/sprite-test.html" target="_blank" rel="noopener">Sprite test room</a>
+      <a class="test-room-link" href="/h3take/editor-files/sprite-test.html" target="_blank" rel="noopener">Sprite test room<svg aria-hidden="true" viewBox="0 0 16 16"><path d="M4 12l8-8M5 4h7v7"/></svg></a>
       <div class="spacer"></div>
       <button id="checks" class="checks-chip" aria-haspopup="true" popovertarget="checksPanel" hidden></button>
       <div id="checksPanel" class="menu checks-panel" popover aria-label="Checks">
@@ -176,37 +176,40 @@
   </main>
   <main id="spritesRoom" aria-label="Sprites workspace" hidden>
     <aside class="sprite-roster">
-      <div class="sprite-toolbar"><h2>Characters</h2><button class="quiet" id="spriteAdd">Add character</button></div>
+      <div class="sprite-toolbar"><h2>Characters</h2><button class="sprite-action" id="spriteAdd" aria-label="Add character">Add</button></div>
       <div id="spritePeople"></div>
-      <div id="spriteRefs"></div>
+      <details id="spriteReferencePanel" open><summary>References</summary><div id="spriteRefs"></div></details>
     </aside>
     <section class="sprite-desk">
       <h2 id="spriteTitle">Sprites</h2>
-      <div class="sprite-toolbar">
-        <label>Animation <select id="spriteMotion" aria-label="Animation"></select></label>
-        <button class="quiet" id="spriteAddMotion">Add animation…</button>
-        <button class="quiet" id="spriteEditMotion" hidden>Edit prompt…</button>
-        <label>Camera <select id="spriteCamera"><option value="rpg">Orthographic · 45°</option><option value="overhead">Overhead · 90°</option><option value="level">Eye level</option></select></label>
-        <label>Directions <select id="spriteCount"><option>4</option><option selected>8</option></select></label>
+      <div class="sprite-settings">
+        <div class="sprite-animation-controls">
+          <label class="sprite-field">Animation <select id="spriteMotion" aria-label="Animation"></select></label>
+          <div class="sprite-actions"><button class="sprite-action" id="spriteAddMotion">Add animation…</button><button class="sprite-action" id="spriteEditMotion" hidden>Edit prompt…</button></div>
+        </div>
+        <label class="sprite-field">Camera <select id="spriteCamera"><option value="rpg">Orthographic · 45°</option><option value="overhead">Overhead · 90°</option><option value="level">Eye level</option></select></label>
       </div>
       <div class="sprite-stage">
-        <section><h3>Directions</h3><div id="spriteCompass"></div></section>
-        <section><h3>Game preview</h3>
+        <section class="sprite-directions" aria-labelledby="spriteDirectionsTitle">
+          <div class="sprite-section-head"><h3 id="spriteDirectionsTitle">Directions</h3><select id="spriteCount" aria-label="Directions"><option value="4">4-way</option><option value="8" selected>8-way</option></select></div>
+          <div id="spriteCompass"></div><p id="spriteCoverage" class="sprite-caption"></p>
+        </section>
+        <section class="sprite-preview" aria-labelledby="spritePreviewTitle">
+          <div class="sprite-section-head"><h3 id="spritePreviewTitle">Game preview</h3><div class="sprite-actions"><button id="spriteGround" class="sprite-action">Load ground image</button><button id="spritePlain" class="sprite-action">Plain ground</button></div></div>
           <canvas id="spriteArena" width="600" height="220" tabindex="0" aria-label="Game preview. Use WASD or arrow keys to move."></canvas>
-          <div class="sprite-toolbar"><span>WASD or arrow keys</span><button id="spriteGround" class="quiet">Load ground image</button><button id="spritePlain" class="quiet">Plain ground</button></div>
+          <div class="sprite-transport"><div class="sprite-actions"><button class="quiet" id="spritePlay">Pause</button><button class="quiet" id="spriteStep">Next pose</button></div><span class="sprite-caption">WASD or arrow keys</span></div>
           <input id="spriteGroundFile" type="file" accept="image/*" hidden>
         </section>
       </div>
-      <div class="sprite-toolbar">
+      <div class="sprite-toolbar sprite-take-tools">
         <h3 id="spriteTakesTitle">Takes</h3>
-        <button class="quiet" id="spritePlay">Pause</button><button class="quiet" id="spriteStep">Next pose</button>
         <button class="quiet" id="spriteDraft">New draft</button><button class="quiet" id="spriteMirror">Mirror</button>
         <button class="quiet" id="spriteEdit">Edit take</button><button class="primary" id="spriteFinish">Finish this take</button>
       </div>
       <div id="spriteTakes"></div>
       <div class="sprite-toolbar sprite-delivery">
-        <label>Export size <select id="spriteTile"><option value="64">64 px</option><option value="128">128 px</option><option value="256">256 px</option></select></label>
-        <label>Output style <select id="spriteStyle"><option value="illustrated">Illustrated</option><option value="indexed">Indexed</option></select></label>
+        <label class="sprite-field">Export size <select id="spriteTile"><option value="64">64 px</option><option value="128">128 px</option><option value="256">256 px</option></select></label>
+        <label class="sprite-field">Output style <select id="spriteStyle"><option value="illustrated">Illustrated</option><option value="indexed">Indexed</option></select></label>
         <button id="spriteAtlas" class="quiet">Export atlas</button><span id="spriteStatus" role="status"></span>
       </div>
     </section>
