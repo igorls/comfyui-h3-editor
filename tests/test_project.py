@@ -43,7 +43,7 @@ class PromptEditTest(unittest.TestCase):
                                  ("ref2va", "start", 90))
                 self.assertEqual(conditioning["ref_videos.ref_video_0"], ["213", 0])
                 self.assertEqual((graph["213"]["inputs"]["first"], graph["213"]["inputs"]["last"]), (20, 96))
-                self.assertNotIn("20", graph)
+                self.assertEqual(graph["20"]["inputs"]["partial"], True)
                 job["id"] = "render"
                 project_module.add_pending(project, job)
                 project_module.finish_render(project, "render", {"filename": "edited.mp4"},
@@ -51,6 +51,10 @@ class PromptEditTest(unittest.TestCase):
                 self.assertEqual(original["active"], "original")
                 self.assertEqual(original["takes"][-1]["edit"]["out"], 96)
                 self.assertEqual(project["timeline"], before)
+                _, final_graph = plan_render(project, "test", "c1", "final", available=HYPERFLOW | FINALS, edit={
+                    "take": "original", "in": 20, "out": 96, "prompt": "Make the jacket red.",
+                })
+                self.assertNotIn("20", final_graph)
 
     def test_rejects_a_missing_take_or_invalid_source_range(self):
         shot = clip(takes=[{"id": "original", "frames": 400, "file": "source.mp4"}])
@@ -480,6 +484,11 @@ class FinishTest(unittest.TestCase):
                 if isinstance(value, list) and len(value) == 2 and isinstance(value[0], str):
                     self.assertIn(value[0], graph)
 
+    def test_finishing_a_whole_draft_after_cache_cleanup_explains_how_to_recover(self):
+        project, clip = self.drafted()
+        with self.assertRaisesRegex(ValueError, "no saved latents. Render a new draft"):
+            plan_render(project, "x", clip["id"], "finish", available=HYPERFLOW | FINALS, has_latents=lambda take: False)
+
     def test_only_a_draft_can_be_finished(self):
         project, clip = self.drafted()
         clip["takes"][0]["quality"] = "final"
@@ -514,6 +523,160 @@ class FinishTest(unittest.TestCase):
         project, clip = self.drafted(sizes={"final": "sharp"})
         with self.assertRaisesRegex(ValueError, "Sharp"):
             plan_render(project, "x", clip["id"], "finish", None, HYPERFLOW | FINALS)
+
+
+class PartialFinishTest(unittest.TestCase):
+    """Finishing only part of a draft (prompt edit on footage or generated shot), reusing draft latents when possible."""
+
+    def footage_with_prompt_edit_draft(self, frames=240, edit_in=0, edit_out=240, sizes=None):
+        project = new_project("Cut")
+        if sizes:
+            project["sizes"] = sizes
+        src = {"id": "t0", "file": "footage.mp4", "subfolder": "h3take_projects/cut/clips",
+               "frames": frames, "quality": "footage", "size": [1920, 1080]}
+        draft = {"id": "t1", "file": "c1_t1_00001__edit.mp4", "subfolder": "h3take_projects/cut/clips",
+                 "frames": frames, "quality": "draft", "seed": 42, "size": [1920, 1080],
+                 "edit": {"take": "t0", "in": edit_in, "out": edit_out, "prompt": "Make the jacket red.",
+                          "first": {"file": "first.png", "subfolder": "h3take_projects/cut/assets"}}}
+        shot = clip(name="Footage", kind="footage", action="", takes=[src, draft], active="t1")
+        project["clips"] = [shot]
+        project["timeline"] = [
+            {"id": "i1", "clip": "c1", "start": 0, "in": 0, "out": 100},
+            {"id": "i2", "clip": "c1", "start": 100, "in": 100, "out": frames},
+        ]
+        return project, shot
+
+    def test_split_prompt_edit_draft_finalizes_one_part_reusing_latents_then_the_rest(self):
+        project, shot = self.footage_with_prompt_edit_draft(frames=240)
+        # Before finishing, both split items count as draft in export_plan.
+        self.assertEqual(export_plan(project)["drafts"], 2)
+
+        # Finalize only the second split part (100..240) reusing the draft's latents.
+        job1, graph1 = plan_render(project, "cut", "c1", "finish", available=HYPERFLOW | FINALS,
+                                   part={"in": 100, "out": 240}, has_latents=lambda t: True)
+        self.assertEqual(graph1["15"]["class_type"], "H3LoadTake")
+        self.assertEqual(graph1["15"]["inputs"], {
+            "file": "h3take_projects/cut/clips/c1_t1_00001__edit.mp4", "first": 85, "last": 243,
+        })
+        self.assertEqual(graph1["80"]["inputs"]["length"], 158)
+        self.assertEqual((graph1["213"]["inputs"]["first"], graph1["213"]["inputs"]["last"]), (85, 240))
+        # Replacement first frame at 0 is not pinned when refining a slice starting at frame 85.
+        self.assertNotIn("start_image", graph1["80"]["inputs"])
+        self.assertNotIn("20", graph1)
+        self.assertNotIn("finish_fallback", job1)
+        self.assertEqual(job1["finished"], "t1")
+        self.assertEqual(job1["final_ranges"], [[100, 240]])
+        self.assertEqual(job1["splice"], {
+            "file": "c1_t1_00001__edit.mp4", "subfolder": "h3take_projects/cut/clips",
+            "frames": 240, "in": 100, "out": 240, "trim_start": 15, "is_edit": True,
+        })
+        job1["id"] = "j1"
+        project_module.add_pending(project, job1)
+        project_module.finish_render(project, "j1", {"filename": "c1_t2_00001__part.mp4", "subfolder": "h3take_projects/cut/clips"},
+                                     {"poster": "p.jpg", "frames": 240, "size": [1920, 1080]})
+        self.assertEqual(shot["active"], job1["take"])
+        self.assertEqual(active_take(shot)["final_ranges"], [[100, 240]])
+        # Only the first split item (0..100) still counts as draft.
+        self.assertEqual(export_plan(project)["drafts"], 1)
+        # Attempting to re-finalize the already-finalized second half is refused.
+        with self.assertRaisesRegex(ValueError, "already at final"):
+            plan_render(project, "cut", "c1", "finish", available=HYPERFLOW | FINALS,
+                        part={"in": 100, "out": 240}, has_latents=lambda t: True)
+
+        # Now finalize the first split part (0..100) on top of the partially finalized take.
+        job2, graph2 = plan_render(project, "cut", "c1", "finish", available=HYPERFLOW | FINALS,
+                                   part={"in": 0, "out": 100}, has_latents=lambda t: True)
+        # Still reuses the original draft's latents (t1), but splices onto t2 so 100..240 stay final.
+        self.assertEqual(graph2["15"]["inputs"], {
+            "file": "h3take_projects/cut/clips/c1_t1_00001__edit.mp4", "first": 0, "last": 107,
+        })
+        self.assertIn("start_image", graph2["80"]["inputs"])
+        self.assertEqual(job2["splice"]["file"], "c1_t2_00001__part.mp4")
+        self.assertEqual(job2["splice"]["trim_start"], 0)
+        # Merged ranges now cover 0..240, so final_ranges is omitted (complete final).
+        self.assertNotIn("final_ranges", job2)
+        job2["id"] = "j2"
+        project_module.add_pending(project, job2)
+        project_module.finish_render(project, "j2", {"filename": "c1_t3_00001__part.mp4", "subfolder": "h3take_projects/cut/clips"},
+                                     {"poster": "p2.jpg", "frames": 240, "size": [1920, 1080]})
+        self.assertNotIn("final_ranges", active_take(shot))
+        self.assertEqual(export_plan(project)["drafts"], 0)
+
+    def test_short_split_part_expands_window_to_meet_video_reference_minimum(self):
+        project, _ = self.footage_with_prompt_edit_draft(frames=95, edit_in=0, edit_out=95)
+        job, graph = plan_render(project, "cut", "c1", "finish", available=HYPERFLOW | FINALS,
+                                 part={"in": 80, "out": 95}, has_latents=lambda t: True)
+        ref_first, ref_last = graph["213"]["inputs"]["first"], graph["213"]["inputs"]["last"]
+        self.assertGreaterEqual(ref_last - ref_first, 48)
+        self.assertLessEqual(ref_first, 80)
+        self.assertEqual(ref_last, 95)
+        self.assertEqual(job["splice"]["trim_start"], 80 - ref_first)
+
+    def test_fallback_renders_fresh_final_when_draft_latents_are_missing_or_sharp_is_chosen(self):
+        project, _ = self.footage_with_prompt_edit_draft(frames=240)
+        # Missing latents -> fresh Final prompt edit for the selected range.
+        job, graph = plan_render(project, "cut", "c1", "finish", available=HYPERFLOW | FINALS,
+                                 part={"in": 100, "out": 240}, has_latents=lambda t: False)
+        self.assertIn("finish_fallback", job)
+        self.assertEqual(graph["15"]["class_type"], "SamplerCustomAdvanced")
+        self.assertEqual((graph["213"]["inputs"]["first"], graph["213"]["inputs"]["last"]), (100, 240))
+        self.assertEqual(job["splice"]["trim_start"], 0)
+        # Short part fallback expands window to >= 48 frames and sets trim_start accordingly.
+        job_short, graph_short = plan_render(project, "cut", "c1", "finish", available=HYPERFLOW | FINALS,
+                                             part={"in": 220, "out": 240}, has_latents=lambda t: False)
+        self.assertEqual(graph_short["213"]["inputs"]["last"] - graph_short["213"]["inputs"]["first"], 48)
+        self.assertEqual(job_short["splice"]["trim_start"], 220 - graph_short["213"]["inputs"]["first"])
+        # Missing latent upscaler -> fallback.
+        job_no_up, graph_no_up = plan_render(project, "cut", "c1", "finish", available=HYPERFLOW,
+                                             part={"in": 100, "out": 240}, has_latents=lambda t: True)
+        self.assertIn("latent upscaler", job_no_up["finish_fallback"])
+        self.assertEqual(graph_no_up["15"]["class_type"], "SamplerCustomAdvanced")
+        # Sharp final size -> fallback using RelayVSR sharp final.
+        sharp_project, _ = self.footage_with_prompt_edit_draft(frames=240, sizes={"final": "sharp"})
+        relay = set(project_module.UPSCALERS["relayvsr"]["files"].values())
+        job_sharp, graph_sharp = plan_render(sharp_project, "cut", "c1", "finish", available=HYPERFLOW | FINALS | relay,
+                                             part={"in": 100, "out": 240}, has_latents=lambda t: True)
+        self.assertIn("Sharp", job_sharp["finish_fallback"])
+        self.assertEqual(graph_sharp["15"]["class_type"], "SamplerCustomAdvanced")
+        self.assertIn("36", graph_sharp)
+
+    def test_partial_finish_on_normal_generated_draft_slices_latents_and_shifts_timing(self):
+        project = new_project("Cut")
+        project["style"] = "Oil paint"
+        shot = clip(name="Shot", seconds=5,
+                    first={"file": "start.png"}, last={"file": "end.png"},
+                    mid_guides=[{"frame": 20, "file": "early.png"}, {"frame": 70, "file": "mid.png"}],
+                    style_markers=[{"frame": 0, "style": "Oil paint"}, {"frame": 60, "style": "Ink"}],
+                    track={"file": "song.wav", "from": 2.0},
+                    takes=[{"id": "td", "file": "c1_td_00001_.mp4", "subfolder": "h3take_projects/cut/clips",
+                            "frames": 124, "quality": "draft", "seed": 99}],
+                    active="td")
+        project["clips"] = [shot]
+        job, graph = plan_render(project, "cut", "c1", "finish", available=HYPERFLOW | FINALS,
+                                 part={"in": 50, "out": 100}, has_latents=lambda t: True)
+        self.assertEqual(graph["15"]["class_type"], "H3LoadTake")
+        self.assertEqual(graph["15"]["inputs"], {
+            "file": "h3take_projects/cut/clips/c1_td_00001_.mp4", "first": 34, "last": 107,
+        })
+        self.assertEqual(graph["80"]["inputs"]["length"], 73)
+        self.assertNotIn("start_image", graph["80"]["inputs"])
+        self.assertNotIn("end_image", graph["80"]["inputs"])
+        # Guide at 70 shifted by -34 -> 36; guide at 20 dropped.
+        self.assertEqual(graph["80"]["inputs"]["mid_frames"], "36")
+        # Track audio is preserved by splice rather than overwritten with a short slice.
+        self.assertNotIn("track", job)
+        self.assertEqual(job["splice"], {
+            "file": "c1_td_00001_.mp4", "subfolder": "h3take_projects/cut/clips",
+            "frames": 124, "in": 50, "out": 100, "trim_start": 16, "is_edit": False,
+        })
+        self.assertEqual(job["final_ranges"], [[50, 100]])
+
+    def test_rejects_part_outside_edit_range_or_on_non_finish(self):
+        project, _ = self.footage_with_prompt_edit_draft(frames=240, edit_in=100, edit_out=200)
+        with self.assertRaisesRegex(ValueError, "outside the edited draft range"):
+            plan_render(project, "cut", "c1", "finish", available=HYPERFLOW | FINALS, part={"in": 0, "out": 80})
+        with self.assertRaisesRegex(ValueError, "only supported when finishing"):
+            plan_render(project, "cut", "c1", "final", available=HYPERFLOW | FINALS, part={"in": 0, "out": 80})
 
 
 class SizeTest(unittest.TestCase):

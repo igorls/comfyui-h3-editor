@@ -331,6 +331,13 @@ on the server, so closing the editor never loses one. Every change is a
 revision you can go back to, and two editors, or an editor and an agent, can
 work on one project at once.
 
+**Project storage.** Open the menu beside the project name and choose **Project
+storage** to see how much space its `.hold.safetensors` files use. **Clear unused
+files** removes cached latents the current project no longer references. Choose
+**All cached latents** to clear those for existing takes too. Your videos still
+play and export. Extensions can use frames from the video, and you can render a
+new draft when you need its original latents for finishing.
+
 | Key | Does |
 |---|---|
 | Space | Play or pause |

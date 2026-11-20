@@ -22,12 +22,13 @@
         </div>
         <div id="projectRows" class="project-rows" role="listbox" aria-label="Projects, the open one first, then the last changed"></div>
       </div>
-      <button id="projectMore" class="tool" aria-label="Rename, duplicate or delete this project" title="Rename, duplicate or delete this project" aria-haspopup="menu" popovertarget="projectMenu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/></svg></button>
+      <button id="projectMore" class="tool" aria-label="Project actions" title="Project actions" aria-haspopup="menu" popovertarget="projectMenu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/></svg></button>
       <div id="projectMenu" class="menu" popover role="menu" aria-label="This project">
         <button id="projectRename" role="menuitem"><b>Rename</b><span>Give this project another name</span></button>
         <button id="projectDuplicate" role="menuitem"><b>Duplicate</b><span>A copy with its clips, takes and pictures, to try another cut</span></button>
         <button id="projectDownload" role="menuitem"><b>Download as zip</b><span>Take this project to another machine, with its takes</span></button>
         <button id="projectOpen" role="menuitem"><b>Open a project zip</b><span>Carry on with a project downloaded here or elsewhere</span></button>
+        <button id="projectStorage" role="menuitem"><b>Project storage</b><span>See how much space cached latents use and clear them</span></button>
         <button id="projectDelete" role="menuitem"><b>Delete</b><span>Move this project to the trash folder</span></button>
       </div>
       <button id="newProject" class="quiet">New project</button>
@@ -396,6 +397,19 @@
         <option value="best">Best, the largest file</option>
         <option value="high" selected>High</option>
         <option value="small">Smaller file</option>
+<dialog id="storage" class="keys exporter" aria-labelledby="storageTitle">
+  <div class="keys-head"><h2 id="storageTitle">Project storage</h2><button id="storageClose" class="quiet" autofocus>Close</button></div>
+  <div class="exporter-body">
+    <p id="storageSummary" class="exporter-summary"></p>
+    <div class="packer-levels" role="radiogroup" aria-label="Cached latents to clear">
+      <label class="packer-level"><input id="storageUnused" name="storageScope" type="radio" checked disabled><span><b>Unused cached latents</b><small>Only files this project no longer references.</small></span><span id="storageUnusedSize" class="packer-size"></span></label>
+      <label class="packer-level"><input id="storageAll" name="storageScope" type="radio" disabled><span><b>All cached latents</b><small>Includes files for takes still in this project.</small></span><span id="storageAllSize" class="packer-size"></span></label>
+    </div>
+    <p id="storageImpact" class="hint" hidden>Extensions will use frames from the rendered video. To finish a whole draft from saved latents, render a new draft first.</p>
+    <p id="storageStatus" class="hint" role="status"></p>
+  </div>
+  <div class="exporter-foot"><button id="storageRefresh" class="quiet">Refresh</button><span class="spacer"></span><button id="storageClear" class="primary danger" disabled>Clear unused files</button></div>
+</dialog>
       </select></label>
     </div>
     <label class="check"><input id="exporterDownload" type="checkbox" checked><span>Download it to this computer when it is done</span></label>

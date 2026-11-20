@@ -67,7 +67,22 @@ class GridTest(unittest.TestCase):
 
     def test_the_file_is_named_after_the_take(self):
         self.assertEqual(holds.hold_path("a/c1_t1_00001_.mp4"), "a/c1_t1.hold.safetensors")
+        self.assertEqual(holds.hold_path("a/c1_t1_00001__edit.mp4"), "a/c1_t1.hold.safetensors")
+        self.assertEqual(holds.hold_path("a/c1_t1_00001__part.mp4"), "a/c1_t1.hold.safetensors")
         self.assertEqual(holds.hold_path("a/footage.mp4"), "a/footage.hold.safetensors")
+
+    def test_slice_window_always_covers_the_requested_frames_on_grid(self):
+        for total in (39, 124, 243):
+            for first, stop, minimum in ((0, 20, 5), (0, 20, 48), (18, 35, 5), (total - 10, total, 48)):
+                if stop > total:
+                    continue
+                grid_in, grid_len = holds.slice_window(first, stop, total, min_frames=minimum)
+                self.assertTrue(holds.on_grid(grid_in, grid_len))
+                self.assertLessEqual(0, grid_in)
+                self.assertLessEqual(grid_in, first)
+                self.assertLessEqual(stop, grid_in + grid_len)
+                self.assertLessEqual(grid_in + grid_len, total)
+                self.assertGreaterEqual(grid_len, min(minimum, total))
 
 
 @unittest.skipIf(torch is None, "needs torch and safetensors")
@@ -171,6 +186,19 @@ class FileTest(unittest.TestCase):
         with open(self.path, "wb") as f:
             f.write(b"not a safetensors file")
         self.assertIsNone(holds.part(self.path, 85, 124, 124))
+
+    def test_load_take_slices_on_grid_and_partial_flag_blocks_extend_holds(self):
+        self.assertFalse(holds.has_take(self.path))
+        holds.save(self.path, take(124), partial=True)
+        self.assertTrue(holds.has_take(self.path))
+        # Extend/bridge holds ignore partial latents, while load_take can still load and slice them.
+        self.assertIsNone(holds.part(self.path, 0, 39, 124))
+        video, audio = holds.load_take(self.path, 34, 90)
+        self.assertEqual(tuple(video.shape), (1, 4, 17, 2, 3))
+        self.assertEqual(video[0, 0, :, 0, 0].tolist(), [float(n) for n in range(10, 27)])
+        self.assertEqual(audio.shape[-1], holds.audio_ticks(56))
+        with self.assertRaisesRegex(ValueError, "multiple of 17"):
+            holds.load_take(self.path, 10, 49)
 
 
 @unittest.skipIf(torch is None, "needs torch and safetensors")

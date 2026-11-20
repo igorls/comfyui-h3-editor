@@ -10,7 +10,7 @@ import logging
 import sys
 
 MODULES = ("sprite", "policy", "holds", "twins", "latent_writer", "prompting", "h3lora", "media", "looks", "style_timeline", "ggml_dequant", "ggml_ops", "hyperflow", "patches", "project", "cuts", "listen", "lips", "scene", "detail", "judge", "archive",
-           "editor_api", "nodes", "preview")
+           "hold_cache", "editor_api", "nodes", "preview")
 
 
 def install(package):

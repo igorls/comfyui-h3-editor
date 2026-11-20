@@ -17,6 +17,7 @@ from aiohttp import web
 import folder_paths
 
 from . import archive
+from . import hold_cache
 from . import fetch
 from . import cuts as cutscore
 from . import listen as soundscore
@@ -913,6 +914,30 @@ async def remove(request):
     return web.json_response({"deleted": folder, "trash": "%s/%s/%s" % (store.ROOT, TRASH, kept)})
 
 
+async def project_storage(request):
+    folder = request.match_info["name"]
+    try:
+        if folder != store.slug(folder):
+            return refused("Use the project folder name from the projects list.")
+    except ValueError as error:
+        return refused(str(error))
+    scope = version = None
+    if request.method == "POST":
+        body = await request.json()
+        if not isinstance(body, dict) or body.get("scope") not in ("unused", "all") or not isinstance(body.get("version"), str):
+            return refused("Send a cleanup scope and its version from the storage report.")
+        scope, version = body["scope"], body["version"]
+    async with lock(folder):
+        data = read_project(folder)
+        try:
+            report = await asyncio.to_thread(hold_cache.project_cache, root(), folder, data, scope, version)
+        except hold_cache.CacheConflict as error:
+            return refused(str(error), 409)
+        except (OSError, ValueError) as error:
+            return refused(str(error))
+    return web.json_response(report, headers={"Cache-Control": "no-store"})
+
+
 async def sizes(request):
     """Describe the presets for any project ratio, optionally resolving a custom size on the same grid."""
     try:
@@ -1698,7 +1723,8 @@ async def graph(request):
 
 async def probe_file(path):
     """Frame count, a poster and a filmstrip for a finished render."""
-    frames = (await video_info(path))["frames"]
+    meta = await video_info(path)
+    frames = meta["frames"]
     poster = os.path.splitext(path)[0] + ".jpg"
     frame = max(0, min(12, frames - 1))
     await run(["ffmpeg", "-y", "-v", "error", "-i", path, "-vf", "select=eq(n\\,%d),scale=480:-2" % frame, "-frames:v", "1", poster])
@@ -1706,7 +1732,10 @@ async def probe_file(path):
         made = await make_strip(path, frames)
     except web.HTTPException:
         made = None
-    return {"frames": frames, "poster": os.path.basename(poster), "strip": made}
+    out = {"frames": frames, "poster": os.path.basename(poster), "strip": made}
+    if meta.get("width") and meta.get("height"):
+        out["size"] = [int(meta["width"]), int(meta["height"])]
+    return out
 
 
 async def probe(request):
@@ -1921,6 +1950,19 @@ async def sprite_atlas(request):
             if not isinstance(pick, dict):
                 raise ValueError("Invalid sprite selection.")
             key = (pick.get("motion"), pick.get("direction"))
+def take_has_latents(take):
+    """Whether a draft take has a whole-take latent file beside its video on disk."""
+    if not take or not take.get("file"):
+        return False
+    try:
+        path = output_path(take.get("subfolder"), take["file"])
+    except web.HTTPException:
+        return False
+    return store.holds.has_take(store.holds.hold_path(path))
+
+
+async def start_render(data, folder, clip_id, quality, seed=None, client_id=None, detail=None, upscaler=None,
+                       patches=None, edit=None, part=None):
             if not isinstance(key[0], str) or key[1] not in store.sprite.DIRECTIONS or key in seen:
                 raise ValueError("Choose each motion and direction once.")
             seen.add(key)
@@ -1952,7 +1994,8 @@ async def sprite_atlas(request):
 async def start_render(data, folder, clip_id, quality, seed=None, client_id=None, detail=None, upscaler=None, patches=None, edit=None):
     """Queue one render. patches is the installed patch nodes, for a batch that has read them already."""
     job, graph = store.plan_render(data, folder, clip_id, quality or "draft", seed, available_models(), detail, upscaler,
-                                   installed_patches() if patches is None else patches, edit)
+                                   installed_patches() if patches is None else patches, edit, part=part,
+                                   has_latents=take_has_latents)
     job["id"] = await queue_prompt(graph, client_id)
     store.add_pending(data, job)
     return job
@@ -2004,7 +2047,8 @@ async def render(request):
         data = read_project(folder)
         try:
             job = await start_render(data, folder, body.get("clip"), body.get("quality"), body.get("seed"),
-                                     body.get("client_id"), body.get("detail"), body.get("upscaler"), edit=body.get("edit"))
+                                     body.get("client_id"), body.get("detail"), body.get("upscaler"),
+                                     edit=body.get("edit"), part=body.get("part"))
         except (ValueError, KeyError) as error:
             return refused(plain(error))
         except Refused as error:
@@ -2060,7 +2104,8 @@ async def operations(request):
                     clip_id = store._resolve(op.get("clip"), names, "clip")
                     planned, _ = store.plan_render(copy.deepcopy(work), folder, clip_id, op.get("quality") or "draft",
                                                    op.get("seed"), available_models(), op.get("detail"), op.get("upscaler"),
-                                                   patches, op.get("edit"))
+                                                   patches, op.get("edit"), part=op.get("part"),
+                                                   has_latents=take_has_latents)
                     later.append((index, op, clip_id, planned.get("loads") or planned["models"]["unet"]))
                     results.append(None)
                 elif kind == "cancel":
@@ -2101,8 +2146,8 @@ async def operations(request):
         for index, op, clip_id, _ in arranged:
             try:
                 if op["op"] == "render":
-                    job = await start_render(work, folder, clip_id, op.get("quality"), op.get("seed"), op.get("client_id"), op.get("detail"), op.get("upscaler"),
-                                             patches, op.get("edit"))
+                    job = await start_render(work, folder, clip_id, op.get("quality"), op.get("seed"), op.get("client_id"),
+                                             op.get("detail"), op.get("upscaler"), patches, op.get("edit"), part=op.get("part"))
                     results[index] = {"clip": clip_id, "job": job["id"], "take": job["take"]}
                 elif op["op"] == "make_refmod":
                     cast_id, name, graph = clip_id
@@ -2281,10 +2326,13 @@ async def watch_once():
                 continue
             try:
                 path = output_path(file.get("subfolder"), file["filename"])
-                if job.get("edit"):
+                if job.get("splice"):
+                    path = await assemble_splice(path, job["splice"])
+                    file = dict(file, filename=os.path.basename(path))
+                elif job.get("edit"):
                     path = await assemble_prompt_edit(path, job["edit"])
                     file = dict(file, filename=os.path.basename(path))
-                if job.get("track"):
+                if job.get("track") and not job.get("splice"):
                     await lay_track(path, job["track"])
                 info = await probe_file(path)
                 if sheets:
@@ -2293,6 +2341,50 @@ async def watch_once():
             except web.HTTPException as error:
                 finished.append((job, None, None, "The render saved a file that cannot be read: %s" % error.text))
         if not finished:
+async def assemble_splice(rendered, splice):
+    """Replace frames splice['in']..splice['out'] of the base take with the newly finalized slice, keeping its audio."""
+    source = output_path(splice.get("subfolder"), splice["file"])
+    first, last, total = int(splice["in"]), int(splice["out"]), int(splice["frames"])
+    trim_start = int(splice.get("trim_start") or 0)
+    count = last - first
+    base_info = await video_info(source, count=False)
+    rendered_info = await video_info(rendered)
+    if rendered_info["frames"] < trim_start + count:
+        raise web.HTTPInternalServerError(text="the finalized video is shorter than the selected part")
+    bw, bh = int(base_info["width"]), int(base_info["height"])
+    rw, rh = int(rendered_info["width"]), int(rendered_info["height"])
+    if splice.get("is_edit") and bw * bh >= rw * rh * 0.75:
+        width, height = bw, bh
+    else:
+        width, height = rw, rh
+    fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
+           f"force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS")
+    filters, segments = [], []
+    if first:
+        filters.append(f"[1:v]trim=end_frame={first},{fit}[prefix]")
+        segments.append("[prefix]")
+    filters.append(f"[0:v]trim=start_frame={trim_start}:end_frame={trim_start + count},{fit}[part]")
+    segments.append("[part]")
+    if last < total:
+        filters.append(f"[1:v]trim=start_frame={last},{fit}[suffix]")
+        segments.append("[suffix]")
+    filters.append("".join(segments) + f"concat=n={len(segments)}:v=1:a=0,setpts=N/({store.FPS}*TB)[picture]")
+    target = os.path.splitext(rendered)[0] + "_part.mp4"
+    temporary = target + ".tmp.mp4"
+    try:
+        await run(["ffmpeg", "-y", "-v", "error", "-i", rendered, "-i", source,
+                   "-filter_complex", ";".join(filters), "-map", "[picture]", "-map", "1:a:0?",
+                   "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy",
+                   "-movflags", "+faststart", temporary])
+        if (await video_info(temporary))["frames"] != total:
+            raise web.HTTPInternalServerError(text="the finalized part did not match the take's frame count")
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return target
+
+
             continue
         async with lock(folder):
             data = read_project(folder)
@@ -2684,3 +2776,5 @@ def install():
         routes.route(method, path)(bound(handler))
     routes.static("/h3take/editor-files/", PAGE)
     PromptServer.instance.loop.call_soon_threadsafe(lambda: getattr(sys.modules[module], "ensure_watcher")())
+    ("GET", "/h3take/api/project/{name}/storage", "project_storage"),
+    ("POST", "/h3take/api/project/{name}/storage", "project_storage"),

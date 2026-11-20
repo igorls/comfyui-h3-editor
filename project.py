@@ -1052,7 +1052,7 @@ def wire_motion_transfer(graph, motion):
     graph["9"]["inputs"]["model"] = ["221", 0]
 
 
-def render_graph(project, folder, clip, take, quality, seed, available=None, patches=None, finish=None, edit=None):
+def render_graph(project, folder, clip, take, quality, seed, available=None, patches=None, finish=None, edit=None, finish_window=None):
     """One clip as a ComfyUI graph, saved as its own file in the project.
 
     available is the set of model files ComfyUI lists, used to find a profile's files.
@@ -1085,9 +1085,12 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     hyperflow = is_hyperflow(unet)
     link = clip.get("link")
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
-    if edit:
+    if finish_window is not None:
+        length = int(finish_window[1])
+    elif edit:
         length = 5 + 17 * math.ceil((edit["out"] - edit["in"] - 5) / 17)
     if config:
+    finish_window is an optional (grid_in, grid_len) tuple to slice and refine only part of finish's latents.
         length = sprite.FRAMES
     guides = clean_mid_guides(clip, length)
     graph = {
@@ -1271,7 +1274,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     if not config and quality != "draft" and size_name(project, quality) == SHARP:
         add_sharp(graph, refine_size(project), available)
     if finish:
-        start_from_take(graph, clip, finish, length)
+        start_from_take(graph, clip, finish, length, finish_window)
     markers = style_timeline.schedule(clip.get("style_markers"), length, project.get("style", ""))
     if markers:
         # Each style prefixes the same shot text, so content, cast and speech stay constant.
@@ -1317,13 +1320,21 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             if matte:
                 graph["212"] = {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": matte}}
                 graph["211"]["inputs"]["bg_model"] = ["212", 0]
-    if edit:
-        # The finished take contains source frames around the edit, so the sampler's latents don't line up.
-        graph.pop("20")
+    if finish_window is not None:
+        # Partial finishes and edit-draft finishes leave the full draft's latents intact on the draft take.
+        graph.pop("20", None)
+    elif edit:
+        if quality == "draft":
+            # Keep the draft's sampled latents so later partial/full finals can refine them without re-sampling;
+            # partial=True stops extend/bridge holds from misaligning them against the assembled video.
+            graph["20"]["inputs"]["partial"] = True
+        else:
+            # The finished take contains source frames around the edit, so the sampler's latents don't line up.
+            graph.pop("20", None)
     return graph
 
 
-def start_from_take(graph, clip, source, length):
+def start_from_take(graph, clip, source, length, window=None):
     """Make a final's refine pass start from a rendered draft's latents in place of its own first pass.
 
     The draft's sampled latents, saved beside its video, take the place of the first pass's: they are enlarged and
@@ -1331,11 +1342,16 @@ def start_from_take(graph, clip, source, length):
     """
     if "90" not in graph:
         raise ValueError("finishing a draft needs the latent upscaler: install the latent upscaler from Get the models")
-    if int(source.get("frames") or 0) != int(length):
+    if window is None and int(source.get("frames") or 0) != int(length):
         raise ValueError("%s runs %s frames now and its draft %s. Render a new draft to finish"
                          % (clip.get("name", "This clip"), length, source.get("frames")))
     file = "%s/%s" % (source["subfolder"], source["file"]) if source.get("subfolder") else source["file"]
-    graph["15"] = {"class_type": "H3LoadTake", "inputs": {"file": file}}
+    inputs = {"file": file}
+    if window is not None:
+        grid_in, grid_len = int(window[0]), int(window[1])
+        inputs["first"] = grid_in
+        inputs["last"] = grid_in + grid_len
+    graph["15"] = {"class_type": "H3LoadTake", "inputs": inputs}
     # The first pass's sampler, and its decode, which the refine replaces, have nothing left to do.
     for unused in ("13", "16"):
         graph.pop(unused, None)
@@ -1388,6 +1404,7 @@ def add_refine(graph, size, tail, upscaler):
 # window drew its own room and the windows dissolved into one another (a 20.75 s chorus: 44% of the background changed).
 # Its refine redraws only the last steps of a settled picture, so it can go in windows: on a 20.75 s take at
 # 1088 x 1920 the refine's three steps took 22 minutes whole (50 GB of GPU memory in use at the peak) and the whole
+    When window=(grid_in, grid_len) is given, only that on-grid slice is loaded and refined.
 # final 15 minutes in windows of 124 frames, the same picture to the pore, the place, the skin and the lips held.
 LONG_TAKE = 249                 # frames (10.4 s): a refine longer than this goes in windows
 REFINE_WINDOW = (124, 39)       # frames each window and frames two windows share, both 17n + 5
@@ -1567,7 +1584,8 @@ def export_plan(project, scale=1.0, span=None):
         if not take:
             missing += int(in_range)
             continue
-        if in_range and take.get("quality") == "draft" and clip.get("kind") != "footage":
+        status = take_range_status(take, item["in"], item["out"])
+        if in_range and status in ("draft", "partial") and (clip.get("kind") != "footage" or take.get("edit")):
             drafts += 1
         w, h = take_size(project, take)
         if w > width:
@@ -1610,6 +1628,51 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
     if not items:
         raise ValueError("there are no rendered clips on the timeline to export")
     if width is None or height is None:
+def merge_ranges(ranges):
+    """Merge overlapping or adjacent [start, end] frame spans into sorted disjoint pairs."""
+    spans = sorted((int(a), int(b)) for a, b in (ranges or []) if int(b) > int(a))
+    merged = []
+    for a, b in spans:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return merged
+
+
+def range_covered(ranges, first, last):
+    """Whether frames [first, last) are completely covered by ranges."""
+    first, last = int(first), int(last)
+    return any(a <= first and b >= last for a, b in merge_ranges(ranges))
+
+
+def take_range_status(take, first, last):
+    """Quality status of frames [first, last) inside a take: 'final', 'draft', 'partial', or 'footage'."""
+    if not take:
+        return None
+    first, last = int(first), int(last)
+    quality = take.get("quality")
+    if quality == "draft":
+        edit = take.get("edit")
+        if edit:
+            lo, hi = max(first, int(edit["in"])), min(last, int(edit["out"]))
+            if lo >= hi:
+                return "footage"
+            return "draft" if lo == first and hi == last else "partial"
+        return "draft"
+    if quality == "final":
+        ranges = take.get("final_ranges")
+        if ranges:
+            merged = merge_ranges(ranges)
+            if any(a <= first and b >= last for a, b in merged):
+                return "final"
+            if any(max(first, a) < min(last, b) for a, b in merged):
+                return "partial"
+            return "draft"
+        return "final"
+    return quality or "footage"
+
+
         # The cut takes the size of its largest picture, so upscaled finals keep their detail.
         width = height = 0
         for item in items:
@@ -3658,7 +3721,255 @@ def prompt_edit(clip, edit, available=None):
     return source, info
 
 
-def plan_render(project, folder, clip_id, quality, seed=None, available=None, detail=None, upscaler=None, patches=None, edit=None):
+def _edit_latent_frames(edit):
+    return 5 + holds.CYCLE * math.ceil((int(edit["out"]) - int(edit["in"]) - 5) / holds.CYCLE)
+
+
+def _edit_slice_window(rel_in, rel_out, edit_len, draft_latent_frames):
+    """On-grid latent window covering [rel_in, rel_out) inside a prompt-edit draft latent,
+    keeping at least 2*FPS real source frames inside [0, edit_len) when edit_len >= 2*FPS."""
+    min_ref = min(2 * FPS, edit_len)
+    grid_in, grid_len = holds.slice_window(rel_in, rel_out, draft_latent_frames, min_frames=min_ref)
+    if min(edit_len, grid_in + grid_len) - grid_in < min_ref:
+        grid_in = max(0, ((edit_len - min_ref) // holds.CYCLE) * holds.CYCLE)
+        need = max(rel_out - grid_in, min_ref)
+        grid_len = 5 + holds.CYCLE * max(0, math.ceil((need - 5) / holds.CYCLE))
+        if grid_in + grid_len > draft_latent_frames:
+            grid_len = draft_latent_frames - grid_in
+    return grid_in, grid_len
+
+
+def _fallback_edit_window(target_in, target_out, edit_in, edit_out):
+    """Window inside [edit_in, edit_out) covering [target_in, target_out) with at least 2*FPS frames."""
+    min_ref = min(2 * FPS, edit_out - edit_in)
+    if target_out - target_in >= min_ref:
+        return target_in, target_out
+    extra = min_ref - (target_out - target_in)
+    win_in = max(edit_in, target_in - extra // 2)
+    win_out = min(edit_out, win_in + min_ref)
+    win_in = max(edit_in, win_out - min_ref)
+    return win_in, win_out
+
+
+def _slice_style_markers(markers, start, length, default_style=""):
+    """Shift a clip's style markers to cover a sliced sub-window [start, start + length)."""
+    rows = style_timeline.schedule(markers, start + length, default_style)
+    if not rows:
+        return []
+    active = rows[0]
+    for row in rows:
+        if row["frame"] <= start:
+            active = row
+    kept = [{"frame": 0, "style": active["style"], "name": active["name"]}]
+    for row in rows:
+        if start < row["frame"] < start + length:
+            kept.append({"frame": row["frame"] - start, "style": row["style"], "name": row["name"]})
+    if len(kept) == 1 and kept[0]["style"] == default_style:
+        return []
+    return kept
+
+
+def _clean_part(part, total):
+    if part is None:
+        return 0, total, False
+    if not isinstance(part, dict):
+        raise ValueError("part must be an object with integer in and out frame numbers")
+    first, last = part.get("in"), part.get("out")
+    if type(first) is not int or type(last) is not int or not 0 <= first < last <= total:
+        raise ValueError("the part to finish must fall inside the take (0..%s)" % total)
+    return first, last, not (first == 0 and last == total)
+
+
+def _finish_fallback_reason(project, clip, base_draft, available, has_latents, check_grid=False):
+    """Reason draft latents cannot be reused for a partial/edit finish, or None when they can."""
+    if base_draft is None:
+        return "The original draft take is no longer in this clip, so this part is rendering fresh at Final quality."
+    if size_name(project, "final") == SHARP:
+        return "Sharp final size uses a video upscaler instead of refining draft latents, so this part is rendering fresh."
+    models = project_models(project, available, clip)
+    if not (models.get("latent_upscaler") and installed(models["latent_upscaler"], available)):
+        return "The latent upscaler is not installed, so this part is rendering fresh at Final quality."
+    if has_latents is not None and not has_latents(base_draft):
+        return "This draft has no saved latents, so this part is rendering fresh at Final quality."
+    if check_grid and not holds.legal_length(int(base_draft.get("frames") or 0)):
+        return "This draft's length is not on the H3 latent grid, so this part is rendering fresh at Final quality."
+    return None
+
+
+def _plan_edit_finish(project, folder, clip, base_draft, composite_source, existing_final_ranges,
+                      req_in, req_out, seed, available, patches, has_latents):
+    """Finish all or part of a prompt-edit / motion-transfer draft, reusing its latents when possible."""
+    clip_id = clip["id"]
+    total = int(composite_source.get("frames") or 0)
+    edit_meta = copy.deepcopy((base_draft or composite_source)["edit"])
+    edit_in, edit_out = int(edit_meta["in"]), int(edit_meta["out"])
+    target_in, target_out = max(req_in, edit_in), min(req_out, edit_out)
+    if target_in >= target_out:
+        raise ValueError("the selected part is outside the edited draft range")
+    if existing_final_ranges and range_covered(existing_final_ranges, target_in, target_out):
+        raise ValueError("that part is already at final quality")
+    orig_source = next((t for t in clip.get("takes", []) if t["id"] == edit_meta.get("take")), None)
+    if not orig_source:
+        raise ValueError("the source take for this edit is no longer in the clip")
+
+    work_project = project
+    work_clip = {"id": clip_id, "name": clip["name"], "profile": clip.get("profile"), "loras": clip.get("loras"),
+                 "action": edit_meta.get("prompt", ""), "first": edit_meta.get("first")}
+    motion_info = None
+    if edit_meta.get("motion"):
+        settings = motion_status(available)
+        if not settings["available"]:
+            raise ValueError("motion transfer needs " + ", ".join(settings["missing"]))
+        motion_info = {k: settings[k] for k in ("pose", "detector", "control", "profile")}
+        motion_info.update(character=copy.deepcopy(edit_meta["motion"]["character"]),
+                           strength=clean_strength(edit_meta["motion"].get("strength", 1), (0.1, 2.0), "motion strength"))
+        work_clip["profile"] = motion_info["profile"]
+        work_project = dict(project, models={k: v for k, v in (project.get("models") or {}).items()
+                                             if k not in ("unet", "unet_text")})
+        work_clip["action"] = work_clip["action"] or "A full-body performance."
+
+    if seed in (None, ""):
+        seed = (base_draft or composite_source).get("seed")
+    if seed in (None, ""):
+        seed = random.randrange(2 ** 31)
+
+    fallback = _finish_fallback_reason(work_project, work_clip, base_draft, available, has_latents)
+    take = new_id("t")
+    if fallback is None:
+        draft_latent_frames = _edit_latent_frames(edit_meta)
+        grid_in, grid_len = _edit_slice_window(target_in - edit_in, target_out - edit_in,
+                                               edit_out - edit_in, draft_latent_frames)
+        ref_first = edit_in + grid_in
+        ref_last = min(edit_out, edit_in + grid_in + grid_len)
+        render_edit = {"take": orig_source["id"], "in": ref_first, "out": ref_last,
+                       "prompt": edit_meta.get("prompt", ""), "file": orig_source["file"],
+                       "subfolder": orig_source.get("subfolder", ""), "frames": orig_source["frames"]}
+        if grid_in == 0 and edit_meta.get("first"):
+            render_edit["first"] = copy.deepcopy(edit_meta["first"])
+        else:
+            work_clip["first"] = None
+        if motion_info:
+            render_edit["motion"] = motion_info
+        graph = render_graph(work_project, folder, work_clip, take, "final", int(seed), available, patches,
+                             finish=base_draft, edit=render_edit, finish_window=(grid_in, grid_len))
+        trim_start = target_in - ref_first
+    else:
+        win_in, win_out = _fallback_edit_window(target_in, target_out, edit_in, edit_out)
+        render_edit = {"take": orig_source["id"], "in": win_in, "out": win_out,
+                       "prompt": edit_meta.get("prompt", ""), "file": orig_source["file"],
+                       "subfolder": orig_source.get("subfolder", ""), "frames": orig_source["frames"]}
+        if win_in == edit_in and edit_meta.get("first"):
+            render_edit["first"] = copy.deepcopy(edit_meta["first"])
+        else:
+            work_clip["first"] = None
+        if motion_info:
+            render_edit["motion"] = motion_info
+        graph = render_graph(work_project, folder, work_clip, take, "final", int(seed), available, patches,
+                             finish=None, edit=render_edit)
+        trim_start = target_in - win_in
+
+    outer = []
+    if edit_in > 0:
+        outer.append([0, edit_in])
+    if edit_out < total:
+        outer.append([edit_out, total])
+    merged = merge_ranges([*outer, *existing_final_ranges, [target_in, target_out]])
+    job = {"clip": clip_id, "take": take, "quality": "final", "seed": int(seed),
+           "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
+           "models": dict(render_models(graph), profile=project_profile(work_project, available, work_clip)[0],
+                          profile_title=project_profile(work_project, available, work_clip)[1]["title"],
+                          steps=graph["12"]["inputs"]["steps"], sampler=graph["11"]["inputs"]["sampler_name"]),
+           "finished": (base_draft or composite_source)["id"],
+           "edit": edit_meta,
+           "size": list(take_size(project, orig_source)),
+           "part": {"in": target_in, "out": target_out},
+           "splice": {"file": composite_source["file"], "subfolder": composite_source.get("subfolder", ""),
+                      "frames": total, "in": target_in, "out": target_out, "trim_start": trim_start, "is_edit": True}}
+    if "36" in graph:
+        job["upscaler"], job["detail"] = SHARP_UPSCALER, SHARP_DETAIL
+        job["models"]["video_upscaler"] = graph["31"]["inputs"]["unet_name"]
+    if merged != [[0, total]]:
+        job["final_ranges"] = merged
+    if fallback:
+        job["finish_fallback"] = fallback
+    if orig_source.get("source"):
+        job["source"] = orig_source["source"]
+    return job, graph
+
+
+def _plan_partial_finish(project, folder, clip, base_draft, composite_source, existing_final_ranges,
+                         req_in, req_out, seed, available, patches, has_latents):
+    """Finish part of a normal generated draft, slicing and refining its saved latents when possible."""
+    clip_id = clip["id"]
+    total = int(composite_source.get("frames") or 0)
+    if (base_draft or composite_source).get("sprite"):
+        raise ValueError("Sprite Draft takes are finished whole")
+    if seed in (None, ""):
+        seed = (base_draft or composite_source).get("seed")
+    if seed in (None, ""):
+        seed = clip.get("seed")
+    if seed in (None, ""):
+        seed = random.randrange(2 ** 31)
+
+    fallback = _finish_fallback_reason(project, clip, base_draft, available, has_latents, check_grid=True)
+    take = new_id("t")
+    if fallback is None:
+        draft_frames = int(base_draft["frames"])
+        grid_in, grid_len = holds.slice_window(req_in, req_out, draft_frames, min_frames=min(39, draft_frames))
+        slice_clip = copy.deepcopy(clip)
+        slice_clip.pop("link", None)
+        if grid_in > 0:
+            slice_clip.pop("first", None)
+        if grid_in + grid_len < draft_frames:
+            slice_clip.pop("last", None)
+        if slice_clip.get("mid_guides"):
+            slice_clip["mid_guides"] = [dict(g, frame=g["frame"] - grid_in) for g in slice_clip["mid_guides"]
+                                        if grid_in < g["frame"] < grid_in + grid_len - 1]
+        if slice_clip.get("style_markers"):
+            slice_clip["style_markers"] = _slice_style_markers(slice_clip["style_markers"], grid_in, grid_len,
+                                                               project.get("style", ""))
+        if slice_clip.get("track"):
+            slice_clip["track"] = dict(slice_clip["track"], **{"from": float(slice_clip["track"].get("from") or 0) + grid_in / float(FPS)})
+        graph = render_graph(project, folder, slice_clip, take, "final", int(seed), available, patches,
+                             finish=base_draft, finish_window=(grid_in, grid_len))
+        trim_start = req_in - grid_in
+        profile_clip = slice_clip
+    else:
+        work_clip = copy.deepcopy(clip)
+        refresh_link(project, work_clip)
+        if not work_clip.get("link") and snap_frames(work_clip.get("seconds", 5)) < req_out:
+            work_clip["seconds"] = total / float(FPS)
+        graph = render_graph(project, folder, work_clip, take, "final", int(seed), available, patches)
+        trim_start = req_in
+        profile_clip = work_clip
+
+    merged = merge_ranges([*existing_final_ranges, [req_in, req_out]])
+    job = {"clip": clip_id, "take": take, "quality": "final", "seed": int(seed),
+           "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
+           "models": dict(render_models(graph), profile=project_profile(project, available, profile_clip)[0],
+                          profile_title=project_profile(project, available, profile_clip)[1]["title"],
+                          steps=graph["12"]["inputs"]["steps"], sampler=graph["11"]["inputs"]["sampler_name"]),
+           "finished": (base_draft or composite_source)["id"],
+           "part": {"in": req_in, "out": req_out},
+           "splice": {"file": composite_source["file"], "subfolder": composite_source.get("subfolder", ""),
+                      "frames": total, "in": req_in, "out": req_out, "trim_start": trim_start, "is_edit": False}}
+    if "91" in graph:
+        job["size"] = [graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]]
+    elif "36" in graph:
+        job["size"] = [graph["36"]["inputs"]["width"], graph["36"]["inputs"]["height"]]
+        job["upscaler"], job["detail"] = SHARP_UPSCALER, SHARP_DETAIL
+        job["models"]["video_upscaler"] = graph["31"]["inputs"]["unet_name"]
+    elif tuple(render_size(project, "final")[:2]) != tuple(frame_size(project, "final")):
+        job["size"] = [graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]]
+    if merged != [[0, total]]:
+        job["final_ranges"] = merged
+    if fallback:
+        job["finish_fallback"] = fallback
+    return job, graph
+
+
+def plan_render(project, folder, clip_id, quality, seed=None, available=None, detail=None, upscaler=None,
+                patches=None, edit=None, part=None, has_latents=None):
     """The graph for a new take, and the job that will turn its file into a take. detail and upscaler are for an upscale only.
 
     patches is the installed patch nodes by id, as project_patches takes them.
@@ -3681,11 +3992,33 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
             clip["action"] = clip["action"] or "A full-body performance."
     finish = None
     if quality == FINISH_QUALITY:
-        finish = active_take(clip)
-        if not finish or finish.get("quality") != "draft":
+        if any(j["clip"] == clip_id for j in project.get("pending", [])):
+            raise ValueError("%s is already rendering" % clip["name"])
+        current = active_take(clip)
+        if current and current.get("quality") == "draft":
+            base_draft, composite_source, existing_final_ranges = current, current, []
+        elif current and current.get("quality") == "final" and current.get("final_ranges"):
+            composite_source = current
+            existing_final_ranges = merge_ranges(current.get("final_ranges"))
+            base_draft = next((t for t in clip.get("takes", [])
+                               if t["id"] == current.get("finished") and t.get("quality") == "draft"), None)
+        else:
             raise ValueError("%s has no draft to finish. Render a draft, or choose one of its draft takes" % clip["name"])
-        if finish.get("edit"):
-            raise ValueError("use Edit with prompt and choose Final to render a prompt edit at final quality")
+        total = int(composite_source.get("frames") or 0)
+        req_in, req_out, is_partial = _clean_part(part, total)
+        if existing_final_ranges and range_covered(existing_final_ranges, req_in, req_out):
+            raise ValueError("that part is already at final quality")
+        if (base_draft or composite_source).get("edit"):
+            return _plan_edit_finish(project, folder, clip, base_draft, composite_source, existing_final_ranges,
+                                     req_in, req_out, seed, available, patches, has_latents)
+        if is_partial or existing_final_ranges:
+            if clip.get("kind") == "footage":
+                raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip["name"])
+            return _plan_partial_finish(project, folder, clip, base_draft, composite_source, existing_final_ranges,
+                                        req_in, req_out, seed, available, patches, has_latents)
+        finish = base_draft
+        if has_latents is not None and not has_latents(finish):
+            raise ValueError("This draft has no saved latents. Render a new draft to finish, or render a new final.")
         # The final keeps the draft's seed: the refine pass draws its noise from it.
         quality, seed = "final", finish.get("seed")
         if finish.get("sprite"):
@@ -3739,7 +4072,11 @@ def add_pending(project, job):
     project.setdefault("pending", []).append(job)
 
 
+    part is an optional {in, out} frame range for finishing only part of a draft.
+    has_latents is an optional callable(take) -> bool used to detect missing draft latents and fall back.
 def pop_pending(project, job_id):
+    if part is not None and quality != FINISH_QUALITY:
+        raise ValueError("part is only supported when finishing a draft")
     pending = project.get("pending") or []
     job = next((j for j in pending if j.get("id") == job_id), None)
     project["pending"] = [j for j in pending if j.get("id") != job_id]
@@ -3758,7 +4095,7 @@ def finish_render(project, job_id, file, info):
     take = {"id": job["take"], "file": file["filename"], "subfolder": file.get("subfolder") or "",
             "poster": info["poster"], "frames": int(info["frames"]), "quality": job["quality"],
             "seed": job["seed"], "saved": job.get("saved")}
-    for key in ("models", "upscale", "size", "upscaled", "upscaler", "detail", "finished", "source"):
+    for key in ("models", "upscale", "size", "upscaled", "upscaler", "detail", "finished", "source", "final_ranges"):
         if job.get(key):
             take[key] = job[key]
     if info.get("sprite"):
@@ -3767,10 +4104,11 @@ def finish_render(project, job_id, file, info):
         take["strip"] = info["strip"]
     if job.get("edit"):
         take["edit"] = {key: value for key, value in job["edit"].items() if key not in ("file", "subfolder", "frames")}
-        clip = find_clip(project, job["clip"])
-        clip.setdefault("takes", []).append(take)
-        clip.pop("error", None)
-        return clip
+        if not job.get("finished"):
+            clip = find_clip(project, job["clip"])
+            clip.setdefault("takes", []).append(take)
+            clip.pop("error", None)
+            return clip
     return accept_take(project, job["clip"], take)
 
 
@@ -3838,6 +4176,8 @@ def merge_editor_save(base, mine, current):
         if "mid_guides" in clip:
             clip["mid_guides"] = clean_mid_guides(clip)
         stored = existing.get(clip["id"])
+    if info.get("size") and job.get("splice"):
+        take["size"] = list(info["size"])
         if stored is None:
             continue
         ids = {take["id"] for take in stored.get("takes", [])}

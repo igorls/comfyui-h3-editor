@@ -26,27 +26,54 @@ Which frames can be held from the file:
 
 No Comfy import: a latent comes in as the tensors of its streams.
 """
+import math
 import os
 
 try:
-    from .policy import audio_ticks, frame_to_step, latent_frames, legal_length, video_steps
+    from .policy import AUDIO_HZ, FPS, audio_ticks, frame_to_step, latent_frames, legal_length, video_steps
 except ImportError:
-    from policy import audio_ticks, frame_to_step, latent_frames, legal_length, video_steps
+    from policy import AUDIO_HZ, FPS, audio_ticks, frame_to_step, latent_frames, legal_length, video_steps
 
 CYCLE = 17      # frames in one round of the picture latent's pattern
 HOLD_STEPS = 12   # 39 frames: what a file from before whole takes were saved holds of each end
+HOLD_SUFFIX = ".hold.safetensors"
 
 
 def hold_path(file):
     """Where a take keeps its latents: beside its video, named after the same take."""
     stem = os.path.splitext(file)[0]
+    for suffix in ("_edit", "_part"):
+        if stem.endswith(suffix):
+            stem = stem[:-len(suffix)]
+            break
     head, _, counter = stem.rstrip("_").rpartition("_")
-    return (head if counter.isdigit() and head else stem) + ".hold.safetensors"
+    return (head if counter.isdigit() and head else stem) + HOLD_SUFFIX
 
 
 def on_grid(first, count):
     """Can frames first..first+count of a take be held as the picture latent they were sampled in."""
     return int(first) >= 0 and int(first) % CYCLE == 0 and legal_length(count)
+
+
+def slice_window(first, stop, total, min_frames=5):
+    """Smallest on-grid window (grid_in, grid_len) covering frames first..stop inside a total-frame latent.
+
+    total must be a legal 5 + 17k latent length. Returns (grid_in, grid_len) with grid_in % 17 == 0,
+    legal_length(grid_len), and 0 <= grid_in <= first < stop <= grid_in + grid_len <= total.
+    """
+    first, stop, total, min_frames = int(first), int(stop), int(total), int(min_frames)
+    if not legal_length(total):
+        raise ValueError("latent length %s is not on the 17k+5 grid" % total)
+    if not 0 <= first < stop <= total:
+        raise ValueError("slice %s..%s does not fit in %s frames" % (first, stop, total))
+    grid_in = (first // CYCLE) * CYCLE
+    need = max(stop - grid_in, min(max(5, min_frames), total))
+    grid_len = 5 + CYCLE * max(0, math.ceil((need - 5) / CYCLE))
+    if grid_len > total:
+        grid_len = total
+    if grid_in + grid_len > total:
+        grid_in = total - grid_len
+    return grid_in, grid_len
 
 
 def whole_ticks(first, count):
@@ -82,8 +109,12 @@ def streams(samples):
     return samples, None
 
 
-def save(path, samples, final=None):
-    """Write a sampled take's latents to path. final is the samples of its refine pass, when it had one."""
+def save(path, samples, final=None, partial=False):
+    """Write a sampled take's latents to path. final is the samples of its refine pass, when it had one.
+
+    partial marks latents from an edited sub-range (such as Edit with prompt), so extend/bridge holds do not
+    misalign them against the assembled video while finishing a draft can still load and slice them.
+    """
     import safetensors.torch
 
     video, audio = streams(samples)
@@ -100,12 +131,30 @@ def save(path, samples, final=None):
     folder = os.path.dirname(path)
     if folder:
         os.makedirs(folder, exist_ok=True)
-    safetensors.torch.save_file(kept, path, metadata={"frames": str(latent_frames(video.shape[2]))})
+    metadata = {"frames": str(latent_frames(video.shape[2]))}
+    if partial:
+        metadata["partial"] = "1"
+    safetensors.torch.save_file(kept, path, metadata=metadata)
 
 
-def load_take(path):
+def has_take(path):
+    """Whether path holds a whole sampled take's picture and sound latents that load_take can read."""
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        from safetensors import safe_open
+
+        with safe_open(path, framework="pt") as saved:
+            keys = set(saved.keys())
+            return "video" in keys and "audio" in keys
+    except Exception:
+        return False
+
+
+def load_take(path, first=0, stop=0):
     """A take's latents as sampled, picture and sound, from the file beside its video: for a pass that starts from them,
-    such as finishing a draft. Raises when the file is missing or keeps less than a whole take."""
+    such as finishing a draft. Optional first..stop slices an on-grid sub-window for partial draft finalization.
+    Raises when the file is missing or keeps less than a whole take."""
     if not os.path.exists(path):
         raise FileNotFoundError("%s has no latents saved beside it. Render it again to finish it" % os.path.basename(path))
     from safetensors import safe_open
@@ -114,7 +163,32 @@ def load_take(path):
         keys = set(saved.keys())
         if "video" not in keys or "audio" not in keys:
             raise ValueError("%s keeps no whole take, picture and sound. Render it again to finish it" % os.path.basename(path))
-        return saved.get_tensor("video").float(), saved.get_tensor("audio").float()
+        video = saved.get_tensor("video").float()
+        audio = saved.get_tensor("audio").float()
+    first, stop = int(first or 0), int(stop or 0)
+    if first == 0 and stop == 0:
+        return video, audio
+    total = latent_frames(video.shape[2])
+    if stop == 0:
+        stop = total
+    count = stop - first
+    if not (0 <= first < stop <= total) or not on_grid(first, count):
+        raise ValueError("cannot slice %s..%s from a %s-frame take latent: start must be a multiple of 17 and length 5 + 17k"
+                         % (first, stop, total))
+    step = frame_to_step(first)
+    steps = video_steps(count)
+    video_slice = video[:, :, step:step + steps].contiguous()
+    ticks = audio_ticks(count)
+    total_ticks = audio.shape[-1]
+    tick = int(round(first / float(FPS) * AUDIO_HZ))
+    tick = max(0, min(tick, max(0, total_ticks - ticks)))
+    audio_slice = audio[..., tick:tick + ticks].contiguous()
+    if audio_slice.shape[-1] < ticks:
+        import torch
+
+        pad = audio_slice[..., -1:].expand(*audio_slice.shape[:-1], ticks - audio_slice.shape[-1])
+        audio_slice = torch.cat([audio_slice, pad], dim=-1)
+    return video_slice, audio_slice
 
 
 def part(path, first, stop, total):
@@ -132,6 +206,8 @@ def part(path, first, stop, total):
         from safetensors import safe_open
 
         with safe_open(path, framework="pt") as saved:
+            if (saved.metadata() or {}).get("partial") == "1":
+                return None
             keys = set(saved.keys())
             if "video" in keys:
                 if not on_grid(first, count):

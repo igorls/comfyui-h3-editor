@@ -43,17 +43,16 @@ def _stem(name):
     return base[:cut] if cut > 0 else os.path.splitext(base)[0]
 
 
-def _referenced(value, found):
+def referenced_files(value):
     """Every {file, subfolder} pair anywhere in the project's data, as subfolder/file paths."""
     if isinstance(value, dict):
         if isinstance(value.get("file"), str) and isinstance(value.get("subfolder"), str):
-            found.add((value["subfolder"].replace("\\", "/").strip("/"), os.path.basename(value["file"])))
+            yield value["subfolder"].replace("\\", "/").strip("/"), os.path.basename(value["file"])
         for inner in value.values():
-            _referenced(inner, found)
+            yield from referenced_files(inner)
     elif isinstance(value, list):
         for inner in value:
-            _referenced(inner, found)
-    return found
+            yield from referenced_files(inner)
 
 
 def trimmed(data, keep):
@@ -96,7 +95,7 @@ def files_for(project_dir, root_name, folder, data, keep):
                 continue
             every.append(name if rel_dir == "." else rel_dir + "/" + name)
     prefix = _project_prefix(root_name, folder)
-    refs = _referenced(data, set())
+    refs = set(referenced_files(data))
     outside = sorted("%s/%s" % pair for pair in refs if not (pair[0] + "/").startswith(prefix))
     if keep == "all":
         return sorted(every), outside

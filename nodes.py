@@ -557,12 +557,12 @@ class H3SaveHold(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, latent, file, final=None) -> io.NodeOutput:
+    def execute(cls, latent, file, final=None, partial=False) -> io.NodeOutput:
         base = os.path.realpath(folder_paths.get_output_directory())
         path = os.path.realpath(os.path.join(base, file))
         if not path.startswith(base + os.sep) or not path.endswith(".safetensors"):
             raise ValueError("%s is not a .safetensors path inside the output folder" % file)
-        holds.save(path, latent["samples"], final["samples"] if final is not None else None)
+        holds.save(path, latent["samples"], final["samples"] if final is not None else None, partial=bool(partial))
         return io.NodeOutput()
 
 
@@ -630,6 +630,7 @@ class H3SmallTextEncoder(io.ComfyNode):
 
     @classmethod
     def execute(cls, clip_name, projection) -> io.NodeOutput:
+                io.Boolean.Input("partial", default=False, optional=True, tooltip="Mark latents saved for an edited range so extend/bridge holds ignore them while draft finalization can still reuse them."),
         return io.NodeOutput(clipproj.load(clip_name, projection))
 
 
@@ -714,15 +715,21 @@ class H3LoadTake(io.ComfyNode):
                 "Read the latents an H3 take was sampled as, picture and sound, from the file saved beside its video. "
                 "Upscale them and refine them at a larger size to finish a draft: the same shot, at final detail."
             ),
-            inputs=[io.String.Input("file", tooltip="The take's video, as a path inside the output folder.")],
+            inputs=[
+                io.String.Input("file", tooltip="The take's video, as a path inside the output folder."),
+                io.Int.Input("first", default=0, min=0, max=100000, optional=True,
+                             tooltip="Optional start frame on the 17-frame grid when refining only a part of the draft."),
+                io.Int.Input("last", default=0, min=0, max=100000, optional=True,
+                             tooltip="Optional exclusive end frame (0 loads the whole take)."),
+            ],
             outputs=[io.Latent.Output(display_name="latent")],
         )
 
     @classmethod
-    def execute(cls, file) -> io.NodeOutput:
+    def execute(cls, file, first=0, last=0) -> io.NodeOutput:
         import comfy.nested_tensor
 
-        video, audio = holds.load_take(holds.hold_path(output_file(file)))
+        video, audio = holds.load_take(holds.hold_path(output_file(file)), first, last)
         return io.NodeOutput({"samples": comfy.nested_tensor.NestedTensor((video, audio))})
 
 

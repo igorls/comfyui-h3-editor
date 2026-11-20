@@ -333,3 +333,53 @@ test("spectrograms crop source time at the clip's trim, including changed speed"
   assert.equal(drawing[0][3], 2048 * 48 / 288);
   assert.equal(canvas.style.width, "72px");
 });
+
+test("partial draft finalization detects split parts, blocks finished halves, and posts part range", async () => {
+  const calls = [], toasts = [];
+  const draftEdit = { id: "t1", frames: 240, quality: "draft", edit: { take: "t0", in: 0, out: 240, prompt: "Red jacket" } };
+  const partialFinal = { id: "t2", frames: 240, quality: "final", finished: "t1", final_ranges: [[100, 240]], edit: draftEdit.edit };
+  const clip = { id: "c1", kind: "footage", name: "Footage", action: "", takes: [{ id: "t0", frames: 240, quality: "footage" }, draftEdit], active: "t1" };
+  const left = { id: "i1", clip: "c1", start: 0, in: 0, out: 100 };
+  const right = { id: "i2", clip: "c1", start: 100, in: 100, out: 240 };
+  const c = vm.createContext({
+    state: { folder: "cut", item: "i2", range: null, sourceRange: null, jobs: new Map(),
+      project: { clips: [clip], timeline: [left, right], sizes: {} } },
+    FPS: 24, clientId: "tab", Math,
+    viewing: () => null,
+    sorted: () => [left, right],
+    speedOf: () => 1,
+    itemLength: (item) => item.out - item.in,
+    itemEnd: (item) => item.start + item.out - item.in,
+    flush: async () => {},
+    postJson: async (path, body) => { calls.push({ path, body }); return { job: { id: "j1", clip: body.clip, part: body.part }, project: c.state.project }; },
+    unsaved: () => false, adopt() {}, updateQueue() {}, renderAll() {}, selectClip() {},
+    toast: (msg, bad) => toasts.push({ msg, bad: Boolean(bad) }),
+  });
+  functions(c, ["activeTake", "jobFor", "timecode", "boundedRange", "takeRangeStatus", "finishRange", "finishOff", "finishDraft", "renderClip"]);
+  assert.equal(c.finishOff(clip, right), "");
+  assert.equal(JSON.stringify(c.finishRange(clip, draftEdit, right)), '{"a":100,"b":240,"partial":true}');
+  assert.equal(JSON.stringify(c.finishRange(clip, draftEdit, null)), '{"a":0,"b":240,"partial":false}');
+  assert.equal(await c.finishDraft(clip, right), true);
+  assert.equal(calls.length, 1);
+  assert.equal(JSON.stringify(calls[0].body.part), '{"in":100,"out":240}');
+  assert.match(toasts[0].msg, /draft latents/);
+
+  // Fallback notice is surfaced verbatim when the server could not reuse draft latents.
+  c.state.jobs.clear();
+  c.postJson = async (path, body) => {
+    calls.push({ path, body });
+    return { job: { id: "j2", clip: body.clip, part: body.part, finish_fallback: "This draft has no saved latents." }, project: c.state.project };
+  };
+  assert.equal(await c.finishDraft(clip, left), true);
+  assert.equal(toasts[1].msg, "This draft has no saved latents.");
+
+  // After partial finish activates, right is final while left is still finishable as draft.
+  c.state.jobs.clear();
+  clip.takes.push(partialFinal);
+  clip.active = "t2";
+  assert.equal(c.takeRangeStatus(partialFinal, 100, 240), "final");
+  assert.equal(c.takeRangeStatus(partialFinal, 0, 100), "draft");
+  assert.equal(c.takeRangeStatus(partialFinal, 50, 150), "partial");
+  assert.match(c.finishOff(clip, right), /already a final/);
+  assert.equal(c.finishOff(clip, left), "");
+});

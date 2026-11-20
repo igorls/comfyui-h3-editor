@@ -1490,10 +1490,12 @@ function clipStatus(clip) {
   }
   if (clip.error) return { kind: "danger", text: "Render failed" };
   if (!clip.takes.length) return { kind: "muted", text: "Not rendered" };
-  if (clip.kind === "footage") return { kind: "", text: "Footage" };
-  if (isStale(clip)) return { kind: "danger", text: "Source changed" };
   const take = activeTake(clip);
-  const quality = take.upscaled ? "Upscaled" : take.quality === "final" ? "Final" : "Draft";
+  if (clip.kind === "footage" && !take?.edit && take?.quality !== "draft" && !take?.final_ranges?.length) return { kind: "", text: "Footage" };
+  if (isStale(clip)) return { kind: "danger", text: "Source changed" };
+  const quality = take.upscaled ? "Upscaled"
+    : take.quality === "final" && take.final_ranges?.length ? "Partial final"
+    : take.quality === "final" ? "Final" : "Draft";
   return { kind: "", text: clip.takes.length > 1 ? quality + ", take " + (clip.takes.indexOf(take) + 1) + " of " + clip.takes.length : quality };
 }
 
@@ -4015,7 +4017,7 @@ function drawInspector() {
     source.textContent = "Imported from " + (take?.source || take?.file || "a file");
     const about = document.createElement("p");
     about.className = "hint";
-    about.textContent = "On the timeline, use Generate to extend this footage or bridge to the next clip.";
+    about.textContent = "On the timeline, use Generate to extend this footage, edit with a prompt, or bridge to the next clip.";
     if (state.tab === "timeline") parts.push(section("On the timeline", timelineControls(placed)), clipEnvelopePanel(placed, take));
     else if (state.tab === "shot") parts.push(section("Footage", [source, about]));
     if (state.tab === "takes" && clip.takes.length) {
@@ -4024,12 +4026,30 @@ function drawInspector() {
     if (job) {
       const cancel = document.createElement("button");
       cancel.className = "quiet";
-      cancel.textContent = "Cancel upscale";
+      cancel.textContent = job.upscaled ? "Cancel upscale" : "Cancel render";
       cancel.onclick = () => cancelJob(job);
-      parts.push(cancel);
+      actions.append(cancel);
+      foot.append(progress);
     } else {
-      const upscale = upscaleControls(clip);
-        if (upscale) parts.push(section("Upscale", [upscale]));
+      if (!finishOff(clip, placed)) {
+        const range = finishRange(clip, take, placed);
+        const finish = document.createElement("button");
+        finish.className = "primary";
+        finish.textContent = range?.partial ? "Finish this part" : "Finish draft";
+        finish.title = range?.partial
+          ? "Render only " + timecode(range.a) + " – " + timecode(range.b - 1) + " at Final quality, reusing this draft's latents when available, and splice it into the take."
+          : "Make a final from this draft, reusing its latents when available.";
+        finish.addEventListener("click", () => finishDraft(clip, placed));
+        actions.append(finish);
+        if (range?.partial) {
+          const spanNote = document.createElement("p");
+          spanNote.className = "hint";
+          spanNote.textContent = "Part " + timecode(range.a) + " – " + timecode(range.b - 1)
+            + " · " + ((range.b - range.a) / FPS).toFixed(2) + " s";
+          foot.append(spanNote);
+        }
+      }
+      upscale = upscaleControls(clip);
     }
     panel.replaceChildren(...parts);
     return;
@@ -4047,7 +4067,16 @@ function drawInspector() {
   durationHint.id = "shotDurationHint";
   durationHint.className = "field-error";
   durationHint.setAttribute("aria-live", "polite");
+    const foot = document.createElement("div");
+    foot.className = "inspector-foot";
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    let upscale = null;
   duration.input.setAttribute("aria-describedby", durationHint.id);
+      const progress = document.createElement("p");
+      progress.className = "foot-status";
+      progress.dataset.status = clip.id;
+      progress.textContent = status.text;
   function validateDuration() {
     duration.input.setCustomValidity("");
     if (duration.input.validity.valid && clip.mid_guides?.length) {
@@ -4057,6 +4086,9 @@ function drawInspector() {
     }
     const valid = duration.input.validity.valid;
     duration.input.setAttribute("aria-invalid", String(!valid));
+    if (actions.childElementCount) foot.append(actions);
+    if (upscale) foot.append(upscale);
+    if (foot.childElementCount) parts.push(foot);
     durationHint.textContent = valid ? "" : (duration.input.validity.customError ? duration.input.validationMessage : "Enter 0.5 to 60 seconds.")
       + " The shot is still " + clip.seconds + " s.";
     return valid;
@@ -4164,13 +4196,17 @@ function drawInspector() {
       button.addEventListener("click", () => renderClip(clip, quality));
       actions.append(button);
     }
-    if (!finishOff(clip)) {
+    if (!finishOff(clip, placed)) {
+      const shown = activeTake(clip);
+      const range = finishRange(clip, shown, placed);
       const finish = document.createElement("button");
       finish.className = "quiet";
-      finish.textContent = "Finish draft";
-      finish.title = activeTake(clip)?.sprite ? "Refine this sprite at 512 × 768 with its saved loop timing, scale and pivot." : "Make a final from the draft you see: the same shot, framing, motion and sound, redrawn at the selected Final size. "
-        + "Only the final's last steps run, so it is faster than Render final, and there is no new seed to hope for.";
-      finish.addEventListener("click", () => renderClip(clip, "finish"));
+      finish.textContent = range?.partial ? "Finish this part" : "Finish draft";
+      finish.title = shown?.sprite ? "Refine this sprite at 512 × 768 with its saved loop timing, scale and pivot."
+        : range?.partial ? "Refine only " + timecode(range.a) + " – " + timecode(range.b - 1) + " from this draft's latents and splice it into the take."
+        : "Make a final from the draft you see: the same shot, framing, motion and sound, redrawn at the selected Final size. "
+          + "Only the final's last steps run, so it is faster than Render final, and there is no new seed to hope for.";
+      finish.addEventListener("click", () => finishDraft(clip, placed));
       actions.append(finish);
     }
     upscale = upscaleControls(clip);
@@ -4318,7 +4354,8 @@ function versions(clip) {
     skim(img, take, "contain");
     const label = document.createElement("span");
     const editLabel = take.edit?.motion ? ", motion transfer · " : take.edit ? ", prompt edit · " : ", ";
-    label.textContent = "Take " + (index + 1) + editLabel + take.quality;
+    const qualityLabel = take.quality === "final" && take.final_ranges?.length ? "partial final" : take.quality;
+    label.textContent = "Take " + (index + 1) + editLabel + qualityLabel;
     const madeWith = take.models?.profile_title || profileOf(take.models?.profile)?.title;
     const patched = (take.models?.patches || []).map((row) => patchOf(row.node)?.title || row.node);
     if (take.edit) label.title = take.edit.prompt;
@@ -6267,14 +6304,20 @@ function renderTimeline() {
       name.append(level);
     }
     block.append(film, name);
-    if (take && clip.kind !== "footage" && px(itemLength(item)) >= 64) {
-      // Whether the take on the timeline is a quick draft or a finished final.
-      const grade = document.createElement("div");
-      const final = take.quality === "final";
-      grade.className = "grade " + (final ? "final" : "draft");
-      grade.textContent = final ? "Final" : "Draft";
-      grade.title = final ? "A final render" : "A draft. Render a final when the shot is right.";
-      block.append(grade);
+    const showGrade = take && (clip.kind !== "footage" || take.edit || take.quality === "draft" || take.final_ranges?.length);
+    if (showGrade && px(itemLength(item)) >= 64) {
+      // Whether this part of the take on the timeline is a draft, partially final, or a finished final.
+      const status = takeRangeStatus(take, item.in, item.out);
+      if (status && status !== "footage") {
+        const grade = document.createElement("div");
+        const final = status === "final";
+        grade.className = "grade " + (final ? "final" : "draft");
+        grade.textContent = final ? "Final" : status === "partial" ? "Partial" : "Draft";
+        grade.title = final ? "A final render"
+          : status === "partial" ? "Part of this clip is final and part is still a draft"
+          : "A draft. Finish this part or render a final when the shot is right.";
+        block.append(grade);
+      }
     }
     if (item.transition) {
       const mark = document.createElement("div");
@@ -8473,7 +8516,7 @@ function itemActions(item) {
   const render = clip.kind === "footage" ? [] : [
     act("Render draft", () => renderClip(clip, "draft"), { off: busy ? clip.name + " is rendering" : "" }),
     act("Render final", () => renderClip(clip, "final"), { off: busy ? clip.name + " is rendering" : "" }),
-    act("Finish this draft", () => renderClip(clip, "finish"), { off: busy ? clip.name + " is rendering" : finishOff(clip) }),
+    finishRow,
     "-",
     act(String(clip.action || "").trim() ? "Rewrite with a language model" : "Write with a language model", () => openRewrite(clip)),
     "-",
@@ -8496,7 +8539,7 @@ function clipActions(clip) {
   const render = clip.kind === "footage" ? [] : [
     act("Render draft", () => renderClip(clip, "draft"), { off: busy ? clip.name + " is rendering" : "" }),
     act("Render final", () => renderClip(clip, "final"), { off: busy ? clip.name + " is rendering" : "" }),
-    act("Finish this draft", () => renderClip(clip, "finish"), { off: busy ? clip.name + " is rendering" : finishOff(clip) }),
+    finishRow,
     "-",
     act(String(clip.action || "").trim() ? "Rewrite with a language model" : "Write with a language model", () => openRewrite(clip)),
     "-",
@@ -8523,6 +8566,12 @@ function viewerActions() {
   const clip = clipOf(state.clip);
   const compared = comparisonTakes(viewing());
   const shown = compared?.a || activeTake(viewing() || clipOf(itemAt(state.playhead)?.clip));
+  const shown = activeTake(clip);
+  const finishSpan = finishRange(clip, shown, item);
+  const finishLabel = finishSpan?.partial ? "Finish this part" : "Finish this draft";
+  const finishRow = act(finishLabel, () => finishDraft(clip, item), { off: busy ? clip.name + " is rendering" : finishOff(clip, item) });
+  const footageFinish = clip.kind === "footage" && shown && (shown.quality === "draft" || shown.final_ranges?.length)
+    ? [finishRow] : [];
   const off = !clip || clip.kind === "footage" ? "Select a generated shot to give it this frame" : !shown ? "The viewer shows no rendered frame" : "";
   const rows = compared ? [act("Close take comparison", closeComparison, { key: "Escape" }), "-"] : [];
   for (const [side, label] of [["first", "First frame"], ["last", "Last frame"]]) {
@@ -8534,6 +8583,7 @@ function viewerActions() {
     const { first, last } = midGuideLimits(clip);
     rows.push(act("Use as a mid-frame guide", () => {
       showTab("shot");
+    ...footageFinish,
       revealInspectorControl(".capture-mid-guide")?.click();
     }, { off: off || (frame === null || frame < first || frame > last ? "Move the playhead to an interior frame of this shot" : "") }));
   }
@@ -8546,6 +8596,10 @@ function actionsAt(target, x) {
   const control = target.closest("select, input[type=range], input[type=checkbox], input[type=radio]");
   if (control) {
     const title = control.getAttribute("aria-label") || control.labels?.[0]?.innerText.trim() || "Control";
+  const shown = activeTake(clip);
+  const finishRow = act("Finish this draft", () => finishDraft(clip, null), { off: busy ? clip.name + " is rendering" : finishOff(clip, null) });
+  const footageFinish = clip.kind === "footage" && shown && (shown.quality === "draft" || shown.final_ranges?.length)
+    ? [finishRow] : [];
     if (control.tagName === "SELECT") {
       return { title, rows: [...control.options].filter(o => !o.hidden).map(option => act(option.textContent, () => {
         control.value = option.value;
@@ -8559,6 +8613,7 @@ function actionsAt(target, x) {
         control.dispatchEvent(new Event("input", { bubbles: true }));
         control.dispatchEvent(new Event("change", { bubbles: true }));
       };
+    ...footageFinish,
       return { title, rows: [act("Increase", () => adjust(1)), act("Decrease", () => adjust(-1))] };
     }
     return { title, rows: [act(control.checked && control.type === "checkbox" ? "Uncheck" : "Select", () => control.click())] };
@@ -9549,20 +9604,29 @@ function updateQueue() {
 // Renders are queued by the server, which also attaches the finished take to the project.
 // The editor only shows progress, so closing it never loses a render.
 // The server also checks the draft's saved latents and the installed latent upscaler.
-function finishOff(clip) {
+function finishOff(clip, item) {
   const shown = activeTake(clip);
-  if (!shown || shown.quality !== "draft") return "Choose a draft take to finish";
-  if (shown.edit) return "Open " + (shown.edit.motion ? "Motion transfer" : "Edit with prompt") + " and choose Final";
+  const hasDraft = Boolean(shown && (shown.quality === "draft" || (shown.quality === "final" && shown.final_ranges?.length)));
+  if (!hasDraft) return "Choose a draft take to finish";
   if (clip.sprite && !shown.sprite) return "Choose a Sprite Draft take to finish with sprite settings";
   const final = state.project.sizes?.final;
-  if (final === "sharp" && !shown.sprite) return "Choose Full, Large, Medium, Small or your own Final size to finish a draft";
+  if (final === "sharp" && !shown.sprite && !shown.edit && !range.partial && !shown.final_ranges?.length)
+    return "Choose Full, Large, Medium, Small or your own Final size to finish a draft";
   return "";
 }
 
-async function renderClip(clip, quality, detail, upscaler, edit, seed) {
+function finishDraft(clip, item) {
+  const shown = activeTake(clip);
+  const range = finishRange(clip, shown, item);
+  const part = range?.partial ? { in: range.a, out: range.b } : undefined;
+  return renderClip(clip, "finish", undefined, undefined, undefined, undefined, part);
+}
+
+async function renderClip(clip, quality, detail, upscaler, edit, seed, part) {
   const folder = state.folder;
   if (jobFor(clip.id)) return;
-  if (!edit && quality !== "upscale" && !(quality === "finish" && activeTake(clip)?.sprite) && !clip.action.trim()) {
+  const shown = activeTake(clip);
+  if (!edit && quality !== "upscale" && !(quality === "finish" && (shown?.sprite || shown?.edit)) && !clip.action.trim()) {
     selectClip(clip.id);
     toast("Describe what happens in " + clip.name + " before rendering it.", true);
     return;
@@ -9599,6 +9663,53 @@ async function cancelJob(job) {
     state.jobs.delete(job.id);
     if (!unsaved()) adopt(result.project);
     updateQueue();
+function takeRangeStatus(take, first = 0, last = take?.frames || 0) {
+  if (!take) return null;
+  if (take.quality === "draft") {
+    if (take.edit) {
+      const lo = Math.max(first, take.edit.in), hi = Math.min(last, take.edit.out);
+      if (lo >= hi) return "footage";
+      return lo === first && hi === last ? "draft" : "partial";
+    }
+    return "draft";
+  }
+  if (take.quality === "final") {
+    const ranges = take.final_ranges;
+    if (Array.isArray(ranges) && ranges.length) {
+      if (ranges.some(([a, b]) => a <= first && b >= last)) return "final";
+      if (ranges.some(([a, b]) => Math.max(first, a) < Math.min(last, b))) return "partial";
+      return "draft";
+    }
+    return "final";
+  }
+  return take.quality || "footage";
+}
+
+function finishRange(clip, take, selected) {
+  if (!take || !take.frames) return null;
+  let range = null;
+  if (viewing()?.id === clip.id && state.sourceRange) {
+    range = boundedRange(state.sourceRange, take.frames);
+  } else if (selected === null) {
+    range = { a: 0, b: take.frames };
+  } else {
+    const item = selected || sorted().find(i => i.clip === clip.id && i.id === state.item);
+    if (!item) range = { a: 0, b: take.frames };
+    else if (!state.range) range = boundedRange({ a: item.in, b: item.out }, take.frames);
+    else {
+      const a = Math.max(state.range.a, item.start), b = Math.min(state.range.b, itemEnd(item));
+      if (a >= b) return null;
+      const speed = speedOf(item);
+      range = boundedRange({
+        a: Math.min(item.out, item.in + Math.round((a - item.start) * speed)),
+        b: b === itemEnd(item) ? item.out : Math.min(item.out, item.in + Math.round((b - item.start) * speed)),
+      }, take.frames);
+    }
+  }
+  if (!range) return null;
+  return { ...range, partial: range.a > 0 || range.b < take.frames };
+}
+
     renderAll();
     toast("Render cancelled.");
   } catch (error) {
@@ -9607,6 +9718,12 @@ async function cancelJob(job) {
 }
 
 // The jobs shown are the project's own record of what is rendering, wherever it was started.
+  const range = finishRange(clip, shown, item);
+  if (!range) return "Move the In and Out range over this clip to finish a part";
+  if (shown.sprite && range.partial) return "Sprite Draft takes are finished whole";
+  const status = takeRangeStatus(shown, range.a, range.b);
+  if (status === "final") return range.partial ? "This part is already a final" : "This take is already a final";
+  if (shown.edit && status === "footage") return "This part is outside the edited draft range";
 function syncJobs() {
   const next = new Map();
   for (const job of state.project.pending || []) next.set(job.id, state.jobs.get(job.id) || { ...job, step: 0, max: 0, progress: 0 });
@@ -9628,12 +9745,15 @@ function connect() {
   socket.onmessage = (event) => {
     if (typeof event.data === "string") onMessage(JSON.parse(event.data));
     else onBinary(event.data);
+    if (part) body.part = part;
   };
 }
 
 function onBinary(buffer) {
   const view = new DataView(buffer);
   const kind = view.getUint32(0);
+    if (result.job?.finish_fallback) toast(result.job.finish_fallback);
+    else if (result.job?.part) toast("Finishing " + timecode(result.job.part.in) + " – " + timecode(result.job.part.out - 1) + " from draft latents.");
   let start;
   let mime = "image/jpeg";
   if (kind === 1) {
@@ -10324,7 +10444,12 @@ const PACK_LEVELS = [
   ["cut", "What the cut uses", "The takes the timeline shows, footage, pictures and sounds"],
   ["text", "No renders", "The shots, the cast and its pictures, sounds and footage. Render the clips again after opening"],
 ];
-const sizeText = (bytes) => (bytes >= 1e9 ? (bytes / 1e9).toFixed(2) + " GB" : (bytes / 1e6).toFixed(1) + " MB");
+function sizeText(bytes) {
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(2) + " GB";
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + " MB";
+  if (bytes >= 1e3) return (bytes / 1e3).toFixed(1) + " kB";
+  return bytes + " B";
+}
 const OLD_SERVER = "This ComfyUI started before H3 Editor was updated: restart ComfyUI to use project zips.";
 
 $("projectDownload").addEventListener("click", async () => {
@@ -10339,6 +10464,81 @@ $("projectDownload").addEventListener("click", async () => {
   levels.replaceChildren();
   $("packerGo").disabled = true;
   $("packer").showModal();
+let storageVisit = 0;
+$("storageClose").onclick = () => $("storage").close();
+$("projectStorage").addEventListener("click", () => {
+  const folder = state.folder;
+  if (!folder) return;
+  const visit = ++storageVisit;
+  const dialog = $("storage"), clear = $("storageClear"), status = $("storageStatus");
+  const all = $("storageAll"), unused = $("storageUnused"), refresh = $("storageRefresh");
+  const path = "/project/" + encodeURIComponent(folder) + "/storage";
+  const title = projectTitle();
+  const current = () => dialog.open && visit === storageVisit && folder === state.folder;
+  let report = null;
+  unused.checked = true;
+  $("storageSummary").textContent = title;
+  $("storageUnusedSize").textContent = $("storageAllSize").textContent = "…";
+  dialog.showModal();
+
+  function updateControls() {
+    const scope = all.checked ? "all" : "unused";
+    $("storageImpact").hidden = !all.checked;
+    clear.textContent = all.checked ? "Clear all cached latents" : "Clear unused files";
+    clear.disabled = !report || report.rendering || !report[scope].files;
+    all.disabled = unused.disabled = !report || !report.all.files;
+  }
+
+  async function measure(cleanup = false) {
+    const scope = all.checked ? "all" : "unused";
+    const version = report?.[scope].version;
+    report = null;
+    updateControls();
+    refresh.disabled = true;
+    status.classList.remove("bad");
+    status.textContent = cleanup ? "Clearing cached latents…" : "Measuring cached latents…";
+    try {
+      await flush();
+      if (!current()) return;
+      if (unsaved()) throw new Error("Save the project, then refresh storage.");
+      const result = cleanup ? await postJson(path, { scope, version }) : await api(path);
+      if (!current()) return;
+      report = result;
+      const count = result.all.files;
+      $("storageSummary").textContent = title + " · " + count + " .hold.safetensors " + (count === 1 ? "file" : "files")
+        + " · " + sizeText(result.free_bytes) + " free on disk";
+      $("storageUnusedSize").textContent = sizeText(result.unused.bytes);
+      $("storageAllSize").textContent = sizeText(result.all.bytes);
+      if (cleanup) {
+        const removed = result.removed;
+        status.textContent = "Cleared " + removed.files + (removed.files === 1 ? " file" : " files") + " (" + sizeText(removed.bytes) + ").";
+        if (result.failed) {
+          status.textContent += " Could not remove " + result.failed + ". Check file permissions or try again when the files are closed.";
+          status.classList.add("bad");
+        }
+      } else if (result.rendering) {
+        status.textContent = "Refresh after this project’s renders finish to clear cached latents.";
+      } else {
+        status.textContent = !count ? "This project’s latent cache is empty."
+          : !result.unused.files ? "Every cached file is referenced by this project." : "Clearing the cache keeps your videos and exports.";
+      }
+    } catch (error) {
+      if (!current()) return;
+      status.textContent = error.message;
+      status.classList.add("bad");
+    } finally {
+      if (current()) {
+        refresh.disabled = false;
+        updateControls();
+      }
+    }
+  }
+  all.onchange = unused.onchange = updateControls;
+  refresh.onclick = () => measure();
+  clear.onclick = () => measure(true);
+  measure();
+});
+
   let sizes;
   try {
     sizes = (await api("/project/" + encodeURIComponent(state.folder) + "/archive")).levels;
