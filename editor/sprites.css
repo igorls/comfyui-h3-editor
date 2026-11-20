@@ -60,26 +60,43 @@
 #spriteReferencePanel summary { width: fit-content; color: var(--muted); font-weight: 600; cursor: pointer; }
 #spriteReferencePanel summary::marker { color: var(--muted); font-size: 10px; }
 #spriteRefs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 7px; margin-top: 10px; }
+.sprite-ref-item { position: relative; }
+.sprite-ref-item:only-of-type { grid-column: 1 / -1; }
 #spriteRefs img {
   display: block; width: 100%; height: 76px; object-fit: contain;
   background: #ebeae7; border-radius: 3px;
 }
-#spriteRefs img:only-of-type { grid-column: 1 / -1; height: auto; max-height: 180px; }
+.sprite-ref-item:only-of-type img { height: auto; max-height: 180px; }
+.sprite-ref-tag {
+  position: absolute; bottom: 3px; left: 3px; padding: 1px 4px; border-radius: 2px;
+  background: rgba(18, 20, 22, 0.82); color: var(--text); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .03em; pointer-events: none;
+}
 #spriteRefs button { grid-column: 1 / -1; justify-self: start; margin-top: 2px; }
 
 .sprite-desk { min-width: 0; width: 100%; max-width: 1600px; padding: 22px clamp(16px, 2.1vw, 34px) 30px; }
-#spriteTitle { margin: 0 0 14px; font-size: 26px; line-height: 1.2; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.sprite-desk-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+#spriteTitle { margin: 0; font-size: 26px; line-height: 1.2; letter-spacing: -.025em; overflow-wrap: anywhere; }
 .sprite-settings {
   display: flex; gap: 12px 24px; align-items: end; justify-content: space-between; flex-wrap: wrap;
 }
+.sprite-render-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 10px 14px; max-width: 100%; }
 .sprite-animation-controls { align-items: end; gap: 4px; max-width: 100%; }
 .sprite-field { display: grid; gap: 4px; max-width: 100%; color: var(--muted); font-size: 12px; font-weight: 500; }
-#spritesRoom select {
+#spritesRoom select, #spritesRoom input[type="text"] {
   max-width: 100%; min-height: 32px; padding: 4px 27px 4px 9px; color: var(--text);
   background-color: var(--raised); border: 1px solid var(--line-hi); border-radius: 4px;
-  font-size: 13px; font-weight: 500; cursor: pointer;
+  font-size: 13px; font-weight: 500;
 }
-#spritesRoom select:hover { border-color: var(--muted); }
+#spritesRoom select { cursor: pointer; }
+#spritesRoom input[type="text"] { padding-right: 9px; width: 126px; font-variant-numeric: tabular-nums; }
+#spritesRoom select:hover, #spritesRoom input[type="text"]:hover { border-color: var(--muted); }
+.sprite-check {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 32px;
+  color: var(--muted); font-size: 12px; font-weight: 500; cursor: pointer; user-select: none;
+}
+.sprite-check input { margin: 0; accent-color: var(--tungsten); }
+.sprite-prop-upload { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 #spriteMotion { width: clamp(130px, 15vw, 208px); text-overflow: ellipsis; }
 .sprite-animation-controls .sprite-field { margin-right: 4px; }
 .sprite-animation-controls .sprite-action { min-height: 32px; }
@@ -158,7 +175,8 @@
   #spritePeople button { padding-block: 6px; }
   #spriteReferencePanel { padding-top: 3px; border: 0; }
   #spriteRefs { grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); }
-  #spriteRefs img:only-of-type { grid-column: auto; height: 76px; }
+  .sprite-ref-item:only-of-type { grid-column: auto; }
+  .sprite-ref-item:only-of-type img { height: 76px; }
   #spriteRefs button { grid-column: auto; align-self: center; }
   .sprite-desk { padding: 16px; }
 }

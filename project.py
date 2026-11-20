@@ -12,6 +12,7 @@ import time
 import uuid
 
 try:
+    from . import h3image
     from . import sprite
     from . import holds
     from . import style_timeline
@@ -19,6 +20,7 @@ try:
     from . import patches as patching
     from .prompting import compose_prompt, compose_reference_prompt
 except ImportError:
+    import h3image
     import sprite
     import holds
     import style_timeline
@@ -855,17 +857,42 @@ def cast_pictures(project, clip):
 
     H3 takes H3_PICTURES pictures in all, pinned first and last frames included. Every member
     brings its main picture, and the room left is dealt out one more picture per member in turn,
-    so one member with many pictures never crowds out another.
+    so one member with many pictures never crowds out another. For directional sprite clips whose
+    cast pictures carry view tags ('front', 'side', 'back', 'left'), only heading-matched views
+    are routed so side profiles do not pull rear or diagonal loops.
     """
     members = clip_cast(project, clip)
-    have = [member_pictures(member) for member in members]
-    room = H3_PICTURES - bool(frame_of(clip, "first")) - bool(frame_of(clip, "last"))
+    config = clip.get("sprite") if isinstance(clip.get("sprite"), dict) else None
+    direction = config.get("direction") if config else None
+    have = [
+        sprite.filter_cast_pictures(member_pictures(member), direction) if direction else member_pictures(member)
+        for member in members
+    ]
+    first_pin = bool(frame_of(clip, "first"))
+    last_pin = bool(frame_of(clip, "last"))
+    if config and not first_pin and not last_pin and (config.get("motion") == "idle" or config.get("animation")):
+        if any(have):
+            first_pin = last_pin = True
+    room = H3_PICTURES - first_pin - last_pin
     taken = [0] * len(members)
     for _ in range(CAST_PICTURES):
         for index, pictures in enumerate(have):
             if taken[index] < len(pictures) and sum(taken) < room:
                 taken[index] += 1
     return [(member, have[index][:taken[index]]) for index, member in enumerate(members) if taken[index]]
+
+
+def sprite_auto_pin(project, clip):
+    """Return the primary direction-matched plate to auto-pin at start & end for sprite idles and one-shot actions."""
+    config = clip.get("sprite") if isinstance(clip.get("sprite"), dict) else None
+    if not config or not (config.get("motion") == "idle" or config.get("animation")):
+        return None
+    if frame_of(clip, "first") or frame_of(clip, "last"):
+        return None
+    shown = cast_pictures(project, clip)
+    if not shown:
+        return None
+    return shown[0][1][0]
 
 
 def clip_refmods(project, clip, available=None):
@@ -1019,10 +1046,12 @@ def clip_prompt(project, clip):
         if voice:
             number = next((n for n, c in enumerate(cast, 1) if c["id"] == voice["id"]), None)
             owner = {"subject": number} if number else {"description": voice.get("description") or voice["name"]}
+        auto_pin = sprite_auto_pin(project, clip)
+        sp_pin = (clip.get("sprite") or {}).get("self_pin") if isinstance(clip.get("sprite"), dict) else None
         return compose_reference_prompt(
             project.get("style", ""), action, subjects=cast,
-            first_frame=bool(frame_of(clip, "first")),
-            last_frame=bool(frame_of(clip, "last")) or arrives_on_pin(clip.get("link")), voice=owner, **fields,
+            first_frame=bool(frame_of(clip, "first") or auto_pin or sp_pin),
+            last_frame=bool(frame_of(clip, "last") or auto_pin) or arrives_on_pin(clip.get("link")), voice=owner, **fields,
         )
     return compose_prompt(project.get("style", ""), action, **fields)
 
@@ -1059,6 +1088,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     patches is the installed patch nodes by id, as project_patches takes them.
     finish is a draft take of the clip to finish: the final's first pass is that draft's own latents, enlarged and
     refined at the refine size, so the shot keeps the draft's framing, motion and sound.
+    finish_window is an optional (grid_in, grid_len) tuple to slice and refine only part of finish's latents.
     """
     if clip.get("kind") == "footage":
         raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip.get("name", "this clip"))
@@ -1071,7 +1101,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     if config:
         if clip.get("link"):
             raise ValueError("Sprite Draft needs an independent shot")
-        width, height = (sprite.WIDTH, sprite.HEIGHT) if quality == "draft" else (sprite.WIDTH * 2, sprite.HEIGHT * 2)
+        width, height = sprite.canvas_size(config, quality)
         enlarged = False
     _, profile = project_profile(project, available, clip)
     size = dict(QUALITIES[quality], width=width, height=height, steps=profile["steps"][quality])
@@ -1090,8 +1120,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     elif edit:
         length = 5 + 17 * math.ceil((edit["out"] - edit["in"] - 5) / 17)
     if config:
-    finish_window is an optional (grid_in, grid_len) tuple to slice and refine only part of finish's latents.
-        length = sprite.FRAMES
+        length = config.get("frames", sprite.FRAMES)
     guides = clean_mid_guides(clip, length)
     graph = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
@@ -1190,9 +1219,20 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             file = "/".join(filter(None, [guide["subfolder"], guide["file"]]))
             graph["210"] = {"class_type": "H3LoadClip", "inputs": {"file": file, "first": 0, "last": length}}
         else:
-            graph["210"] = {"class_type": "H3SpriteGuide", "inputs": {k: config[k] for k in ("direction", "camera", "poses")}}
+            guide_in = {k: config[k] for k in ("direction", "camera", "poses")}
+            if length != sprite.FRAMES:
+                guide_in["frames"] = length
+            if config.get("canvas", "portrait") != "portrait":
+                guide_in["canvas"] = config["canvas"]
+            graph["210"] = {"class_type": "H3SpriteGuide", "inputs": guide_in}
         take_inputs["ref_videos.ref_video_0"] = ["210", 0]
     first, last = frame_of(clip, "first"), frame_of(clip, "last")
+    auto_pin = sprite_auto_pin(project, clip) if config else None
+    sp_pin = config.get("self_pin") if config else None
+    if auto_pin and not first and not last:
+        first = last = auto_pin
+    elif sp_pin and not first:
+        first = sp_pin
     if first:
         graph["40"] = still_node(first)
         take_inputs["start_image"] = ["40", 0]
@@ -1200,6 +1240,14 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         graph["41"] = still_node(last)
         take_inputs["end_image"] = ["41", 0]
     take_inputs["anchor"] = "both" if first and last else "start" if first else "end" if last else "none"
+    if sp_pin and not guides:
+        stride = sp_pin["stride"]
+        sp_frames = [i for i in (stride, 2 * stride) if 0 < i < length]
+        if sp_frames:
+            graph["209"] = still_node(sp_pin)
+            take_inputs["mid_frames"] = ", ".join(str(i) for i in sp_frames)
+            for idx, _ in enumerate(sp_frames):
+                take_inputs["mid_images.mid_image_%s" % idx] = ["209", 0]
     index = 0
     for _, pictures in cast_pictures(project, clip):
         # A member's pictures sit together, in the order the prompt numbers them.
@@ -1301,16 +1349,28 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
                 "curve_direction": "constant", "scramble_seed": -1, "curve_shape": "linear", "curve_value": 1.0}}
             graph[key]["inputs"]["conditioning"] = [node, 0]
     if config:
-        # Sprite drafts display the finished loop. Skip intermediate video and audio preview decoding.
+        # Sprite drafts are silent and display the finished loop. Skip live preview, audio decode,
+        # and hold latent saving unless explicitly refining a draft later.
         for guider in ("13", "88"):
             if guider in graph:
                 graph[guider]["inputs"]["model"] = graph["9"]["inputs"]["model"]
         graph.pop("9")
+        graph.pop("17", None)
+        if "18" in graph:
+            graph["18"]["inputs"].pop("audio", None)
+        if not config.get("refine"):
+            graph.pop("20", None)
         layout = (finish or {}).get("sprite", {}).get("layout")
-        graph["211"] = {"class_type": "H3SpriteSheet", "inputs": {
+        sheet_in = {
             "images": list(graph["18"]["inputs"]["images"]), "poses": config["poses"],
             "filename_prefix": graph["19"]["inputs"]["filename_prefix"],
-            "layout": json.dumps(layout) if layout else ""}}
+            "layout": json.dumps(layout) if layout else "",
+        }
+        if config.get("canvas", "portrait") != "portrait":
+            sheet_in["canvas"] = config["canvas"]
+        if config.get("tile_size"):
+            sheet_in["tile_width"], sheet_in["tile_height"] = config["tile_size"]
+        graph["211"] = {"class_type": "H3SpriteSheet", "inputs": sheet_in}
         if config.get("motion") == "idle":
             graph["211"]["inputs"]["idle"] = True
         if config.get("animation"):
@@ -1339,6 +1399,7 @@ def start_from_take(graph, clip, source, length, window=None):
 
     The draft's sampled latents, saved beside its video, take the place of the first pass's: they are enlarged and
     refined at the refine size as a final's would be, and their sound is the take's sound.
+    When window=(grid_in, grid_len) is given, only that on-grid slice is loaded and refined.
     """
     if "90" not in graph:
         raise ValueError("finishing a draft needs the latent upscaler: install the latent upscaler from Get the models")
@@ -1404,7 +1465,6 @@ def add_refine(graph, size, tail, upscaler):
 # window drew its own room and the windows dissolved into one another (a 20.75 s chorus: 44% of the background changed).
 # Its refine redraws only the last steps of a settled picture, so it can go in windows: on a 20.75 s take at
 # 1088 x 1920 the refine's three steps took 22 minutes whole (50 GB of GPU memory in use at the peak) and the whole
-    When window=(grid_in, grid_len) is given, only that on-grid slice is loaded and refined.
 # final 15 minutes in windows of 124 frames, the same picture to the pore, the place, the skin and the lips held.
 LONG_TAKE = 249                 # frames (10.4 s): a refine longer than this goes in windows
 REFINE_WINDOW = (124, 39)       # frames each window and frames two windows share, both 17n + 5
@@ -1567,6 +1627,51 @@ def export_window(project, span):
     return span["from"], span["to"]
 
 
+def merge_ranges(ranges):
+    """Merge overlapping or adjacent [start, end] frame spans into sorted disjoint pairs."""
+    spans = sorted((int(a), int(b)) for a, b in (ranges or []) if int(b) > int(a))
+    merged = []
+    for a, b in spans:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return merged
+
+
+def range_covered(ranges, first, last):
+    """Whether frames [first, last) are completely covered by ranges."""
+    first, last = int(first), int(last)
+    return any(a <= first and b >= last for a, b in merge_ranges(ranges))
+
+
+def take_range_status(take, first, last):
+    """Quality status of frames [first, last) inside a take: 'final', 'draft', 'partial', or 'footage'."""
+    if not take:
+        return None
+    first, last = int(first), int(last)
+    quality = take.get("quality")
+    if quality == "draft":
+        edit = take.get("edit")
+        if edit:
+            lo, hi = max(first, int(edit["in"])), min(last, int(edit["out"]))
+            if lo >= hi:
+                return "footage"
+            return "draft" if lo == first and hi == last else "partial"
+        return "draft"
+    if quality == "final":
+        ranges = take.get("final_ranges")
+        if ranges:
+            merged = merge_ranges(ranges)
+            if any(a <= first and b >= last for a, b in merged):
+                return "final"
+            if any(max(first, a) < min(last, b) for a, b in merged):
+                return "partial"
+            return "draft"
+        return "final"
+    return quality or "footage"
+
+
 def export_plan(project, scale=1.0, span=None):
     """What an export of the timeline will hold, before making it: its size and length, and what to know first.
 
@@ -1628,51 +1733,6 @@ def export_command(project, paths, out_path, width=None, height=None, scale=1.0,
     if not items:
         raise ValueError("there are no rendered clips on the timeline to export")
     if width is None or height is None:
-def merge_ranges(ranges):
-    """Merge overlapping or adjacent [start, end] frame spans into sorted disjoint pairs."""
-    spans = sorted((int(a), int(b)) for a, b in (ranges or []) if int(b) > int(a))
-    merged = []
-    for a, b in spans:
-        if merged and a <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], b)
-        else:
-            merged.append([a, b])
-    return merged
-
-
-def range_covered(ranges, first, last):
-    """Whether frames [first, last) are completely covered by ranges."""
-    first, last = int(first), int(last)
-    return any(a <= first and b >= last for a, b in merge_ranges(ranges))
-
-
-def take_range_status(take, first, last):
-    """Quality status of frames [first, last) inside a take: 'final', 'draft', 'partial', or 'footage'."""
-    if not take:
-        return None
-    first, last = int(first), int(last)
-    quality = take.get("quality")
-    if quality == "draft":
-        edit = take.get("edit")
-        if edit:
-            lo, hi = max(first, int(edit["in"])), min(last, int(edit["out"]))
-            if lo >= hi:
-                return "footage"
-            return "draft" if lo == first and hi == last else "partial"
-        return "draft"
-    if quality == "final":
-        ranges = take.get("final_ranges")
-        if ranges:
-            merged = merge_ranges(ranges)
-            if any(a <= first and b >= last for a, b in merged):
-                return "final"
-            if any(max(first, a) < min(last, b) for a, b in merged):
-                return "partial"
-            return "draft"
-        return "final"
-    return quality or "footage"
-
-
         # The cut takes the size of its largest picture, so upscaled finals keep their detail.
         width = height = 0
         for item in items:
@@ -2305,7 +2365,7 @@ LORA_NODE = 100
 # A project's model patches: how many, and where their nodes start in a render graph, clear of the LoRAs.
 PATCH_LIMIT = patching.LIMIT
 PATCH_NODE = 120
-CAST_FIELDS = ("name", "description", "voice", "pictures", "refmod")
+CAST_FIELDS = ("name", "description", "voice", "pictures", "refmod", "view")
 # A RefMod is a reference saved by the ComfyUI-MiniMaxH3Mod pack. The editor renders with one only
 # when that pack is installed: its loader takes this many, and the model list names each as refmod:<name>.
 REFMOD_SLOTS = 8
@@ -2427,7 +2487,9 @@ def planned_frames(clip):
         return take["frames"]
     if clip.get("link"):
         return linked_length(clip["link"], clip.get("seconds", 5))
-    return sprite.FRAMES if clip.get("sprite") is not None else snap_frames(clip.get("seconds", 5))
+    if clip.get("sprite") is not None:
+        return clip["sprite"].get("frames", sprite.FRAMES) if isinstance(clip["sprite"], dict) else sprite.FRAMES
+    return snap_frames(clip.get("seconds", 5))
 
 
 def check_fields(fields, allowed):
@@ -2459,7 +2521,8 @@ def clean_mid_guides(clip, length=None):
         raise ValueError("mid-frame guides belong to generated clips")
     link = clip.get("link") or {}
     seconds = clip.get("seconds", 5)
-    length = length or (linked_length(link, seconds) if link else sprite.FRAMES if clip.get("sprite") else snap_frames(seconds))
+    sprite_len = clip["sprite"].get("frames", sprite.FRAMES) if isinstance(clip.get("sprite"), dict) else sprite.FRAMES
+    length = length or (linked_length(link, seconds) if link else sprite_len if clip.get("sprite") else snap_frames(seconds))
     first, last, limit = 1, length - 2, 8
     if link.get("mode") in ("extend_after", "bridge"):
         first = link["hold"]
@@ -3302,7 +3365,13 @@ def clean_pictures(value, person):
         raise ValueError("%s needs a main picture before it takes more" % person.get("name", "a cast member"))
     if len(value) > CAST_PICTURES - 1:
         raise ValueError("a cast member takes up to %s pictures, the main one included" % CAST_PICTURES)
-    return [clean_asset(asset, "a picture") for asset in value]
+    out = []
+    for asset in value:
+        cleaned = clean_asset(asset, "a picture")
+        if isinstance(asset, dict) and asset.get("view") is not None:
+            cleaned["view"] = sprite.normalize_view(asset["view"])
+        out.append(cleaned)
+    return out
 
 
 def clean_refmod(value):
@@ -3326,6 +3395,8 @@ def add_cast(project, fields):
               "description": str(fields.get("description") or "")}
     if asset:
         person.update(asset)
+    if fields.get("view") is not None:
+        person["view"] = sprite.normalize_view(fields["view"])
     if voice:
         person["voice"] = voice
     if fields.get("pictures"):
@@ -3350,6 +3421,12 @@ def update_cast(project, cast_id, fields):
             continue
         if key == "pictures":
             person["pictures"] = clean_pictures(value or [], person)
+            continue
+        if key == "view":
+            if value is None:
+                person.pop("view", None)
+            else:
+                person["view"] = sprite.normalize_view(value)
             continue
         if key == "refmod":
             if value is None and not (person.get("file") or person.get("voice")):
@@ -3973,7 +4050,11 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
     """The graph for a new take, and the job that will turn its file into a take. detail and upscaler are for an upscale only.
 
     patches is the installed patch nodes by id, as project_patches takes them.
+    part is an optional {in, out} frame range for finishing only part of a draft.
+    has_latents is an optional callable(take) -> bool used to detect missing draft latents and fall back.
     """
+    if part is not None and quality != FINISH_QUALITY:
+        raise ValueError("part is only supported when finishing a draft")
     if edit is not None and quality not in QUALITIES:
         raise ValueError("choose draft or final for a prompt edit")
     if quality == UPSCALE_QUALITY:
@@ -4072,11 +4153,7 @@ def add_pending(project, job):
     project.setdefault("pending", []).append(job)
 
 
-    part is an optional {in, out} frame range for finishing only part of a draft.
-    has_latents is an optional callable(take) -> bool used to detect missing draft latents and fall back.
 def pop_pending(project, job_id):
-    if part is not None and quality != FINISH_QUALITY:
-        raise ValueError("part is only supported when finishing a draft")
     pending = project.get("pending") or []
     job = next((j for j in pending if j.get("id") == job_id), None)
     project["pending"] = [j for j in pending if j.get("id") != job_id]
@@ -4098,6 +4175,8 @@ def finish_render(project, job_id, file, info):
     for key in ("models", "upscale", "size", "upscaled", "upscaler", "detail", "finished", "source", "final_ranges"):
         if job.get(key):
             take[key] = job[key]
+    if info.get("size") and job.get("splice"):
+        take["size"] = list(info["size"])
     if info.get("sprite"):
         take["sprite"] = info["sprite"]
     if info.get("strip"):
@@ -4176,8 +4255,6 @@ def merge_editor_save(base, mine, current):
         if "mid_guides" in clip:
             clip["mid_guides"] = clean_mid_guides(clip)
         stored = existing.get(clip["id"])
-    if info.get("size") and job.get("splice"):
-        take["size"] = list(info["size"])
         if stored is None:
             continue
         ids = {take["id"] for take in stored.get("takes", [])}
@@ -4446,7 +4523,7 @@ def describe(project):
             entry["style_markers"] = clip["style_markers"]
         if clip.get("sprite"):
             entry["sprite"] = clip["sprite"]
-            entry["seconds"] = sprite.FRAMES / FPS
+            entry["seconds"] = (clip["sprite"].get("frames", sprite.FRAMES) if isinstance(clip["sprite"], dict) else sprite.FRAMES) / FPS
         if take and take.get("sprite"):
             entry["sprite_sheet"] = take["sprite"]
         if clip.get("mid_guides"):
@@ -4651,3 +4728,61 @@ def apply_op(project, op, names):
     if op.get("as"):
         names[str(op["as"])] = result
     return result
+
+
+def plan_prop_render(project, folder, spec, seed=None, available=None):
+    """Plan a 4+ MP MiniMax-H3-Image render for a static prop, paired state variant, or turnaround plate."""
+    if not isinstance(spec, dict):
+        raise ValueError("prop spec must be an object")
+    kind = spec.get("kind", "prop")
+    if kind not in ("prop", "state_variant", "turnaround"):
+        raise ValueError("kind must be prop, state_variant, or turnaround")
+    name = slug(spec.get("name") or kind)
+    width, height = h3image.resolve_size(spec.get("size", "square"))
+    seed = random.randint(1, 2**31 - 1) if seed is None else int(seed)
+    style = spec.get("style", project.get("style", ""))
+    camera = spec.get("camera", "rpg")
+    style_ref = clean_asset(spec.get("style_ref"), "style_ref") if spec.get("style_ref") else None
+    base_prop = clean_asset(spec.get("base_prop"), "base_prop") if spec.get("base_prop") else None
+    bg_model = None if spec.get("cutout") == "edge" else sprite.matte_model(available)
+    prefix = "%s/%s/props/%s" % (ROOT, folder, name)
+    if kind == "turnaround":
+        if not style_ref:
+            raise ValueError("turnaround needs style_ref (the front reference plate)")
+        graph = h3image.turnaround_graph(
+            spec.get("view", "back"), front_ref=style_ref, side_ref=base_prop,
+            description=spec.get("description", ""), style=style, camera=camera,
+            proportions=spec.get("proportions", "adult"), holding=spec.get("holding", ""),
+            width=width, height=height, seed=seed, filename_prefix=prefix, bg_model=bg_model,
+        )
+    elif kind == "state_variant":
+        if not base_prop:
+            raise ValueError("state_variant needs base_prop")
+        prompt_text = h3image.state_variant_prompt(
+            spec.get("description", ""), style=style, style_ref=style_ref is not None,
+        )
+        graph = h3image.prop_graph(
+            prompt_text, width=width, height=height, seed=seed, filename_prefix=prefix,
+            style_ref=style_ref, base_prop=base_prop, bg_model=bg_model,
+        )
+    else:
+        prompt_text = h3image.prop_prompt(
+            spec.get("description", ""), style=style, camera=camera,
+            style_ref=style_ref is not None, top_canopy=bool(spec.get("top_canopy")),
+        )
+        graph = h3image.prop_graph(
+            prompt_text, width=width, height=height, seed=seed, filename_prefix=prefix,
+            style_ref=style_ref, bg_model=bg_model,
+        )
+    output_size = list(sprite.validate_tile_size(spec["output_size"])) if spec.get("output_size") else None
+    pivot = spec.get("pivot")
+    if pivot is not None:
+        if not isinstance(pivot, (list, tuple)) or len(pivot) != 2 or any(type(v) is not int for v in pivot):
+            raise ValueError("pivot must be [x, y] integers")
+        pivot = [int(pivot[0]), int(pivot[1])]
+    job = {
+        "kind": kind, "name": name, "seed": seed, "native_size": [width, height],
+        "output_size": output_size, "pivot": pivot, "prefix": prefix,
+        "cutout": "foreground model" if bg_model else "background key",
+    }
+    return job, graph

@@ -1840,19 +1840,49 @@ def sprite_export_fps(body):
 
 
 async def make_sprite_export(take, variant, folder, stem, names, export_24fps):
-    """Repack the saved movie. Only the clip decoder, optional matte and PNG writer enter the queue."""
+    """Repack a sprite take. Reuses lossless cached RGBA frames when present; falls back to ComfyUI otherwise."""
     from server import PromptServer
 
     sheet = take["sprite"]
     poses = sheet.get("source_poses", sheet["poses"])
+    tile_w, tile_h = store.sprite.validate_tile_size(variant.get("tile_size") or variant["tile"])
+    total_frames = int(take.get("frames") or sheet.get("frames") or store.sprite.FRAMES)
+    canvas = sheet.get("canvas") or "portrait"
+    idle = sheet["poses"] == 2 * poses - 2
+    cache_name = sheet.get("frame_cache")
+    if cache_name:
+        try:
+            cache_path = output_path(take.get("subfolder"), cache_name)
+        except web.HTTPException:
+            cache_path = None
+        if cache_path and os.path.isdir(cache_path):
+            rendered = await asyncio.to_thread(
+                store.sprite.export_from_cache,
+                cache_path, sheet["layout"], poses, (tile_w, tile_h),
+                idle=idle, export_24fps=export_24fps, total_frames=total_frames, canvas=canvas,
+            )
+            if rendered is not None:
+                full, indexed = rendered
+                for style, img in (("illustrated", full), ("indexed", indexed)):
+                    dest = output_path(folder, names[style])
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    tmp = dest + ".tmp"
+                    await asyncio.to_thread(img.save, tmp, format="PNG")
+                    os.replace(tmp, dest)
+                return
+
     prefix = stem + ".partial-" + uuid.uuid4().hex
+    sheet_inputs = {
+        "images": ["1", 0], "poses": poses, "layout": json.dumps(sheet["layout"]),
+        "cell_size": str(tile_w if tile_w == tile_h and tile_w in store.sprite.EXPORT_SIZES else store.sprite.TILE),
+        "tile_width": tile_w, "tile_height": tile_h, "canvas": canvas,
+        "export_24fps": export_24fps, "save_cache": False,
+        "idle": idle, "filename_prefix": folder + "/" + prefix,
+    }
     graph = {"1": {"class_type": "H3LoadClip", "inputs": {
         "file": "/".join(filter(None, (take.get("subfolder"), take["file"]))), "first": 0,
-        "last": store.sprite.FRAMES, "frames_only": True}},
-        "2": {"class_type": "H3SpriteSheet", "inputs": {
-            "images": ["1", 0], "poses": poses, "layout": json.dumps(sheet["layout"]), "cell_size": str(variant["tile"]),
-            "export_24fps": export_24fps,
-            "idle": sheet["poses"] == 2 * poses - 2, "filename_prefix": folder + "/" + prefix}}}
+        "last": total_frames, "frames_only": True}},
+        "2": {"class_type": "H3SpriteSheet", "inputs": sheet_inputs}}
     if sheet.get("cutout") == "foreground model":
         model = store.sprite.matte_model(available_models())
         if not model:
@@ -1888,9 +1918,13 @@ async def make_sprite_export(take, variant, folder, stem, names, export_24fps):
 async def sprite_export(request):
     name = store.slug(request.match_info["name"])
     body = await request.json()
-    tile = body.get("tile") if isinstance(body, dict) else None
-    if type(tile) is not int or tile not in store.sprite.EXPORT_SIZES:
-        return refused("Choose a sprite export size of 64, 128 or 256 px.")
+    raw_tile = body.get("tile_size") if isinstance(body, dict) and body.get("tile_size") is not None else (
+        body.get("tile") if isinstance(body, dict) else None
+    )
+    try:
+        tile = store.sprite.validate_tile_size(raw_tile)
+    except ValueError as error:
+        return refused(error)
     data = read_project(name)
     take = next((t for c in data["clips"] for t in c.get("takes", [])
                  if t["id"] == body.get("take") and c["id"] == body.get("clip")), None)
@@ -1906,19 +1940,23 @@ async def sprite_export(request):
 
 async def sized_sprite(name, take, tile, fps=None):
     sheet = take["sprite"]
-    if tile == sheet["tile"] and fps is None:
+    tile_w, tile_h = store.sprite.validate_tile_size(tile)
+    base_size = tuple(sheet.get("tile_size") or (sheet["tile"], sheet["tile"]))
+    if (tile_w, tile_h) == base_size and fps is None:
         return dict(sheet, subfolder=take["subfolder"])
     folder = "%s/%s/clips" % (store.ROOT, name)
-    stem = os.path.splitext(os.path.basename(take["file"]))[0] + ".%dpx" % tile
+    size_tag = "%dpx" % tile_w if tile_w == tile_h else "%dx%dpx" % (tile_w, tile_h)
+    stem = os.path.splitext(os.path.basename(take["file"]))[0] + "." + size_tag
     if fps is not None:
         stem += ".24fps"
     names = {style: stem + "." + style + ".png" for style in ("illustrated", "indexed")}
-    variant = dict(sheet, **names, tile=tile, subfolder=folder,
-                   pivot=[v * tile // sheet["tile"] for v in sheet["pivot"]])
+    variant = dict(sheet, **names, tile=tile_w, tile_size=[tile_w, tile_h], subfolder=folder,
+                   pivot=[sheet["pivot"][0] * tile_w // base_size[0], sheet["pivot"][1] * tile_h // base_size[1]])
     if fps is not None:
         variant.update(fps=fps, poses=round(sheet["poses"] * fps / sheet["fps"]))
     if not all(os.path.isfile(output_path(folder, file)) for file in names.values()):
-        if not os.path.isfile(output_path(take.get("subfolder"), take["file"])):
+        has_cache = bool(sheet.get("frame_cache")) and os.path.isdir(output_path(take.get("subfolder"), sheet["frame_cache"]))
+        if not has_cache and not os.path.isfile(output_path(take.get("subfolder"), take["file"])):
             raise FileNotFoundError("The source movie for this take is missing.")
         key = (folder, stem)
         if key not in SPRITE_EXPORTS:
@@ -1934,13 +1972,19 @@ async def sprite_atlas(request):
     body = await request.json()
     if not isinstance(body, dict):
         return refused("Choose sprite takes to export.")
-    tile, style, picks = body.get("tile"), body.get("style"), body.get("picks")
-    if type(tile) is not int or tile not in store.sprite.EXPORT_SIZES or style not in ("illustrated", "indexed"):
+    raw_tile = body.get("tile_size") if body.get("tile_size") is not None else body.get("tile")
+    style, picks = body.get("style"), body.get("picks")
+    try:
+        tile_w, tile_h = store.sprite.validate_tile_size(raw_tile)
+    except ValueError as error:
+        return refused(error)
+    if style not in ("illustrated", "indexed"):
         return refused("Choose an export size and style.")
     if not isinstance(picks, list) or not picks:
         return refused("Choose at least one animation slot.")
-    if len(picks) * tile * tile * 4 > store.sprite.MAX_ATLAS_PIXELS:
+    if len(picks) * tile_w * tile_h * 4 > store.sprite.MAX_ATLAS_PIXELS:
         return refused("This atlas is too large. Choose a smaller export size.")
+    include_webp = bool(body.get("webp", True))
     project = read_project(name)
     rows = []
     seen = set()
@@ -1950,19 +1994,6 @@ async def sprite_atlas(request):
             if not isinstance(pick, dict):
                 raise ValueError("Invalid sprite selection.")
             key = (pick.get("motion"), pick.get("direction"))
-def take_has_latents(take):
-    """Whether a draft take has a whole-take latent file beside its video on disk."""
-    if not take or not take.get("file"):
-        return False
-    try:
-        path = output_path(take.get("subfolder"), take["file"])
-    except web.HTTPException:
-        return False
-    return store.holds.has_take(store.holds.hold_path(path))
-
-
-async def start_render(data, folder, clip_id, quality, seed=None, client_id=None, detail=None, upscaler=None,
-                       patches=None, edit=None, part=None):
             if not isinstance(key[0], str) or key[1] not in store.sprite.DIRECTIONS or key in seen:
                 raise ValueError("Choose each motion and direction once.")
             seen.add(key)
@@ -1981,17 +2012,107 @@ async def start_render(data, folder, clip_id, quality, seed=None, client_id=None
             expected = facing.translate(str.maketrans("EW", "WE")) if mirror else facing
             if expected != key[1]:
                 raise ValueError("The selected take faces a different direction.")
-            sheet = await sized_sprite(name, take, tile, fps)
+            sheet = await sized_sprite(name, take, (tile_w, tile_h), fps)
             rows.append(("_".join(key), output_path(sheet["subfolder"], sheet[style]), sheet,
                          dict(clip=clip["id"], take=take["id"], seed=take.get("seed"), source_direction=facing, mirrored=mirror)))
-        archive_bytes = await asyncio.to_thread(store.sprite.pack_atlas, rows, tile, style)
+        archive_bytes = await asyncio.to_thread(store.sprite.pack_atlas, rows, (tile_w, tile_h), style, include_webp=include_webp)
     except (Refused, OSError, ValueError, KeyError, TypeError) as error:
         return refused(error)
     return web.Response(body=archive_bytes, content_type="application/zip",
                         headers={"Content-Disposition": 'attachment; filename="sprites.zip"'})
 
 
-async def start_render(data, folder, clip_id, quality, seed=None, client_id=None, detail=None, upscaler=None, patches=None, edit=None):
+async def sprite_self_pin(request):
+    """Extract a clean non-edge-touching stride-phase frame from a sprite take for loop self-pinning."""
+    import tempfile
+    from PIL import Image
+
+    name = store.slug(request.match_info["name"])
+    body = await request.json()
+    if not isinstance(body, dict):
+        return refused("Choose a Sprite Draft take to self-pin.")
+    data = read_project(name)
+    take = next((t for c in data["clips"] for t in c.get("takes", [])
+                 if t["id"] == body.get("take") and c["id"] == body.get("clip")), None)
+    if not take or not take.get("sprite"):
+        return refused("Choose an existing Sprite Draft take.", 404)
+    sheet = take["sprite"]
+    default_stride = min(36, max(4, 2 * int(sheet.get("source_poses") or sheet.get("poses") or 7)))
+    stride = body.get("stride", default_stride)
+    if type(stride) is not int or not 4 <= stride <= 36:
+        return refused("Self-pin stride must be an integer between 4 and 36.")
+    preferred = body.get("frame")
+    if preferred is not None and type(preferred) is not int:
+        return refused("Preferred self-pin frame must be an integer.")
+
+    frames = None
+    cache_name = sheet.get("frame_cache")
+    if cache_name:
+        try:
+            cache_path = output_path(take.get("subfolder"), cache_name)
+        except web.HTTPException:
+            cache_path = None
+        if cache_path and os.path.isdir(cache_path):
+            frames = await asyncio.to_thread(store.sprite.load_frame_cache, cache_path)
+
+    if not frames:
+        source = output_path(take.get("subfolder"), take["file"])
+        if not os.path.isfile(source):
+            return refused("The source movie for this take is missing.", 404)
+        with tempfile.TemporaryDirectory() as tmp:
+            pattern = os.path.join(tmp, "f_%04d.png")
+            await run(["ffmpeg", "-y", "-v", "error", "-i", source, pattern])
+            files = sorted(f for f in os.listdir(tmp) if f.endswith(".png"))
+            frames = []
+            for fname in files:
+                with Image.open(os.path.join(tmp, fname)) as im:
+                    frames.append(im.convert("RGB"))
+
+    try:
+        chosen, rgb, pins = await asyncio.to_thread(store.sprite.pick_self_pin_frame, frames, stride, preferred)
+    except ValueError as error:
+        return refused(error)
+    target, asset = asset_target(name, ".png")
+    await asyncio.to_thread(rgb.save, target, format="PNG")
+    return web.json_response({
+        "file": asset["file"],
+        "subfolder": asset["subfolder"],
+        "stride": stride,
+        "frame": chosen,
+        "pins": pins,
+    })
+
+
+async def sprite_prop(request):
+    """Plan or queue a 4+ MP MiniMax-H3-Image static prop, paired state variant, or turnaround plate."""
+    name = store.slug(request.match_info["name"])
+    body = await request.json()
+    if not isinstance(body, dict):
+        return refused("Send a prop render specification object.")
+    project = read_project(name)
+    try:
+        job, graph = store.plan_prop_render(project, name, body, seed=body.get("seed"), available=available_models())
+    except ValueError as error:
+        return refused(error)
+    if body.get("dry_run"):
+        return web.json_response({"job": job, "graph": graph})
+    prompt_id = await queue_prompt(graph)
+    return web.json_response({"prompt_id": prompt_id, "job": job})
+
+
+def take_has_latents(take):
+    """Whether a draft take has a whole-take latent file beside its video on disk."""
+    if not take or not take.get("file"):
+        return False
+    try:
+        path = output_path(take.get("subfolder"), take["file"])
+    except web.HTTPException:
+        return False
+    return store.holds.has_take(store.holds.hold_path(path))
+
+
+async def start_render(data, folder, clip_id, quality, seed=None, client_id=None, detail=None, upscaler=None,
+                       patches=None, edit=None, part=None):
     """Queue one render. patches is the installed patch nodes, for a batch that has read them already."""
     job, graph = store.plan_render(data, folder, clip_id, quality or "draft", seed, available_models(), detail, upscaler,
                                    installed_patches() if patches is None else patches, edit, part=part,
@@ -2217,6 +2338,50 @@ async def lay_track(path, track):
             os.remove(temporary)
 
 
+async def assemble_splice(rendered, splice):
+    """Replace frames splice['in']..splice['out'] of the base take with the newly finalized slice, keeping its audio."""
+    source = output_path(splice.get("subfolder"), splice["file"])
+    first, last, total = int(splice["in"]), int(splice["out"]), int(splice["frames"])
+    trim_start = int(splice.get("trim_start") or 0)
+    count = last - first
+    base_info = await video_info(source, count=False)
+    rendered_info = await video_info(rendered)
+    if rendered_info["frames"] < trim_start + count:
+        raise web.HTTPInternalServerError(text="the finalized video is shorter than the selected part")
+    bw, bh = int(base_info["width"]), int(base_info["height"])
+    rw, rh = int(rendered_info["width"]), int(rendered_info["height"])
+    if splice.get("is_edit") and bw * bh >= rw * rh * 0.75:
+        width, height = bw, bh
+    else:
+        width, height = rw, rh
+    fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
+           f"force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS")
+    filters, segments = [], []
+    if first:
+        filters.append(f"[1:v]trim=end_frame={first},{fit}[prefix]")
+        segments.append("[prefix]")
+    filters.append(f"[0:v]trim=start_frame={trim_start}:end_frame={trim_start + count},{fit}[part]")
+    segments.append("[part]")
+    if last < total:
+        filters.append(f"[1:v]trim=start_frame={last},{fit}[suffix]")
+        segments.append("[suffix]")
+    filters.append("".join(segments) + f"concat=n={len(segments)}:v=1:a=0,setpts=N/({store.FPS}*TB)[picture]")
+    target = os.path.splitext(rendered)[0] + "_part.mp4"
+    temporary = target + ".tmp.mp4"
+    try:
+        await run(["ffmpeg", "-y", "-v", "error", "-i", rendered, "-i", source,
+                   "-filter_complex", ";".join(filters), "-map", "[picture]", "-map", "1:a:0?",
+                   "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy",
+                   "-movflags", "+faststart", temporary])
+        if (await video_info(temporary))["frames"] != total:
+            raise web.HTTPInternalServerError(text="the finalized part did not match the take's frame count")
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return target
+
+
 async def assemble_prompt_edit(rendered, edit):
     """Replace exactly the requested source frames, retaining the original audio stream."""
     source = output_path(edit["subfolder"], edit["file"])
@@ -2341,50 +2506,6 @@ async def watch_once():
             except web.HTTPException as error:
                 finished.append((job, None, None, "The render saved a file that cannot be read: %s" % error.text))
         if not finished:
-async def assemble_splice(rendered, splice):
-    """Replace frames splice['in']..splice['out'] of the base take with the newly finalized slice, keeping its audio."""
-    source = output_path(splice.get("subfolder"), splice["file"])
-    first, last, total = int(splice["in"]), int(splice["out"]), int(splice["frames"])
-    trim_start = int(splice.get("trim_start") or 0)
-    count = last - first
-    base_info = await video_info(source, count=False)
-    rendered_info = await video_info(rendered)
-    if rendered_info["frames"] < trim_start + count:
-        raise web.HTTPInternalServerError(text="the finalized video is shorter than the selected part")
-    bw, bh = int(base_info["width"]), int(base_info["height"])
-    rw, rh = int(rendered_info["width"]), int(rendered_info["height"])
-    if splice.get("is_edit") and bw * bh >= rw * rh * 0.75:
-        width, height = bw, bh
-    else:
-        width, height = rw, rh
-    fit = (f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
-           f"force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS")
-    filters, segments = [], []
-    if first:
-        filters.append(f"[1:v]trim=end_frame={first},{fit}[prefix]")
-        segments.append("[prefix]")
-    filters.append(f"[0:v]trim=start_frame={trim_start}:end_frame={trim_start + count},{fit}[part]")
-    segments.append("[part]")
-    if last < total:
-        filters.append(f"[1:v]trim=start_frame={last},{fit}[suffix]")
-        segments.append("[suffix]")
-    filters.append("".join(segments) + f"concat=n={len(segments)}:v=1:a=0,setpts=N/({store.FPS}*TB)[picture]")
-    target = os.path.splitext(rendered)[0] + "_part.mp4"
-    temporary = target + ".tmp.mp4"
-    try:
-        await run(["ffmpeg", "-y", "-v", "error", "-i", rendered, "-i", source,
-                   "-filter_complex", ";".join(filters), "-map", "[picture]", "-map", "1:a:0?",
-                   "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy",
-                   "-movflags", "+faststart", temporary])
-        if (await video_info(temporary))["frames"] != total:
-            raise web.HTTPInternalServerError(text="the finalized part did not match the take's frame count")
-        os.replace(temporary, target)
-    finally:
-        if os.path.exists(temporary):
-            os.remove(temporary)
-    return target
-
-
             continue
         async with lock(folder):
             data = read_project(folder)
@@ -2727,6 +2848,8 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/rename", "rename"),
     ("POST", "/h3take/api/project/{name}/duplicate", "duplicate"),
     ("GET", "/h3take/api/project/{name}/archive", "archive_project"),
+    ("GET", "/h3take/api/project/{name}/storage", "project_storage"),
+    ("POST", "/h3take/api/project/{name}/storage", "project_storage"),
     ("GET", "/h3take/api/project/{name}/summary", "summary"),
     ("GET", "/h3take/api/project/{name}/cuts", "cuts"),
     ("GET", "/h3take/api/project/{name}/detail", "detail"),
@@ -2736,6 +2859,8 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/render", "render"),
     ("POST", "/h3take/api/project/{name}/sprite-export", "sprite_export"),
     ("POST", "/h3take/api/project/{name}/sprite-atlas", "sprite_atlas"),
+    ("POST", "/h3take/api/project/{name}/sprite-self-pin", "sprite_self_pin"),
+    ("POST", "/h3take/api/project/{name}/props", "sprite_prop"),
     ("POST", "/h3take/api/project/{name}/cancel", "cancel"),
     ("GET", "/h3take/api/project/{name}/wait", "wait"),
     ("POST", "/h3take/api/project/{name}/graph", "graph"),
@@ -2776,5 +2901,3 @@ def install():
         routes.route(method, path)(bound(handler))
     routes.static("/h3take/editor-files/", PAGE)
     PromptServer.instance.loop.call_soon_threadsafe(lambda: getattr(sys.modules[module], "ensure_watcher")())
-    ("GET", "/h3take/api/project/{name}/storage", "project_storage"),
-    ("POST", "/h3take/api/project/{name}/storage", "project_storage"),

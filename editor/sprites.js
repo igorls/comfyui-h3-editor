@@ -1,11 +1,114 @@
 const ids = ["NW", "N", "NE", "W", "", "E", "SW", "S", "SE"];
 const presets = new Map([["idle", "Idle"], ["run", "Run"], ["custom", "Custom motion"]]);
+export const CANVASES = ["square", "portrait", "landscape"];
+export const SPRITE_LENGTHS = [39, 56, 73];
+export const CAST_VIEWS = [
+  ["", "Any view"],
+  ["front", "Front (S)"],
+  ["side", "Side (E)"],
+  ["back", "Back (N)"],
+  ["left", "Left (W)"],
+];
 const $ = (id) => document.getElementById(id);
 const opposite = (direction) => direction.replace(/[EW]/, (c) => (c === "E" ? "W" : "E"));
 const directions = (count) => ids.filter((d) => d && (count === 8 || d.length === 1));
 const motionOf = (s) => s.animation || (s.motion === "idle" ? "idle" : s.guide || s.motion === "prompt" ? "custom" : "run");
 const actorOf = (clip, cast) => cast?.[0] || clip.sprite_group || "clip-" + clip.id;
 const slotKey = (camera, motion, direction) => [camera, motion, direction].join("/");
+
+export function defaultCanvasForCamera(camera) {
+  return camera === "rpg" ? "square" : "portrait";
+}
+
+export function buildSpriteConfig({ camera = "rpg", motion = "run", direction = "S", motionPrompt = null, canvas, frames = 39, poses = 7 } = {}) {
+  const config = { camera, direction, poses };
+  if (motion === "idle") config.motion = "idle";
+  if (motionPrompt) Object.assign(config, { motion: "prompt", animation: motion });
+  const chosenCanvas = canvas || defaultCanvasForCamera(camera);
+  if (CANVASES.includes(chosenCanvas)) config.canvas = chosenCanvas;
+  const len = Number(frames);
+  if (Number.isInteger(len) && len >= 22 && (len - 5) % 17 === 0 && len !== 39) config.frames = len;
+  return config;
+}
+
+export function parseTileSize(selectValue, customText = "") {
+  const validEven = (n) => Number.isInteger(n) && n >= 32 && n <= 512 && n % 2 === 0;
+  if (selectValue !== "custom") {
+    const n = Number(selectValue);
+    if (!validEven(n)) throw new Error("Choose an even export tile size between 32 and 512 px.");
+    return n;
+  }
+  const raw = String(customText || "").trim().toLowerCase();
+  if (!raw) throw new Error("Enter an even export size (32–512), e.g. 160 or 144x176.");
+  const parts = raw.split(/[x×,\s]+/).filter(Boolean);
+  if (parts.length === 1) {
+    const n = Number(parts[0]);
+    if (!validEven(n)) throw new Error("Tile size must be an even integer in 32–512 px.");
+    return n;
+  }
+  if (parts.length === 2) {
+    const w = Number(parts[0]), h = Number(parts[1]);
+    if (!validEven(w) || !validEven(h)) throw new Error("Tile width and height must be even integers in 32–512 px.");
+    return w === h ? w : [w, h];
+  }
+  throw new Error("Use a single size like 160 or width x height like 144x176.");
+}
+
+export function buildAtlasPayload({ tile, customTile = "", fps = "", style = "illustrated", webp = true, picks = [] } = {}) {
+  const parsed = parseTileSize(tile, customTile);
+  const payload = {
+    tile: Array.isArray(parsed) ? parsed[0] : parsed,
+    fps: Number(fps) || null,
+    style,
+    webp: Boolean(webp),
+    picks,
+  };
+  if (Array.isArray(parsed)) payload.tile_size = parsed;
+  return payload;
+}
+
+export function buildPropPayload(fields = {}) {
+  const kind = fields.kind || "prop";
+  if (!["prop", "state_variant", "turnaround"].includes(kind)) {
+    throw new Error("Choose a prop, state variant, or turnaround workflow.");
+  }
+  const name = String(fields.name || "").trim();
+  if (!name) throw new Error("Enter a name for this asset.");
+  const description = String(fields.description || "").trim();
+  if ((kind === "prop" || kind === "state_variant") && !description) {
+    throw new Error(kind === "state_variant" ? "Describe the state change." : "Describe the prop to generate.");
+  }
+  const size = fields.size || "square";
+  if (!CANVASES.includes(size)) throw new Error("Choose a 4 MP square, portrait, or landscape size.");
+  const payload = { kind, name, description, size, camera: fields.camera || "rpg" };
+  if (fields.style_ref?.file) {
+    payload.style_ref = { file: fields.style_ref.file, subfolder: fields.style_ref.subfolder || "" };
+  }
+  if (fields.base_prop?.file) {
+    payload.base_prop = { file: fields.base_prop.file, subfolder: fields.base_prop.subfolder || "" };
+  }
+  if (kind === "state_variant" && !payload.base_prop) {
+    throw new Error("Select or upload a base prop image for a paired state variant.");
+  }
+  if (kind === "turnaround") {
+    if (!payload.style_ref) throw new Error("Select a front style reference plate for a turnaround.");
+    payload.view = fields.view || "back";
+    payload.proportions = fields.proportions || "adult";
+    const holding = String(fields.holding || "").trim();
+    if (holding) payload.holding = holding;
+  }
+  if (kind === "prop") {
+    if (fields.top_canopy) payload.top_canopy = true;
+    const outRaw = String(fields.output_size || "").trim();
+    if (outRaw) {
+      const parsed = parseTileSize("custom", outRaw);
+      payload.output_size = Array.isArray(parsed) ? parsed : [parsed, parsed];
+    }
+  }
+  if (fields.dry_run) payload.dry_run = true;
+  return payload;
+}
+
 function cutoutLabel(sheet) {
   if (sheet.cutout === "foreground model") return "BiRefNet";
   if (sheet.cutout === "background key") return "Background key";
@@ -90,6 +193,8 @@ export function installSprites(editor) {
   let folder,
     actor,
     camera = "rpg",
+    canvas = "square",
+    clipFrames = 39,
     motion = "run",
     dir = "S",
     count = 8,
@@ -143,6 +248,8 @@ export function installSprites(editor) {
     actor = id;
     prefs = project().sprite_workspaces?.[actor] || {};
     camera = prefs.camera || "rpg";
+    canvas = CANVASES.includes(prefs.canvas) ? prefs.canvas : defaultCanvasForCamera(camera);
+    clipFrames = SPRITE_LENGTHS.includes(Number(prefs.frames)) ? Number(prefs.frames) : 39;
     count = prefs.count || 8;
     motion = prefs.motion || "run";
     dir = "S";
@@ -154,6 +261,8 @@ export function installSprites(editor) {
     if (!config) return;
     pickActor(actorOf(clip, t?.saved?.cast ?? clip.cast));
     camera = config.camera;
+    canvas = CANVASES.includes(config.canvas) ? config.canvas : "portrait";
+    clipFrames = SPRITE_LENGTHS.includes(Number(config.frames)) ? Number(config.frames) : 39;
     motion = motionOf(config);
     dir = config.direction;
     if (dir.length === 2) count = 8;
@@ -245,10 +354,19 @@ export function installSprites(editor) {
     refs.replaceChildren();
     if (cast) {
       for (const asset of [cast, ...(cast.pictures || [])].filter((a) => a.file)) {
+        const wrap = document.createElement("div");
+        wrap.className = "sprite-ref-item";
         const img = document.createElement("img");
-        img.alt = cast.name + " reference";
+        img.alt = cast.name + (asset.view ? " (" + asset.view + ")" : "") + " reference";
         img.src = editor.viewUrl(asset.file, asset.subfolder);
-        refs.append(img);
+        wrap.append(img);
+        if (asset.view) {
+          const tag = document.createElement("span");
+          tag.className = "sprite-ref-tag";
+          tag.textContent = asset.view;
+          wrap.append(tag);
+        }
+        refs.append(wrap);
       }
       const edit = button("Edit references", () => editor.editCast(cast.id));
       edit.dataset.spriteFocus = "references";
@@ -267,7 +385,11 @@ export function installSprites(editor) {
     $("spriteAddMotion").disabled = !actor;
     $("spriteEditMotion").hidden = presets.has(motion);
     $("spriteCamera").value = camera;
+    $("spriteCanvas").value = canvas;
+    $("spriteFrames").value = String(clipFrames);
     $("spriteCount").value = String(count);
+    $("spriteTileCustomField").hidden = $("spriteTile").value !== "custom";
+    $("spritePropBtn").disabled = !project();
     const compass = $("spriteCompass");
     compass.replaceChildren();
     const headings = directions(count);
@@ -333,7 +455,12 @@ export function installSprites(editor) {
         film.append(tile);
       }
       const method = document.createElement("small");
-      method.textContent = cutoutLabel(row.take.sprite);
+      const savedCfg = row.take.saved?.sprite || row.clip.sprite;
+      const meta = [cutoutLabel(row.take.sprite)];
+      if (savedCfg?.canvas) meta.push(savedCfg.canvas);
+      if (row.take.frames && row.take.frames !== 39) meta.push(row.take.frames + "f");
+      if (savedCfg?.self_pin) meta.push("self-pinned");
+      method.textContent = meta.join(" · ");
       b.append(frame(row), caption, method, film);
       takes.append(b);
     }
@@ -342,6 +469,8 @@ export function installSprites(editor) {
     $("spriteDraft").textContent = pending ? "Rendering " + dir + "…" : "New " + dir + " draft";
     $("spriteDraft").disabled =
       !actor || !!pending || busy || (motion === "custom" && !slots[dir].clips.length);
+    $("spriteSelfPin").disabled =
+      !show || !!show.mirror || motion === "idle" || !!editor.jobFor(show.clip.id) || busy;
     $("spriteEdit").disabled = !show && !slots[dir].clips.length;
     $("spriteFinish").disabled =
       !show || show.take.quality !== "draft" || !!editor.jobFor(show.clip.id) || busy;
@@ -414,13 +543,14 @@ export function installSprites(editor) {
     const img = pictures.get(url);
     if (!img.naturalWidth) return;
     const sh = row.take.sprite,
-      tile = sh.tile,
+      tw = sh.tile_size?.[0] || sh.tile,
+      th = sh.tile_size?.[1] || sh.tile,
       pose = Math.floor(clock * sh.fps) % sh.poses;
     ctx.save();
     ctx.imageSmoothingEnabled = false;
     ctx.translate(Math.round(x * w), Math.round(y * h));
     if (row.mirror) ctx.scale(-1, 1);
-    ctx.drawImage(img, pose * tile, 0, tile, tile, -sh.pivot[0], -sh.pivot[1], tile, tile);
+    ctx.drawImage(img, pose * tw, 0, tw, th, -sh.pivot[0], -sh.pivot[1], tw, th);
     ctx.restore();
   }
   function tick(now) {
@@ -495,8 +625,19 @@ export function installSprites(editor) {
   };
   $("spriteCamera").onchange = (e) => {
     camera = e.target.value;
+    if (!prefs?.canvas) canvas = defaultCanvasForCamera(camera);
     audition = null;
     if (actor) remember((p) => (p.camera = camera));
+    refresh();
+  };
+  $("spriteCanvas").onchange = (e) => {
+    canvas = e.target.value;
+    if (actor) remember((p) => (p.canvas = canvas));
+    refresh();
+  };
+  $("spriteFrames").onchange = (e) => {
+    clipFrames = Number(e.target.value);
+    if (actor) remember((p) => (p.frames = clipFrames));
     refresh();
   };
   $("spriteMotion").onchange = (e) => {
@@ -554,12 +695,154 @@ export function installSprites(editor) {
   $("spriteMotionCancel").onclick = () => motionDialog.close();
   $("spriteAddMotion").onclick = () => editMotion(false);
   $("spriteEditMotion").onclick = () => editMotion(true);
+
+  const propDialog = $("spritePropDialog");
+  const propKind = $("spritePropKind");
+  const propName = $("spritePropName");
+  const propDesc = $("spritePropDescription");
+  const propSize = $("spritePropSize");
+  const propStyleRef = $("spritePropStyleRef");
+  const propBaseRef = $("spritePropBaseRef");
+  const propBaseField = $("spritePropBaseField");
+  const propOptions = $("spritePropOptions");
+  const propTurnaroundOptions = $("spritePropTurnaroundOptions");
+  const propStatus = $("spritePropStatus");
+  let uploadedBaseAsset = null;
+
+  function castAssetOptions() {
+    const out = [];
+    const members = [...(project()?.cast || [])];
+    members.sort((a, b) => (a.id === actor ? -1 : b.id === actor ? 1 : 0));
+    for (const member of members) {
+      for (const [idx, asset] of [member, ...(member.pictures || [])].filter((a) => a?.file).entries()) {
+        const tag = asset.view ? " · " + asset.view : idx === 0 ? " · main" : " · #" + (idx + 1);
+        out.push({
+          label: member.name + tag,
+          asset: { file: asset.file, subfolder: asset.subfolder || "" },
+        });
+      }
+    }
+    return out;
+  }
+
+  function populatePropRefs() {
+    const assets = castAssetOptions();
+    const fill = (select, noneLabel, extra) => {
+      const prev = select.value;
+      select.replaceChildren(new Option(noneLabel, ""));
+      if (extra?.file) {
+        select.append(new Option("Uploaded: " + extra.file, JSON.stringify(extra)));
+      }
+      for (const item of assets) {
+        select.append(new Option(item.label, JSON.stringify(item.asset)));
+      }
+      if (prev && Array.from(select.options).some((o) => o.value === prev)) select.value = prev;
+      else if (select === propStyleRef && assets.length) select.value = JSON.stringify(assets[0].asset);
+    };
+    fill(propStyleRef, "None (prompt only)");
+    fill(propBaseRef, "None", uploadedBaseAsset);
+  }
+
+  function syncPropDialogKind() {
+    const kind = propKind.value;
+    propBaseField.hidden = kind === "prop";
+    propOptions.hidden = kind !== "prop";
+    propTurnaroundOptions.hidden = kind !== "turnaround";
+    $("spritePropDescLabel").textContent =
+      kind === "state_variant" ? "State change description" :
+      kind === "turnaround" ? "Extra details (optional)" : "Prop description";
+    propDesc.required = kind !== "turnaround";
+    propDesc.placeholder =
+      kind === "state_variant" ? "Glowing cyan-emerald runes and warm flickering flame inside the lantern." :
+      kind === "turnaround" ? "Keep cloak clasp and leather satchel straps consistent." :
+      "Mossy carved stone lantern with weathered roof and iron brackets.";
+    $("spritePropBaseLabel").textContent =
+      kind === "turnaround" ? "Side reference plate (optional, helps back view)" : "Base prop image (required)";
+    propName.placeholder =
+      kind === "state_variant" ? "lantern_lit" :
+      kind === "turnaround" ? "hero_back" : "stone_lantern";
+  }
+
+  propKind.onchange = syncPropDialogKind;
+  $("spritePropCancel").onclick = () => propDialog.close();
+  $("spritePropUploadBase").onclick = () => $("spritePropBaseFile").click();
+  $("spritePropBaseFile").onchange = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    $("spritePropBaseStatus").textContent = "Uploading…";
+    try {
+      const asset = await editor.uploadPicture(file);
+      uploadedBaseAsset = { file: asset.file, subfolder: asset.subfolder || "" };
+      populatePropRefs();
+      propBaseRef.value = JSON.stringify(uploadedBaseAsset);
+      $("spritePropBaseStatus").textContent = "Ready: " + asset.file;
+    } catch (error) {
+      $("spritePropBaseStatus").textContent = "";
+      editor.toast(error.message || "Could not upload base image.", true);
+    }
+  };
+
+  $("spritePropBtn").onclick = () => {
+    if (!project()) return;
+    uploadedBaseAsset = null;
+    $("spritePropBaseStatus").textContent = "";
+    propStatus.textContent = "";
+    propSize.value = CANVASES.includes(canvas) ? canvas : "square";
+    populatePropRefs();
+    syncPropDialogKind();
+    propDialog.showModal();
+    propName.focus();
+  };
+
+  $("spritePropForm").onsubmit = async (e) => {
+    e.preventDefault();
+    propStatus.textContent = "";
+    const parseRef = (val) => (val ? JSON.parse(val) : null);
+    let payload;
+    try {
+      payload = buildPropPayload({
+        kind: propKind.value,
+        name: propName.value,
+        description: propDesc.value,
+        size: propSize.value,
+        camera,
+        style_ref: parseRef(propStyleRef.value),
+        base_prop: parseRef(propBaseRef.value),
+        top_canopy: $("spritePropCanopy").checked,
+        output_size: $("spritePropOutputSize").value,
+        view: $("spritePropView").value,
+        proportions: $("spritePropProportions").value,
+        holding: $("spritePropHolding").value,
+      });
+    } catch (error) {
+      propStatus.textContent = error.message;
+      return;
+    }
+    $("spritePropQueue").disabled = true;
+    propStatus.textContent = "Queueing 4 MP H3-Image render…";
+    try {
+      const result = await editor.queueProp(payload);
+      const dims = result?.job?.native_size ? result.job.native_size.join("×") : "4 MP";
+      editor.toast("Queued " + payload.kind.replace("_", " ") + " · " + (result?.job?.name || payload.name) + " (" + dims + ").");
+      propDialog.close();
+    } catch (error) {
+      propStatus.textContent = error.message || "Could not queue prop render.";
+    } finally {
+      $("spritePropQueue").disabled = false;
+    }
+  };
+
   $("spriteCount").onchange = (e) => {
     count = Number(e.target.value);
     if (count === 4 && dir.length === 2) dir = "S";
     audition = null;
     if (actor) remember((p) => (p.count = count));
     refresh();
+  };
+  $("spriteTile").onchange = () => {
+    $("spriteTileCustomField").hidden = $("spriteTile").value !== "custom";
+    if ($("spriteTile").value === "custom") $("spriteTileCustom").focus();
   };
   $("spriteStyle").onchange = refresh;
   $("spritePlay").onclick = () => {
@@ -610,6 +893,33 @@ export function installSprites(editor) {
       refresh();
     }
   };
+  $("spriteSelfPin").onclick = async () => {
+    const row = current();
+    if (!row || row.mirror || motion === "idle" || busy) return;
+    busy = true;
+    refresh();
+    $("spriteStatus").textContent = "Picking a clean mid-stride frame to close the loop…";
+    try {
+      const pin = await editor.selfPin(row.clip, row.take);
+      editor.checkpoint();
+      row.clip.sprite = {
+        ...row.clip.sprite,
+        canvas,
+        self_pin: { file: pin.file, subfolder: pin.subfolder, stride: pin.stride },
+      };
+      if (clipFrames !== 39) row.clip.sprite.frames = clipFrames;
+      else delete row.clip.sprite.frames;
+      editor.save();
+      editor.toast("Closing loop from frame " + pin.frame + " (pins " + pin.pins.join(", ") + ").");
+      refresh();
+      await editor.render(row.clip, "draft", Math.floor(Math.random() * 2147483648));
+    } catch (error) {
+      editor.toast(error.message || "Could not create a loop-closing self-pin.", true);
+    } finally {
+      busy = false;
+      refresh();
+    }
+  };
   $("spriteEdit").onclick = () => {
     const row = current(),
       clip = row?.clip || slots[dir].clips[0];
@@ -623,7 +933,21 @@ export function installSprites(editor) {
       const old = chosen();
       if (old && !prefs.picks?.[slotKey(camera, motion, dir)]) select(old);
       let clip = slots[dir].clips[0];
-      if (!clip) clip = editor.makeClip(actor, roster().get(actor).name, camera, motion, dir, animations.get(motion));
+      if (!clip) {
+        clip = editor.makeClip(actor, roster().get(actor).name, camera, motion, dir, animations.get(motion), {
+          canvas,
+          frames: clipFrames,
+        });
+      } else if (
+        clip.sprite &&
+        ((clip.sprite.canvas || "portrait") !== canvas || (clip.sprite.frames || 39) !== clipFrames)
+      ) {
+        editor.checkpoint();
+        clip.sprite.canvas = canvas;
+        if (clipFrames !== 39) clip.sprite.frames = clipFrames;
+        else delete clip.sprite.frames;
+        editor.save();
+      }
       refresh();
       await editor.render(clip, "draft", Math.floor(Math.random() * 2147483648));
     } finally {
@@ -648,11 +972,25 @@ export function installSprites(editor) {
     if (exporting) return;
     const picks = exportPicks(),
       name = roster().get(actor)?.name || "sprites";
+    let payload;
+    try {
+      payload = buildAtlasPayload({
+        tile: $("spriteTile").value,
+        customTile: $("spriteTileCustom").value,
+        fps: $("spriteFps").value,
+        style: style(),
+        webp: $("spriteWebp").checked,
+        picks,
+      });
+    } catch (error) {
+      editor.toast(error.message, true);
+      return;
+    }
     exporting = true;
     refresh();
     $("spriteStatus").textContent = "Packing " + picks.length + " animation slots…";
     try {
-      await editor.download(name, { tile: Number($("spriteTile").value), fps: Number($("spriteFps").value) || null, style: style(), picks });
+      await editor.download(name, payload);
     } catch (error) {
       editor.toast(error.message, true);
     } finally {

@@ -1,0 +1,370 @@
+import io
+import json
+import os
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+import h3image
+import project
+import sprite
+
+
+def _make_box_frame(size, box, fill=(40, 90, 160), bg="white"):
+    im = Image.new("RGB", size, bg)
+    ImageDraw.Draw(im).rectangle(box, fill=fill)
+    return im
+
+
+class SpriteCanvasLengthAndTileTest(unittest.TestCase):
+    def test_square_and_landscape_canvas_and_legal_lengths(self):
+        proj = project.new_project("RPG")
+        proj["profile"] = "hyperflow"
+        clip, item = project.add_clip(proj, {"action": "Elf mage walks.", "seconds": 5})
+        project.update_clip(proj, clip["id"], {
+            "sprite": {"direction": "E", "camera": "rpg", "poses": 7, "canvas": "square", "frames": 56, "tile_size": [160, 160]}
+        })
+        self.assertEqual(item["out"], 56)
+        job, graph = project.plan_render(proj, "RPG", clip["id"], "draft", seed=11)
+        self.assertEqual(job["size"], [512, 512])
+        self.assertEqual(graph["10"]["inputs"]["length"], 56)
+        self.assertEqual(graph["210"]["inputs"]["frames"], 56)
+        self.assertEqual(graph["210"]["inputs"]["canvas"], "square")
+        self.assertEqual(graph["211"]["inputs"]["tile_width"], 160)
+        self.assertEqual(graph["211"]["inputs"]["tile_height"], 160)
+        self.assertEqual(graph["211"]["inputs"]["canvas"], "square")
+
+        # Landscape draft/final sizes
+        self.assertEqual(sprite.canvas_size({"canvas": "landscape"}, "draft"), (384, 256))
+        self.assertEqual(sprite.canvas_size({"canvas": "landscape"}, "final"), (768, 512))
+        self.assertEqual(sprite.canvas_size({"canvas": "portrait"}, "draft"), (256, 384))
+        self.assertEqual(sprite.canvas_size({"canvas": "portrait"}, "final"), (512, 768))
+
+        # Jog guide honors arbitrary legal length & square canvas
+        guide = sprite.jog("SE", "rpg", 7, frames=56, canvas="square")
+        self.assertEqual(guide.shape, (56, 512, 512, 3))
+        np.testing.assert_array_equal(guide[0], guide[14])
+
+    def test_56f_and_73f_strips_and_custom_tile_sizes(self):
+        frames_56 = [_make_box_frame((512, 512), (180, 120, 330, 420)) for _ in range(56)]
+        full, indexed, layout = sprite.strips(frames_56, 12, tile_size=(160, 160), canvas="square")
+        self.assertEqual(full.size, (12 * 160, 160))
+        self.assertEqual(indexed.size, full.size)
+        self.assertGreaterEqual(layout["start"], 6)
+        self.assertLess(layout["start"] + 24, 56)
+
+        frames_73 = [_make_box_frame((512, 512), (180, 120, 330, 420)) for _ in range(73)]
+        full73, _, _ = sprite.strips(frames_73, 12, tile_size=(144, 176), canvas="square")
+        self.assertEqual(full73.size, (12 * 144, 176))
+
+        for bad_len in (5, 17, 21, 40, 50):
+            with self.assertRaises(ValueError):
+                sprite.validate_frames(bad_len)
+        for bad_tile in (30, 514, 95, (160, 161), (32, 600), "160"):
+            with self.assertRaises(ValueError):
+                sprite.validate_tile_size(bad_tile)
+
+
+class H3ImagePropAndTurnaroundTest(unittest.TestCase):
+    def test_native_size_enforces_4mp_floor_and_32px_grid(self):
+        self.assertEqual(h3image.resolve_size("square"), (2048, 2048))
+        self.assertEqual(h3image.resolve_size("portrait"), (1664, 2496))
+        self.assertEqual(h3image.resolve_size("landscape"), (2496, 1664))
+        for bad in ((512, 768), (1024, 1024), (2000, 2000), (2048, 2050)):
+            with self.assertRaises(ValueError):
+                h3image.validate_native_size(*bad)
+
+    def test_prop_state_variant_and_turnaround_graphs(self):
+        proj = project.new_project("Glade")
+        proj["style"] = "Cozy fantasy cel-shaded illustration"
+        avail = {sprite.MATTE_PREFIX + "birefnet.safetensors"}
+
+        # Static prop with style ref + top canopy
+        job, graph = project.plan_prop_render(proj, "Glade", {
+            "kind": "prop",
+            "name": "tree_oak",
+            "description": "Mossy oak tree",
+            "style_ref": {"file": "plate_S.png", "subfolder": "refs"},
+            "top_canopy": True,
+            "output_size": [256, 288],
+            "pivot": [128, 268],
+        }, seed=42, available=avail)
+        self.assertEqual(job["native_size"], [2048, 2048])
+        self.assertEqual(job["output_size"], [256, 288])
+        self.assertEqual(job["pivot"], [128, 268])
+        self.assertEqual(graph["10"]["class_type"], "MiniMaxH3ImageConditioning")
+        self.assertEqual(graph["10"]["inputs"]["images.image_1"], ["41", 0])
+        self.assertEqual(graph["41"]["inputs"]["file"], "refs/plate_S.png")
+        self.assertIn("top foliage canopy", graph["10"]["inputs"]["prompt"])
+        self.assertEqual(graph["22"]["class_type"], "H3DefringeMatte")
+        self.assertEqual(graph["15"]["inputs"]["steps"], 6)
+
+        # Paired state variant (lantern_unlit -> lantern_lit)
+        _, vgraph = project.plan_prop_render(proj, "Glade", {
+            "kind": "state_variant",
+            "name": "lantern_lit",
+            "description": "Glowing cyan-emerald runes and lantern flame",
+            "style_ref": {"file": "plate_S.png", "subfolder": "refs"},
+            "base_prop": {"file": "lantern_unlit.png", "subfolder": "props"},
+        }, seed=43, available=avail)
+        self.assertEqual(vgraph["10"]["inputs"]["images.image_1"], ["41", 0])
+        self.assertEqual(vgraph["10"]["inputs"]["images.image_2"], ["42", 0])
+        self.assertIn("pixel-for-pixel", vgraph["10"]["inputs"]["prompt"])
+
+        # Turnaround back plate from front + side
+        _, tgraph = project.plan_prop_render(proj, "Glade", {
+            "kind": "turnaround",
+            "name": "hero_back",
+            "view": "back",
+            "proportions": "chibi",
+            "holding": "a glowing crystal staff",
+            "style_ref": {"file": "plate_S.png", "subfolder": "refs"},
+            "base_prop": {"file": "plate_E.png", "subfolder": "refs"},
+        }, seed=44, available=avail)
+        self.assertIn("2.5-head chibi", tgraph["10"]["inputs"]["prompt"])
+        self.assertIn("rear back view", tgraph["10"]["inputs"]["prompt"])
+        self.assertEqual(tgraph["10"]["inputs"]["images.image_2"], ["42", 0])
+
+    def test_paired_alignment_iou_and_premultiplied_defringe(self):
+        # Synthetic prop with soft white-blended anti-aliased border on white backdrop
+        raw = Image.new("RGB", (256, 256), (255, 255, 255))
+        arr = np.asarray(raw, dtype=np.float32) / 255.0
+        mask = np.zeros((256, 256), dtype=np.float32)
+        mask[40:220, 70:186] = 1.0
+        # Soft 50% halo border blended with pure white
+        mask[38:40, 70:186] = 0.5
+        mask[220:222, 70:186] = 0.5
+        fg = np.array([0.15, 0.25, 0.12], dtype=np.float32)
+        blended = mask[..., None] * fg + (1.0 - mask[..., None]) * 1.0
+        frame = Image.fromarray((blended * 255).round().astype(np.uint8), "RGB")
+
+        out = h3image.process_prop(frame, mask=mask, output_size=(144, 176), pivot=(72, 162))
+        self.assertEqual(out.size, (144, 176))
+        out_arr = np.asarray(out, dtype=np.float32) / 255.0
+        semi = (out_arr[..., 3] > 0.05) & (out_arr[..., 3] < 0.95)
+        if semi.any():
+            # Un-premultiplied border stays dark mossy green, not white halo!
+            self.assertLess(float(out_arr[..., :3][semi].mean()), 0.35)
+
+        # Paired IoU check: identical -> 1.0, shifted -> < 0.9
+        self.assertEqual(h3image.paired_alignment_iou(out, out), 1.0)
+        shifted = Image.new("RGBA", (144, 176), (0, 0, 0, 0))
+        shifted.paste(out, (30, 0))
+        self.assertLess(h3image.paired_alignment_iou(out, shifted), 0.7)
+
+    def test_sprite_settings_accepts_static_prop_mode(self):
+        cfg = sprite.settings({"mode": "prop", "camera": "rpg", "tile_size": [144, 176]})
+        self.assertEqual(cfg["mode"], "prop")
+        self.assertEqual(cfg["tile_size"], [144, 176])
+        with self.assertRaises(ValueError):
+            sprite.settings({"mode": "prop", "motion": "idle"})
+
+
+class GlobalScaleWebPAndCacheTest(unittest.TestCase):
+    def test_global_layout_prevents_full_action_shrinking_and_edge_clips(self):
+        # Idle: compact narrow body; Cast: same body height + wide extended staff/wings
+        idle_frames = [_make_box_frame((512, 512), (216, 160, 296, 360), fill=(30, 60, 120)) for _ in range(39)]
+        cast_frames = []
+        for i in range(39):
+            im = _make_box_frame((512, 512), (216, 160, 296, 360), fill=(30, 60, 120))
+            if 10 <= i <= 25:
+                ImageDraw.Draw(im).rectangle((60, 220, 452, 245), fill=(180, 40, 40))
+            cast_frames.append(im)
+
+        idle_boxes = [sprite.cutout(f).getchannel("A").getbbox() for f in idle_frames]
+        cast_boxes = [sprite.cutout(f).getchannel("A").getbbox() for f in cast_frames]
+        shared = sprite.compute_global_layout(
+            {"idle": idle_boxes, "cast": cast_boxes},
+            tile_size=(160, 160),
+            reference="idle",
+        )
+        self.assertEqual(shared["tile"], [160, 160])
+        self.assertEqual(shared["pivot"], [80, 148])
+
+        idle_strip, _, _ = sprite.strips(
+            idle_frames, 7, tile_size=(160, 160), canvas="square", global_scale=shared["scale"]
+        )
+        cast_strip, _, _ = sprite.strips(
+            cast_frames, 7, full_action=True, tile_size=(160, 160), canvas="square", global_scale=shared["scale"]
+        )
+        # Measure body heights in output pixels — must match identically between idle and cast!
+        idle_box = idle_strip.crop((0, 0, 160, 160)).getchannel("A").point(lambda v: 255 if v >= 128 else 0).getbbox()
+        cast_boxes_out = [
+            cast_strip.crop((i * 160, 0, (i + 1) * 160, 160)).getchannel("A").point(lambda v: 255 if v >= 128 else 0).getbbox()
+            for i in range(7)
+        ]
+        # Every cast frame sits strictly inside tile margins (0 edge clips)
+        for b in cast_boxes_out:
+            self.assertGreater(b[0], 0)
+            self.assertLess(b[2], 160)
+            self.assertGreater(b[1], 0)
+            self.assertLess(b[3], 160)
+        # Body height on idle equals body height on cast (zero character shrinking!)
+        self.assertLessEqual(abs((idle_box[3] - idle_box[1]) - (cast_boxes_out[0][3] - cast_boxes_out[0][1])), 1)
+
+    def test_pack_atlas_supports_nonsquare_tiles_and_webp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            strip = Image.new("RGBA", (3 * 160, 160), (0, 0, 0, 0))
+            for i in range(3):
+                ImageDraw.Draw(strip).ellipse((i * 160 + 40, 20, i * 160 + 120, 140), fill=(60 + i * 40, 120, 90, 255))
+            path = Path(tmp) / "run_S.png"
+            strip.save(path)
+            rows = [("run_S", path, dict(poses=3, pivot=[80, 144], fps=24), dict(mirrored=False))]
+            blob = sprite.pack_atlas(rows, (160, 160), "illustrated", include_webp=True)
+            with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+                names = set(zf.namelist())
+                self.assertIn("sprites.png", names)
+                self.assertIn("sprites.webp", names)
+                manifest = json.loads(zf.read("sprites.json"))
+                self.assertEqual(manifest["image_webp"], "sprites.webp")
+                self.assertEqual(manifest["animations"]["run_S"]["frame_size"], {"w": 160, "h": 160})
+                with Image.open(io.BytesIO(zf.read("sprites.webp"))) as webp_im:
+                    self.assertEqual(webp_im.size, (480, 160))
+
+            blob_no_webp = sprite.pack_atlas(rows, (160, 160), "illustrated", include_webp=False)
+            with zipfile.ZipFile(io.BytesIO(blob_no_webp)) as zf:
+                names = set(zf.namelist())
+                self.assertIn("sprites.png", names)
+                self.assertNotIn("sprites.webp", names)
+                manifest = json.loads(zf.read("sprites.json"))
+                self.assertNotIn("image_webp", manifest)
+
+    def test_lossless_frame_cache_reexports_without_redecoding(self):
+        frames = [_make_box_frame((256, 384), (95, 110, 155, 250), fill=(25 + n * 3, 80, 150)) for n in range(39)]
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = os.path.join(tmp, "take.frames")
+            _, _, layout = sprite.strips(frames, 7, cache_dir=cache)
+            # Re-export at 160x160 directly from lossless cache
+            from_cache, idx_cache = sprite.export_from_cache(cache, layout, 7, (160, 160))
+            direct, _ , _ = sprite.strips(frames, 7, layout, tile_size=(160, 160))
+            self.assertEqual(from_cache.size, (7 * 160, 160))
+            self.assertEqual(idx_cache.size, from_cache.size)
+            self.assertEqual(from_cache.tobytes(), direct.tobytes())
+
+
+class SpriteEfficiencyPinningAndViewRoutingTest(unittest.TestCase):
+    def setUp(self):
+        self.proj = project.new_project("HeroKit")
+        self.proj["profile"] = "hyperflow"
+        self.hero = project.add_cast(self.proj, {
+            "name": "Lyra",
+            "file": "plate_S.png",
+            "subfolder": "refs",
+            "view": "front",
+            "pictures": [
+                {"file": "plate_E.png", "subfolder": "refs", "view": "side"},
+                {"file": "plate_N.png", "subfolder": "refs", "view": "back"},
+                {"file": "plate_W.png", "subfolder": "refs", "view": "left"},
+            ],
+        })
+        self.clip, _ = project.add_clip(self.proj, {
+            "action": "@Lyra raises her staff.",
+            "cast": [self.hero["id"]],
+        })
+
+    def test_view_tagged_cast_filtering_by_direction(self):
+        expected = {
+            "S": ["refs/plate_S.png"],
+            "N": ["refs/plate_N.png"],
+            "E": ["refs/plate_E.png"],
+            "W": ["refs/plate_W.png"],
+            "SE": ["refs/plate_S.png", "refs/plate_E.png"],
+            "SW": ["refs/plate_S.png", "refs/plate_W.png"],
+            "NE": ["refs/plate_N.png", "refs/plate_E.png"],
+            "NW": ["refs/plate_N.png", "refs/plate_W.png"],
+        }
+        for direction, want in expected.items():
+            project.update_clip(self.proj, self.clip["id"], {"sprite": {"direction": direction, "canvas": "square"}})
+            shown = project.cast_pictures(self.proj, self.clip)
+            got = [f"{p['subfolder']}/{p['file']}" for p in shown[0][1]]
+            self.assertEqual(got, want, f"direction {direction}")
+
+    def test_idle_and_full_action_auto_pin_and_strip_loop_wording(self):
+        # Idle auto-pins direction-matched plate to both start & end
+        project.update_clip(self.proj, self.clip["id"], {
+            "sprite": {"direction": "N", "motion": "idle", "canvas": "square"}
+        })
+        _, graph = project.plan_render(self.proj, "HeroKit", self.clip["id"], "draft", seed=9)
+        self.assertEqual(graph["10"]["inputs"]["anchor"], "both")
+        self.assertEqual(graph["40"]["inputs"]["file"], "refs/plate_N.png")
+        self.assertEqual(graph["41"]["inputs"]["file"], "refs/plate_N.png")
+
+        # Named full_action auto-pins start & end and does NOT say "Loop the movement"
+        project.update_clip(self.proj, self.clip["id"], {
+            "sprite": {"direction": "E", "motion": "prompt", "animation": "cast", "canvas": "square"}
+        })
+        _, cgraph = project.plan_render(self.proj, "HeroKit", self.clip["id"], "draft", seed=10)
+        self.assertEqual(cgraph["10"]["inputs"]["anchor"], "both")
+        self.assertEqual(cgraph["40"]["inputs"]["file"], "refs/plate_E.png")
+        self.assertEqual(cgraph["41"]["inputs"]["file"], "refs/plate_E.png")
+        self.assertNotIn("Loop the movement", cgraph["10"]["inputs"]["prompt"])
+        self.assertIn("Perform the full gesture", cgraph["10"]["inputs"]["prompt"])
+
+    def test_sprite_skips_audio_decode_and_save_hold_when_not_refining(self):
+        project.update_clip(self.proj, self.clip["id"], {"sprite": {"direction": "S", "canvas": "square"}})
+        _, graph = project.plan_render(self.proj, "HeroKit", self.clip["id"], "draft", seed=5)
+        self.assertNotIn("17", graph)
+        self.assertNotIn("audio", graph["18"]["inputs"])
+        self.assertNotIn("20", graph)
+
+        # When refine=True is explicitly requested, H3SaveHold stays while audio decode is still skipped
+        project.update_clip(self.proj, self.clip["id"], {"sprite": {"direction": "S", "refine": True}})
+        _, rgraph = project.plan_render(self.proj, "HeroKit", self.clip["id"], "draft", seed=5)
+        self.assertNotIn("17", rgraph)
+        self.assertIn("20", rgraph)
+
+    def test_self_pin_helper_and_graph_wiring(self):
+        # Frame 14 touches edge; neighbors 13 & 15 are clean -> pick_self_pin_frame skips 14 cleanly
+        frames = [_make_box_frame((256, 256), (80, 60, 176, 200), fill=(40 + i, 80, 120)) for i in range(39)]
+        frames[14] = _make_box_frame((256, 256), (0, 60, 176, 200), fill=(54, 80, 120))
+        idx, rgb, pins = sprite.pick_self_pin_frame(frames, stride=14)
+        self.assertIn(idx, (13, 15))
+        self.assertEqual(rgb.mode, "RGB")
+        self.assertEqual(pins, [0, 14, 28])
+
+        # Seam score on a periodic synthetic clip is ~0.0
+        periodic = [frames[i % 14] for i in range(39)]
+        periodic[14] = periodic[0]
+        self.assertLess(sprite.seam_score(periodic, 6, 14), 0.01)
+
+        # Graph wiring for self_pin on 56-frame walk (stride=26 -> pins 0, 26, 52)
+        project.update_clip(self.proj, self.clip["id"], {
+            "sprite": {
+                "direction": "S", "canvas": "square", "frames": 56,
+                "self_pin": {"file": "pin_f26.png", "subfolder": "pins", "stride": 26},
+            }
+        })
+        _, sgraph = project.plan_render(self.proj, "HeroKit", self.clip["id"], "draft", seed=12)
+        self.assertEqual(sgraph["10"]["inputs"]["anchor"], "start")
+        self.assertEqual(sgraph["40"]["inputs"]["file"], "pins/pin_f26.png")
+        self.assertEqual(sgraph["10"]["inputs"]["mid_frames"], "26, 52")
+        self.assertEqual(sgraph["209"]["inputs"]["file"], "pins/pin_f26.png")
+
+
+class NodesAndApiRegistrationTest(unittest.TestCase):
+    def test_nodes_and_editor_api_syntax_and_registrations(self):
+        import ast
+
+        root = Path(__file__).resolve().parent.parent
+        nodes_src = (root / "nodes.py").read_text(encoding="utf-8")
+        nodes_tree = ast.parse(nodes_src, filename="nodes.py")
+        classes = {n.name for n in nodes_tree.body if isinstance(n, ast.ClassDef)}
+        self.assertIn("H3DefringeMatte", classes)
+        self.assertIn("H3SpriteGuide", classes)
+        self.assertIn("H3SpriteSheet", classes)
+        self.assertIn('"H3DefringeMatte": H3DefringeMatte', nodes_src)
+        self.assertIn('"H3DefringeMatte": "H3 Defringe Matte"', nodes_src)
+
+        api_src = (root / "editor_api.py").read_text(encoding="utf-8")
+        ast.parse(api_src, filename="editor_api.py")
+        self.assertIn('("POST", "/h3take/api/project/{name}/sprite-self-pin", "sprite_self_pin")', api_src)
+        self.assertIn('("POST", "/h3take/api/project/{name}/props", "sprite_prop")', api_src)
+        self.assertIn("export_from_cache", api_src)
+
+
+if __name__ == "__main__":
+    unittest.main()

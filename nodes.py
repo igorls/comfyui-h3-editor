@@ -487,13 +487,64 @@ class H3SpriteGuide(io.ComfyNode):
         return io.Schema(node_id="H3SpriteGuide", display_name="H3 Sprite Motion Guide", category="minimax/h3",
             inputs=[io.Combo.Input("direction", options=list(sprite.DIRECTIONS)),
                     io.Combo.Input("camera", options=list(sprite.CAMERAS)),
-                    io.Int.Input("poses", default=7, min=4, max=12)],
+                    io.Int.Input("poses", default=7, min=4, max=12),
+                    io.Int.Input("frames", default=sprite.FRAMES, min=22, max=141, step=17, optional=True),
+                    io.Combo.Input("canvas", options=list(sprite.CANVASES), default="portrait", optional=True)],
             outputs=[io.Image.Output(display_name="motion guide")])
 
     @classmethod
-    def execute(cls, direction, camera, poses):
-        frames = sprite.jog(direction, camera, poses)
-        return io.NodeOutput(torch.from_numpy(frames).float().div_(255))
+    def execute(cls, direction, camera, poses, frames=sprite.FRAMES, canvas="portrait"):
+        frames_arr = sprite.jog(direction, camera, poses, frames=int(frames), canvas=canvas or "portrait")
+        return io.NodeOutput(torch.from_numpy(frames_arr).float().div_(255))
+
+
+class H3DefringeMatte(io.ComfyNode):
+    """Remove estimated backdrop colour from soft foreground matte edges to prevent white halos on dark terrain."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3DefringeMatte",
+            display_name="H3 Defringe Matte",
+            category="minimax/h3",
+            description=(
+                "Un-premultiply the estimated border backdrop colour from partially covered foreground pixels "
+                "(BiRefNet or similar soft mattes) and tighten alpha coverage, eliminating white halos on game sprites and props."
+            ),
+            inputs=[
+                io.Image.Input("images"),
+                io.Mask.Input("mask"),
+                io.Float.Input("alpha_low", default=0.12, min=0.0, max=0.5, step=0.01, optional=True),
+                io.Float.Input("alpha_high", default=0.88, min=0.5, max=1.0, step=0.01, optional=True),
+                io.Boolean.Input("invert_mask", default=False, optional=True,
+                                 tooltip="Flip mask polarity when the upstream background remover outputs background=1."),
+            ],
+            outputs=[
+                io.Image.Output(display_name="rgba"),
+                io.Mask.Output(display_name="matte"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, images, mask, alpha_low=0.12, alpha_high=0.88, invert_mask=False):
+        masks = mask.detach().float().cpu().numpy()
+        if masks.ndim == 2:
+            masks = masks[None]
+        if invert_mask:
+            masks = 1.0 - masks
+        rgba_batch = []
+        matte_batch = []
+        for idx, frame_t in enumerate(images):
+            frame = Image.fromarray((frame_t.detach().cpu().clamp(0, 1).numpy() * 255).round().astype(np.uint8))
+            m = masks[min(idx, len(masks) - 1)]
+            out_im = sprite.with_matte(frame, m, alpha_low=alpha_low, alpha_high=alpha_high)
+            arr = np.asarray(out_im, dtype=np.float32) / 255.0
+            rgba_batch.append(arr)
+            matte_batch.append(arr[:, :, 3])
+        return io.NodeOutput(
+            torch.from_numpy(np.stack(rgba_batch)),
+            torch.from_numpy(np.stack(matte_batch)),
+        )
 
 
 class H3SpriteSheet(io.ComfyNode):
@@ -507,12 +558,24 @@ class H3SpriteSheet(io.ComfyNode):
                     io.Boolean.Input("full_action", default=False, optional=True,
                                      tooltip="Sample a prompted gesture from beginning to end."),
                     io.Combo.Input("cell_size", options=[str(n) for n in sprite.EXPORT_SIZES], optional=True),
-                    io.Boolean.Input("export_24fps", default=False, optional=True), *optional],
+                    io.Boolean.Input("export_24fps", default=False, optional=True),
+                    io.Int.Input("tile_width", default=0, min=0, max=sprite.MAX_TILE, step=2, optional=True,
+                                 tooltip="Custom even tile width (32..512). 0 uses cell_size."),
+                    io.Int.Input("tile_height", default=0, min=0, max=sprite.MAX_TILE, step=2, optional=True,
+                                 tooltip="Custom even tile height (32..512). 0 uses cell_size."),
+                    io.Combo.Input("canvas", options=list(sprite.CANVASES), default="portrait", optional=True),
+                    io.Float.Input("global_scale", default=0.0, min=0.0, max=16.0, step=0.01, optional=True,
+                                   tooltip="Optional shared character scale in tile px per canvas px. 0 auto-scales."),
+                    io.Boolean.Input("save_webp", default=False, optional=True),
+                    io.Boolean.Input("save_cache", default=True, optional=True,
+                                     tooltip="Cache lossless defringed RGBA frames beside the strip for GPU-free re-exports."),
+                    *optional],
             outputs=[], is_output_node=True)
 
     @classmethod
     def execute(cls, images, poses, filename_prefix, layout="", idle=False, bg_model=None, cell_size="64", full_action=False,
-                export_24fps=False):
+                export_24fps=False, tile_width=0, tile_height=0, canvas="portrait", global_scale=0.0, save_webp=False,
+                save_cache=True):
         base = os.path.realpath(folder_paths.get_output_directory())
         dest = os.path.realpath(os.path.join(base, filename_prefix))
         if os.path.commonpath((base, dest)) != base or dest == base:
@@ -522,18 +585,34 @@ class H3SpriteSheet(io.ComfyNode):
             return bg_model.encode_image(images[indices]).detach().float().cpu().numpy()
 
         cell_size = int(cell_size)
-        full, indexed, transform = sprite.strips(frames, poses, json.loads(layout) if layout else None,
-                                                masks_for if bg_model is not None else None, idle=idle, cell_size=cell_size,
-                                                full_action=full_action, export_24fps=export_24fps)
+        custom_tile = (int(tile_width), int(tile_height)) if (tile_width and tile_height) else None
+        tile_w, tile_h = sprite.validate_tile_size(custom_tile) if custom_tile else (cell_size, cell_size)
+        cache_path = (dest + ".frames") if save_cache else None
+        scale_override = float(global_scale) if global_scale and float(global_scale) > 0 else None
         os.makedirs(os.path.dirname(dest), exist_ok=True)
+        full, indexed, transform = sprite.strips(
+            frames, poses, json.loads(layout) if layout else None,
+            masks_for if bg_model is not None else None, idle=idle, cell_size=cell_size,
+            full_action=full_action, export_24fps=export_24fps,
+            tile_size=custom_tile, canvas=canvas or "portrait", global_scale=scale_override,
+            cache_dir=cache_path,
+        )
         fps = sprite.playback_fps(transform, poses, idle, export_24fps)
-        metadata = {"poses": full.width // cell_size, "source_poses": poses, "fps": fps,
-                    "tile": cell_size, "pivot": [v * cell_size // sprite.TILE for v in sprite.PIVOT], "layout": transform,
+        metadata = {"poses": full.width // tile_w, "source_poses": poses, "fps": fps,
+                    "tile": tile_w, "tile_size": [tile_w, tile_h],
+                    "pivot": [sprite.PIVOT[0] * tile_w // sprite.TILE, sprite.PIVOT[1] * tile_h // sprite.TILE],
+                    "layout": transform, "canvas": canvas or "portrait", "frames": len(frames),
                     "cutout": "foreground model" if bg_model is not None else "background key"}
+        if cache_path and os.path.isdir(cache_path):
+            metadata["frame_cache"] = os.path.basename(cache_path)
         for label, sheet in (("illustrated", full), ("indexed", indexed)):
             filename = dest + "." + label + ".png"
             sheet.save(filename, format="PNG")
             metadata[label] = os.path.basename(filename)
+        if save_webp:
+            webp_name = dest + ".illustrated.webp"
+            full.save(webp_name, format="WEBP", quality=84, alpha_quality=90, method=6)
+            metadata["illustrated_webp"] = os.path.basename(webp_name)
         return io.NodeOutput(ui={"sprite": [metadata]})
 
 
@@ -551,6 +630,7 @@ class H3SaveHold(io.ComfyNode):
                 io.Latent.Input("latent", tooltip="The sampled take, before it is decoded."),
                 io.String.Input("file", tooltip="Path inside the output folder. Name it after the take's video."),
                 io.Latent.Input("final", optional=True, tooltip="For a take that is enlarged and refined: the latent after the refine pass. A take that extends this one holds it in its own refine pass."),
+                io.Boolean.Input("partial", default=False, optional=True, tooltip="Mark latents saved for an edited range so extend/bridge holds ignore them while draft finalization can still reuse them."),
             ],
             outputs=[],
             is_output_node=True,
@@ -630,7 +710,6 @@ class H3SmallTextEncoder(io.ComfyNode):
 
     @classmethod
     def execute(cls, clip_name, projection) -> io.NodeOutput:
-                io.Boolean.Input("partial", default=False, optional=True, tooltip="Mark latents saved for an edited range so extend/bridge holds ignore them while draft finalization can still reuse them."),
         return io.NodeOutput(clipproj.load(clip_name, projection))
 
 
@@ -778,12 +857,12 @@ class H3RefineLatent(io.ComfyNode):
         return io.NodeOutput(out)
 
 
-NODE_CLASS_MAPPINGS = {"H3SpriteGuide": H3SpriteGuide, "H3SpriteSheet": H3SpriteSheet, "H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3SaveHold": H3SaveHold, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
+NODE_CLASS_MAPPINGS = {"H3SpriteGuide": H3SpriteGuide, "H3DefringeMatte": H3DefringeMatte, "H3SpriteSheet": H3SpriteSheet, "H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3SaveHold": H3SaveHold, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
                        "H3VOSR2Video": H3VOSR2Video,
                        "H3StyleGuider": H3StyleGuider,
                        "H3Lora": H3Lora, "H3LoadTake": H3LoadTake, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
                        "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder}
-NODE_DISPLAY_NAME_MAPPINGS = {"H3SpriteGuide": "H3 Sprite Motion Guide", "H3SpriteSheet": "H3 Sprite Sheet", "H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
+NODE_DISPLAY_NAME_MAPPINGS = {"H3SpriteGuide": "H3 Sprite Motion Guide", "H3DefringeMatte": "H3 Defringe Matte", "H3SpriteSheet": "H3 Sprite Sheet", "H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
                               "H3VOSR2Video": "H3 VOSR2 Video (experimental)",
                               "H3StyleGuider": "H3 Style Guider (experimental)",
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3LoadTake": "H3 Load Take", "H3RefineLatent": "H3 Refine Latent",

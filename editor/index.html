@@ -182,13 +182,20 @@
       <details id="spriteReferencePanel" open><summary>References</summary><div id="spriteRefs"></div></details>
     </aside>
     <section class="sprite-desk">
-      <h2 id="spriteTitle">Sprites</h2>
+      <div class="sprite-desk-head">
+        <h2 id="spriteTitle">Sprites</h2>
+        <button class="quiet" id="spritePropBtn" type="button" title="Generate 4 MP static props, paired state variants, or neutral turnaround plates with MiniMax-H3-Image">Props &amp; plates…</button>
+      </div>
       <div class="sprite-settings">
         <div class="sprite-animation-controls">
           <label class="sprite-field">Animation <select id="spriteMotion" aria-label="Animation"></select></label>
           <div class="sprite-actions"><button class="sprite-action" id="spriteAddMotion">Add animation…</button><button class="sprite-action" id="spriteEditMotion" hidden>Edit prompt…</button></div>
         </div>
-        <label class="sprite-field">Camera <select id="spriteCamera"><option value="rpg">Orthographic · 45°</option><option value="overhead">Overhead · 90°</option><option value="level">Eye level</option></select></label>
+        <div class="sprite-render-controls">
+          <label class="sprite-field">Camera <select id="spriteCamera"><option value="rpg">Orthographic · 45°</option><option value="overhead">Overhead · 90°</option><option value="level">Eye level</option></select></label>
+          <label class="sprite-field">Canvas <select id="spriteCanvas"><option value="square">Square · 512×512</option><option value="portrait">Portrait · 256×384</option><option value="landscape">Landscape · 384×256</option></select></label>
+          <label class="sprite-field">Length <select id="spriteFrames"><option value="39">39 frames · 1.6 s</option><option value="56">56 frames · 2.3 s</option><option value="73">73 frames · 3.0 s</option></select></label>
+        </div>
       </div>
       <div class="sprite-stage">
         <section class="sprite-directions" aria-labelledby="spriteDirectionsTitle">
@@ -205,13 +212,16 @@
       <div class="sprite-toolbar sprite-take-tools">
         <h3 id="spriteTakesTitle">Takes</h3>
         <button class="quiet" id="spriteDraft">New draft</button><button class="quiet" id="spriteMirror">Mirror</button>
+        <button class="quiet" id="spriteSelfPin" title="Pin a clean mid-stride frame at 0, stride and 2×stride to close a walk or run loop">Close loop</button>
         <button class="quiet" id="spriteEdit">Edit take</button><button class="primary" id="spriteFinish">Finish this take</button>
       </div>
       <div id="spriteTakes"></div>
       <div class="sprite-toolbar sprite-delivery">
-        <label class="sprite-field">Export size <select id="spriteTile"><option value="64">64 px</option><option value="128">128 px</option><option value="256">256 px</option></select></label>
+        <label class="sprite-field">Export size <select id="spriteTile"><option value="64">64 px</option><option value="128">128 px</option><option value="160">160 px</option><option value="256">256 px</option><option value="custom">Custom…</option></select></label>
+        <label class="sprite-field" id="spriteTileCustomField" hidden>Custom px <input id="spriteTileCustom" type="text" inputmode="numeric" placeholder="160 or 144x176" aria-label="Custom export tile size"></label>
         <label class="sprite-field">Frame rate <select id="spriteFps"><option value="">Original per loop</option><option value="24">24 fps</option></select></label>
         <label class="sprite-field">Output style <select id="spriteStyle"><option value="illustrated">Illustrated</option><option value="indexed">Indexed</option></select></label>
+        <label class="sprite-check"><input id="spriteWebp" type="checkbox" checked><span>Include WebP</span></label>
         <button id="spriteAtlas" class="quiet">Export atlas</button><span id="spriteStatus" role="status"></span>
       </div>
     </section>
@@ -288,6 +298,57 @@
     <div class="exporter-foot"><button id="spriteMotionSave" class="primary" type="submit">Add animation</button></div>
   </form>
 </dialog>
+<dialog id="spritePropDialog" class="keys exporter" aria-labelledby="spritePropTitle">
+  <form id="spritePropForm">
+    <div class="keys-head"><h2 id="spritePropTitle">4 MP Prop &amp; Turnaround (H3-Image)</h2><button id="spritePropCancel" class="quiet" type="button">Cancel</button></div>
+    <div class="exporter-body">
+      <label class="choice"><span>Workflow</span><select id="spritePropKind">
+        <option value="prop">Static prop (4 MP)</option>
+        <option value="state_variant">Paired state variant (unlit → lit)</option>
+        <option value="turnaround">Character turnaround plate</option>
+      </select></label>
+      <label class="field"><span>Asset name</span><input id="spritePropName" required maxlength="64" autocomplete="off" placeholder="stone_lantern"></label>
+      <label class="field"><span id="spritePropDescLabel">Prop description</span><textarea id="spritePropDescription" rows="3" placeholder="Mossy carved stone lantern with weathered roof and iron brackets."></textarea></label>
+      <div class="halves">
+        <label class="choice"><span>Native size (≥ 4 MP)</span><select id="spritePropSize">
+          <option value="square">Square · 2048×2048</option>
+          <option value="portrait">Portrait · 1664×2496</option>
+          <option value="landscape">Landscape · 2496×1664</option>
+        </select></label>
+        <label class="choice"><span>Style reference</span><select id="spritePropStyleRef"></select></label>
+      </div>
+      <div id="spritePropBaseField" hidden>
+        <label class="choice"><span id="spritePropBaseLabel">Base prop image</span><select id="spritePropBaseRef"></select></label>
+        <div class="sprite-prop-upload">
+          <button id="spritePropUploadBase" class="quiet" type="button">Upload image…</button>
+          <span id="spritePropBaseStatus" class="hint"></span>
+          <input id="spritePropBaseFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+        </div>
+      </div>
+      <div id="spritePropOptions">
+        <label class="check"><input id="spritePropCanopy" type="checkbox"><span>Top-down canopy framing (trees &amp; foliage at 42°)</span></label>
+        <label class="field"><span>Target export size (optional)</span><input id="spritePropOutputSize" type="text" autocomplete="off" placeholder="160 or 256x288"></label>
+      </div>
+      <div id="spritePropTurnaroundOptions" hidden>
+        <div class="halves">
+          <label class="choice"><span>Target view</span><select id="spritePropView">
+            <option value="back">Back (N)</option>
+            <option value="side">Right side (E)</option>
+            <option value="left">Left side (W)</option>
+            <option value="front">Front (S)</option>
+          </select></label>
+          <label class="choice"><span>Proportions</span><select id="spritePropProportions">
+            <option value="adult">Standard</option>
+            <option value="chibi">Chibi · 2.5-head</option>
+          </select></label>
+        </div>
+        <label class="field"><span>Held item (optional)</span><input id="spritePropHolding" type="text" maxlength="120" autocomplete="off" placeholder="a glowing crystal staff"></label>
+      </div>
+      <p class="hint" id="spritePropHint">Renders at ≥ 4 MP with MiniMax-H3-Image, BiRefNet cutout and H3DefringeMatte into the project's props/ folder.</p>
+    </div>
+    <div class="exporter-foot"><span id="spritePropStatus" class="hint" role="status"></span><span class="spacer"></span><button id="spritePropQueue" class="primary" type="submit">Queue 4 MP render</button></div>
+  </form>
+</dialog>
 <dialog id="creator" class="keys exporter" aria-labelledby="creatorTitle">
   <form id="creatorForm" method="dialog">
     <div class="keys-head"><h2 id="creatorTitle">New project</h2><button id="creatorClose" class="quiet" type="button">Close</button></div>
@@ -335,6 +396,19 @@
     </div>
     <div class="exporter-foot"><span class="spacer"></span><button id="askerGo" class="primary" type="submit"></button></div>
   </form>
+</dialog>
+<dialog id="storage" class="keys exporter" aria-labelledby="storageTitle">
+  <div class="keys-head"><h2 id="storageTitle">Project storage</h2><button id="storageClose" class="quiet" autofocus>Close</button></div>
+  <div class="exporter-body">
+    <p id="storageSummary" class="exporter-summary"></p>
+    <div class="packer-levels" role="radiogroup" aria-label="Cached latents to clear">
+      <label class="packer-level"><input id="storageUnused" name="storageScope" type="radio" checked disabled><span><b>Unused cached latents</b><small>Only files this project no longer references.</small></span><span id="storageUnusedSize" class="packer-size"></span></label>
+      <label class="packer-level"><input id="storageAll" name="storageScope" type="radio" disabled><span><b>All cached latents</b><small>Includes files for takes still in this project.</small></span><span id="storageAllSize" class="packer-size"></span></label>
+    </div>
+    <p id="storageImpact" class="hint" hidden>Extensions will use frames from the rendered video. To finish a whole draft from saved latents, render a new draft first.</p>
+    <p id="storageStatus" class="hint" role="status"></p>
+  </div>
+  <div class="exporter-foot"><button id="storageRefresh" class="quiet">Refresh</button><span class="spacer"></span><button id="storageClear" class="primary danger" disabled>Clear unused files</button></div>
 </dialog>
 <dialog id="packer" class="keys exporter" aria-labelledby="packerTitle">
   <div class="keys-head"><h2 id="packerTitle">Download the project</h2><button id="packerClose" class="quiet">Close</button></div>
@@ -397,19 +471,6 @@
         <option value="best">Best, the largest file</option>
         <option value="high" selected>High</option>
         <option value="small">Smaller file</option>
-<dialog id="storage" class="keys exporter" aria-labelledby="storageTitle">
-  <div class="keys-head"><h2 id="storageTitle">Project storage</h2><button id="storageClose" class="quiet" autofocus>Close</button></div>
-  <div class="exporter-body">
-    <p id="storageSummary" class="exporter-summary"></p>
-    <div class="packer-levels" role="radiogroup" aria-label="Cached latents to clear">
-      <label class="packer-level"><input id="storageUnused" name="storageScope" type="radio" checked disabled><span><b>Unused cached latents</b><small>Only files this project no longer references.</small></span><span id="storageUnusedSize" class="packer-size"></span></label>
-      <label class="packer-level"><input id="storageAll" name="storageScope" type="radio" disabled><span><b>All cached latents</b><small>Includes files for takes still in this project.</small></span><span id="storageAllSize" class="packer-size"></span></label>
-    </div>
-    <p id="storageImpact" class="hint" hidden>Extensions will use frames from the rendered video. To finish a whole draft from saved latents, render a new draft first.</p>
-    <p id="storageStatus" class="hint" role="status"></p>
-  </div>
-  <div class="exporter-foot"><button id="storageRefresh" class="quiet">Refresh</button><span class="spacer"></span><button id="storageClear" class="primary danger" disabled>Clear unused files</button></div>
-</dialog>
       </select></label>
     </div>
     <label class="check"><input id="exporterDownload" type="checkbox" checked><span>Download it to this computer when it is done</span></label>

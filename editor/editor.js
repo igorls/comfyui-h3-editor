@@ -21,7 +21,7 @@ const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the pic
 const STEPPED = new Set(["15", "90"]);
 
 import { VfxRuntime } from "./vfx-runtime.js";
-import { installSprites } from "./sprites.js";
+import { buildSpriteConfig, CAST_VIEWS, installSprites } from "./sprites.js";
 import { cropWindow, editCrop } from "./crop.js";
 import * as writer from "./writer.js";
 import { curveLevel, soundEnvelope, resumeSoundMixer, setMediaLevel, setSoundLevel, disconnectSound } from "./sound-envelope.js?v=track";
@@ -312,7 +312,7 @@ function snapFrames(seconds) {
 
 function plannedFrames(clip) {
   const take = activeTake(clip);
-  return take ? take.frames : clip.link ? linkedFrames(clip.link, clip.seconds) : clip.sprite ? 39 : snapFrames(clip.seconds);
+  return take ? take.frames : clip.link ? linkedFrames(clip.link, clip.seconds) : clip.sprite ? (clip.sprite.frames || 39) : snapFrames(clip.seconds);
 }
 
 // An unrendered clip follows its seconds on the timeline, and the clips after it move along.
@@ -1180,6 +1180,24 @@ function addRefmodMember() {
   renderAll();
 }
 
+function castViewSelect(target, label, onChange) {
+  const select = document.createElement("select");
+  select.className = "picture-view";
+  select.setAttribute("aria-label", label);
+  select.title = "Direction tag for Sprite Draft view routing";
+  for (const [val, text] of CAST_VIEWS) select.append(new Option(text, val));
+  select.value = target.view || "";
+  select.addEventListener("change", () => {
+    checkpoint();
+    if (select.value) target.view = select.value;
+    else delete target.view;
+    save();
+    spritesRoom.refresh();
+    if (onChange) onChange();
+  });
+  return select;
+}
+
 // More pictures of the same cast member: other angles, other light, the whole figure.
 function morePictures(person) {
   const box = document.createElement("div");
@@ -1205,7 +1223,8 @@ function morePictures(person) {
       save();
       renderInspector();
     });
-    cell.append(image, remove);
+    const view = castViewSelect(asset, "View tag for picture of " + person.name);
+    cell.append(image, view, remove);
     row.append(cell);
   }
   if (others.length < CAST_PICTURES - 1) {
@@ -1309,7 +1328,14 @@ function openPerson(id) {
       image.className = "portrait";
       image.alt = person.name;
       image.src = assetUrl(person);
-      left.push(dialogSection("Pictures", [image, morePictures(person)], "picture"));
+      const mainView = spriteChoice("Main picture view", CAST_VIEWS, person.view || "", (val) => {
+        checkpoint();
+        if (val) person.view = val;
+        else delete person.view;
+        save();
+        spritesRoom.refresh();
+      });
+      left.push(dialogSection("Pictures", [image, mainView, morePictures(person)], "picture"));
     }
     left.push(dialogSection("About", [
       field("Name", person.name, (v) => {
@@ -1501,7 +1527,7 @@ function clipStatus(clip) {
 
 function clipSeconds(clip) {
   const take = activeTake(clip);
-  return (take ? take.frames / FPS : clip.sprite ? 39 / FPS : clip.seconds).toFixed(1) + " s";
+  return (take ? take.frames / FPS : clip.sprite ? (clip.sprite.frames || 39) / FPS : clip.seconds).toFixed(1) + " s";
 }
 
 // Run the pointer across a thumbnail to scrub through the clip, frame strip permitting.
@@ -4023,7 +4049,16 @@ function drawInspector() {
     if (state.tab === "takes" && clip.takes.length) {
       parts.push(section("Takes", versions(clip)));
     }
+    const foot = document.createElement("div");
+    foot.className = "inspector-foot";
+    const actions = document.createElement("div");
+    actions.className = "actions";
+    let upscale = null;
     if (job) {
+      const progress = document.createElement("p");
+      progress.className = "foot-status";
+      progress.dataset.status = clip.id;
+      progress.textContent = status.text;
       const cancel = document.createElement("button");
       cancel.className = "quiet";
       cancel.textContent = job.upscaled ? "Cancel upscale" : "Cancel render";
@@ -4051,6 +4086,9 @@ function drawInspector() {
       }
       upscale = upscaleControls(clip);
     }
+    if (actions.childElementCount) foot.append(actions);
+    if (upscale) foot.append(upscale);
+    if (foot.childElementCount) parts.push(foot);
     panel.replaceChildren(...parts);
     return;
   }
@@ -4059,7 +4097,7 @@ function drawInspector() {
 
   const timing = document.createElement("div");
   timing.className = "two";
-  const duration = plainField("Seconds", clip.sprite ? 39 / FPS : clip.seconds, { type: "number" });
+  const duration = plainField("Seconds", clip.sprite ? (clip.sprite.frames || 39) / FPS : clip.seconds, { type: "number" });
   Object.assign(duration.input, { min: "0.5", max: "60", step: "any", required: true });
   duration.input.disabled = Boolean(clip.sprite);
   duration.input.dataset.key = "Seconds";
@@ -4067,16 +4105,7 @@ function drawInspector() {
   durationHint.id = "shotDurationHint";
   durationHint.className = "field-error";
   durationHint.setAttribute("aria-live", "polite");
-    const foot = document.createElement("div");
-    foot.className = "inspector-foot";
-    const actions = document.createElement("div");
-    actions.className = "actions";
-    let upscale = null;
   duration.input.setAttribute("aria-describedby", durationHint.id);
-      const progress = document.createElement("p");
-      progress.className = "foot-status";
-      progress.dataset.status = clip.id;
-      progress.textContent = status.text;
   function validateDuration() {
     duration.input.setCustomValidity("");
     if (duration.input.validity.valid && clip.mid_guides?.length) {
@@ -4086,9 +4115,6 @@ function drawInspector() {
     }
     const valid = duration.input.validity.valid;
     duration.input.setAttribute("aria-invalid", String(!valid));
-    if (actions.childElementCount) foot.append(actions);
-    if (upscale) foot.append(upscale);
-    if (foot.childElementCount) parts.push(foot);
     durationHint.textContent = valid ? "" : (duration.input.validity.customError ? duration.input.validationMessage : "Enter 0.5 to 60 seconds.")
       + " The shot is still " + clip.seconds + " s.";
     return valid;
@@ -4749,9 +4775,10 @@ function spriteSection(clip) {
   label.className = "sprite-enable";
   label.append(toggle, "Enable Sprite Draft");
   function update(next) {
-    if (next && clip.mid_guides?.some(g => g.frame > 37)) {
+    const maxGuide = ((next && next.frames) || 39) - 2;
+    if (next && clip.mid_guides?.some(g => g.frame > maxGuide)) {
       toggle.checked = Boolean(config);
-      toast("Move or remove guides after frame 37 before enabling Sprite Draft.", true);
+      toast("Move or remove guides after frame " + maxGuide + " before updating Sprite Draft.", true);
       return;
     }
     checkpoint();
@@ -4762,9 +4789,10 @@ function spriteSection(clip) {
     renderBin();
     renderInspector();
   }
-  toggle.onchange = () => update(toggle.checked ? { direction: "S", camera: "rpg", poses: 7 } : null);
+  toggle.onchange = () => update(toggle.checked ? { direction: "S", camera: "rpg", poses: 7, canvas: "square" } : null);
   const children = [label];
   if (config) {
+    const spriteFrames = config.frames || 39;
     const guides = new Map();
     function addGuide(asset, title) {
       const ref = { file: asset.file, subfolder: asset.subfolder || "" };
@@ -4774,18 +4802,28 @@ function spriteSection(clip) {
     for (const other of state.project.clips) {
       if (other.id === clip.id) continue;
       for (const [index, take] of (other.takes || []).entries()) {
-        if (take.file && take.frames >= 39) addGuide(take, other.name + " · take " + (index + 1));
+        if (take.file && take.frames >= spriteFrames) addGuide(take, other.name + " · take " + (index + 1));
       }
     }
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "Choose character views in Cast. For another motion guide, import at least 39 frames at 24 fps.";
+    hint.textContent = "Choose character views in Cast (tag front/side/back/left for heading routing). For another motion guide, import at least " + spriteFrames + " frames at 24 fps.";
     children.push(
       spriteChoice("Facing", [["S", "South"], ["E", "East"], ["N", "North"], ["W", "West"],
         ["NE", "Northeast"], ["NW", "Northwest"], ["SE", "Southeast"], ["SW", "Southwest"]],
         config.direction, direction => update({ ...config, direction })),
       spriteChoice("View", [["rpg", "RPG · 45°"], ["overhead", "Overhead · 90°"], ["level", "Eye level"]],
         config.camera, camera => update({ ...config, camera })),
+      spriteChoice("Canvas", [["square", "Square · 512×512"], ["portrait", "Portrait · 256×384"], ["landscape", "Landscape · 384×256"]],
+        config.canvas || "portrait", canvas => update({ ...config, canvas })),
+      spriteChoice("Length", [["39", "39 frames · 1.6 s"], ["56", "56 frames · 2.3 s"], ["73", "73 frames · 3.0 s"]],
+        String(spriteFrames), value => {
+          const next = { ...config };
+          const n = Number(value);
+          if (n !== 39) next.frames = n;
+          else delete next.frames;
+          update(next);
+        }),
       spriteChoice("Loop poses", Array.from({ length: 9 }, (_, i) => [String(i + 4), String(i + 4)]),
         String(config.poses), poses => update({ ...config, poses: Number(poses) })),
       spriteChoice("Motion guide", [["", "Built-in jog"], ["idle", "Idle · planted stance"], ["prompt", "Use shot prompt"], ...guides],
@@ -4801,6 +4839,21 @@ function spriteSection(clip) {
       spriteChoice("Cutout", [["auto", "Auto · prefer BiRefNet"], ["edge", "Background key"]],
         config.cutout || "auto", cutout => update({ ...config, cutout })), hint,
     );
+    if (config.self_pin) {
+      const pinNote = document.createElement("p");
+      pinNote.className = "hint";
+      pinNote.textContent = "Self-pin loop closure: " + config.self_pin.file + " (stride " + config.self_pin.stride + ").";
+      const clearPin = document.createElement("button");
+      clearPin.type = "button";
+      clearPin.className = "quiet";
+      clearPin.textContent = "Clear self-pin";
+      clearPin.onclick = () => {
+        const next = { ...config };
+        delete next.self_pin;
+        update(next);
+      };
+      children.push(pinNote, clearPin);
+    }
     const open = document.createElement("button");
     open.className = "quiet";
     open.textContent = "Open in Sprites";
@@ -4858,7 +4911,7 @@ function spritePlayback(clip, take) {
   const describe = () => sheet.poses + " frames · " + sheet.fps + " fps" + (sheet.cutout ? " · " + sheet.cutout : "");
   info.textContent = describe();
   let request = 0;
-  const size = spriteChoice("Export size", [64, 128, 256].map(n => [String(n), n + " px"]), String(sheet.tile), changeExport);
+  const size = spriteChoice("Export size", [64, 128, 160, 256].map(n => [String(n), n + " px"]), String(sheet.tile), changeExport);
   const rate = spriteChoice("Frame rate", [["", "Original · " + sheet.fps + " fps"], ["24", "24 fps"]], "", changeExport);
   const tileSelect = size.querySelector("select");
   const rateSelect = rate.querySelector("select");
@@ -4907,7 +4960,7 @@ function spritePlayback(clip, take) {
   }
   try {
     const remembered = localStorage.getItem(preference);
-    if (["64", "128", "256"].includes(remembered)) tileSelect.value = remembered;
+    if (["64", "128", "160", "256"].includes(remembered)) tileSelect.value = remembered;
     if (localStorage.getItem(preference + ".fps") === "24") rateSelect.value = "24";
   } catch (_) {}
   if (Number(tileSelect.value) !== sheet.tile || rateSelect.value) changeExport();
@@ -4916,7 +4969,7 @@ function spritePlayback(clip, take) {
 
 function midGuideLimits(clip, seconds = clip.seconds) {
   const link = clip.link;
-  const length = link ? linkedFrames(link, seconds) : clip.sprite ? 39 : snapFrames(seconds);
+  const length = link ? linkedFrames(link, seconds) : clip.sprite ? (clip.sprite.frames || 39) : snapFrames(seconds);
   let first = 1, last = length - 2, limit = 8;
   if (link?.mode === "extend_after" || link?.mode === "bridge") first = link.hold;
   if (link?.mode === "extend_before") last = length - link.hold - 1;
@@ -8513,6 +8566,12 @@ function itemActions(item) {
     act("Bridge into its movement", () => addLinked("bridge", "hold"), { off: bridgeable(item, next, "hold") ? "" : "Needs a longer rendered clip after it" }),
     act("Merge with next", mergeWithNext, { off: next && activeTake(clipOf(next.clip)) && next.start === itemEnd(item) ? "" : "Needs a rendered clip right after it" }),
   ];
+  const shown = activeTake(clip);
+  const finishSpan = finishRange(clip, shown, item);
+  const finishLabel = finishSpan?.partial ? "Finish this part" : "Finish this draft";
+  const finishRow = act(finishLabel, () => finishDraft(clip, item), { off: busy ? clip.name + " is rendering" : finishOff(clip, item) });
+  const footageFinish = clip.kind === "footage" && shown && (shown.quality === "draft" || shown.final_ranges?.length)
+    ? [finishRow] : [];
   const render = clip.kind === "footage" ? [] : [
     act("Render draft", () => renderClip(clip, "draft"), { off: busy ? clip.name + " is rendering" : "" }),
     act("Render final", () => renderClip(clip, "final"), { off: busy ? clip.name + " is rendering" : "" }),
@@ -8524,6 +8583,7 @@ function itemActions(item) {
   return [
     act("Edit with prompt", () => openPromptEdit(clip, item), { off: !rendered ? "Render a take first" : busy ? "The clip is rendering" : "" }),
     act("Motion transfer", () => openPromptEdit(clip, item, true), { off: motionUnavailable(clip) }),
+    ...footageFinish,
     ...generate, "-", ...render,
     act("Crop and reframe", () => openPlacementCrop(item), { off: rendered ? "" : "Render a take first" }),
     act("Split at the playhead", splitAtPlayhead, { key: "S", off: inside ? "" : "Move the playhead over this clip" }),
@@ -8536,6 +8596,10 @@ function itemActions(item) {
 
 function clipActions(clip) {
   const busy = Boolean(jobFor(clip.id));
+  const shown = activeTake(clip);
+  const finishRow = act("Finish this draft", () => finishDraft(clip, null), { off: busy ? clip.name + " is rendering" : finishOff(clip, null) });
+  const footageFinish = clip.kind === "footage" && shown && (shown.quality === "draft" || shown.final_ranges?.length)
+    ? [finishRow] : [];
   const render = clip.kind === "footage" ? [] : [
     act("Render draft", () => renderClip(clip, "draft"), { off: busy ? clip.name + " is rendering" : "" }),
     act("Render final", () => renderClip(clip, "final"), { off: busy ? clip.name + " is rendering" : "" }),
@@ -8549,6 +8613,7 @@ function clipActions(clip) {
     act("Open in inspector", () => { showTab("shot"); showWorkspacePanel("inspector"); }),
     act("Edit with prompt", () => openPromptEdit(clip), { off: !activeTake(clip) ? "Render a take first" : busy ? "The clip is rendering" : "" }),
     act("Motion transfer", () => openPromptEdit(clip, null, true), { off: motionUnavailable(clip) }),
+    ...footageFinish,
     ...render,
     act("Add to the end of the cut", () => {
       checkpoint();
@@ -8566,12 +8631,6 @@ function viewerActions() {
   const clip = clipOf(state.clip);
   const compared = comparisonTakes(viewing());
   const shown = compared?.a || activeTake(viewing() || clipOf(itemAt(state.playhead)?.clip));
-  const shown = activeTake(clip);
-  const finishSpan = finishRange(clip, shown, item);
-  const finishLabel = finishSpan?.partial ? "Finish this part" : "Finish this draft";
-  const finishRow = act(finishLabel, () => finishDraft(clip, item), { off: busy ? clip.name + " is rendering" : finishOff(clip, item) });
-  const footageFinish = clip.kind === "footage" && shown && (shown.quality === "draft" || shown.final_ranges?.length)
-    ? [finishRow] : [];
   const off = !clip || clip.kind === "footage" ? "Select a generated shot to give it this frame" : !shown ? "The viewer shows no rendered frame" : "";
   const rows = compared ? [act("Close take comparison", closeComparison, { key: "Escape" }), "-"] : [];
   for (const [side, label] of [["first", "First frame"], ["last", "Last frame"]]) {
@@ -8583,7 +8642,6 @@ function viewerActions() {
     const { first, last } = midGuideLimits(clip);
     rows.push(act("Use as a mid-frame guide", () => {
       showTab("shot");
-    ...footageFinish,
       revealInspectorControl(".capture-mid-guide")?.click();
     }, { off: off || (frame === null || frame < first || frame > last ? "Move the playhead to an interior frame of this shot" : "") }));
   }
@@ -8596,10 +8654,6 @@ function actionsAt(target, x) {
   const control = target.closest("select, input[type=range], input[type=checkbox], input[type=radio]");
   if (control) {
     const title = control.getAttribute("aria-label") || control.labels?.[0]?.innerText.trim() || "Control";
-  const shown = activeTake(clip);
-  const finishRow = act("Finish this draft", () => finishDraft(clip, null), { off: busy ? clip.name + " is rendering" : finishOff(clip, null) });
-  const footageFinish = clip.kind === "footage" && shown && (shown.quality === "draft" || shown.final_ranges?.length)
-    ? [finishRow] : [];
     if (control.tagName === "SELECT") {
       return { title, rows: [...control.options].filter(o => !o.hidden).map(option => act(option.textContent, () => {
         control.value = option.value;
@@ -8613,7 +8667,6 @@ function actionsAt(target, x) {
         control.dispatchEvent(new Event("input", { bubbles: true }));
         control.dispatchEvent(new Event("change", { bubbles: true }));
       };
-    ...footageFinish,
       return { title, rows: [act("Increase", () => adjust(1)), act("Decrease", () => adjust(-1))] };
     }
     return { title, rows: [act(control.checked && control.type === "checkbox" ? "Uncheck" : "Select", () => control.click())] };
@@ -9601,68 +9654,6 @@ function updateQueue() {
   chip.firstElementChild.textContent = parts.join(", ");
 }
 
-// Renders are queued by the server, which also attaches the finished take to the project.
-// The editor only shows progress, so closing it never loses a render.
-// The server also checks the draft's saved latents and the installed latent upscaler.
-function finishOff(clip, item) {
-  const shown = activeTake(clip);
-  const hasDraft = Boolean(shown && (shown.quality === "draft" || (shown.quality === "final" && shown.final_ranges?.length)));
-  if (!hasDraft) return "Choose a draft take to finish";
-  if (clip.sprite && !shown.sprite) return "Choose a Sprite Draft take to finish with sprite settings";
-  const final = state.project.sizes?.final;
-  if (final === "sharp" && !shown.sprite && !shown.edit && !range.partial && !shown.final_ranges?.length)
-    return "Choose Full, Large, Medium, Small or your own Final size to finish a draft";
-  return "";
-}
-
-function finishDraft(clip, item) {
-  const shown = activeTake(clip);
-  const range = finishRange(clip, shown, item);
-  const part = range?.partial ? { in: range.a, out: range.b } : undefined;
-  return renderClip(clip, "finish", undefined, undefined, undefined, undefined, part);
-}
-
-async function renderClip(clip, quality, detail, upscaler, edit, seed, part) {
-  const folder = state.folder;
-  if (jobFor(clip.id)) return;
-  const shown = activeTake(clip);
-  if (!edit && quality !== "upscale" && !(quality === "finish" && (shown?.sprite || shown?.edit)) && !clip.action.trim()) {
-    selectClip(clip.id);
-    toast("Describe what happens in " + clip.name + " before rendering it.", true);
-    return;
-  }
-  try {
-    await flush();
-    if (folder !== state.folder) return;
-    const body = { clip: clip.id, quality, client_id: clientId };
-    if (seed !== undefined) body.seed = seed;
-    if (detail !== undefined) body.detail = detail;
-    if (upscaler) body.upscaler = upscaler;
-    if (edit) body.edit = edit;
-    const result = await postJson("/project/" + folder + "/render", body);
-    if (folder !== state.folder) return;
-    state.jobs.set(result.job.id, { ...result.job, step: 0, max: 0, progress: 0 });
-    if (!unsaved()) adopt(result.project);
-    updateQueue();
-    renderAll();
-    return true;
-  } catch (error) {
-    if (edit) throw error;
-    toast(error.message, true);
-  }
-}
-
-async function cancelJob(job) {
-  const folder = state.folder;
-  try {
-    await flush();
-    if (folder !== state.folder) return;
-    const result = await postJson("/project/" + folder + "/cancel", { job: job.id, client_id: clientId });
-    if (folder !== state.folder) return;
-    job.reported = true;
-    state.jobs.delete(job.id);
-    if (!unsaved()) adopt(result.project);
-    updateQueue();
 function takeRangeStatus(take, first = 0, last = take?.frames || 0) {
   if (!take) return null;
   if (take.quality === "draft") {
@@ -9710,6 +9701,77 @@ function finishRange(clip, take, selected) {
   return { ...range, partial: range.a > 0 || range.b < take.frames };
 }
 
+// Renders are queued by the server, which also attaches the finished take to the project.
+// The editor only shows progress, so closing it never loses a render.
+// The server also checks the draft's saved latents and the installed latent upscaler.
+function finishOff(clip, item) {
+  const shown = activeTake(clip);
+  const hasDraft = Boolean(shown && (shown.quality === "draft" || (shown.quality === "final" && shown.final_ranges?.length)));
+  if (!hasDraft) return "Choose a draft take to finish";
+  if (clip.sprite && !shown.sprite) return "Choose a Sprite Draft take to finish with sprite settings";
+  const range = finishRange(clip, shown, item);
+  if (!range) return "Move the In and Out range over this clip to finish a part";
+  if (shown.sprite && range.partial) return "Sprite Draft takes are finished whole";
+  const status = takeRangeStatus(shown, range.a, range.b);
+  if (status === "final") return range.partial ? "This part is already a final" : "This take is already a final";
+  if (shown.edit && status === "footage") return "This part is outside the edited draft range";
+  const final = state.project.sizes?.final;
+  if (final === "sharp" && !shown.sprite && !shown.edit && !range.partial && !shown.final_ranges?.length)
+    return "Choose Full, Large, Medium, Small or your own Final size to finish a draft";
+  return "";
+}
+
+function finishDraft(clip, item) {
+  const shown = activeTake(clip);
+  const range = finishRange(clip, shown, item);
+  const part = range?.partial ? { in: range.a, out: range.b } : undefined;
+  return renderClip(clip, "finish", undefined, undefined, undefined, undefined, part);
+}
+
+async function renderClip(clip, quality, detail, upscaler, edit, seed, part) {
+  const folder = state.folder;
+  if (jobFor(clip.id)) return;
+  const shown = activeTake(clip);
+  if (!edit && quality !== "upscale" && !(quality === "finish" && (shown?.sprite || shown?.edit)) && !clip.action.trim()) {
+    selectClip(clip.id);
+    toast("Describe what happens in " + clip.name + " before rendering it.", true);
+    return;
+  }
+  try {
+    await flush();
+    if (folder !== state.folder) return;
+    const body = { clip: clip.id, quality, client_id: clientId };
+    if (seed !== undefined) body.seed = seed;
+    if (detail !== undefined) body.detail = detail;
+    if (upscaler) body.upscaler = upscaler;
+    if (edit) body.edit = edit;
+    if (part) body.part = part;
+    const result = await postJson("/project/" + folder + "/render", body);
+    if (folder !== state.folder) return;
+    state.jobs.set(result.job.id, { ...result.job, step: 0, max: 0, progress: 0 });
+    if (!unsaved()) adopt(result.project);
+    updateQueue();
+    renderAll();
+    if (result.job?.finish_fallback) toast(result.job.finish_fallback);
+    else if (result.job?.part) toast("Finishing " + timecode(result.job.part.in) + " – " + timecode(result.job.part.out - 1) + " from draft latents.");
+    return true;
+  } catch (error) {
+    if (edit) throw error;
+    toast(error.message, true);
+  }
+}
+
+async function cancelJob(job) {
+  const folder = state.folder;
+  try {
+    await flush();
+    if (folder !== state.folder) return;
+    const result = await postJson("/project/" + folder + "/cancel", { job: job.id, client_id: clientId });
+    if (folder !== state.folder) return;
+    job.reported = true;
+    state.jobs.delete(job.id);
+    if (!unsaved()) adopt(result.project);
+    updateQueue();
     renderAll();
     toast("Render cancelled.");
   } catch (error) {
@@ -9718,12 +9780,6 @@ function finishRange(clip, take, selected) {
 }
 
 // The jobs shown are the project's own record of what is rendering, wherever it was started.
-  const range = finishRange(clip, shown, item);
-  if (!range) return "Move the In and Out range over this clip to finish a part";
-  if (shown.sprite && range.partial) return "Sprite Draft takes are finished whole";
-  const status = takeRangeStatus(shown, range.a, range.b);
-  if (status === "final") return range.partial ? "This part is already a final" : "This take is already a final";
-  if (shown.edit && status === "footage") return "This part is outside the edited draft range";
 function syncJobs() {
   const next = new Map();
   for (const job of state.project.pending || []) next.set(job.id, state.jobs.get(job.id) || { ...job, step: 0, max: 0, progress: 0 });
@@ -9745,15 +9801,12 @@ function connect() {
   socket.onmessage = (event) => {
     if (typeof event.data === "string") onMessage(JSON.parse(event.data));
     else onBinary(event.data);
-    if (part) body.part = part;
   };
 }
 
 function onBinary(buffer) {
   const view = new DataView(buffer);
   const kind = view.getUint32(0);
-    if (result.job?.finish_fallback) toast(result.job.finish_fallback);
-    else if (result.job?.part) toast("Finishing " + timecode(result.job.part.in) + " – " + timecode(result.job.part.out - 1) + " from draft latents.");
   let start;
   let mime = "image/jpeg";
   if (kind === 1) {
@@ -10406,64 +10459,6 @@ function ask({ title, label = "Name", value = null, note = "", confirm, danger =
 
 const projectTitle = () => state.project?.name || (state.folder || "").replaceAll("_", " ");
 
-$("projectRename").addEventListener("click", async () => {
-  const name = await ask({ title: "Rename the project", value: projectTitle(), confirm: "Rename",
-    note: "Only its name changes. Its folder in ComfyUI's output keeps the name it was made with." });
-  if (!name || name === projectTitle()) return;
-  try {
-    await flush();
-    const reply = await postJson("/project/" + state.folder + "/rename", { name, client_id: clientId });
-    adopt(reply.project);
-    await refreshProjects(state.folder);
-    toast("The project is now called " + name + ".");
-  } catch (error) {
-    toast(error.message, true);
-  }
-});
-
-$("projectDuplicate").addEventListener("click", async () => {
-  const name = await ask({ title: "Duplicate the project", value: projectTitle() + " copy", confirm: "Duplicate",
-    note: "The copy gets its own folder, with the clips, takes and pictures. A project with many finals takes a while to copy." });
-  if (!name) return;
-  try {
-    await flush();
-    toast("Copying " + projectTitle() + ".");
-    const { folder } = await postJson("/project/" + state.folder + "/duplicate", { name, client_id: clientId });
-    await refreshProjects(folder);
-    await openProject(folder);
-    toast("This is " + name + ", a copy. The original is untouched.");
-  } catch (error) {
-    toast(error.message, true);
-  }
-});
-
-// Project zips: Download as zip makes one to take the project to another machine, Open a project zip opens one as a
-// new project. The zip is made and opened by the server (archive.py); the editor picks the level and shows progress.
-const PACK_LEVELS = [
-  ["all", "Everything", "Every take, the exports, the pictures and sounds"],
-  ["cut", "What the cut uses", "The takes the timeline shows, footage, pictures and sounds"],
-  ["text", "No renders", "The shots, the cast and its pictures, sounds and footage. Render the clips again after opening"],
-];
-function sizeText(bytes) {
-  if (bytes >= 1e9) return (bytes / 1e9).toFixed(2) + " GB";
-  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + " MB";
-  if (bytes >= 1e3) return (bytes / 1e3).toFixed(1) + " kB";
-  return bytes + " B";
-}
-const OLD_SERVER = "This ComfyUI started before H3 Editor was updated: restart ComfyUI to use project zips.";
-
-$("projectDownload").addEventListener("click", async () => {
-  try {
-    await flush();
-  } catch (_) {}
-  const levels = $("packerLevels");
-  const result = $("packerResult");
-  $("packerTitle").textContent = "Download " + projectTitle();
-  result.textContent = "Measuring the project.";
-  result.classList.remove("bad");
-  levels.replaceChildren();
-  $("packerGo").disabled = true;
-  $("packer").showModal();
 let storageVisit = 0;
 $("storageClose").onclick = () => $("storage").close();
 $("projectStorage").addEventListener("click", () => {
@@ -10539,6 +10534,64 @@ $("projectStorage").addEventListener("click", () => {
   measure();
 });
 
+$("projectRename").addEventListener("click", async () => {
+  const name = await ask({ title: "Rename the project", value: projectTitle(), confirm: "Rename",
+    note: "Only its name changes. Its folder in ComfyUI's output keeps the name it was made with." });
+  if (!name || name === projectTitle()) return;
+  try {
+    await flush();
+    const reply = await postJson("/project/" + state.folder + "/rename", { name, client_id: clientId });
+    adopt(reply.project);
+    await refreshProjects(state.folder);
+    toast("The project is now called " + name + ".");
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+
+$("projectDuplicate").addEventListener("click", async () => {
+  const name = await ask({ title: "Duplicate the project", value: projectTitle() + " copy", confirm: "Duplicate",
+    note: "The copy gets its own folder, with the clips, takes and pictures. A project with many finals takes a while to copy." });
+  if (!name) return;
+  try {
+    await flush();
+    toast("Copying " + projectTitle() + ".");
+    const { folder } = await postJson("/project/" + state.folder + "/duplicate", { name, client_id: clientId });
+    await refreshProjects(folder);
+    await openProject(folder);
+    toast("This is " + name + ", a copy. The original is untouched.");
+  } catch (error) {
+    toast(error.message, true);
+  }
+});
+
+// Project zips: Download as zip makes one to take the project to another machine, Open a project zip opens one as a
+// new project. The zip is made and opened by the server (archive.py); the editor picks the level and shows progress.
+const PACK_LEVELS = [
+  ["all", "Everything", "Every take, the exports, the pictures and sounds"],
+  ["cut", "What the cut uses", "The takes the timeline shows, footage, pictures and sounds"],
+  ["text", "No renders", "The shots, the cast and its pictures, sounds and footage. Render the clips again after opening"],
+];
+function sizeText(bytes) {
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(2) + " GB";
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + " MB";
+  if (bytes >= 1e3) return (bytes / 1e3).toFixed(1) + " kB";
+  return bytes + " B";
+}
+const OLD_SERVER = "This ComfyUI started before H3 Editor was updated: restart ComfyUI to use project zips.";
+
+$("projectDownload").addEventListener("click", async () => {
+  try {
+    await flush();
+  } catch (_) {}
+  const levels = $("packerLevels");
+  const result = $("packerResult");
+  $("packerTitle").textContent = "Download " + projectTitle();
+  result.textContent = "Measuring the project.";
+  result.classList.remove("bad");
+  levels.replaceChildren();
+  $("packerGo").disabled = true;
+  $("packer").showModal();
   let sizes;
   try {
     sizes = (await api("/project/" + encodeURIComponent(state.folder) + "/archive")).levels;
@@ -11702,21 +11755,33 @@ const spritesRoom = installSprites({
     setSource(clip.id);
     showSource(clip);
   },
-  makeClip(actor, name, camera, motion, direction, motionPrompt) {
+  makeClip(actor, name, camera, motion, direction, motionPrompt, extra = {}) {
     checkpoint();
     const cast = state.project.cast?.some(p => p.id === actor) ? [actor] : [];
     const clip = { id: uid("c"), name: [name, motion, direction].join(" · "), cast,
       action: motionPrompt ?? (motion === "idle" ? "Stand in place and breathe." : "Run in place with a steady stride."),
       camera: "", speaker: "", dialogue: "", sound: "", music: "", seconds: 5, takes: [], active: null,
-      sprite: { camera, direction, poses: 7 } };
+      sprite: buildSpriteConfig({ camera, motion, direction, motionPrompt, canvas: extra.canvas, frames: extra.frames }) };
     if (!cast.length) clip.sprite_group = actor;
-    if (motion === "idle") clip.sprite.motion = "idle";
-    if (motionPrompt) Object.assign(clip.sprite, { motion: "prompt", animation: motion });
     state.project.clips.push(clip);
     save();
     return clip;
   },
   render(clip, quality, seed) { return renderClip(clip, quality, undefined, undefined, undefined, seed); },
+  async selfPin(clip, take, stride) {
+    const folder = state.folder;
+    await flush();
+    if (folder !== state.folder) throw new Error("Project changed while preparing self-pin.");
+    const body = { clip: clip.id, take: take.id };
+    if (stride != null) body.stride = stride;
+    return postJson("/project/" + encodeURIComponent(folder) + "/sprite-self-pin", body);
+  },
+  async queueProp(payload) {
+    const folder = state.folder;
+    await flush();
+    if (folder !== state.folder) throw new Error("Project changed while queueing prop.");
+    return postJson("/project/" + encodeURIComponent(folder) + "/props", payload);
+  },
   async download(name, options) {
     const folder = state.folder;
     await flush();
@@ -11727,7 +11792,8 @@ const spritesRoom = installSprites({
     if (!response.ok) throw new Error((await response.json()).error || "Could not export sprites");
     const url = URL.createObjectURL(await response.blob());
     const link = document.createElement("a");
-    link.download = name + "-" + options.tile + "px-" + options.style + (options.fps ? "-" + options.fps + "fps" : "") + ".zip";
+    const sizeLabel = Array.isArray(options.tile_size) ? options.tile_size.join("x") : String(options.tile);
+    link.download = name + "-" + sizeLabel + "px-" + options.style + (options.fps ? "-" + options.fps + "fps" : "") + ".zip";
     link.href = url; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   },

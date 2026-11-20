@@ -1,14 +1,46 @@
-"""Directional jog guides and small, transparent sprite strips for independent editor takes."""
+"""Directional jog guides, defringing, global scale locking, and sprite atlases for independent editor takes."""
 
 import math
+import os
 
 FRAMES = 39
 WIDTH, HEIGHT = 256, 384
 TILE, BODY = 64, 48
 EXPORT_SIZES = (64, 128, 256)
+MIN_TILE, MAX_TILE = 32, 512
 MAX_ATLAS_PIXELS = 32 * 1024 * 1024
 PIVOT = (32, 59)
 MATTE_PREFIX = "background_removal:"
+
+CANVASES = {
+    "portrait": ((256, 384), (512, 768)),
+    "square": ((512, 512), (512, 512)),
+    "landscape": ((384, 256), (768, 512)),
+}
+
+VIEW_TAGS = ("front", "side", "back", "left")
+VIEW_ALIASES = {
+    "front": "front",
+    "s": "front",
+    "side": "side",
+    "right": "side",
+    "e": "side",
+    "back": "back",
+    "rear": "back",
+    "n": "back",
+    "left": "left",
+    "w": "left",
+}
+DIRECTION_VIEWS = {
+    "S": ("front",),
+    "N": ("back",),
+    "E": ("side", "front"),
+    "W": ("left", "side", "front"),
+    "SE": ("front", "side"),
+    "SW": ("front", "left", "side"),
+    "NE": ("back", "side"),
+    "NW": ("back", "left", "side"),
+}
 
 
 def matte_model(available):
@@ -18,6 +50,8 @@ def matte_model(available):
             if name.replace("\\", "/").split("/")[-1].lower() == "birefnet.safetensors":
                 return name
     return None
+
+
 DIRECTIONS = {
     "S": "south, down the screen",
     "E": "east, screen right",
@@ -35,10 +69,125 @@ CAMERAS = {
 }
 
 
+def validate_frames(value):
+    """Any legal H3 video length on the 5 + 17k grid with at least 22 frames (22, 39, 56, 73, ...)."""
+    if type(value) is not int or value < 22 or (value - 5) % 17 != 0:
+        raise ValueError("sprite frames must be a legal H3 length >= 22 on the 5 + 17k grid (22, 39, 56, 73, ...)")
+    return value
+
+
+def validate_tile_size(tile):
+    """Validate an even sprite tile width x height in 32..512 (accepts an int or (w, h) pair)."""
+    if type(tile) is int:
+        w = h = tile
+    elif isinstance(tile, (tuple, list)) and len(tile) == 2 and type(tile[0]) is int and type(tile[1]) is int:
+        w, h = tile
+    elif isinstance(tile, dict) and type(tile.get("w")) is int and type(tile.get("h")) is int:
+        w, h = tile["w"], tile["h"]
+    else:
+        raise ValueError("tile size must be an even pixel size or (w, h) pair in %s..%s" % (MIN_TILE, MAX_TILE))
+    if not (MIN_TILE <= w <= MAX_TILE and MIN_TILE <= h <= MAX_TILE) or w % 2 != 0 or h % 2 != 0:
+        raise ValueError("tile dimensions must be even integers in %s..%s (got %sx%s)" % (MIN_TILE, MAX_TILE, w, h))
+    return (w, h)
+
+
+def canvas_size(config=None, quality="draft"):
+    """Source (width, height) for a sprite canvas preset and render quality."""
+    name = (config or {}).get("canvas", "portrait")
+    if name not in CANVASES:
+        raise ValueError("choose a sprite canvas of %s" % (", ".join(CANVASES),))
+    draft, final = CANVASES[name]
+    return draft if quality == "draft" else final
+
+
+def normalize_view(view):
+    """Normalize a cast picture view tag ('front', 'side', 'back', 'left', or compass S/E/N/W)."""
+    if view is None:
+        return None
+    if not isinstance(view, str) or not view.strip():
+        raise ValueError("view must be one of %s" % (", ".join(VIEW_TAGS),))
+    key = view.strip().lower()
+    if key not in VIEW_ALIASES:
+        raise ValueError("view must be one of %s" % (", ".join(VIEW_TAGS),))
+    return VIEW_ALIASES[key]
+
+
+def filter_cast_pictures(pictures, direction):
+    """Filter view-tagged cast pictures for a sprite compass direction so side refs don't pull rear views.
+
+    When no picture carries a view tag, all pictures are kept unchanged for full backward compatibility.
+    """
+    pictures = list(pictures or ())
+    if not pictures or direction not in DIRECTION_VIEWS:
+        return pictures
+    tagged = [p for p in pictures if isinstance(p, dict) and p.get("view")]
+    if not tagged:
+        return pictures
+    desired = DIRECTION_VIEWS[direction]
+    by_view = {}
+    for pic in tagged:
+        v = normalize_view(pic["view"])
+        by_view.setdefault(v, []).append(pic)
+    selected = []
+    if direction in ("S", "N"):
+        selected.extend(by_view.get(desired[0], []))
+    elif direction == "E":
+        selected.extend(by_view.get("side", []))
+        if not selected:
+            selected.extend(by_view.get("front", []))
+    elif direction == "W":
+        selected.extend(by_view.get("left", []))
+        if not selected:
+            selected.extend(by_view.get("side", []))
+        if not selected:
+            selected.extend(by_view.get("front", []))
+    elif direction in ("SE", "SW"):
+        selected.extend(by_view.get("front", []))
+        side_key = "side" if direction == "SE" else ("left" if "left" in by_view else "side")
+        selected.extend(by_view.get(side_key, []))
+    elif direction in ("NE", "NW"):
+        selected.extend(by_view.get("back", []))
+        side_key = "side" if direction == "NE" else ("left" if "left" in by_view else "side")
+        selected.extend(by_view.get(side_key, []))
+    if not selected:
+        return pictures
+    # Deduplicate while preserving priority order.
+    seen = set()
+    out = []
+    for pic in selected:
+        ident = (pic.get("subfolder", ""), pic.get("file", ""))
+        if ident not in seen:
+            seen.add(ident)
+            out.append(pic)
+    return out
+
+
+def _clean_file_ref(ref, what):
+    if (
+        not isinstance(ref, dict)
+        or not isinstance(ref.get("file"), str)
+        or not ref["file"].strip()
+        or not isinstance(ref.get("subfolder", ""), str)
+    ):
+        raise ValueError("%s needs a file and subfolder" % what)
+    name, folder = ref["file"], ref.get("subfolder", "").replace("\\", "/")
+    if (
+        any(c in name for c in ("/", "\\", ":", "\x00"))
+        or folder.startswith("/")
+        or ":" in folder
+        or "\x00" in folder
+        or ".." in folder.split("/")
+    ):
+        raise ValueError("%s must sit inside the output folder" % what)
+    return name, folder
+
+
 def settings(value):
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) - {"direction", "camera", "poses", "guide", "motion", "cutout", "animation"}:
+    allowed = {"direction", "camera", "poses", "guide", "motion", "cutout", "animation",
+               "canvas", "frames", "tile_size", "mode", "refine", "self_pin"}
+    if not isinstance(value, dict) or set(value) - allowed:
         raise ValueError("unknown sprite setting")
     direction, camera, poses = value.get("direction", "S"), value.get("camera", "rpg"), value.get("poses", 7)
     if direction not in tuple(DIRECTIONS) or camera not in tuple(CAMERAS):
@@ -46,6 +195,12 @@ def settings(value):
     if type(poses) is not int or not 4 <= poses <= 12:
         raise ValueError("a sprite cycle needs 4 to 12 poses at 12 fps")
     out = {"direction": direction, "camera": camera, "poses": poses}
+    if "mode" in value:
+        if value["mode"] != "prop":
+            raise ValueError("sprite mode must be prop")
+        if "motion" in value or value.get("guide") is not None:
+            raise ValueError("static prop mode does not take a motion source or guide")
+        out["mode"] = "prop"
     if "motion" in value:
         if value["motion"] not in ("prompt", "idle") or value.get("guide") is not None:
             raise ValueError("choose one sprite motion source")
@@ -60,6 +215,27 @@ def settings(value):
         if value["cutout"] not in ("auto", "edge"):
             raise ValueError("choose auto or edge sprite cutout")
         out["cutout"] = value["cutout"]
+    if "canvas" in value:
+        if value["canvas"] not in CANVASES:
+            raise ValueError("choose a sprite canvas of %s" % (", ".join(CANVASES),))
+        out["canvas"] = value["canvas"]
+    if "frames" in value:
+        out["frames"] = validate_frames(value["frames"])
+    if "tile_size" in value:
+        out["tile_size"] = list(validate_tile_size(value["tile_size"]))
+    if "refine" in value:
+        if type(value["refine"]) is not bool:
+            raise ValueError("refine must be true or false")
+        out["refine"] = value["refine"]
+    if value.get("self_pin") is not None:
+        sp = value["self_pin"]
+        name, folder = _clean_file_ref(sp, "self_pin")
+        if not name.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            raise ValueError("self_pin must be an image file")
+        stride = sp.get("stride", 2 * poses)
+        if type(stride) is not int or not 4 <= stride <= 36:
+            raise ValueError("self_pin stride must be an integer in 4..36")
+        out["self_pin"] = {"file": name, "subfolder": folder, "stride": stride}
     if value.get("guide") is not None:
         g = value["guide"]
         if (
@@ -90,7 +266,13 @@ def instruction(config):
     )
     poses = "Match the poses and foot contacts in <Video 1>, keeping the same proportions and equipment. "
     if config.get("motion") == "prompt":
-        poses = "Loop the movement with consistent proportions and equipment. "
+        if config.get("animation"):
+            poses = (
+                "Perform the full gesture cleanly from start to finish and return to the initial pose, "
+                "with consistent proportions and equipment. "
+            )
+        else:
+            poses = "Loop the movement with consistent proportions and equipment. "
     elif config.get("motion") == "idle":
         motion = "resting in its natural standing pose"
         poses = ("Make one subtle repeating idle gesture and return to the initial pose. "
@@ -108,21 +290,30 @@ def instruction(config):
     )
 
 
-def jog(direction, camera, poses):
+def jog(direction, camera, poses, frames=FRAMES, canvas="portrait"):
     """Project the same articulated stride onto a pitched orthographic camera in each facing."""
     import numpy as np
     from PIL import Image, ImageDraw
 
+    validate_frames(frames)
+    w, h = canvas_size({"canvas": canvas}, "draft")
+    scale = min(w / float(WIDTH), h / float(HEIGHT))
+    cx, cy = w / 2.0, h / 2.0
     pitch = math.radians({"rpg": 45, "level": 0, "overhead": 90}[camera])
     dx = int("E" in direction) - int("W" in direction)
     dz = int("S" in direction) - int("N" in direction)
     length = math.hypot(dx, dz)
 
     def project(j):
-        f, h, r = j
+        f, height_val, r = j
         x, z = (f * dx - r * dz) / length, (f * dz + r * dx) / length
-        return (round(128 + x), round(192 - (h - 120) * math.cos(pitch) + z * math.sin(pitch)))
+        return (
+            round(cx + x * scale),
+            round(cy + (-(height_val - 120) * math.cos(pitch) + z * math.sin(pitch)) * scale),
+        )
 
+    line_w = max(2, round(2 * scale))
+    joint_r = max(1, round(1 * scale))
     cycle = []
     for frame in range(2 * poses):
         phase = math.pi * frame / poses
@@ -157,14 +348,14 @@ def jog(direction, camera, poses):
                 continue
             ear = (3, 231 + bob, 13 * side)
             limbs.append((neck, ear, "#aa00ff"))
-        im = Image.new("RGB", (WIDTH, HEIGHT))
+        im = Image.new("RGB", (w, h))
         draw = ImageDraw.Draw(im)
         for a, b, color in limbs:
             xy = project(b)
-            draw.line((project(a), xy), fill=color, width=2)
-            draw.ellipse((xy[0] - 1, xy[1] - 1, xy[0] + 1, xy[1] + 1), fill=color)
+            draw.line((project(a), xy), fill=color, width=line_w)
+            draw.ellipse((xy[0] - joint_r, xy[1] - joint_r, xy[0] + joint_r, xy[1] + joint_r), fill=color)
         cycle.append(np.asarray(im))
-    return np.stack([cycle[t % len(cycle)] for t in range(FRAMES)])
+    return np.stack([cycle[t % len(cycle)] for t in range(frames)])
 
 
 def cutout(im):
@@ -183,7 +374,7 @@ def cutout(im):
     return im
 
 
-def with_matte(frame, mask):
+def with_matte(frame, mask, alpha_low=0.12, alpha_high=0.88):
     """Remove the estimated backdrop colour from partially covered foreground pixels."""
     import numpy as np
     from PIL import Image
@@ -194,9 +385,114 @@ def with_matte(frame, mask):
     alpha = np.asarray(mask, dtype=np.float32)[..., None].clip(0, 1)
     if alpha.shape[:2] != rgb.shape[:2]:
         raise ValueError("sprite matte must match the source frame")
+    span = max(float(alpha_high) - float(alpha_low), 1e-4)
     color = ((rgb - (1 - alpha) * ground) / np.maximum(alpha, .05)).clip(0, 1)
-    coverage = ((alpha - .12) / .76).clip(0, 1)
+    coverage = ((alpha - float(alpha_low)) / span).clip(0, 1)
     return Image.fromarray((np.concatenate((color, coverage), axis=2) * 255).round().astype("uint8"))
+
+
+def seam_score(frames, start, period):
+    """Loop-closure jump from frame[start+period] back to frame[start], normalized by median frame step."""
+    import numpy as np
+    from PIL import Image
+
+    if start < 0 or period < 1 or start + period >= len(frames):
+        raise ValueError("seam window (%s, %s) does not fit in %s frames" % (start, period, len(frames)))
+    sigs = []
+    for frame in frames:
+        rgba = frame.convert("RGBA").resize((64, 64), Image.Resampling.BOX)
+        arr = np.asarray(rgba, dtype=np.float32)
+        sigs.append(arr[:, :, :3].mean(2) * arr[:, :, 3] / 255.0)
+    steps = [float(np.abs(sigs[i] - sigs[i + 1]).mean()) for i in range(start, start + period)]
+    med = float(np.median(steps)) if steps else 0.0
+    jump = float(np.abs(sigs[start] - sigs[start + period]).mean())
+    return round(jump / max(med, 1e-6), 4)
+
+
+def pick_self_pin_frame(frames, stride, preferred=None):
+    """Pick a clean non-edge-touching stride-phase frame for deterministic 0 / stride / 2*stride self-pinning."""
+    from PIL import Image
+
+    total = len(frames)
+    if total < stride + 1:
+        raise ValueError("clip of %s frames is too short for stride %s self-pinning" % (total, stride))
+    lo = min(6, total - 1)
+    hi = min(total - 1, stride + 4)
+    target = stride if preferred is None else max(0, min(total - 1, int(preferred)))
+    candidates = sorted(range(lo, hi + 1), key=lambda idx: (abs(idx - target), idx))
+    chosen = target
+    for idx in candidates:
+        im = frames[idx]
+        rgba = im if im.mode == "RGBA" else cutout(im)
+        bbox = rgba.getchannel("A").point(lambda v: 255 if v >= 128 else 0).getbbox()
+        if bbox and bbox[0] > 1 and bbox[1] > 1 and bbox[2] < rgba.width - 1 and bbox[3] < rgba.height - 1:
+            chosen = idx
+            break
+    frame = frames[chosen]
+    if frame.mode == "RGBA":
+        bg = Image.new("RGBA", frame.size, (255, 255, 255, 255))
+        bg.alpha_composite(frame)
+        rgb = bg.convert("RGB")
+    else:
+        rgb = frame.convert("RGB")
+    pin_indices = [i for i in (0, stride, 2 * stride) if i < total]
+    return chosen, rgb, pin_indices
+
+
+def compute_global_layout(animation_boxes, tile_size=(TILE, TILE), body_ratio=BODY / TILE,
+                          pivot_y_ratio=PIVOT[1] / TILE, margin=2, reference=None):
+    """Compute one width- and height-clamped global scale & ground pivot shared across all animations of a character.
+
+    Prevents full-action wide/overhead takes from shrinking the character relative to idle/run,
+    while guaranteeing zero tile-edge clipping on every frame of every row.
+    """
+    import numpy as np
+
+    tile_w, tile_h = validate_tile_size(tile_size)
+    pivot_x = tile_w // 2
+    pivot_y = int(round(tile_h * float(pivot_y_ratio)))
+    per_anim = {}
+    medians = []
+    max_half_w = 0.0
+    max_above = 0.0
+    max_below = 0.0
+    for name, boxes in animation_boxes.items():
+        seen = [b for b in boxes if b is not None]
+        if not seen:
+            raise ValueError("animation %r has no visible silhouette frames" % (name,))
+        h_med = float(np.median([b[3] - b[1] for b in seen]))
+        cx = float(np.median([(b[0] + b[2]) / 2.0 for b in seen]))
+        gy = float(np.percentile([b[3] for b in seen], 90))
+        per_anim[name] = {"height": h_med, "center": cx, "ground": gy}
+        medians.append(h_med)
+        for b in seen:
+            max_half_w = max(max_half_w, cx - b[0], b[2] - cx)
+            max_above = max(max_above, gy - b[1])
+            max_below = max(max_below, b[3] - gy)
+    if not per_anim:
+        raise ValueError("compute_global_layout needs at least one animation")
+    ref_height = per_anim[reference]["height"] if (reference and reference in per_anim) else float(np.median(medians))
+    scale_h = (tile_h * float(body_ratio)) / max(ref_height, 1e-6)
+    avail_half_w = max(1.0, min(pivot_x, tile_w - pivot_x) - float(margin))
+    avail_above = max(1.0, pivot_y - float(margin))
+    avail_below = max(1.0, (tile_h - pivot_y) - float(margin))
+    scale_w = avail_half_w / max(max_half_w, 1e-6)
+    scale_top = avail_above / max(max_above, 1e-6)
+    scale_bot = avail_below / max(max_below, 1e-6) if max_below > 0 else scale_h
+    global_scale = min(scale_h, scale_w, scale_top, scale_bot)
+    # Express the shared scale in equivalent reference-height units so strips() can reuse it seamlessly.
+    effective_height = (tile_h * float(body_ratio)) / max(global_scale, 1e-6)
+    for row in per_anim.values():
+        row["scale"] = global_scale
+        row["effective_height"] = effective_height
+    return {
+        "scale": global_scale,
+        "reference_height": ref_height,
+        "effective_height": effective_height,
+        "tile": [tile_w, tile_h],
+        "pivot": [pivot_x, pivot_y],
+        "per_animation": per_anim,
+    }
 
 
 def action_indices(signatures, poses):
@@ -224,12 +520,12 @@ def playback_fps(layout, poses, idle, export_24fps=False):
     return 6 if idle else 12
 
 
-def playback_indices(layout, poses, idle, export_24fps):
+def playback_indices(layout, poses, idle, export_24fps, total_frames=FRAMES):
     """Map output cells to saved movie frames, keeping the authored loop duration."""
     start = layout["start"]
     indices = layout.get("indices", [start + 2 * i for i in range(poses)])
     if (not isinstance(indices, list) or len(indices) != poses
-            or any(type(i) is not int or not 0 <= i < FRAMES for i in indices)
+            or any(type(i) is not int or not 0 <= i < total_frames for i in indices)
             or indices != sorted(set(indices)) or indices[0] != start):
         raise ValueError("Invalid sprite pose indices")
     cycle = indices + indices[-2:0:-1] if idle else indices
@@ -251,97 +547,10 @@ def playback_indices(layout, poses, idle, export_24fps):
     return sequence
 
 
-def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=TILE, full_action=False, export_24fps=False):
-    """Pick a loop once. Finish reuses the draft's phase, scale and ground contact in normalized source coordinates."""
+def _indexed_from_atlas(atlas):
     import numpy as np
     from PIL import Image
 
-    if len(frames) != FRAMES:
-        raise ValueError("Sprite Draft expects exactly 39 source frames")
-    if type(cell_size) is not int or cell_size not in EXPORT_SIZES:
-        raise ValueError("choose a sprite cell size of 64, 128 or 256 px")
-    keyed = [
-        cutout(frame.convert("RGB").resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)) for frame in frames
-    ] if previous is None or (masks_for is None and cell_size == TILE) else []
-    period = 2 * poses
-    if previous is None:
-        signatures = []
-        boxes = []
-        for frame in keyed:
-            small = frame.resize((64, 96), Image.Resampling.BOX)
-            sig = np.asarray(small, dtype=np.float32)
-            signatures.append(sig[:, :, :3].mean(2) * sig[:, :, 3] / 255)
-            boxes.append(frame.getchannel("A").getbbox())
-
-        def cost(start):
-            win = boxes[start : start + period]
-            edge = sum(
-                b is None or b[0] <= 1 or b[1] <= 1 or b[2] >= WIDTH - 1 or b[3] >= HEIGHT - 1 for b in win
-            )
-            return edge, float(np.abs(signatures[start] - signatures[start + period]).mean())
-
-        if full_action:
-            indices = action_indices(signatures, poses)
-            start = indices[0]
-            seen = [boxes[i] for i in indices if boxes[i]]
-        else:
-            start = min(range(6, FRAMES - period), key=cost)
-            seen = [b for b in boxes[start : start + period] if b]
-        if not seen:
-            raise ValueError("No sprite silhouette was visible against the background")
-        height = float(np.median([b[3] - b[1] for b in seen]))
-        center = float(np.median([(b[0] + b[2]) / 2 for b in seen]))
-        ground = float(np.percentile([b[3] for b in seen], 90))
-        layout = {"start": start, "height": height, "center": center, "ground": ground}
-        if full_action:
-            # Give extended limbs room in every pose, using one crop for the whole take.
-            left, right = min(b[0] for b in seen), max(b[2] for b in seen)
-            layout["center"] = (left + right) / 2
-            layout["height"] = max(height, (right - left) * BODY / (TILE - 2))
-            layout["indices"] = indices
-    else:
-        layout = previous
-        if not isinstance(layout, dict) or not all(
-            k in layout for k in ("start", "height", "center", "ground")
-        ):
-            raise ValueError("Invalid sprite draft layout")
-        start = layout["start"]
-        if (
-            type(start) is not int
-            or not 0 <= start < (FRAMES if "indices" in layout else FRAMES - period)
-            or not all(
-                isinstance(layout[k], (int, float)) and math.isfinite(layout[k])
-                for k in ("height", "center", "ground")
-            )
-            or layout["height"] <= 0
-        ):
-            raise ValueError("Invalid sprite draft layout")
-    order = playback_indices(layout, poses, idle, export_24fps)
-    indices = list(dict.fromkeys(order))
-    scale = BODY / layout["height"]
-    atlas = Image.new("RGBA", (cell_size * len(order), cell_size))
-    if masks_for is None:
-        selected = [keyed[n] if cell_size == TILE else cutout(frames[n]) for n in indices]
-    else:
-        masks = masks_for(indices)
-        if len(masks) != len(indices):
-            raise ValueError("expected one foreground mask per sprite pose")
-        selected = [with_matte(frames[n], mask) for n, mask in zip(indices, masks)]
-    tiles = {}
-    for source_index, frame in zip(indices, selected):
-        sx, sy = frame.width / WIDTH, frame.height / HEIGHT
-        x = (layout["center"] - PIVOT[0] / scale) * sx
-        y = (layout["ground"] - PIVOT[1] / scale) * sy
-        box = (x, y, x + TILE * sx / scale, y + TILE * sy / scale)
-        # The crop stays in source coordinates. Only its output sampling density changes.
-        size = (cell_size, cell_size)
-        fine = frame.convert("RGBa").transform((4 * cell_size, 4 * cell_size), Image.Transform.EXTENT, box, Image.Resampling.BILINEAR)
-        tile = fine.resize(size, Image.Resampling.LANCZOS).convert("RGBA")
-        coverage = fine.getchannel("a").resize(size, Image.Resampling.BOX)
-        tile.paste((0, 0, 0, 0), mask=coverage.point(lambda v: 0 if v else 255))
-        tiles[source_index] = tile
-    for column, index in enumerate(order):
-        atlas.paste(tiles[index], (cell_size * column, 0))
     rgba = np.asarray(atlas)
     visible = rgba[:, :, 3] >= 128
     pixels = rgba[:, :, :3][visible]
@@ -359,11 +568,178 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
     )
     indexed.putpalette([0, 0, 0] + cols + [0] * 720)
     indexed.info["transparency"] = 0
+    return indexed
+
+
+def _render_cells(selected_by_index, order, layout, tile_w, tile_h, ref_w, ref_h, global_scale=None):
+    from PIL import Image
+
+    if global_scale is not None:
+        # global_scale is in output-tile pixels per reference-canvas pixel.
+        scale_x = float(global_scale)
+        scale_y = float(global_scale)
+        px = tile_w / 2.0
+        py = tile_h * (PIVOT[1] / float(TILE))
+    else:
+        scale_unit = BODY / layout["height"]
+        scale_x = scale_unit * (tile_w / float(TILE))
+        scale_y = scale_unit * (tile_h / float(TILE))
+        px = PIVOT[0] * (tile_w / float(TILE))
+        py = PIVOT[1] * (tile_h / float(TILE))
+    atlas = Image.new("RGBA", (tile_w * len(order), tile_h))
+    tiles = {}
+    size = (tile_w, tile_h)
+    for source_index, frame in selected_by_index.items():
+        sx, sy = frame.width / float(ref_w), frame.height / float(ref_h)
+        x = (layout["center"] - px / scale_x) * sx
+        y = (layout["ground"] - py / scale_y) * sy
+        box = (x, y, x + tile_w * sx / scale_x, y + tile_h * sy / scale_y)
+        fine = frame.convert("RGBa").transform((4 * tile_w, 4 * tile_h), Image.Transform.EXTENT, box, Image.Resampling.BILINEAR)
+        tile = fine.resize(size, Image.Resampling.LANCZOS).convert("RGBA")
+        coverage = fine.getchannel("a").resize(size, Image.Resampling.BOX)
+        tile.paste((0, 0, 0, 0), mask=coverage.point(lambda v: 0 if v else 255))
+        tiles[source_index] = tile
+    for column, index in enumerate(order):
+        atlas.paste(tiles[index], (tile_w * column, 0))
+    return atlas
+
+
+def save_frame_cache(folder, frames_by_index):
+    """Persist lossless defringed RGBA frames beside a take so re-exports never re-decode H.264 or re-run BiRefNet."""
+    os.makedirs(folder, exist_ok=True)
+    saved = {}
+    for idx, frame in frames_by_index.items():
+        name = "f%04d.png" % int(idx)
+        path = os.path.join(folder, name)
+        frame.convert("RGBA").save(path, format="PNG")
+        saved[int(idx)] = name
+    return saved
+
+
+def load_frame_cache(folder, indices):
+    """Load cached lossless RGBA frames for the requested indices, or return None if any frame is missing."""
+    from PIL import Image
+
+    if not folder or not os.path.isdir(folder):
+        return None
+    loaded = {}
+    for idx in indices:
+        path = os.path.join(folder, "f%04d.png" % int(idx))
+        if not os.path.isfile(path):
+            return None
+        with Image.open(path) as im:
+            loaded[int(idx)] = im.convert("RGBA")
+    return loaded
+
+
+def export_from_cache(folder, layout, poses, tile_size, idle=False, export_24fps=False,
+                      total_frames=FRAMES, canvas="portrait", global_scale=None):
+    """Re-slice and resize a sprite strip directly from lossless cached RGBA frames without touching the GPU."""
+    tile_w, tile_h = validate_tile_size(tile_size)
+    order = playback_indices(layout, poses, idle, export_24fps, total_frames=total_frames)
+    indices = list(dict.fromkeys(order))
+    cached = load_frame_cache(folder, indices)
+    if cached is None:
+        return None
+    ref_w, ref_h = canvas_size({"canvas": canvas}, "draft")
+    atlas = _render_cells(cached, order, layout, tile_w, tile_h, ref_w, ref_h, global_scale=global_scale)
+    indexed = _indexed_from_atlas(atlas)
+    return atlas, indexed
+
+
+def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=TILE, full_action=False,
+           export_24fps=False, tile_size=None, canvas="portrait", global_scale=None, cache_dir=None):
+    """Pick a loop once. Finish reuses the draft's phase, scale and ground contact in normalized source coordinates."""
+    import numpy as np
+    from PIL import Image
+
+    total_frames = validate_frames(len(frames))
+    if tile_size is not None:
+        tile_w, tile_h = validate_tile_size(tile_size)
+    else:
+        if type(cell_size) is not int or cell_size not in EXPORT_SIZES:
+            raise ValueError("choose a sprite cell size of 64, 128 or 256 px")
+        tile_w = tile_h = cell_size
+    ref_w, ref_h = canvas_size({"canvas": canvas}, "draft")
+    is_default_cell = (tile_w == TILE and tile_h == TILE)
+    keyed = [
+        cutout(frame.convert("RGB").resize((ref_w, ref_h), Image.Resampling.LANCZOS)) for frame in frames
+    ] if previous is None or (masks_for is None and is_default_cell) else []
+    period = 2 * poses
+    if previous is None:
+        signatures = []
+        boxes = []
+        sig_w, sig_h = max(32, ref_w // 4), max(32, ref_h // 4)
+        for frame in keyed:
+            small = frame.resize((sig_w, sig_h), Image.Resampling.BOX)
+            sig = np.asarray(small, dtype=np.float32)
+            signatures.append(sig[:, :, :3].mean(2) * sig[:, :, 3] / 255)
+            boxes.append(frame.getchannel("A").getbbox())
+
+        def cost(start):
+            win = boxes[start : start + period]
+            edge = sum(
+                b is None or b[0] <= 1 or b[1] <= 1 or b[2] >= ref_w - 1 or b[3] >= ref_h - 1 for b in win
+            )
+            return edge, float(np.abs(signatures[start] - signatures[start + period]).mean())
+
+        if full_action:
+            indices = action_indices(signatures, poses)
+            start = indices[0]
+            seen = [boxes[i] for i in indices if boxes[i]]
+        else:
+            start = min(range(6, total_frames - period), key=cost)
+            seen = [b for b in boxes[start : start + period] if b]
+        if not seen:
+            raise ValueError("No sprite silhouette was visible against the background")
+        height = float(np.median([b[3] - b[1] for b in seen]))
+        center = float(np.median([(b[0] + b[2]) / 2 for b in seen]))
+        ground = float(np.percentile([b[3] for b in seen], 90))
+        layout = {"start": start, "height": height, "center": center, "ground": ground}
+        if full_action and global_scale is None:
+            # Give extended limbs room in every pose, using one crop for the whole take.
+            left, right = min(b[0] for b in seen), max(b[2] for b in seen)
+            layout["center"] = (left + right) / 2
+            layout["height"] = max(height, (right - left) * BODY / (TILE - 2))
+            layout["indices"] = indices
+        elif full_action:
+            layout["indices"] = indices
+    else:
+        layout = previous
+        if not isinstance(layout, dict) or not all(
+            k in layout for k in ("start", "height", "center", "ground")
+        ):
+            raise ValueError("Invalid sprite draft layout")
+        start = layout["start"]
+        if (
+            type(start) is not int
+            or not 0 <= start < (total_frames if "indices" in layout else total_frames - period)
+            or not all(
+                isinstance(layout[k], (int, float)) and math.isfinite(layout[k])
+                for k in ("height", "center", "ground")
+            )
+            or layout["height"] <= 0
+        ):
+            raise ValueError("Invalid sprite draft layout")
+    order = playback_indices(layout, poses, idle, export_24fps, total_frames=total_frames)
+    indices = list(dict.fromkeys(order))
+    if masks_for is None:
+        selected = [keyed[n] if is_default_cell else cutout(frames[n]) for n in indices]
+    else:
+        masks = masks_for(indices)
+        if len(masks) != len(indices):
+            raise ValueError("expected one foreground mask per sprite pose")
+        selected = [with_matte(frames[n], mask) for n, mask in zip(indices, masks)]
+    selected_by_index = dict(zip(indices, selected))
+    if cache_dir is not None:
+        save_frame_cache(cache_dir, selected_by_index)
+    atlas = _render_cells(selected_by_index, order, layout, tile_w, tile_h, ref_w, ref_h, global_scale=global_scale)
+    indexed = _indexed_from_atlas(atlas)
     return atlas, indexed, layout
 
 
-def pack_atlas(rows, tile, style):
-    """Pack chosen strips, reflecting individual poses about their ground pivot."""
+def pack_atlas(rows, tile, style, include_webp=True, webp_quality=84):
+    """Pack chosen strips, reflecting individual poses about their ground pivot. Supports square or non-square tiles and WebP."""
     import io
     import json
     import zipfile
@@ -371,18 +747,19 @@ def pack_atlas(rows, tile, style):
     import numpy as np
     from PIL import Image, ImageOps
 
+    tile_w, tile_h = validate_tile_size(tile)
     counts = [sheet["poses"] for _, _, sheet, _ in rows]
     columns, height = max(counts), len(rows)
-    compact = columns * height * tile * tile > MAX_ATLAS_PIXELS
+    compact = columns * height * tile_w * tile_h > MAX_ATLAS_PIXELS
     if compact:
         cells = sum(counts)
-        if cells * tile * tile > MAX_ATLAS_PIXELS:
+        if cells * tile_w * tile_h > MAX_ATLAS_PIXELS:
             raise ValueError("This atlas is too large. Choose a smaller export size.")
         # Mixed 24 fps loops can waste most of each short row. Wrap their
         # cells and keep the exact location of every frame in the manifest.
         columns = 1 << (math.isqrt(cells - 1)).bit_length()
         height = math.ceil(cells / columns)
-    atlas = Image.new("RGBA", (columns * tile, height * tile))
+    atlas = Image.new("RGBA", (columns * tile_w, height * tile_h))
     animations = {}
     offset = 0
     for name, path, sheet, source in rows:
@@ -390,12 +767,12 @@ def pack_atlas(rows, tile, style):
         frames = []
         spans = []
         with Image.open(path) as strip:
-            if strip.size != (count * tile, tile):
+            if strip.size != (count * tile_w, tile_h):
                 raise ValueError("The saved sprite strip does not match its take.")
             for index in range(count):
                 row, col = divmod(offset + index, columns)
-                x, y = col * tile, row * tile
-                frame = strip.crop((index * tile, 0, (index + 1) * tile, tile)).convert("RGBA")
+                x, y = col * tile_w, row * tile_h
+                frame = strip.crop((index * tile_w, 0, (index + 1) * tile_w, tile_h)).convert("RGBA")
                 if source["mirrored"]:
                     frame = ImageOps.mirror(frame)
                 atlas.paste(frame, (x, y))
@@ -403,29 +780,35 @@ def pack_atlas(rows, tile, style):
                 occupied = np.flatnonzero(alpha.sum(axis=1) > 1)
                 if len(occupied):
                     bottom = occupied[-1]
-                    feet = np.flatnonzero(alpha[max(0, bottom - int(tile * .05)):bottom + 1].any(axis=0))
+                    feet = np.flatnonzero(alpha[max(0, bottom - int(tile_h * .05)):bottom + 1].any(axis=0))
                     spans.append(int(feet[-1] - feet[0] + 1))
-                frames.append(dict(x=x, y=y, w=tile, h=tile))
+                frames.append(dict(x=x, y=y, w=tile_w, h=tile_h))
         offset += count if compact else columns
         pivot_x, pivot_y = sheet["pivot"]
         direction = name.rsplit("_", 1)[1]
         view = "side" if direction in ("E", "W") else "back" if "N" in direction else "front"
         animations[name] = dict(view=view, direction=direction, fps=sheet["fps"],
                                 loop=dict(start=0, end=count - 1, mode="cycle"),
-                                frame_size=dict(w=tile, h=tile), frames=frames,
-                                anchor=dict(x=tile - pivot_x if source["mirrored"] else pivot_x, y=pivot_y,
+                                frame_size=dict(w=tile_w, h=tile_h), frames=frames,
+                                anchor=dict(x=tile_w - pivot_x if source["mirrored"] else pivot_x, y=pivot_y,
                                             span=round(float(np.percentile(spans, 90)), 1) if spans else 0),
                                 ground_speed=0, steps=[], waived=[],
                                 **source)
+    write_webp = bool(include_webp and style == "illustrated")
     if style == "indexed":
         atlas = atlas.quantize(colors=256, method=Image.Quantize.FASTOCTREE)
-    manifest = dict(format="animwright/1", name="Sprites", image="sprites.png", height=BODY * tile // TILE,
+    manifest = dict(format="animwright/1", name="Sprites", image="sprites.png", height=BODY * tile_h // TILE,
                     generated=dict(tool="H3 Editor", backend="h3", ai_generated=True, waived_gates=[]),
                     size=dict(w=atlas.width, h=atlas.height), animations=animations, rejected=[])
+    if write_webp:
+        manifest["image_webp"] = "sprites.webp"
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         with archive.open("sprites.png", "w") as image:
             atlas.save(image, format="PNG")
+        if write_webp:
+            with archive.open("sprites.webp", "w") as webp_file:
+                atlas.save(webp_file, format="WEBP", quality=int(webp_quality), alpha_quality=90, method=6)
         archive.writestr("sprites.json", json.dumps(manifest, indent=2))
         template = (Path(__file__).parent / "editor" / "sprite-test.html").read_text(encoding="utf-8")
         # The browser can open the extracted ZIP from disk without a fetch for the manifest.

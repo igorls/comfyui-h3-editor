@@ -2,7 +2,16 @@
 // The editor has no bundler; extracting top-level functions keeps these tests dependency-free.
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { pickedSprite, spriteSlots } from "../editor/sprites.js";
+import {
+  buildAtlasPayload,
+  buildPropPayload,
+  buildSpriteConfig,
+  CAST_VIEWS,
+  defaultCanvasForCamera,
+  parseTileSize,
+  pickedSprite,
+  spriteSlots,
+} from "../editor/sprites.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { curveLevel, soundEnvelope, setSoundLevel, resumeSoundMixer, disconnectSound } from "../editor/sound-envelope.js";
@@ -32,6 +41,94 @@ test("named motions keep separate direction slots and use each take's recorded a
   assert.deepEqual(spriteSlots(project, "herald", "rpg", "Wing stretch").NE, { clips: [], takes: [{ clip, take }] });
   assert.deepEqual(spriteSlots(project, "herald", "rpg", "Hover").NE, { clips: [clip], takes: [] });
   assert.deepEqual(spriteSlots(project, "herald", "rpg", "custom").NE, { clips: [legacy], takes: [] });
+});
+
+test("sprite v2 config, custom export tile sizes, webp toggle and 4 MP prop payloads", () => {
+  assert.equal(defaultCanvasForCamera("rpg"), "square");
+  assert.equal(defaultCanvasForCamera("level"), "portrait");
+  assert.equal(defaultCanvasForCamera("overhead"), "portrait");
+  assert.deepEqual(CAST_VIEWS.map(([v]) => v), ["", "front", "side", "back", "left"]);
+
+  assert.deepEqual(
+    buildSpriteConfig({ camera: "rpg", motion: "run", direction: "SE", canvas: "square", frames: 56 }),
+    { camera: "rpg", direction: "SE", poses: 7, canvas: "square", frames: 56 },
+  );
+  assert.deepEqual(
+    buildSpriteConfig({ camera: "rpg", motion: "idle", direction: "S", frames: 39 }),
+    { camera: "rpg", direction: "S", poses: 7, motion: "idle", canvas: "square" },
+  );
+  assert.deepEqual(
+    buildSpriteConfig({ camera: "level", motion: "cast", direction: "E", motionPrompt: "Raises staff.", canvas: "landscape", frames: 73 }),
+    { camera: "level", direction: "E", poses: 7, motion: "prompt", animation: "cast", canvas: "landscape", frames: 73 },
+  );
+
+  assert.equal(parseTileSize("160"), 160);
+  assert.equal(parseTileSize("custom", "160"), 160);
+  assert.deepEqual(parseTileSize("custom", "144x176"), [144, 176]);
+  assert.equal(parseTileSize("custom", "128×128"), 128);
+  assert.throws(() => parseTileSize("custom", "161"), /even/);
+  assert.throws(() => parseTileSize("custom", "16x64"), /32–512/);
+
+  const picks = [{ motion: "run", direction: "S", clip: "c1", take: "t1", mirror: false }];
+  assert.deepEqual(
+    buildAtlasPayload({ tile: "160", fps: "24", style: "illustrated", webp: true, picks }),
+    { tile: 160, fps: 24, style: "illustrated", webp: true, picks },
+  );
+  assert.deepEqual(
+    buildAtlasPayload({ tile: "custom", customTile: "144x176", fps: "", style: "indexed", webp: false, picks }),
+    { tile: 144, tile_size: [144, 176], fps: null, style: "indexed", webp: false, picks },
+  );
+
+  const ref = { file: "hero_S.png", subfolder: "refs" };
+  const base = { file: "lantern_unlit.png", subfolder: "props" };
+  assert.deepEqual(
+    buildPropPayload({
+      kind: "prop", name: "tree_oak", description: "Mossy oak tree", size: "square", camera: "rpg",
+      style_ref: ref, top_canopy: true, output_size: "256x288",
+    }),
+    {
+      kind: "prop", name: "tree_oak", description: "Mossy oak tree", size: "square", camera: "rpg",
+      style_ref: ref, top_canopy: true, output_size: [256, 288],
+    },
+  );
+  assert.deepEqual(
+    buildPropPayload({
+      kind: "state_variant", name: "lantern_lit", description: "Warm flame glow", size: "square", camera: "rpg",
+      style_ref: ref, base_prop: base,
+    }),
+    {
+      kind: "state_variant", name: "lantern_lit", description: "Warm flame glow", size: "square", camera: "rpg",
+      style_ref: ref, base_prop: base,
+    },
+  );
+  assert.throws(() => buildPropPayload({ kind: "state_variant", name: "x", description: "glow" }), /base prop/);
+  assert.deepEqual(
+    buildPropPayload({
+      kind: "turnaround", name: "hero_back", size: "portrait", camera: "rpg",
+      style_ref: ref, base_prop: { file: "hero_E.png", subfolder: "refs" },
+      view: "back", proportions: "chibi", holding: "a crystal staff",
+    }),
+    {
+      kind: "turnaround", name: "hero_back", description: "", size: "portrait", camera: "rpg",
+      style_ref: ref, base_prop: { file: "hero_E.png", subfolder: "refs" },
+      view: "back", proportions: "chibi", holding: "a crystal staff",
+    },
+  );
+  assert.throws(() => buildPropPayload({ kind: "turnaround", name: "hero_back" }), /front style reference/);
+});
+
+test("sprite clips with 56 frames report 56 planned frames and guide limits up to 54", () => {
+  const clip = { id: "s56", seconds: 5, takes: [], sprite: { direction: "E", camera: "rpg", canvas: "square", frames: 56 } };
+  const c = vm.createContext({
+    FPS: 24, JOINT: 51,
+    activeTake: () => null,
+    endHold: (l) => l.end_hold || l.hold,
+    arrivesOnPin: (l) => l.arrive === "pin",
+  });
+  functions(c, ["nearestEven", "snapFrames", "linkedFrames", "plannedFrames", "midGuideLimits"]);
+  assert.equal(c.plannedFrames(clip), 56);
+  assert.equal(c.midGuideLimits(clip).last, 54);
+  assert.equal(c.plannedFrames({ id: "s39", seconds: 5, takes: [], sprite: { direction: "S", camera: "rpg" } }), 39);
 });
 
 function functions(context, names) {
