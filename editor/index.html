@@ -565,11 +565,11 @@
         </div>
       </div>
       <div class="halves">
-        <label class="choice"><span>Transfer mode</span><select id="motionMode"><option value="replace">Replace character in scene</option><option value="choreography">New scene from pose</option></select></label>
+        <label class="choice"><span>Transfer mode</span><select id="motionMode"><option value="replace">Replace character in scene</option><option value="rescene">New scene &amp; outfit (pure motion · M5/M7)</option><option value="choreography">New scene from pose (skeleton only)</option></select></label>
         <label class="choice" id="motionStyleField"><span>Character style</span><select id="motionStyle"><option value="auto">Auto (detect from image)</option><option value="photoreal">Match scene lighting (photoreal)</option><option value="preserve">Keep reference style (anime / 2D)</option></select></label>
       </div>
       <div class="halves">
-        <label class="choice"><span>Render quality</span><select id="motionQuality"><option value="draft">Draft</option><option value="final">Final</option><option value="sharp">Final · Sharp (2× RelayVSR)</option></select></label>
+        <label class="choice"><span>Render quality</span><select id="motionQuality"><option value="realism_fast">Natural Skin · Fast (F1-Fast / M5 · 1088p)</option><option value="realism">Natural Skin · Max (F1 · 1088p)</option><option value="fast_sharp">Fast Sharp (F2 · 768p + RelayVSR 2×)</option><option value="draft">Draft (quick preview)</option><option value="final">Classic Final</option><option value="sharp">Classic Sharp (544p + RelayVSR 2×)</option></select></label>
         <label class="choice" id="motionPlacementField"><span>Timeline</span><select id="motionPlacement"><option value="clips">Keep in Clips (don't change cut)</option><option value="replace">Replace selected clip in place</option></select></label>
       </div>
       <label class="field"><span id="motionNotesLabel">Character / scene notes (optional)</span><textarea id="motionNotes" rows="2" maxlength="12000" placeholder="Brief hair, outfit, or lighting note for close-ups…"></textarea></label>

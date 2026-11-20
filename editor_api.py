@@ -348,6 +348,8 @@ def available_models():
         names.add("sam3-nodes")
     if all(name in comfy_nodes.NODE_CLASS_MAPPINGS for name in store.MOTION_NODES):
         names.add("motion-nodes")
+    if store.H3_IMAGE_SAMPLER_NODE in comfy_nodes.NODE_CLASS_MAPPINGS:
+        names.add("h3-image-sampler")
     if "checkpoints" in folder_paths.folder_names_and_paths:
         names.update("motion-checkpoints:" + name for name in folder_paths.get_filename_list("checkpoints"))
     if "model_patches" in folder_paths.folder_names_and_paths:
@@ -3373,6 +3375,7 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
             motion_clips.append({
                 "id": c["id"], "name": c.get("name") or "Motion",
                 "mode": m.get("mode") or "replace",
+                "preset": m.get("preset") or "standard",
                 "style": m.get("style") or "auto",
                 "frames": int(src.get("out", 0)) - int(src.get("in", 0)),
                 "rendered": bool(take),
@@ -3464,28 +3467,37 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
             m = target["motion"]
             src = m.get("source") or {}
             mode = m.get("mode") or "replace"
+            preset = m.get("preset") or "standard"
             style_cfg = m.get("style") or "auto"
             char = m.get("character") or {}
             resolved_style = detect_motion_style(char) if style_cfg == "auto" else style_cfg
-            swap_default = (1.0 if resolved_style == "photoreal" else 0.5) if ms.get("swap_lora") else 0.0
-            swap_eff = float(m["swap_lora"]) if m.get("swap_lora") is not None else swap_default
-            pose_strength = float(m.get("strength", 0.0 if mode == "replace" else 1.0))
+            swap_default = ((0.85 if preset != "standard" else 1.0) if resolved_style == "photoreal" else 0.5) if (mode == "replace" and ms.get("swap_lora")) else 0.0
+            swap_eff = float(m["swap_lora"]) if (mode == "replace" and m.get("swap_lora") is not None) else swap_default
+            pose_strength = float(m.get("strength", 0.0 if mode in ("replace", "rescene") else 1.0))
             in_f, out_f = int(src.get("in") or 0), int(src.get("out") or 0)
             exact_f = max(1, out_f - in_f)
             src_total = max(out_f, int(src.get("frames") or out_f))
-            windows = store.motion_replace.plan_relay_windows(exact_f)
+            if preset in ("realism_fast", "realism"):
+                windows = store.motion_replace.plan_relay_windows(
+                    exact_f,
+                    single_max=store.motion_replace.REALISM_WINDOW_FRAMES,
+                    window_frames=store.motion_replace.REALISM_WINDOW_FRAMES,
+                    overlap_frames=store.motion_replace.OVERLAP_FRAMES,
+                )
+            else:
+                windows = store.motion_replace.plan_relay_windows(exact_f)
             needed_f = windows[-1]["start"] + windows[-1]["length"]
             load_last = min(src_total, in_f + needed_f)
             src_rel = "/".join(filter(None, (src.get("subfolder"), src.get("file"))))
             char_rel = "/".join(filter(None, (char.get("subfolder"), char.get("file"))))
             expand_px = int(m.get("expand_px", 32))
             draft_w, draft_h, _ = store.render_size(data, "draft")
-            if mode == "replace":
+            if mode in ("replace", "rescene"):
                 med_w, med_h = store.format_sizes(store.project_format(data))["medium"]
                 if draft_w * draft_h < med_w * med_h:
                     draft_w, draft_h = med_w, med_h
             profile_id, profile = store.project_profile(data, available, target)
-            draft_steps = max(6, profile["steps"]["draft"]) if mode == "replace" and profile_id == "hyperflow" else profile["steps"]["draft"]
+            draft_steps = max(6, profile["steps"]["draft"]) if mode in ("replace", "rescene") and profile_id == "hyperflow" else profile["steps"]["draft"]
 
             src_path = None
             char_path = None
@@ -3505,10 +3517,17 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
             c_sum = store.motion_replace.cutout_cache_summary(char_path, subject="person", backdrop="white") if char_path else None
             c_hit = bool(c_sum)
 
-            isolate_on = bool(m.get("isolate", True))
+            isolate_on = bool(m.get("isolate", mode != "rescene"))
             plate_on = mode == "replace" and bool(m.get("plate", True))
-            sharp_on = bool(m.get("sharp") or store.size_name(data, "final") == store.SHARP)
+            sharp_on = bool(preset == "fast_sharp" or (preset not in ("realism_fast", "realism") and (m.get("sharp") or store.size_name(data, "final") == store.SHARP)))
             active_t = store.active_take(target)
+
+            preset_label = {
+                "realism_fast": "F1-Fast (1088p 2-step H3Sampler)",
+                "realism": "F1 Max (1088p 3-step H3Sampler)",
+                "fast_sharp": "F2 Fast Sharp (768p + RelayVSR 2x 0.85)",
+                "standard": "Classic",
+            }.get(preset, preset)
 
             stages = [
                 {
@@ -3526,7 +3545,7 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
                     "status": ("off" if not isolate_on else "cached" if c_hit else "ready" if ms.get("sam3") else "missing"),
                     "badge": ("Bypassed" if not isolate_on else "Cached" if c_hit else "Uncached"),
                     "detail": (f"Style: {style_cfg}" + (f" -> {resolved_style}" if style_cfg == "auto" else "")
-                               + f" · Swap LoRA {swap_eff:.2f}"
+                               + (f" · Swap LoRA {swap_eff:.2f}" + (" (sigma 1.0→0.45)" if preset != "standard" else "") if mode == "replace" else " · No Swap LoRA (pure motion)")
                                + (f" · {c_sum['size_bytes'] // 1024} KB" if c_sum else "")),
                     "original_url": _view_output_url(char.get("file", ""), char.get("subfolder", "")) if char.get("file") else None,
                     "preview_url": _preview_url(folder, "cutout", char_rel, bust=int(os.path.getmtime(c_sum["path"]))) if c_sum else None,
@@ -3536,8 +3555,9 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
                     "id": "segmentation", "title": "Subject segmentation", "component": "SAM 3.1 · H3TrackSubjectMask",
                     "nodes": ["238", "240", "245"],
                     "status": ("off" if mode != "replace" else "cached" if m_hit else "partial" if m_sum else "ready" if ms.get("replace") else "missing"),
-                    "badge": ("Off (pose mode)" if mode != "replace" else "Cached" if m_hit else f"Partial ({m_sum['cached_frames']}/{m_sum['frames']}f)" if m_sum else "Not cached"),
-                    "detail": (f"Expand {expand_px}px · "
+                    "badge": ("Off (new-scene mode)" if mode == "rescene" else "Off (pose mode)" if mode != "replace" else "Cached" if m_hit else f"Partial ({m_sum['cached_frames']}/{m_sum['frames']}f)" if m_sum else "Not cached"),
+                    "detail": ("Bypassed for pure new-scene motion transfer (unmasked RGB <Video 1>)" if mode == "rescene"
+                               else f"Expand {expand_px}px · "
                                + (f"Reused on next render · {m_sum['cached_frames']}/{m_sum['frames']}f ({m_sum['size_bytes'] / 1048576:.2f} MB)"
                                   if m_hit and m_sum else
                                   f"Cached spans: {m_sum['spans']} ({m_sum['size_bytes'] / 1048576:.2f} MB)" if m_sum
@@ -3554,20 +3574,25 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
                     "badge": ("Off (0.0)" if pose_strength <= 0 else "Cached · loaders skipped" if p_hit else f"Partial ({p_sum['cached_frames']}/{p_sum['frames']}f)" if p_sum else "Not cached"),
                     "detail": (f"ControlNet strength {pose_strength:.2f}"
                                + (f" · {p_sum['detected_frames']}/{p_sum['cached_frames']}f with pose ({p_sum['size_bytes'] // 1024} KB)" if p_sum else
-                                  " · No pose reinforcement (SAM3 mask + video ref only)" if pose_strength <= 0 else " · Will run RT-DETR + SDPose once and cache")),
+                                  " · Pure M5 video-motion (no extra pose models)" if (mode == "rescene" and pose_strength <= 0) else
+                                  " · No pose reinforcement (SAM3 mask + video ref only)" if pose_strength <= 0 else
+                                  " · M7 pose lock + face landmarks (Pass-1 only)" if mode == "rescene" else " · Will run RT-DETR + SDPose once and cache")),
                     "coverage": {"cached": p_sum["cached_frames"], "total": p_sum["frames"], "spans": p_sum["spans"]} if p_sum else None,
                     "preview_url": (_preview_url(folder, "pose", src_rel, in_f, load_last, 0, int(os.path.getmtime(p_sum["path"])))
                                     if p_sum else None),
                     "cache": {"kind": "pose", "file": src_rel} if p_sum else None,
                 },
                 {
-                    "id": "sampling", "title": "Diffusion & Swap Guard", "component": "H3Take + H3SwapGuard",
-                    "nodes": ["10", "15", "248", "16"],
+                    "id": "sampling", "title": "Diffusion & Refine", "component": "H3Take" + (" + H3ImageSampler" if preset != "standard" else "") + (" + H3SwapGuard" if mode == "replace" else ""),
+                    "nodes": ["10", "15", "248", "16", "80", "82", "83", "86", "90", "91"],
                     "status": "ready",
-                    "badge": f"{len(windows)} window{'s' if len(windows) != 1 else ''} · {draft_w}×{draft_h}",
-                    "detail": (f"Draft floor {draft_w}×{draft_h}, {draft_steps} steps · "
-                               + ("Swap Guard auto-retry on Window 0" if mode == "replace" else "Pose ControlNet choreography")
-                               + (f" · {len(windows)} relay windows (22f soft overlap)" if len(windows) > 1 else "")),
+                    "badge": f"{len(windows)} window{'s' if len(windows) != 1 else ''} · {preset_label}",
+                    "detail": (f"Preset: {preset_label} · Draft floor {draft_w}×{draft_h}, {draft_steps} steps · "
+                               + ("Swap Guard auto-retry on Window 0" if mode == "replace"
+                                  else ("Unmasked RGB + Fun ControlNet 2.0 (M7)" if pose_strength > 0 else "Unmasked RGB pure motion (M5)") if mode == "rescene"
+                                  else "Pose ControlNet choreography")
+                               + (f" · {len(windows)} relay windows (22f double latent carry)" if (len(windows) > 1 and preset in ("realism_fast", "realism"))
+                                  else f" · {len(windows)} relay windows (22f overlap)" if len(windows) > 1 else "")),
                     "windows": [
                         {"index": idx + 1, "start": in_f + w["start"], "end": min(out_f, in_f + w["start"] + w["length"]),
                          "length": w["length"], "overlap": w["overlap"]}
@@ -3575,12 +3600,12 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
                     ],
                 },
                 {
-                    "id": "plate", "title": "Plate composite & output", "component": "H3CompositeSourcePlate" + (" + RelayVSR 2x" if sharp_on else ""),
+                    "id": "plate", "title": "Plate composite & output", "component": ("H3CompositeSourcePlate" if plate_on else "Direct 1088p output") + (" + RelayVSR 2x" if sharp_on else ""),
                     "nodes": ["250", "33", "34", "35", "36", "18", "19"],
                     "status": "cached" if active_t else ("ready" if (not sharp_on or relay_ok) else "missing"),
-                    "badge": (f"{active_t['quality'].title()} · {active_t['frames']}f" if active_t else ("Sharp 2x ready" if sharp_on else "Pending render")),
-                    "detail": (("Zero-halo plate on (src +18px / gen +4px)" if plate_on else "Source plate off")
-                               + (" · RelayVSR 2x final enabled" if sharp_on else "")
+                    "badge": (f"{active_t['quality'].title()} · {active_t['frames']}f" if active_t else ("Fast Sharp F2 ready" if preset == "fast_sharp" else "Sharp 2x ready" if sharp_on else "Pending render")),
+                    "detail": (("Zero-halo plate on (src +18px / gen +4px)" if plate_on else "Source plate off (full new scene)")
+                               + (" · RelayVSR 2x (0.85) before 1080p plate" if preset == "fast_sharp" else " · RelayVSR 2x final enabled" if sharp_on else "")
                                + (f" · Active take {active_t.get('size', [0, 0])[0]}×{active_t.get('size', [0, 0])[1]}" if active_t and active_t.get("size") else "")),
                     "preview_url": _view_output_url(active_t["strip"]["sprite"], active_t.get("subfolder", ""))
                                    if active_t and active_t.get("strip", {}).get("sprite") else None,
@@ -3588,7 +3613,7 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
             ]
             clip_report = {
                 "id": target["id"], "kind": "motion", "name": target.get("name") or "Motion",
-                "mode": mode, "style": style_cfg, "resolved_style": resolved_style,
+                "mode": mode, "preset": preset, "style": style_cfg, "resolved_style": resolved_style,
                 "swap_lora": swap_eff, "exact_frames": exact_f, "grid_frames": needed_f,
                 "stages": stages,
             }

@@ -605,8 +605,18 @@ test("motion transfer helpers cover SAVED_FIELDS, plannedFrames, window counts, 
   // Required model packs for each combination
   assert.equal(JSON.stringify(c.motionRequiredGroups("replace", 0, "draft")), JSON.stringify(["replace"]));
   assert.equal(JSON.stringify(c.motionRequiredGroups("replace", 0.75, "sharp")), JSON.stringify(["replace", "pose", "sharp"]));
+  assert.equal(JSON.stringify(c.motionRequiredGroups("replace", 0, "fast_sharp")), JSON.stringify(["replace", "sharp"]));
+  assert.equal(JSON.stringify(c.motionRequiredGroups("rescene", 0, "realism_fast")), JSON.stringify([]));
+  assert.equal(JSON.stringify(c.motionRequiredGroups("rescene", 0.75, "realism_fast")), JSON.stringify(["pose"]));
+  assert.equal(JSON.stringify(c.motionRequiredGroups("rescene", 0, "fast_sharp")), JSON.stringify(["sharp"]));
   assert.equal(JSON.stringify(c.motionRequiredGroups("choreography", 1.0, "final")), JSON.stringify(["pose"]));
   assert.equal(JSON.stringify(c.motionRequiredGroups("choreography", 1.0, "sharp")), JSON.stringify(["pose", "sharp"]));
+
+  // Double-latent-carry 1088p realism windows (107f / 85f stride)
+  assert.equal(JSON.stringify(c.motionWindowSummary(107, "realism_fast")), JSON.stringify({ windows: 1, label: "Single pass" }));
+  assert.equal(JSON.stringify(c.motionWindowSummary(342, "realism_fast")), JSON.stringify({ windows: 4, label: "4-window 1088p relay" }));
+  assert.equal(c.stageForNode("365"), "Refining 1088p window 2");
+  assert.equal(c.isSteppedNode("365"), true);
 
   // Range bounds clamp >30s source clips to 30s default and preserve existing motion source bounds
   const longClip = { id: "f1", takes: [{ id: "t1", frames: 960 }], active: "t1" };

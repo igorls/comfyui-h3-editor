@@ -2023,6 +2023,123 @@ class MotionTransferIntegrationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             project_module.motion_setup_status(set(), ["unknown_group"])
 
+    def test_realism_presets_f1_f1fast_and_f2_graph_wiring(self):
+        files = self.REPLACE_FILES | {"h3-image-sampler"}
+        project, src, _, _ = self._project_with_footage(73)
+        project["format"] = "9:16"
+        project["cast"] = [{
+            "id": "p1", "name": "Astrid",
+            "file": "astrid_front.png", "subfolder": "h3take_projects/dance/assets",
+            "pictures": [{"file": "astrid_34.png", "subfolder": "h3take_projects/dance/assets"}],
+        }]
+
+        # F1-Fast (realism_fast): 768x1344 Pass-1 H3ImageSampler + sigma-split swap_lora (0.85, 1.0->0.45)
+        # + Realism-V2 capped 0.55 (start_sigma=0.85) + 2nd cast portrait (270) + clean Pass-2 1088x1920 Refine (231, 86, 0.50/0.20/0.0)
+        mc, _ = project_module.add_motion_clip(
+            project, src["id"], first=0, last=73,
+            motion={"character": {"file": "astrid_front.png", "subfolder": "h3take_projects/dance/assets"},
+                    "cast": "p1", "mode": "replace", "preset": "realism_fast", "style": "photoreal"},
+        )
+        job, graph = plan_render(project, "dance", mc["id"], "final", seed=42, available=files)
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (768, 1344))
+        self.assertEqual(graph["11"]["class_type"], "H3ImageSampler")
+        self.assertEqual(graph["11"]["inputs"], {"texture_from": 0.55, "eta": 0.50, "detail": 0.07})
+        self.assertEqual(graph["230"]["inputs"]["strength"], 0.85)
+        self.assertEqual(graph["230"]["inputs"]["start_sigma"], 1.0)
+        self.assertEqual(graph["230"]["inputs"]["end_sigma"], 0.45)
+        self.assertEqual(graph["95"]["inputs"]["strength"], 0.55)
+        self.assertEqual(graph["95"]["inputs"]["start_sigma"], 0.85)
+        self.assertEqual(graph["270"]["class_type"], "H3LoadStill")
+        self.assertEqual(graph["10"]["inputs"]["ref_images.ref_image_1"], ["270", 0])
+        self.assertIn("<Picture 1> and <Picture 2>", graph["10"]["inputs"]["prompt"])
+        # Pass-2 1088x1920 Refine: ZERO swap_lora (reads clean 231), H3ImageSampler (86), 2-step sigmas, SwapGuard -> 82, edit mask 246
+        self.assertEqual((graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]), (1088, 1920))
+        self.assertEqual(graph["231"]["class_type"], "MiniMaxH3SigmaShift")
+        self.assertEqual(graph["88"]["inputs"]["model"], ["231", 0])
+        self.assertEqual(graph["86"]["class_type"], "H3ImageSampler")
+        self.assertEqual(graph["87"]["inputs"]["sigmas"], "0.50, 0.20, 0.0")
+        self.assertEqual(graph["82"]["inputs"]["samples"], ["248", 0])
+        self.assertEqual(graph["83"]["inputs"]["take"], ["246", 0])
+        self.assertEqual(graph["250"]["class_type"], "H3CompositeSourcePlate")
+        self.assertEqual(job["size"], [1088, 1920])
+        self.assertEqual(job["models"]["sampler"], "H3ImageSampler")
+
+        # F1 Max (realism): 3-step refine sigmas 0.675, 0.385, 0.159, 0.0
+        update_clip(project, mc["id"], {"motion": {**mc["motion"], "preset": "realism"}})
+        _, f1_graph = plan_render(project, "dance", mc["id"], "final", seed=42, available=files)
+        self.assertEqual(f1_graph["87"]["inputs"]["sigmas"], "0.675, 0.385, 0.159, 0.0")
+        self.assertEqual(f1_graph["86"]["inputs"], {"texture_from": 0.70, "eta": 0.50, "detail": 0.07})
+
+        # Fallback when h3-image-sampler node is not installed: uses KSamplerSelect(euler) cleanly
+        _, fallback_graph = plan_render(project, "dance", mc["id"], "final", seed=42, available=self.REPLACE_FILES)
+        self.assertEqual(fallback_graph["11"]["class_type"], "KSamplerSelect")
+        self.assertNotIn("86", fallback_graph)
+
+        # F2 (fast_sharp): 768x1344 Pass-1 + RelayVSR 2x (detail=0.85) FIRST, then lossless 1080p plate ("250") AFTER ("36")
+        update_clip(project, mc["id"], {"motion": {**mc["motion"], "preset": "fast_sharp", "sharp": True}})
+        f2_job, f2_graph = plan_render(project, "dance", mc["id"], "final", seed=42, available=files)
+        self.assertEqual((f2_graph["10"]["inputs"]["width"], f2_graph["10"]["inputs"]["height"]), (768, 1344))
+        self.assertNotIn("90", f2_graph)
+        self.assertEqual(f2_graph["35"]["inputs"]["detail"], 0.85)
+        self.assertEqual(f2_job["detail"], 0.85)
+        self.assertEqual(f2_graph["250"]["inputs"]["generated"], ["36", 0])
+        self.assertEqual(f2_graph["18"]["inputs"]["images"], ["250", 0])
+
+    def test_rescene_m5_m7_and_multi_window_double_latent_carry(self):
+        # M5 pure motion transfer requires ZERO optional SAM3 or pose packs — works with HyperFlow + finals alone!
+        minimal_files = HYPERFLOW | FINALS | {"h3-image-sampler"}
+        status = project_module.motion_status(minimal_files)
+        self.assertTrue(status["rescene"])
+        self.assertEqual(status["default_mode"], "rescene")
+
+        project, src, _, _ = self._project_with_footage(342)
+        project["format"] = "9:16"
+        mc, _ = project_module.add_motion_clip(
+            project, src["id"], first=0, last=73,
+            motion={"character": {"file": "astrid_terrace.png"}, "mode": "rescene",
+                    "preset": "realism_fast", "style": "photoreal"},
+            action="Wearing a white linen sundress on a sunlit stone terrace.",
+        )
+        # Single-window M5: unmasked RGB <Video 1>, NO SAM3/mask/SwapGuard/plate/swap_lora, isolate=False, Pass-2 drops ref_video_0
+        job, g_m5 = plan_render(project, "dance", mc["id"], "final", seed=7, available=minimal_files)
+        self.assertEqual(job["size"], [1088, 1920])
+        self.assertEqual(g_m5["10"]["inputs"]["ref_videos.ref_video_0"], ["260", 0])
+        self.assertNotIn("mask", g_m5["260"]["inputs"])
+        for forbidden in ("230", "238", "239", "240", "245", "246", "248", "250", "221"):
+            self.assertNotIn(forbidden, g_m5)
+        self.assertNotIn("ref_videos.ref_video_0", g_m5["80"]["inputs"])
+        self.assertIn("white linen sundress", g_m5["80"]["inputs"]["prompt"])
+
+        # M7 (rescene + strength=0.75): SDPose(draw_face=True) + Fun ControlNet 2.0 (end_percent=0.80) on Pass-1 ONLY; ZERO ControlNet on Pass-2!
+        pose_files = self.POSE_FILES | {"h3-image-sampler"}
+        update_clip(project, mc["id"], {"motion": {**mc["motion"], "strength": 0.75}})
+        _, g_m7 = plan_render(project, "dance", mc["id"], "final", seed=7, available=pose_files)
+        self.assertEqual(g_m7["219"]["inputs"]["draw_face"], True)
+        self.assertEqual(g_m7["221"]["inputs"]["strength"], 0.75)
+        self.assertEqual(g_m7["221"]["inputs"]["end_percent"], 0.80)
+        self.assertEqual(g_m7["9"]["inputs"]["model"], ["221", 0])
+        self.assertEqual(g_m7["88"]["inputs"]["model"], ["5", 0])  # Clean pre-ControlNet model on Pass-2!
+
+        # Multi-window double latent carry on full 342f (14.25s) clip: 4 windows (107f, 22f overlap, stride 85)
+        update_clip(project, mc["id"], {
+            "motion": {**mc["motion"], "strength": 0.0, "source": {**mc["motion"]["source"], "in": 0, "out": 342}},
+        })
+        long_job, g_long = plan_render(project, "dance", mc["id"], "final", seed=7, available=minimal_files)
+        self.assertEqual(long_job["size"], [1088, 1920])
+        self.assertEqual(g_long["10"]["inputs"]["length"], 107)
+        # Window 0 Pass-2 ("80".."91") + Windows 1..3 Pass-1 (340/380/420) & Pass-2 (360/400/440)
+        for base in (340, 380, 420):
+            self.assertEqual(g_long[str(base + 3)]["inputs"]["hold_frames"], 22)
+            self.assertEqual(g_long[str(base + 20)]["inputs"]["hold_frames"], 22)
+            self.assertEqual(g_long[str(base + 23)]["class_type"], "H3RefineLatent")
+            self.assertEqual(g_long[str(base + 27)]["class_type"], "H3JoinWindow")
+            self.assertEqual(g_long[str(base + 27)]["inputs"]["blend_frames"], 6)
+        # Window 1 Pass-2 carries Window 0 Pass-2 ("90"); Window 2 carries Window 1 Pass-2 ("365"); Window 3 trims to 342
+        self.assertEqual(g_long["360"]["inputs"]["carry"], ["90", 0])
+        self.assertEqual(g_long["400"]["inputs"]["carry"], ["365", 0])
+        self.assertEqual(g_long["447"]["inputs"]["trim_to"], 342)
+        self.assertEqual(g_long["18"]["inputs"]["images"], ["447", 0])
+
 
 if __name__ == "__main__":
     unittest.main()

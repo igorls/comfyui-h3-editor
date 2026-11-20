@@ -720,8 +720,24 @@ MOTION_CONTROL = "minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensor
 MOTION_CONTROL_V2 = "minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors"
 MOTION_SAM3 = "sam3.1_multiplex_fp16.safetensors"
 MOTION_SWAP_LORA = "h3_character_swap_v1.5.safetensors"
-MOTION_MODES = ("replace", "choreography")
+MOTION_MODES = ("replace", "rescene", "choreography")
 MOTION_STYLES = ("auto", "preserve", "photoreal")
+MOTION_PRESETS = ("standard", "realism_fast", "realism", "fast_sharp")
+H3_IMAGE_SAMPLER_NODE = "H3ImageSampler"
+# Hardware-verified <=32 GB RTX 5090 motion realism recipes (F1 / F1-Fast / F2 / M5 / M7):
+MOTION_REALISM_P1_SAMPLER = {"texture_from": 0.55, "eta": 0.50, "detail": 0.07}
+MOTION_REALISM_P2_SAMPLER = {
+    "realism_fast": {"texture_from": 0.55, "eta": 0.50, "detail": 0.07},
+    "realism": {"texture_from": 0.70, "eta": 0.50, "detail": 0.07},
+}
+MOTION_REALISM_SIGMAS = {
+    "realism_fast": "0.50, 0.20, 0.0",
+    "realism": "0.675, 0.385, 0.159, 0.0",
+}
+MOTION_REALISM_P1_LORA = 0.60
+MOTION_REALISM_P2_LORA = 0.55
+MOTION_SWAP_END_SIGMA = 0.45
+MOTION_FAST_SHARP_DETAIL = 0.85
 MOTION_MAX_SECONDS = 30
 SAM3_NODES = ("CheckpointLoaderSimple", "SAM3_Detect", "SAM3_VideoTrack", "SAM3_TrackToMask")
 MOTION_NODES = ("CheckpointLoaderSimple", "RTDETR_detect", "SDPoseKeypointExtractor",
@@ -855,17 +871,27 @@ def motion_status(available):
     relayvsr = UPSCALERS["relayvsr"]["files"]
     sharp_ready = bool(installed(relayvsr["model"], available) and installed(relayvsr["vae"], available))
 
-    available_any = replace_ready or pose_ready
+    rescene_missing = [] if (flash or base) else [PROFILES["hyperflow"]["unet"][0]]
+    rescene_ready = not rescene_missing
+    h3_sampler_ready = bool(available is None or "h3-image-sampler" in files)
+
+    available_any = replace_ready or rescene_ready or pose_ready
     missing = [] if available_any else list(dict.fromkeys(replace_missing + pose_missing))
-    default_mode = "choreography" if (pose_ready and not replace_ready) else "replace"
+    default_mode = (
+        "replace" if replace_ready
+        else ("choreography" if pose_ready else ("rescene" if rescene_ready else "replace"))
+    )
     return {
         "available": available_any,
         "missing": missing,
         "replace": replace_ready,
         "replace_missing": replace_missing,
+        "rescene": rescene_ready,
+        "rescene_missing": rescene_missing,
         "pose_control": pose_ready,
         "pose_missing": pose_missing,
         "sharp_ready": sharp_ready,
+        "h3_image_sampler": h3_sampler_ready,
         "default_mode": default_mode,
         "profile": profile,
         "model": PROFILES[profile]["title"],
@@ -1214,26 +1240,77 @@ def still_node(asset):
     return {"class_type": "H3LoadStill", "inputs": {"file": file}}
 
 
-def motion_prompt(motion, user_prompt=""):
-    """Build the clean positive conditioning prompt for masked replacement or choreography."""
+def motion_prompt(motion, user_prompt="", ref_count=1, *, refine_pass=False):
+    """Build the clean positive conditioning prompt for masked replacement, pure re-scene motion, or choreography."""
     extra = str(user_prompt or "").strip()
-    if (motion.get("mode") or "choreography") == "replace":
+    mode = motion.get("mode") or "choreography"
+    preset = motion.get("preset") or "standard"
+    pics = "<Picture 1> and <Picture 2>" if int(ref_count or 1) >= 2 else "<Picture 1>"
+
+    if mode == "rescene":
+        if refine_pass:
+            if motion.get("style") == "photoreal":
+                prefix = (
+                    f"The exact person shown in {pics}, faithfully preserving their facial structure, eyes, eyebrows, "
+                    "lips, natural skin tone, and hair from every angle. "
+                    "Authentic unretouched handheld camera video, natural matte skin texture with real pores, "
+                    "fine flyaway hair, soft natural shadows, and subtle realistic camera grain.\n"
+                )
+            else:
+                prefix = (
+                    f"The exact character shown in {pics}, faithfully preserving their exact art style, face, hair, "
+                    "and proportions in a clean, cohesive scene.\n"
+                )
+            return prefix + extra
+        pose_clause = (
+            " Do NOT stay locked in a static reference pose — keep both arms free to follow every gesture in <Video 1>."
+            if float(motion.get("strength") or 0.0) > 0.0 else ""
+        )
         if motion.get("style") == "photoreal":
             prefix = (
-                "Completely replace the person in <Video 1> from the first frame to the last frame with the "
-                "photorealistic person in <Picture 1>, preserving <Picture 1>'s exact face, hair, and outfit "
-                "while matching the scene's lighting, shadows, framing, camera movement, and motion. "
-                "Leave the source background cleanly visible whenever the person exits.\n"
+                f"Transfer ONLY the body movement, dance choreography, arm gestures, head tilts, and subtle mouth and "
+                f"facial expressions from <Video 1> to the exact person shown in {pics}, starting from the very first frame.{pose_clause} "
+                "Completely ignore and discard the original background, lighting, and outfit from <Video 1>. "
+                "Keep the new scene, lighting, outfit, and person continuously consistent throughout the entire clip. "
+                "Authentic unretouched handheld camera video, natural matte skin texture with real pores, "
+                "subtle skin tone variation, fine flyaway hair, soft natural shadows, and realistic video grain.\n"
             )
         else:
             prefix = (
-                "Completely replace the person in <Video 1> from the first frame to the last frame with the "
-                "character in <Picture 1>, matching <Picture 1>'s exact art style, face, hair, and outfit "
+                f"Transfer ONLY the body movement, choreography, gestures, and facial expressions from <Video 1> to the "
+                f"character shown in {pics}, starting from the very first frame.{pose_clause} "
+                "Completely ignore and discard the original background and outfit from <Video 1>, preserving "
+                f"{pics}'s exact art style, face, and hair in the requested scene.\n"
+            )
+        return prefix + extra
+
+    if mode == "replace":
+        if motion.get("style") == "photoreal":
+            if preset != "standard":
+                prefix = (
+                    f"Replace the person in <Video 1> from the first frame to the last frame with the exact person shown in "
+                    f"{pics}, faithfully preserving their facial structure, eyes, eyebrows, lips, hair, and likeness from every angle. "
+                    "Match every body movement, expression, mouth micro-movement, hand gesture, framing, and natural lighting of <Video 1>. "
+                    "Authentic unretouched smartphone camera video, natural matte skin texture with real pores, subtle skin tone variation, "
+                    "fine flyaway hair, soft natural shadows, and realistic video grain. "
+                    "Leave the original background cleanly visible whenever the person moves.\n"
+                )
+            else:
+                prefix = (
+                    "Completely replace the person in <Video 1> from the first frame to the last frame with the "
+                    "photorealistic person in <Picture 1>, preserving <Picture 1>'s exact face, hair, and outfit "
+                    "while matching the scene's lighting, shadows, framing, camera movement, and motion. "
+                    "Leave the source background cleanly visible whenever the person exits.\n"
+                )
+        else:
+            prefix = (
+                f"Completely replace the person in <Video 1> from the first frame to the last frame with the "
+                f"character in {pics}, matching {pics}'s exact art style, face, hair, and outfit "
                 "while preserving the scene and motion. Leave the source background cleanly visible whenever the person exits.\n"
             )
         return prefix + extra
     return (
-        "<Picture 1> defines the performer's face, hair, body and outfit. "
+        f"{pics} defines the performer's face, hair, body and outfit. "
         "The performer follows the pose guide's choreography and timing in a continuous full-body shot.\n"
         + extra
     )
@@ -1252,6 +1329,9 @@ def resolve_motion_runtime(motion, available=None, detect_style=None):
     mode = motion.get("mode") or settings["default_mode"]
     if mode not in MOTION_MODES:
         raise ValueError("motion mode must be one of %s" % (", ".join(MOTION_MODES),))
+    preset = motion.get("preset") or "standard"
+    if preset not in MOTION_PRESETS:
+        raise ValueError("motion preset must be one of %s" % (", ".join(MOTION_PRESETS),))
     style = motion.get("style") or "auto"
     if style not in MOTION_STYLES:
         raise ValueError("character style must be one of %s" % (", ".join(MOTION_STYLES),))
@@ -1259,13 +1339,41 @@ def resolve_motion_runtime(motion, available=None, detect_style=None):
         detected = detect_style(character) if detect_style is not None else None
         style = "preserve" if detected == "preserve" else "photoreal"
 
+    if mode == "rescene":
+        if not settings["rescene"]:
+            raise ValueError("new-scene motion transfer needs " + ", ".join(settings["rescene_missing"]))
+        pose_strength = clean_strength(motion.get("strength", 0.0), (0.0, 2.0), "motion strength")
+        if pose_strength > 0.0 and not settings["pose_control"]:
+            raise ValueError("motion transfer needs " + ", ".join(settings["pose_missing"]))
+        out = {
+            "mode": "rescene",
+            "preset": preset,
+            "style": style,
+            "character": character,
+            "strength": pose_strength,
+            "sam3": settings["sam3"],
+            "isolate": bool(motion.get("isolate", False)),
+            "plate": False,
+            "swap_lora": None,
+            "swap_lora_strength": 0.0,
+            "h3_image_sampler": bool(settings["h3_image_sampler"]),
+        }
+        if pose_strength > 0.0:
+            out.update({k: settings[k] for k in ("pose", "detector", "control")})
+        if motion.get("sharp") or preset == "fast_sharp":
+            out["sharp"] = True
+            if preset == "fast_sharp":
+                out["sharp_detail"] = MOTION_FAST_SHARP_DETAIL
+        return out
+
     if mode == "replace":
         if not settings["replace"]:
             raise ValueError("character replacement needs " + ", ".join(settings["replace_missing"]))
         pose_strength = clean_strength(motion.get("strength", 0.0), (0.0, 2.0), "motion strength")
         if pose_strength > 0.0 and not settings["pose_control"]:
             raise ValueError("pose reinforcement needs " + ", ".join(settings["pose_missing"]))
-        default_swap = (1.0 if style == "photoreal" else 0.5) if settings["swap_lora"] else 0.0
+        photoreal_default_swap = 0.85 if preset != "standard" else 1.0
+        default_swap = (photoreal_default_swap if style == "photoreal" else 0.5) if settings["swap_lora"] else 0.0
         raw_swap = motion.get("swap_lora")
         swap_strength = clean_strength(
             default_swap if raw_swap is None else raw_swap, (0.0, 1.5), "character swap LoRA strength"
@@ -1277,6 +1385,7 @@ def resolve_motion_runtime(motion, available=None, detect_style=None):
             raise ValueError("mask expansion must be between 0 and 128 pixels")
         out = {
             "mode": "replace",
+            "preset": preset,
             "style": style,
             "character": character,
             "strength": pose_strength,
@@ -1286,11 +1395,14 @@ def resolve_motion_runtime(motion, available=None, detect_style=None):
             "expand_px": int(expand_raw),
             "swap_lora": settings["swap_lora"] if swap_strength > 0.0 else None,
             "swap_lora_strength": swap_strength,
+            "h3_image_sampler": bool(settings["h3_image_sampler"]),
         }
         if pose_strength > 0.0:
             out.update({k: settings[k] for k in ("pose", "detector", "control")})
-        if motion.get("sharp"):
+        if motion.get("sharp") or preset == "fast_sharp":
             out["sharp"] = True
+            if preset == "fast_sharp":
+                out["sharp_detail"] = MOTION_FAST_SHARP_DETAIL
         return out
 
     if not settings["pose_control"]:
@@ -1298,25 +1410,40 @@ def resolve_motion_runtime(motion, available=None, detect_style=None):
     out = {k: settings[k] for k in ("pose", "detector", "control", "profile")}
     out.update(
         mode="choreography",
+        preset=preset,
         style=style,
         character=character,
         strength=clean_strength(motion.get("strength", 1.0), (0.1, 2.0), "motion strength"),
         sam3=settings["sam3"],
         isolate=bool(motion.get("isolate", bool(settings["sam3"]))),
         plate=False,
+        h3_image_sampler=bool(settings["h3_image_sampler"]),
     )
-    if motion.get("sharp"):
+    if motion.get("sharp") or preset == "fast_sharp":
         out["sharp"] = True
+        if preset == "fast_sharp":
+            out["sharp_detail"] = MOTION_FAST_SHARP_DETAIL
     return out
 
 
-def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_count=None, prompt_text="", seed=0,
-                         source_info=None, cache_hits=None):
+def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_count=None, prompt_text="",
+                         refine_prompt_text="", seed=0, source_info=None, cache_hits=None,
+                         extra_characters=None, refine_cfg=None):
     """Wire single-pass or automatic multi-window pure-latent relay motion transfer onto `graph`."""
     mode = motion.get("mode") or "choreography"
+    preset = motion.get("preset") or "standard"
     exact_frames = int(frame_count or graph["10"]["inputs"]["length"])
-    windows = motion_replace.plan_relay_windows(exact_frames)
+    if refine_cfg and refine_cfg.get("multi_refine"):
+        windows = motion_replace.plan_relay_windows(
+            exact_frames,
+            single_max=motion_replace.REALISM_WINDOW_FRAMES,
+            window_frames=motion_replace.REALISM_WINDOW_FRAMES,
+            overlap_frames=motion_replace.OVERLAP_FRAMES,
+        )
+    else:
+        windows = motion_replace.plan_relay_windows(exact_frames)
     multi = len(windows) > 1
+    multi_refine = bool(multi and refine_cfg and refine_cfg.get("multi_refine"))
     hits = cache_hits or {}
 
     graph["214"] = still_node(motion["character"])
@@ -1343,11 +1470,19 @@ def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_cou
         char_ref = ["239", 0]
 
     graph["10"]["inputs"]["ref_images.ref_image_0"] = char_ref
+    for idx, extra_asset in enumerate((extra_characters or [])[:1]):
+        nid = str(270 + idx)
+        graph[nid] = still_node(extra_asset)
+        graph["10"]["inputs"]["ref_images.ref_image_%d" % (idx + 1)] = [nid, 0]
     graph["10"]["inputs"]["prompt"] = prompt_text
     graph["10"]["inputs"]["length"] = windows[0]["length"]
 
-    pose_strength = float(motion.get("strength", 0.0 if mode == "replace" else 1.0))
+    pose_strength = float(motion.get("strength", 0.0 if mode in ("replace", "rescene") else 1.0))
     use_pose = pose_strength > 0.0 and motion.get("detector") and motion.get("pose") and motion.get("control")
+
+    # Keep a clean model reference (pre-swap_lora and pre-ControlNet) for Pass-2 1088p Refine.
+    pre_swap_model = list(graph["5"]["inputs"]["model"])
+    clean_refine_model = ["5", 0] if use_pose else (["9", 0] if "9" in graph else ["5", 0])
 
     if mode == "replace":
         # Decode full-resolution RGB pixels cleanly (also supports >15s clips for windowed relay).
@@ -1373,14 +1508,31 @@ def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_cou
 
         swap_strength = float(motion.get("swap_lora_strength", 0.0))
         if swap_strength > 0.0 and motion.get("swap_lora"):
-            graph["230"] = dict(class_type="H3Lora", inputs={
-                "model": graph["5"]["inputs"]["model"], "lora_name": motion["swap_lora"],
+            swap_inputs = {
+                "model": pre_swap_model, "lora_name": motion["swap_lora"],
                 "strength": swap_strength,
-            })
+            }
+            if preset != "standard":
+                # Sigma-split swap_lora to high-sigma structure steps only (1.0 -> 0.45), freeing low-sigma steps for crisp skin.
+                swap_inputs["start_sigma"] = 1.0
+                swap_inputs["end_sigma"] = MOTION_SWAP_END_SIGMA
+                graph["231"] = {
+                    "class_type": "MiniMaxH3SigmaShift",
+                    "inputs": {
+                        "model": pre_swap_model,
+                        "shift_video": graph["5"]["inputs"]["shift_video"],
+                        "shift_audio": graph["5"]["inputs"]["shift_audio"],
+                    },
+                }
+                clean_refine_model = ["231", 0]
+            graph["230"] = dict(class_type="H3Lora", inputs=swap_inputs)
             graph["5"]["inputs"]["model"] = ["230", 0]
-    elif multi:
+    elif mode == "rescene" or multi:
         graph["213"]["inputs"]["reference_only"] = False
         graph["213"]["inputs"]["frames_only"] = True
+
+    if refine_cfg is not None:
+        refine_cfg["refine_model"] = clean_refine_model
 
     if use_pose:
         pose_inputs = {
@@ -1400,13 +1552,15 @@ def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_cou
             graph["217"] = dict(class_type="CheckpointLoaderSimple", inputs={"ckpt_name": motion["pose"]})
             pose_inputs.update({"model": ["217", 0], "vae": ["217", 2], "bboxes": ["216", 0]})
         graph["218"] = dict(class_type="H3GatedSDPose", inputs=pose_inputs)
+        draw_face = bool(mode == "rescene" or preset != "standard")
         graph["219"] = dict(class_type="SDPoseDrawKeypoints", inputs={
             "keypoints": ["218", 0], "draw_body": True, "draw_head": True, "draw_hands": True, "draw_feet": True,
-            "draw_face": False, "stick_width": 4, "face_point_size": 2, "score_threshold": 0.3})
+            "draw_face": draw_face, "stick_width": 4, "face_point_size": 2, "score_threshold": 0.3})
         graph["220"] = dict(class_type="ModelPatchLoader", inputs={"name": motion["control"]})
 
     base_guider_model = list(graph["13"]["inputs"]["model"])
     ctrl_node = "H3FlashControlNetApply" if hyperflow else "MiniMaxH3FunControlNetApply"
+    ctrl_end = 0.80 if (mode == "rescene" or preset != "standard") else 1.0
 
     def attach_swap_guard(model_ref):
         swap_lora_name = motion.get("swap_lora") or ""
@@ -1422,7 +1576,7 @@ def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_cou
             "seed": int(seed),
             "swap_lora": swap_lora_name,
             "boost_strength": round(boost, 2),
-            "min_change": 0.42,
+            "min_change": 0.30 if preset != "standard" else 0.42,
         })
         graph["16"]["inputs"]["samples"] = ["248", 0]
         return "248"
@@ -1440,17 +1594,30 @@ def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_cou
                 "overlap_frames": 0,
             })
             graph["15"]["inputs"]["latent_image"] = ["245", 0]
+        elif mode == "rescene":
+            # M5 / M7: Unmasked grid-aligned RGB <Video 1> (NO edit mask, NO source plate, NO swap_lora!).
+            graph["260"] = dict(class_type="H3SliceBatch", inputs={
+                "start": 0, "length": windows[0]["length"], "images": ["213", 0],
+            })
+            graph["10"]["inputs"]["ref_videos.ref_video_0"] = ["260", 0]
         if use_pose:
+            if mode == "rescene":
+                graph["261"] = dict(class_type="H3SliceBatch", inputs={
+                    "start": 0, "length": windows[0]["length"], "images": ["219", 0],
+                })
+                ctrl_vid = ["261", 0]
+            else:
+                ctrl_vid = ["219", 0]
             graph["221"] = dict(class_type=ctrl_node, inputs={
                 "model": graph["9"]["inputs"]["model"], "vae": ["3", 0], "model_patch": ["220", 0],
-                "control_video": ["219", 0], "strength": pose_strength, "start_percent": 0.0, "end_percent": 1.0,
+                "control_video": ctrl_vid, "strength": pose_strength, "start_percent": 0.0, "end_percent": ctrl_end,
             })
             graph["9"]["inputs"]["model"] = ["221", 0]
         if mode == "replace":
             attach_swap_guard(graph["13"]["inputs"]["model"])
         return windows
 
-    # Multi-window pure-latent relay (>141 frames / 5.9s -> up to 30s):
+    # Multi-window pure-latent relay (>141 frames / >107f for realism refine -> up to 30s):
     # Window 0 uses the primary take/sampler/decode nodes (10/13/15/16) with sliced inputs.
     w0 = windows[0]
     w0_slice_inputs = {"start": w0["start"], "length": w0["length"], "images": ["213", 0]}
@@ -1464,20 +1631,59 @@ def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_cou
             "overlap_frames": 0,
         })
         graph["15"]["inputs"]["latent_image"] = ["245", 0]
+    elif mode == "rescene":
+        graph["10"]["inputs"]["ref_videos.ref_video_0"] = ["260", 0]
     if use_pose:
         graph["261"] = dict(class_type="H3SliceBatch", inputs={"start": w0["start"], "length": w0["length"], "images": ["219", 0]})
         graph["221"] = dict(class_type=ctrl_node, inputs={
             "model": base_guider_model, "vae": ["3", 0], "model_patch": ["220", 0],
-            "control_video": ["261", 0], "strength": pose_strength, "start_percent": 0.0, "end_percent": 1.0,
+            "control_video": ["261", 0], "strength": pose_strength, "start_percent": 0.0, "end_percent": ctrl_end,
         })
         graph["13"]["inputs"]["model"] = ["221", 0]
 
     prev_sampler = attach_swap_guard(graph["13"]["inputs"]["model"]) if mode == "replace" else "15"
     prev_decoded = ["16", 0]
+    prev_p2_sampler = None
     base_take_inputs = copy.deepcopy(graph["10"]["inputs"])
 
+    if multi_refine:
+        # Window 0 Pass-2 1088p Refine (shared 3D upscaler "81", H3ImageSampler "86", ManualSigmas "87").
+        ref_w, ref_h = refine_cfg["size"]
+        p2_base_inputs = copy.deepcopy(base_take_inputs)
+        p2_base_inputs.update({"width": ref_w, "height": ref_h, "length": w0["length"]})
+        if mode == "rescene":
+            p2_base_inputs.pop("ref_videos.ref_video_0", None)
+            p2_base_inputs["prompt"] = refine_prompt_text or prompt_text
+        graph["80"] = dict(class_type="H3Take", inputs=p2_base_inputs)
+        w0_p2_take_latent = ["80", 1]
+        if mode == "replace":
+            graph["246"] = dict(class_type="H3ApplyEditMask", inputs={
+                "latent": ["80", 1], "vae": ["3", 0], "source_video": ["260", 0], "mask": ["260", 1],
+                "overlap_frames": 0,
+            })
+            w0_p2_take_latent = ["246", 0]
+        graph["81"] = {"class_type": "LatentUpscaleModelLoader", "inputs": {"model_name": refine_cfg["upscaler"]}}
+        graph["82"] = {"class_type": "MiniMaxH3LatentUpscaleWithModel", "inputs": {
+            "model": ["81", 0], "samples": [prev_sampler, 0], "width": ref_w, "height": ref_h}}
+        graph["83"] = {"class_type": "H3RefineLatent", "inputs": {"upscaled": ["82", 0], "take": w0_p2_take_latent}}
+        graph["86"] = (
+            {"class_type": H3_IMAGE_SAMPLER_NODE, "inputs": dict(refine_cfg["sampler_cfg"])}
+            if refine_cfg.get("use_h3_sampler") else copy.deepcopy(graph["11"])
+        )
+        graph["87"] = {"class_type": "ManualSigmas", "inputs": {"sigmas": refine_cfg["sigmas"]}}
+        graph["88"] = {"class_type": "BasicGuider", "inputs": {"model": clean_refine_model, "conditioning": ["80", 0]}}
+        graph["90"] = {"class_type": "SamplerCustomAdvanced", "inputs": {
+            "noise": ["14", 0], "guider": ["88", 0], "sampler": ["86", 0],
+            "sigmas": ["87", 0], "latent_image": ["83", 0]}}
+        graph["91"] = {"class_type": "VAEDecode", "inputs": {"samples": ["90", 0], "vae": ["3", 0]}}
+        graph.pop("16", None)
+        prev_p2_sampler = "90"
+        prev_decoded = ["91", 0]
+        refine_cfg["applied"] = True
+
+    win_stride_ids = 40 if multi_refine else 20
     for idx, win in enumerate(windows[1:], start=1):
-        base = 300 + 20 * idx
+        base = 300 + win_stride_ids * idx
         k_slice = str(base)
         k_pslice = str(base + 1)
         k_ctrl = str(base + 2)
@@ -1501,7 +1707,7 @@ def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_cou
             })
             graph[k_ctrl] = dict(class_type=ctrl_node, inputs={
                 "model": base_guider_model, "vae": ["3", 0], "model_patch": ["220", 0],
-                "control_video": [k_pslice, 0], "strength": pose_strength, "start_percent": 0.0, "end_percent": 1.0,
+                "control_video": [k_pslice, 0], "strength": pose_strength, "start_percent": 0.0, "end_percent": ctrl_end,
             })
             win_model = [k_ctrl, 0]
 
@@ -1509,6 +1715,13 @@ def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_cou
         win_take_inputs["length"] = win["length"]
         if mode == "replace":
             win_take_inputs["ref_videos.ref_video_0"] = [k_slice, 0]
+        elif mode == "rescene":
+            # M5 / M7 multi-window: carry prior 768p latent (22f overlap) AND feed sliced unmasked RGB <Video 1>!
+            win_take_inputs.update({
+                "ref_videos.ref_video_0": [k_slice, 0],
+                "carry": [prev_sampler, 0], "hold_frames": win["overlap"],
+                "align": "video", "audio_hold": "off", "video_mode": "off",
+            })
         else:
             # Choreography mode carries the prior window's last 22 latent frames directly via H3Take.carry.
             win_take_inputs.update({
@@ -1533,15 +1746,66 @@ def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_cou
             "noise": [k_noise, 0], "guider": [k_guider, 0], "sampler": ["11", 0],
             "sigmas": ["12", 0], "latent_image": win_latent,
         })
-        graph[k_decode] = dict(class_type="VAEDecode", inputs={"samples": [k_sampler, 0], "vae": ["3", 0]})
         is_last = idx == len(windows) - 1
-        graph[k_join] = dict(class_type="H3JoinWindow", inputs={
-            "prev_images": prev_decoded, "next_images": [k_decode, 0],
-            "overlap_frames": win["overlap"], "blend_frames": 4,
-            "trim_to": exact_frames if is_last else 0,
-        })
-        prev_sampler = k_sampler
-        prev_decoded = [k_join, 0]
+
+        if multi_refine:
+            # Double latent carry: Pass-2 window i carries prior 1088p refined latent (22f locked in 1088p latent space!).
+            ref_w, ref_h = refine_cfg["size"]
+            k_p2_take = str(base + 20)
+            k_p2_mask = str(base + 21)
+            k_p2_up = str(base + 22)
+            k_p2_reflat = str(base + 23)
+            k_p2_guider = str(base + 24)
+            k_p2_sampler = str(base + 25)
+            k_p2_decode = str(base + 26)
+            k_p2_join = str(base + 27)
+
+            p2_take_inputs = copy.deepcopy(graph["80"]["inputs"])
+            p2_take_inputs["length"] = win["length"]
+            if mode == "replace":
+                p2_take_inputs["ref_videos.ref_video_0"] = [k_slice, 0]
+            else:
+                p2_take_inputs.update({
+                    "carry": [prev_p2_sampler, 0], "hold_frames": win["overlap"],
+                    "align": "video", "audio_hold": "off", "video_mode": "off",
+                })
+            graph[k_p2_take] = dict(class_type="H3Take", inputs=p2_take_inputs)
+            if mode == "replace":
+                graph[k_p2_mask] = dict(class_type="H3ApplyEditMask", inputs={
+                    "latent": [k_p2_take, 1], "vae": ["3", 0],
+                    "source_video": [k_slice, 0], "mask": [k_slice, 1],
+                    "prev_latent": [prev_p2_sampler, 0], "overlap_frames": win["overlap"],
+                })
+                p2_take_latent = [k_p2_mask, 0]
+            else:
+                p2_take_latent = [k_p2_take, 1]
+            graph[k_p2_up] = {"class_type": "MiniMaxH3LatentUpscaleWithModel", "inputs": {
+                "model": ["81", 0], "samples": [k_sampler, 0], "width": ref_w, "height": ref_h}}
+            graph[k_p2_reflat] = {"class_type": "H3RefineLatent", "inputs": {
+                "upscaled": [k_p2_up, 0], "take": p2_take_latent}}
+            graph[k_p2_guider] = dict(class_type="BasicGuider", inputs={
+                "model": clean_refine_model, "conditioning": [k_p2_take, 0]})
+            graph[k_p2_sampler] = dict(class_type="SamplerCustomAdvanced", inputs={
+                "noise": [k_noise, 0], "guider": [k_p2_guider, 0], "sampler": ["86", 0],
+                "sigmas": ["87", 0], "latent_image": [k_p2_reflat, 0]})
+            graph[k_p2_decode] = dict(class_type="VAEDecode", inputs={"samples": [k_p2_sampler, 0], "vae": ["3", 0]})
+            graph[k_p2_join] = dict(class_type="H3JoinWindow", inputs={
+                "prev_images": prev_decoded, "next_images": [k_p2_decode, 0],
+                "overlap_frames": win["overlap"], "blend_frames": 6,
+                "trim_to": exact_frames if is_last else 0,
+            })
+            prev_sampler = k_sampler
+            prev_p2_sampler = k_p2_sampler
+            prev_decoded = [k_p2_join, 0]
+        else:
+            graph[k_decode] = dict(class_type="VAEDecode", inputs={"samples": [k_sampler, 0], "vae": ["3", 0]})
+            graph[k_join] = dict(class_type="H3JoinWindow", inputs={
+                "prev_images": prev_decoded, "next_images": [k_decode, 0],
+                "overlap_frames": win["overlap"], "blend_frames": 4,
+                "trim_to": exact_frames if is_last else 0,
+            })
+            prev_sampler = k_sampler
+            prev_decoded = [k_join, 0]
 
     graph["18"]["inputs"]["images"] = prev_decoded
     graph["18"]["inputs"].pop("audio", None)
@@ -1562,7 +1826,7 @@ def wire_motion_plate(graph, motion):
             graph["17"]["inputs"]["samples"] = ["248", 0]
         if "20" in graph:
             graph["20"]["inputs"]["latent"] = ["248", 0]
-    if "83" in graph and "80" in graph and "240" in graph:
+    if "83" in graph and "80" in graph and "240" in graph and "246" not in graph:
         # Keep the source background locked across a single-window final's refine pass too.
         src_ref = ["260", 0] if "260" in graph else ["213", 0]
         mask_ref = ["260", 1] if "260" in graph else ["240", 1]
@@ -1613,7 +1877,17 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
                       "in": int(src["in"]), "out": int(src["out"]),
                       "frames": int(src.get("frames") or src["out"])}
     exact_motion_frames = (motion_src["out"] - motion_src["in"]) if motion_src else 0
-    multi_window = bool(active_motion and exact_motion_frames > motion_replace.SINGLE_MAX_FRAMES)
+    motion_mode = (active_motion.get("mode") or "choreography") if active_motion else None
+    motion_preset = (active_motion.get("preset") or "standard") if active_motion else "standard"
+    is_realism_refine = bool(active_motion and motion_preset in ("realism_fast", "realism"))
+    is_fast_sharp = bool(active_motion and motion_preset == "fast_sharp")
+    is_realism_preset = bool(is_realism_refine or is_fast_sharp)
+    single_max = (
+        motion_replace.REALISM_WINDOW_FRAMES
+        if (is_realism_refine and quality != "draft")
+        else motion_replace.SINGLE_MAX_FRAMES
+    )
+    multi_window = bool(active_motion and exact_motion_frames > single_max)
 
     width, height, enlarged = render_size(project, quality)
     config = sprite.settings(clip.get("sprite"))
@@ -1622,25 +1896,31 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             raise ValueError("Sprite Draft needs an independent shot")
         width, height = sprite.canvas_size(config, quality)
         enlarged = False
-    is_replace_motion = bool(active_motion and (active_motion.get("mode") or "choreography") == "replace")
-    if is_replace_motion and not config and quality == "draft":
-        # Masked character replacement needs ~0.5 MP (medium, e.g. 544x960) so empty-prompt swaps
+    is_replace_motion = bool(active_motion and motion_mode == "replace")
+    is_rescene_motion = bool(active_motion and motion_mode == "rescene")
+    if (is_replace_motion or is_rescene_motion) and not config and quality == "draft":
+        # Video-referenced motion transfer needs ~0.5 MP (medium, e.g. 544x960) so drafts
         # commit cleanly from frame 0 instead of sticking to <Video 1>'s original performer.
         med_w, med_h = format_sizes(project_format(project))["medium"]
         if width * height < med_w * med_h:
             width, height = med_w, med_h
     use_sharp = not config and quality != "draft" and (
-        size_name(project, quality) == SHARP or bool(active_motion and active_motion.get("sharp"))
+        is_fast_sharp
+        or (not is_realism_refine and (size_name(project, quality) == SHARP or bool(active_motion and active_motion.get("sharp"))))
     )
-    if use_sharp:
+    if is_realism_preset and not config and quality != "draft":
+        # Hardware-verified RTX 5090 <=32 GB realism presets (F1 / F1-Fast / F2 / M5 / M7) sample Pass-1 at
+        # large (~768x1344) so facial geometry and skin micro-texture have enough latent tokens.
+        width, height = format_sizes(project_format(project))["large"]
+        enlarged = bool(is_realism_refine)
+    elif use_sharp:
         if is_replace_motion:
-            # Masked replacement on Sharp (RelayVSR 2x) samples at medium (544x960 / 960x544) before
-            # exact 2x RelayVSR to 1088x1920 / 1920x1088: 2.1x faster, ~18 GB less VRAM, and matches
-            # H3 Ref2VA's ~0.5 MP video-reference canvas for reliable empty-prompt swaps.
+            # Legacy masked replacement on Sharp (RelayVSR 2x) samples at medium (544x960 / 960x544) before
+            # exact 2x RelayVSR to 1088x1920 / 1920x1088.
             width, height = format_sizes(project_format(project))["medium"]
         enlarged = False
-    if multi_window:
-        # Multi-window relay tiles 124f windows; skip single-pass latent refine (use Sharp RelayVSR instead).
+    if multi_window and not is_realism_refine:
+        # Legacy multi-window relay tiles 124f windows; skip single-pass latent refine (use Sharp RelayVSR instead).
         enlarged = False
     _, profile = project_profile(project, available, clip)
     size = dict(QUALITIES[quality], width=width, height=height, steps=profile["steps"][quality])
@@ -1652,7 +1932,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     # A family's fl2va model takes a prompt alone. Anything with references goes to its ref2va model.
     unet = models["unet"] if references or not models.get("unet_text") else models["unet_text"]
     hyperflow = is_hyperflow(unet)
-    if is_replace_motion and not config and hyperflow and size["steps"] < 6:
+    if (is_replace_motion or is_rescene_motion) and not config and hyperflow and size["steps"] < 6:
         size["steps"] = 6
     link = clip.get("link")
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
@@ -1701,6 +1981,9 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         # Few-step and CFG-free, on its own two-time schedule.
         graph["1"] = {"class_type": "H3HyperFlowLoader", "inputs": {"unet_name": unet, "weights_in": "auto"}}
         graph["12"] = {"class_type": "H3HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": size["steps"]}}
+        if is_realism_preset and active_motion.get("h3_image_sampler"):
+            # H3ImageSampler (res_2s_rkmk2e stochastic exponential Heun) injects organic matte skin/hair texture.
+            graph["11"] = {"class_type": H3_IMAGE_SAMPLER_NODE, "inputs": dict(MOTION_REALISM_P1_SAMPLER)}
     model = ["1", 0]
     if profile.get("lora") and models.get("profile_lora"):
         # A LoRA the family always samples with, such as a turbo LoRA.
@@ -1714,14 +1997,19 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     # the chain. At half: +1% by the third clip and +12% by the fifth, with the skin's texture kept.
     # Do not inject photographic Realism Slider grain onto stylized character replacements.
     stylized_motion = bool(
-        active_motion and (active_motion.get("mode") or "choreography") == "replace"
+        active_motion and motion_mode in ("replace", "rescene")
         and active_motion.get("style", "preserve") != "photoreal"
     )
     realism = 0.0 if stylized_motion else realism_strength(project, size) * (LINKED_REALISM if clip.get("link") else 1.0)
+    if is_realism_preset and not stylized_motion and realism > 0.0:
+        # Cap Realism Slider at 0.55 (start_sigma=0.85) on motion realism presets to avoid glossy cheek highlights.
+        realism = min(realism, MOTION_REALISM_P2_LORA)
     if realism and models.get("lora") and installed(models["lora"], available):
         # The Realism Slider, on the model both passes sample with. Without it a final still renders.
         lora_inputs = {"model": model, "lora_name": models["lora"], "strength": realism}
-        if size.get("lora_start_sigma") is not None:
+        if is_realism_preset:
+            lora_inputs["start_sigma"] = 0.85
+        elif size.get("lora_start_sigma") is not None:
             lora_inputs["start_sigma"] = size["lora_start_sigma"]
         graph["95"] = {"class_type": "H3Lora", "inputs": lora_inputs}
         model = ["95", 0]
@@ -1741,10 +2029,32 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         model = [node, 0]
     graph["5"]["inputs"]["model"] = model
     take_inputs = graph["10"]["inputs"]
+    motion_refine_cfg = None
+    motion_refine_prompt = ""
     if active_motion and motion_src:
         # Load real look-ahead frames up to the grid-snapped render length when the source video has them,
         # so MiniMaxH3ReferenceToVideo never truncates <Video 1> and dissolves the subject at the tail.
-        windows_needed = motion_replace.plan_relay_windows(exact_motion_frames)
+        has_latent_up = bool(models.get("latent_upscaler") and installed(models["latent_upscaler"], available))
+        want_multi_refine = bool(multi_window and is_realism_refine and quality != "draft" and has_latent_up)
+        if want_multi_refine:
+            windows_needed = motion_replace.plan_relay_windows(
+                exact_motion_frames,
+                single_max=motion_replace.REALISM_WINDOW_FRAMES,
+                window_frames=motion_replace.REALISM_WINDOW_FRAMES,
+                overlap_frames=motion_replace.OVERLAP_FRAMES,
+            )
+            motion_refine_cfg = {
+                "multi_refine": True,
+                "size": refine_size(project),
+                "upscaler": models["latent_upscaler"],
+                "sigmas": MOTION_REALISM_SIGMAS[motion_preset],
+                "sampler_cfg": MOTION_REALISM_P2_SAMPLER[motion_preset],
+                "use_h3_sampler": bool(hyperflow and active_motion.get("h3_image_sampler")),
+            }
+        else:
+            windows_needed = motion_replace.plan_relay_windows(exact_motion_frames)
+            if is_realism_refine:
+                motion_refine_cfg = {"multi_refine": False}
         needed_frames = windows_needed[-1]["start"] + windows_needed[-1]["length"]
         src_total = max(motion_src["out"], int(motion_src.get("frames") or motion_src["out"]))
         load_last = min(src_total, motion_src["in"] + needed_frames)
@@ -1755,12 +2065,32 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         })
         source_info = {"file": src_file, "first": motion_src["in"], "last": load_last, "total_frames": src_total}
         cache_hits = check_cache(source_info, active_motion.get("character"), active_motion) if check_cache else None
+        extra_chars = []
+        if is_realism_preset and active_motion.get("cast"):
+            member = next((p for p in (project.get("cast") or []) if p.get("id") == active_motion["cast"]), None)
+            primary = active_motion.get("character") or {}
+            primary_key = (primary.get("subfolder") or "", primary.get("file") or "")
+            if member:
+                pics = []
+                if member.get("file"):
+                    pics.append({"file": member["file"], "subfolder": member.get("subfolder") or ""})
+                for p in member.get("pictures") or []:
+                    if isinstance(p, dict) and p.get("file"):
+                        pics.append({"file": p["file"], "subfolder": p.get("subfolder") or ""})
+                for p in pics:
+                    if (p["subfolder"], p["file"]) != primary_key:
+                        extra_chars.append(p)
+                        break
+        ref_count = 1 + len(extra_chars)
         user_notes = edit["prompt"] if edit else str(clip.get("action") or "")
-        prompt_text = motion_prompt(active_motion, user_notes)
+        prompt_text = motion_prompt(active_motion, user_notes, ref_count=ref_count)
+        motion_refine_prompt = motion_prompt(active_motion, user_notes, ref_count=ref_count, refine_pass=True)
         wire_motion_transfer(
             graph, active_motion, hyperflow=hyperflow, width=size["width"],
-            frame_count=exact_motion_frames, prompt_text=prompt_text, seed=int(seed),
+            frame_count=exact_motion_frames, prompt_text=prompt_text,
+            refine_prompt_text=motion_refine_prompt, seed=int(seed),
             source_info=source_info, cache_hits=cache_hits,
+            extra_characters=extra_chars, refine_cfg=motion_refine_cfg,
         )
     elif edit:
         graph["213"] = dict(class_type="H3LoadClip", inputs={
@@ -1875,16 +2205,48 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             take_inputs["end_audio"] = ["61", 0]
     if finish and not config and size_name(project, quality) == SHARP:
         raise ValueError("Sharp uses a video upscaler. Choose Full, Large, Medium, Small or your own Final size to finish a draft")
-    if (size.get("refine") or finish) and models.get("latent_upscaler") and installed(models["latent_upscaler"], available):
+    already_refined = bool(motion_refine_cfg and motion_refine_cfg.get("applied"))
+    if (size.get("refine") or finish) and not already_refined and models.get("latent_upscaler") and installed(models["latent_upscaler"], available):
         # Without the latent upscaler a final stays at H3's own size.
-        tail = profile.get("refine_sigmas") or profile["refine_from"]
+        tail = (
+            MOTION_REALISM_SIGMAS[motion_preset]
+            if (is_realism_refine and hyperflow)
+            else (profile.get("refine_sigmas") or profile["refine_from"])
+        )
         add_refine(graph, refine_size(project) if enlarged else (width, height), tail, models["latent_upscaler"])
+        if "248" in graph:
+            # Feed the SwapGuard-verified Pass-1 latent into Pass-2 upscaling.
+            graph["82"]["inputs"]["samples"] = ["248", 0]
+        if is_replace_motion and "260" in graph:
+            # Keep background noise_mask=0 during Pass-2 1088p Refine for clean masked replacement.
+            graph["246"] = dict(class_type="H3ApplyEditMask", inputs={
+                "latent": ["80", 1], "vae": ["3", 0], "source_video": ["260", 0], "mask": ["260", 1],
+                "overlap_frames": 0,
+            })
+            graph["83"]["inputs"]["take"] = ["246", 0]
+        if is_realism_refine:
+            # F1 / F1-Fast / M5 / M7 Pass-2 Refine: ZERO swap_lora, ZERO ControlNet, H3ImageSampler micro-texture!
+            if motion_refine_cfg and motion_refine_cfg.get("refine_model"):
+                graph["88"]["inputs"]["model"] = list(motion_refine_cfg["refine_model"])
+            if hyperflow and active_motion.get("h3_image_sampler"):
+                graph["86"] = {"class_type": H3_IMAGE_SAMPLER_NODE, "inputs": dict(MOTION_REALISM_P2_SAMPLER[motion_preset])}
+                graph["90"]["inputs"]["sampler"] = ["86", 0]
+            if is_rescene_motion:
+                graph["80"]["inputs"].pop("ref_videos.ref_video_0", None)
+                graph["80"]["inputs"]["prompt"] = motion_refine_prompt
         if length > LONG_TAKE:
             add_refine_windows(graph)
-    if active_motion:
-        wire_motion_plate(graph, active_motion)
-    if use_sharp:
-        add_sharp(graph, refine_size(project), available)
+    sharp_detail = float(active_motion.get("sharp_detail", SHARP_DETAIL)) if active_motion else SHARP_DETAIL
+    if use_sharp and is_fast_sharp:
+        # F2 recipe: upscale 768p generation via RelayVSR 2x (detail=0.85) FIRST, then composite lossless 1080p plate!
+        add_sharp(graph, refine_size(project), available, detail=sharp_detail)
+        if active_motion:
+            wire_motion_plate(graph, active_motion)
+    else:
+        if active_motion:
+            wire_motion_plate(graph, active_motion)
+        if use_sharp:
+            add_sharp(graph, refine_size(project), available, detail=sharp_detail)
     if finish:
         start_from_take(graph, clip, finish, length, finish_window)
     markers = style_timeline.schedule(clip.get("style_markers"), length, project.get("style", ""))
@@ -2057,7 +2419,7 @@ def without_nodes(graph, missing):
     return out
 
 
-def add_sharp(graph, size, available=None):
+def add_sharp(graph, size, available=None, *, detail=SHARP_DETAIL):
     """Enlarge the decoded picture two times with a video upscaler, then scale it down to the final's size.
 
     The picture is sampled once, at H3's own size. The sound is untouched.
@@ -2072,7 +2434,7 @@ def add_sharp(graph, size, available=None):
         "34": {"class_type": "KSampler", "inputs": {
             "model": ["31", 0], "seed": 0, "steps": 1, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple",
             "positive": ["33", 0], "negative": ["33", 0], "latent_image": ["33", 1], "denoise": 1.0}},
-        "35": {"class_type": "VSRDecode", "inputs": {"vae": ["32", 0], "samples": ["34", 0], "images": picture, "detail": SHARP_DETAIL}},
+        "35": {"class_type": "VSRDecode", "inputs": {"vae": ["32", 0], "samples": ["34", 0], "images": picture, "detail": float(detail)}},
         "36": {"class_type": "ImageScale", "inputs": {
             "image": ["35", 0], "upscale_method": "lanczos", "width": width, "height": height, "crop": "disabled"}},
     })
@@ -3187,11 +3549,14 @@ def clean_motion_field(value):
     mode = value.get("mode") or "replace"
     if mode not in MOTION_MODES:
         raise ValueError("motion mode must be one of %s" % (", ".join(MOTION_MODES),))
+    preset = value.get("preset") or "standard"
+    if preset not in MOTION_PRESETS:
+        raise ValueError("motion preset must be one of %s" % (", ".join(MOTION_PRESETS),))
     style = value.get("style") or "auto"
     if style not in MOTION_STYLES:
         raise ValueError("character style must be one of %s" % (", ".join(MOTION_STYLES),))
-    strength_limits = (0.0, 2.0) if mode == "replace" else (0.1, 2.0)
-    strength_default = 0.0 if mode == "replace" else 1.0
+    strength_limits = (0.0, 2.0) if mode in ("replace", "rescene") else (0.1, 2.0)
+    strength_default = 0.0 if mode in ("replace", "rescene") else 1.0
     strength = clean_strength(value.get("strength", strength_default), strength_limits, "motion strength")
     expand_raw = value.get("expand_px", 32)
     if isinstance(expand_raw, bool) or not isinstance(expand_raw, (int, float)) or not 0 <= int(expand_raw) <= 128:
@@ -3210,15 +3575,17 @@ def clean_motion_field(value):
         "mode": mode,
         "style": style,
         "strength": strength,
-        "isolate": bool(value.get("isolate", True)),
-        "plate": bool(value.get("plate", mode == "replace")),
+        "isolate": bool(value.get("isolate", mode != "rescene")),
+        "plate": bool(value.get("plate", mode == "replace")) if mode == "replace" else False,
         "expand_px": int(expand_raw),
     }
+    if preset != "standard":
+        cleaned["preset"] = preset
     if value.get("cast"):
         cleaned["cast"] = str(value["cast"])
     if value.get("swap_lora") is not None:
         cleaned["swap_lora"] = clean_strength(value["swap_lora"], (0.0, 1.5), "character swap LoRA strength")
-    if value.get("sharp"):
+    if value.get("sharp") or preset == "fast_sharp":
         cleaned["sharp"] = True
     return cleaned
 
@@ -4879,13 +5246,17 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
            "saved": saved,
            "models": dict(render_models(graph), profile=project_profile(project, available, clip)[0],
                           profile_title=project_profile(project, available, clip)[1]["title"],
-                          steps=graph["12"]["inputs"]["steps"], sampler=graph["11"]["inputs"]["sampler_name"])}
+                          steps=graph["12"]["inputs"]["steps"],
+                          sampler=(graph["11"]["inputs"].get("sampler_name")
+                                   or graph["11"]["inputs"].get("sampler")
+                                   or graph["11"]["class_type"]))}
     if "91" in graph:
         job["size"] = [graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]]
     elif "36" in graph:
         # A sharp final: the take records the upscaler that brought it to this size.
         job["size"] = [graph["36"]["inputs"]["width"], graph["36"]["inputs"]["height"]]
-        job["upscaler"], job["detail"] = SHARP_UPSCALER, SHARP_DETAIL
+        job["upscaler"] = SHARP_UPSCALER
+        job["detail"] = graph["35"]["inputs"].get("detail", SHARP_DETAIL)
         job["models"]["video_upscaler"] = graph["31"]["inputs"]["unet_name"]
     elif clip.get("sprite") or clip.get("motion") or tuple(render_size(project, quality)[:2]) != tuple(frame_size(project, quality)):
         # A size the project chose. A take that records none is at the usual size for its format.

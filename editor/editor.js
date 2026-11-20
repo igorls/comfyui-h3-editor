@@ -16,11 +16,11 @@ const clientId = (() => {
 // and takes longer than the first pass on most cards: without its own labels it read as "Decoding the sound" throughout.
 const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the picture", 17: "Decoding the sound", 80: "Preparing the final size",
   216: "Finding the performer", 218: "Tracking poses", 219: "Drawing the pose guide",
-  238: "Loading SAM 3.1", 239: "Isolating the character", 240: "Tracking subject mask (SAM 3.1)",
+  231: "Preparing clean refine model", 238: "Loading SAM 3.1", 239: "Isolating the character", 240: "Tracking subject mask (SAM 3.1)",
   245: "Applying edit mask", 246: "Applying refine edit mask", 248: "Checking character swap", 250: "Compositing source plate",
-  260: "Slicing window 1", 261: "Slicing pose window 1",
+  260: "Slicing window 1", 261: "Slicing pose window 1", 270: "Loading extra cast angle",
   31: "Loading RelayVSR 2x", 33: "Preparing RelayVSR 2x", 34: "Upscaling 2x (RelayVSR)", 35: "Decoding RelayVSR 2x", 36: "Finishing 2x size",
-  82: "Enlarging", 83: "Enlarging", 90: "Refining at final size", 91: "Decoding the final picture", 18: "Assembling", 19: "Saving" };
+  82: "Enlarging", 83: "Enlarging", 86: "Preparing realism refine sampler", 90: "Refining at final size", 91: "Decoding the final picture", 18: "Assembling", 19: "Saving" };
 // The nodes that report steps: the first pass, a final's refine pass, RelayVSR, and windowed relay samplers.
 const STEPPED = new Set(["15", "34", "90"]);
 const MOTION_MAX_SECONDS = 30;
@@ -36,6 +36,7 @@ function stageForNode(node) {
     if (offset === 1) return "Slicing pose window " + win;
     if (offset === 3) return "Preparing window " + win;
     if (offset === 4) return "Locking relay window " + win;
+    if (offset === 5 && id >= 360) return "Refining 1088p window " + (Math.floor((id - 300) / 40) + 1);
     if (offset === 6) return "Sampling window " + win;
     if (offset === 7) return "Decoding window " + win;
     if (offset === 8) return "Joining window " + win;
@@ -47,7 +48,9 @@ function isSteppedNode(node) {
   const key = String(node || "");
   if (STEPPED.has(key)) return true;
   const id = Number(key);
-  return Number.isInteger(id) && id >= 320 && (id - 300) % 20 === 6;
+  if (!Number.isInteger(id) || id < 320) return false;
+  const offset = (id - 300) % 20;
+  return offset === 6 || (offset === 5 && id >= 360);
 }
 
 function motionStageForNode(stages, node) {
@@ -4948,11 +4951,19 @@ function motionSection(clip) {
 
   const badges = document.createElement("div");
   badges.className = "motion-badges";
-  const tags = [m.mode === "choreography" ? "Pose choreography" : "Replace character"];
+  const tags = [
+    m.mode === "rescene"
+      ? (Number(m.strength) > 0 ? "New scene · M7" : "New scene · M5")
+      : m.mode === "choreography" ? "Pose choreography" : "Replace character",
+  ];
+  if (m.preset === "realism_fast") tags.push("F1-Fast · 1088p");
+  else if (m.preset === "realism") tags.push("F1 Max · 1088p");
+  else if (m.preset === "fast_sharp") tags.push("F2 Sharp · 2x");
   if (m.mode !== "choreography") tags.push(m.style === "photoreal" ? "Photoreal" : m.style === "preserve" ? "Keep style" : "Auto style");
-  if (win.windows > 1) tags.push(win.label);
-  if (m.mode !== "choreography" && m.plate !== false) tags.push("Zero-halo plate");
-  if (m.sharp || state.project.sizes?.final === "sharp") tags.push("Sharp 2x");
+  const winForPreset = motionWindowSummary(frames, m.preset);
+  if (winForPreset.windows > 1) tags.push(winForPreset.label);
+  if (m.mode === "replace" && m.plate !== false) tags.push("Zero-halo plate");
+  if (m.preset !== "fast_sharp" && (m.sharp || state.project.sizes?.final === "sharp")) tags.push("Sharp 2x");
   for (const label of tags) {
     const badge = document.createElement("span");
     badge.className = "motion-badge";
@@ -5166,7 +5177,8 @@ function drawMotionReport(panel, report) {
   // Switch between motion clips and source footage clips
   const choices = [];
   for (const mc of report.motion_clips || []) {
-    choices.push({ id: mc.id, label: mc.name + " · " + (mc.mode === "choreography" ? "Pose" : "Replace") + " (" + (mc.frames / FPS).toFixed(1) + "s)" });
+    const modeLabel = mc.mode === "rescene" ? "New scene" : mc.mode === "choreography" ? "Pose" : "Replace";
+    choices.push({ id: mc.id, label: mc.name + " · " + modeLabel + " (" + (mc.frames / FPS).toFixed(1) + "s)" });
   }
   for (const c of state.project.clips || []) {
     if (!c.motion && c.kind === "footage") {
@@ -8320,17 +8332,20 @@ function motionUnavailable(clip) {
   return "";
 }
 
-function motionWindowSummary(frames) {
+function motionWindowSummary(frames, preset = "standard") {
   const total = Math.max(0, Math.round(Number(frames) || 0));
-  if (total <= 141) return { windows: 1, label: "Single pass" };
+  const realismRefine = preset === "realism_fast" || preset === "realism";
+  const maxWin = realismRefine ? 107 : 141;
+  const stride = realismRefine ? 85 : 102;
+  if (total <= maxWin) return { windows: 1, label: "Single pass" };
   let windows = 0;
   let pos = 0;
   while (pos < total) {
     windows += 1;
-    if (total - pos <= 141) break;
-    pos += 102;
+    if (total - pos <= maxWin) break;
+    pos += stride;
   }
-  return { windows, label: windows + "-window relay" };
+  return { windows, label: windows + (realismRefine ? "-window 1088p relay" : "-window relay") };
 }
 
 function motionRequiredGroups(mode, poseStrength, quality) {
@@ -8338,10 +8353,12 @@ function motionRequiredGroups(mode, poseStrength, quality) {
   if (mode === "replace") {
     groups.push("replace");
     if (Number(poseStrength) > 0) groups.push("pose");
+  } else if (mode === "rescene") {
+    if (Number(poseStrength) > 0) groups.push("pose");
   } else {
     groups.push("pose");
   }
-  if (quality === "sharp") groups.push("sharp");
+  if (quality === "sharp" || quality === "fast_sharp") groups.push("sharp");
   return groups;
 }
 
@@ -8462,12 +8479,19 @@ function watchMotionSetup() {
   }, 1000);
 }
 
+function defaultMotionSwapLora() {
+  if ($("motionStyle")?.value === "preserve") return 0.5;
+  const q = $("motionQuality")?.value || "";
+  return (q === "realism_fast" || q === "realism" || q === "fast_sharp" || q === "draft") ? 0.85 : 1.0;
+}
+
 function updateMotionRangeSummary() {
   if (!motionTarget) return;
   const a = Math.max(0, Math.round(Number($("motionIn").value) || 0));
   const b = Math.max(a + 1, Math.round(Number($("motionOut").value) || 0));
   const frames = Math.max(0, b - a);
-  const win = motionWindowSummary(frames);
+  const q = $("motionQuality")?.value || "standard";
+  const win = motionWindowSummary(frames, (q === "realism_fast" || q === "realism") ? q : "standard");
   const suffix = win.windows > 1 ? " · " + win.label : "";
   $("motionDialogRange").textContent = motionTarget.sourceName + " · " + timecode(a) + " – " + timecode(Math.max(0, b - 1))
     + " · " + (frames / FPS).toFixed(2) + " s" + suffix;
@@ -8486,22 +8510,42 @@ function setMotionSwapDisplay(value) {
 function syncMotionModeControls(resetStrength = false) {
   const mode = $("motionMode").value;
   const replace = mode === "replace";
-  $("motionStyleField").hidden = !replace;
+  const rescene = mode === "rescene";
+  const videoRef = replace || rescene;
+  $("motionStyleField").hidden = !videoRef;
   $("motionSwapLoraField").hidden = !replace;
   $("motionPlateField").hidden = !replace;
   const strength = $("motionStrength");
-  strength.min = replace ? "0" : "0.1";
-  if (resetStrength) strength.value = replace ? "0" : "1";
-  else if (!replace && Number(strength.value) < 0.1) strength.value = "1";
+  strength.min = videoRef ? "0" : "0.1";
+  if (resetStrength) {
+    strength.value = videoRef ? "0" : "1";
+    $("motionIsolate").checked = !rescene;
+  } else if (!videoRef && Number(strength.value) < 0.1) {
+    strength.value = "1";
+  }
   const label = $("motionStrengthLabel");
   if (label && label.firstChild) {
-    label.firstChild.textContent = replace ? "Pose reinforcement (0 = fast video-ref) " : "Pose strength ";
+    label.firstChild.textContent = replace
+      ? "Pose reinforcement (0 = fast video-ref) "
+      : rescene
+        ? "Pose lock for conflicting reference pose (0 = M5, 0.75 = M7) "
+        : "Pose strength ";
   }
   setMotionStrengthDisplay(strength.value);
-  $("motionNotesLabel").textContent = replace ? "Character / scene notes (optional)" : "Scene direction (optional)";
-  $("motionNotes").placeholder = replace
-    ? "Optional: brief hair, outfit or style note (helpful when mapping a full-body still onto a close-up)."
-    : "Full-body shot in a charcoal dance studio with a gray floor.";
+  if (replace && !motionSwapTouched) {
+    const val = defaultMotionSwapLora();
+    $("motionSwapLora").value = String(val);
+    setMotionSwapDisplay(val);
+  }
+  $("motionNotesLabel").textContent = rescene
+    ? "New outfit & scene description (recommended)"
+    : replace ? "Character / scene notes (optional)" : "Scene direction (optional)";
+  $("motionNotes").placeholder = rescene
+    ? "e.g. Wearing a white linen sundress on a sunlit Mediterranean stone terrace overlooking the sea."
+    : replace
+      ? "Optional: brief hair, outfit or style note (helpful when mapping a full-body still onto a close-up)."
+      : "Full-body shot in a charcoal dance studio with a gray floor.";
+  updateMotionRangeSummary();
   drawMotionModels();
 }
 
@@ -8672,8 +8716,9 @@ function drawMotionModels() {
   let backendBlocked = "";
   if (status) {
     if (mode === "replace" && !status.replace) backendBlocked = "Character replacement needs " + status.replace_missing.join(", ") + ".";
+    else if (mode === "rescene" && status.rescene === false) backendBlocked = "New-scene motion transfer needs " + (status.rescene_missing || []).join(", ") + ".";
     else if ((mode === "choreography" || poseStrength > 0) && !status.pose_control) backendBlocked = "Pose control needs " + status.pose_missing.join(", ") + ".";
-    else if (quality === "sharp" && !status.sharp_ready) backendBlocked = "Sharp 2x needs RelayVSR models.";
+    else if ((quality === "sharp" || quality === "fast_sharp") && !status.sharp_ready) backendBlocked = "Sharp 2x needs RelayVSR models.";
   }
 
   panel.hidden = !(needsModels || running || motionSetup.expanded || Boolean(backendBlocked));
@@ -8822,8 +8867,13 @@ async function openMotionTransfer(clip, item = null) {
   $("motionDialogSubmit").textContent = editing ? "Save & render" : "Create & render";
   $("motionMode").value = defaultMode;
   $("motionStyle").value = existing?.style || "auto";
-  const defaultQuality = existing?.sharp ? "sharp"
-    : (editing && activeTake(clip)?.quality === "final" ? "final" : "draft");
+  const defaultQuality = existing?.preset && existing.preset !== "standard"
+    ? existing.preset
+    : existing?.sharp
+      ? "sharp"
+      : editing
+        ? (activeTake(clip)?.quality === "final" ? "final" : "draft")
+        : "realism_fast";
   $("motionQuality").value = defaultQuality;
   const placementField = $("motionPlacementField");
   if (placementField) {
@@ -8837,13 +8887,13 @@ async function openMotionTransfer(clip, item = null) {
   $("motionOut").min = String(2 * FPS);
   $("motionOut").max = String(bounds.total);
   $("motionOut").value = String(bounds.b);
-  $("motionIsolate").checked = existing ? existing.isolate !== false : true;
+  $("motionIsolate").checked = existing ? existing.isolate !== false : defaultMode !== "rescene";
   $("motionPlate").checked = existing ? existing.plate !== false : true;
-  const defaultSwap = existing?.swap_lora ?? ($("motionStyle").value === "preserve" ? 0.5 : 1.0);
+  const defaultSwap = existing?.swap_lora ?? defaultMotionSwapLora();
   $("motionSwapLora").value = String(defaultSwap);
   setMotionSwapDisplay(defaultSwap);
   motionSwapTouched = existing?.swap_lora !== undefined;
-  $("motionStrength").value = String(existing?.strength ?? (defaultMode === "replace" ? 0 : 1));
+  $("motionStrength").value = String(existing?.strength ?? (defaultMode === "choreography" ? 1 : 0));
   motionSelectedCast = existing?.cast || null;
   motionSelectedCatalog = null;
   motionDroppedFile = null;
@@ -8889,12 +8939,20 @@ $("motionPlacement")?.addEventListener("change", () => {
 $("motionMode").addEventListener("change", () => syncMotionModeControls(true));
 $("motionStyle").addEventListener("change", () => {
   if (!motionSwapTouched) {
-    const val = $("motionStyle").value === "preserve" ? 0.5 : 1.0;
+    const val = defaultMotionSwapLora();
     $("motionSwapLora").value = String(val);
     setMotionSwapDisplay(val);
   }
 });
-$("motionQuality").addEventListener("change", () => drawMotionModels());
+$("motionQuality").addEventListener("change", () => {
+  if (!motionSwapTouched && $("motionMode").value === "replace") {
+    const val = defaultMotionSwapLora();
+    $("motionSwapLora").value = String(val);
+    setMotionSwapDisplay(val);
+  }
+  updateMotionRangeSummary();
+  drawMotionModels();
+});
 $("motionStrength").addEventListener("input", (event) => {
   setMotionStrengthDisplay(event.target.value);
   drawMotionModels();
@@ -9034,9 +9092,15 @@ $("motionDialogForm").addEventListener("submit", async (event) => {
     const style = $("motionStyle").value;
     const qualityChoice = $("motionQuality").value;
     const renderQuality = qualityChoice === "draft" ? "draft" : "final";
+    const presetChoice = (qualityChoice === "realism_fast" || qualityChoice === "realism" || qualityChoice === "fast_sharp")
+      ? qualityChoice
+      : qualityChoice === "draft"
+        ? "realism_fast"
+        : "standard";
     const notes = $("motionNotes").value.trim();
     const motionPayload = {
       mode,
+      preset: presetChoice,
       style,
       strength: Number($("motionStrength").value),
       isolate: $("motionIsolate").checked,
@@ -9045,7 +9109,7 @@ $("motionDialogForm").addEventListener("submit", async (event) => {
     if (mode === "replace" && motionSwapTouched) {
       motionPayload.swap_lora = Number($("motionSwapLora").value);
     }
-    if (qualityChoice === "sharp") motionPayload.sharp = true;
+    if (qualityChoice === "sharp" || qualityChoice === "fast_sharp") motionPayload.sharp = true;
     if (chosenCastId) motionPayload.cast = chosenCastId;
     motionPayload.character = character;
 

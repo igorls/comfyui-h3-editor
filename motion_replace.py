@@ -16,6 +16,7 @@ import numpy as np
 #    22 frames =  7 latent steps (5 + 17*1, exact 1-4-4-4-4-1-4 boundary)
 #   102 stride = 30 latent steps (17*6, so step 30..36 of window k align 1:1 with step 0..6 of window k+1)
 WINDOW_FRAMES = 124
+REALISM_WINDOW_FRAMES = 107  # 5 + 17*6 (~4.46s, stride 85 with 22f overlap; 1088p refine fits <=32GB RTX 5090)
 OVERLAP_FRAMES = 22
 WINDOW_STRIDE = WINDOW_FRAMES - OVERLAP_FRAMES  # 102
 SINGLE_MAX_FRAMES = 141  # 5 + 17*8 (~5.88s)

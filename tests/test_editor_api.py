@@ -407,6 +407,20 @@ class MotionAudioAndPromptEditTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(store.motion_replace.has_pose_cache(src_path, 0, 73))
             self.assertFalse(store.motion_replace.has_cutout_cache(char_path))
 
+            # Verify rescene + realism_fast pipeline report uses 107f windows and surfaces Pass-2 refine nodes
+            m_rescene, _ = store.add_motion_clip(
+                project, src_clip["id"], first=0, last=120,
+                motion={"character": char_obj, "mode": "rescene", "preset": "realism_fast", "style": "photoreal"},
+            )
+            rep_rescene = self.api._motion_pipeline_report(project, folder, m_rescene["id"], available=avail | {"h3-image-sampler"})
+            self.assertEqual(rep_rescene["clip"]["mode"], "rescene")
+            self.assertEqual(rep_rescene["clip"]["preset"], "realism_fast")
+            r_by_id = {s["id"]: s for s in rep_rescene["clip"]["stages"]}
+            self.assertEqual(len(r_by_id["sampling"]["windows"]), 2)  # 120f > 107f -> 2 double-carry windows
+            self.assertEqual(r_by_id["segmentation"]["status"], "off")
+            self.assertIn("Source plate off", r_by_id["plate"]["detail"])
+            self.assertIn("90", r_by_id["sampling"]["nodes"])
+
 
 if __name__ == "__main__":
     unittest.main()
