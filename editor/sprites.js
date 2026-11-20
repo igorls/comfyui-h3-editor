@@ -2,6 +2,10 @@ const ids = ["NW", "N", "NE", "W", "", "E", "SW", "S", "SE"];
 const presets = new Map([["idle", "Idle"], ["run", "Run"], ["custom", "Custom motion"]]);
 export const CANVASES = ["square", "portrait", "landscape"];
 export const SPRITE_LENGTHS = [39, 56, 73];
+export const SPRITE_STYLE_PRESETS = {
+  pixel: "16-bit SNES pixel art RPG sprite, crisp dark pixel outlines, clean limited-palette shading, no anti-aliasing blur",
+  chibi: "Cozy 2.5-head chibi fantasy RPG illustration, crisp dark ink outlines, clean cel shading",
+};
 export const CAST_VIEWS = [
   ["", "Any view"],
   ["front", "Front (S)"],
@@ -20,7 +24,13 @@ export function defaultCanvasForCamera(camera) {
   return camera === "rpg" ? "square" : "portrait";
 }
 
-export function buildSpriteConfig({ camera = "rpg", motion = "run", direction = "S", motionPrompt = null, canvas, frames = 39, poses = 7 } = {}) {
+export function resolveSpriteStyle(preset = "", custom = "") {
+  if (!preset) return "";
+  if (preset === "custom") return String(custom || "").trim();
+  return SPRITE_STYLE_PRESETS[preset] || String(preset).trim();
+}
+
+export function buildSpriteConfig({ camera = "rpg", motion = "run", direction = "S", motionPrompt = null, canvas, frames = 39, poses = 7, style = "" } = {}) {
   const config = { camera, direction, poses };
   if (motion === "idle") config.motion = "idle";
   if (motionPrompt) Object.assign(config, { motion: "prompt", animation: motion });
@@ -28,6 +38,8 @@ export function buildSpriteConfig({ camera = "rpg", motion = "run", direction = 
   if (CANVASES.includes(chosenCanvas)) config.canvas = chosenCanvas;
   const len = Number(frames);
   if (Number.isInteger(len) && len >= 22 && (len - 5) % 17 === 0 && len !== 39) config.frames = len;
+  const cleanedStyle = String(style || "").trim();
+  if (cleanedStyle) config.style = cleanedStyle;
   return config;
 }
 
@@ -81,6 +93,8 @@ export function buildPropPayload(fields = {}) {
   const size = fields.size || "square";
   if (!CANVASES.includes(size)) throw new Error("Choose a 4 MP square, portrait, or landscape size.");
   const payload = { kind, name, description, size, camera: fields.camera || "rpg" };
+  const styleText = String(fields.style || "").trim();
+  if (styleText) payload.style = styleText;
   if (fields.style_ref?.file) {
     payload.style_ref = { file: fields.style_ref.file, subfolder: fields.style_ref.subfolder || "" };
   }
@@ -195,6 +209,8 @@ export function installSprites(editor) {
     camera = "rpg",
     canvas = "square",
     clipFrames = 39,
+    artStylePreset = "",
+    artStyleCustom = "",
     motion = "run",
     dir = "S",
     count = 8,
@@ -287,6 +303,8 @@ export function installSprites(editor) {
     camera = prefs.camera || "rpg";
     canvas = CANVASES.includes(prefs.canvas) ? prefs.canvas : defaultCanvasForCamera(camera);
     clipFrames = SPRITE_LENGTHS.includes(Number(prefs.frames)) ? Number(prefs.frames) : 39;
+    artStylePreset = prefs.art_style_preset || "";
+    artStyleCustom = prefs.art_style_custom || "";
     count = prefs.count || 8;
     motion = prefs.motion || "run";
     dir = "S";
@@ -427,6 +445,9 @@ export function installSprites(editor) {
     $("spriteCamera").value = camera;
     $("spriteCanvas").value = canvas;
     $("spriteFrames").value = String(clipFrames);
+    $("spriteArtStyle").value = artStylePreset;
+    $("spriteArtStyleCustom").value = artStyleCustom;
+    $("spriteArtStyleCustomField").hidden = artStylePreset !== "custom";
     $("spriteCount").value = String(count);
     $("spriteTileCustomField").hidden = $("spriteTile").value !== "custom";
     $("spritePropBtn").disabled = !project();
@@ -852,6 +873,16 @@ export function installSprites(editor) {
     if (actor) remember((p) => (p.frames = clipFrames));
     refresh();
   };
+  $("spriteArtStyle").onchange = (e) => {
+    artStylePreset = e.target.value;
+    if (actor) remember((p) => (p.art_style_preset = artStylePreset));
+    refresh();
+    if (artStylePreset === "custom") $("spriteArtStyleCustom").focus();
+  };
+  $("spriteArtStyleCustom").onchange = (e) => {
+    artStyleCustom = e.target.value.trim();
+    if (actor) remember((p) => (p.art_style_custom = artStyleCustom));
+  };
   $("spriteMotion").onchange = (e) => {
     motion = e.target.value;
     audition = null;
@@ -995,14 +1026,87 @@ export function installSprites(editor) {
     }
   };
 
+  async function refreshPropGallery() {
+    const gallery = $("spritePropGallery");
+    if (!gallery || !editor.listProps) return;
+    gallery.textContent = "Loading…";
+    try {
+      const { props = [] } = await editor.listProps();
+      gallery.replaceChildren();
+      if (!props.length) {
+        gallery.textContent = "No props or turnaround plates rendered yet in this project.";
+        return;
+      }
+      for (const item of props) {
+        const card = document.createElement("div");
+        card.className = "sprite-prop-card";
+        const img = document.createElement("img");
+        img.src = editor.viewUrl(item.file, item.subfolder);
+        img.alt = item.file;
+        const nameEl = document.createElement("b");
+        nameEl.textContent = item.file;
+        nameEl.title = item.file;
+        const actions = document.createElement("div");
+        actions.className = "sprite-prop-card-actions";
+        if (actor && editor.addPropToCast) {
+          const viewPick = document.createElement("select");
+          viewPick.setAttribute("aria-label", "Cast view tag for " + item.file);
+          for (const [v, label] of CAST_VIEWS) viewPick.append(new Option(label, v));
+          const lower = item.file.toLowerCase();
+          if (lower.includes("front") || lower.includes("_s_")) viewPick.value = "front";
+          else if (lower.includes("back") || lower.includes("_n_")) viewPick.value = "back";
+          else if (lower.includes("left") || lower.includes("_w_")) viewPick.value = "left";
+          else if (lower.includes("side") || lower.includes("right") || lower.includes("_e_")) viewPick.value = "side";
+          const addBtn = document.createElement("button");
+          addBtn.type = "button";
+          addBtn.className = "quiet";
+          addBtn.textContent = "+ Cast ref";
+          addBtn.onclick = () => {
+            editor.addPropToCast(actor, { file: item.file, subfolder: item.subfolder }, viewPick.value || null);
+            populatePropRefs();
+            refresh();
+          };
+          actions.append(viewPick, addBtn);
+        }
+        const baseBtn = document.createElement("button");
+        baseBtn.type = "button";
+        baseBtn.className = "quiet";
+        baseBtn.textContent = "Use as base";
+        baseBtn.onclick = () => {
+          uploadedBaseAsset = { file: item.file, subfolder: item.subfolder };
+          propKind.value = "state_variant";
+          syncPropDialogKind();
+          populatePropRefs();
+          propBaseRef.value = JSON.stringify(uploadedBaseAsset);
+          $("spritePropBaseStatus").textContent = "Selected: " + item.file;
+        };
+        const dl = document.createElement("a");
+        dl.className = "quiet button";
+        dl.href = editor.viewUrl(item.file, item.subfolder);
+        dl.download = item.file;
+        dl.textContent = "PNG";
+        actions.append(baseBtn, dl);
+        card.append(img, nameEl, actions);
+        gallery.append(card);
+      }
+    } catch {
+      gallery.textContent = "Could not load generated props.";
+    }
+  }
+
+  $("spritePropRefresh").onclick = () => void refreshPropGallery();
   $("spritePropBtn").onclick = () => {
     if (!project()) return;
     uploadedBaseAsset = null;
     $("spritePropBaseStatus").textContent = "";
     propStatus.textContent = "";
     propSize.value = CANVASES.includes(canvas) ? canvas : "square";
+    if (!$("spritePropStyle").value.trim()) {
+      $("spritePropStyle").value = resolveSpriteStyle(artStylePreset, artStyleCustom);
+    }
     populatePropRefs();
     syncPropDialogKind();
+    void refreshPropGallery();
     propDialog.showModal();
     propName.focus();
   };
@@ -1017,6 +1121,7 @@ export function installSprites(editor) {
         kind: propKind.value,
         name: propName.value,
         description: propDesc.value,
+        style: $("spritePropStyle").value,
         size: propSize.value,
         camera,
         style_ref: parseRef(propStyleRef.value),
@@ -1166,19 +1271,25 @@ export function installSprites(editor) {
       const old = chosen();
       if (old && !prefs.picks?.[slotKey(camera, motion, dir)]) select(old);
       let clip = slots[dir].clips[0];
+      const spriteStyle = resolveSpriteStyle(artStylePreset, artStyleCustom);
       if (!clip) {
         clip = editor.makeClip(actor, roster().get(actor).name, camera, motion, dir, animations.get(motion), {
           canvas,
           frames: clipFrames,
+          style: spriteStyle,
         });
       } else if (
         clip.sprite &&
-        ((clip.sprite.canvas || "portrait") !== canvas || (clip.sprite.frames || 39) !== clipFrames)
+        ((clip.sprite.canvas || "portrait") !== canvas ||
+          (clip.sprite.frames || 39) !== clipFrames ||
+          (clip.sprite.style || "") !== spriteStyle)
       ) {
         editor.checkpoint();
         clip.sprite.canvas = canvas;
         if (clipFrames !== 39) clip.sprite.frames = clipFrames;
         else delete clip.sprite.frames;
+        if (spriteStyle) clip.sprite.style = spriteStyle;
+        else delete clip.sprite.style;
         editor.save();
       }
       refresh();

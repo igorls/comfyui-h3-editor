@@ -186,7 +186,7 @@ def settings(value):
     if value is None:
         return None
     allowed = {"direction", "camera", "poses", "guide", "motion", "cutout", "animation",
-               "canvas", "frames", "tile_size", "mode", "refine", "self_pin"}
+               "canvas", "frames", "tile_size", "mode", "refine", "self_pin", "style"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ValueError("unknown sprite setting")
     direction, camera, poses = value.get("direction", "S"), value.get("camera", "rpg"), value.get("poses", 7)
@@ -227,6 +227,12 @@ def settings(value):
         if type(value["refine"]) is not bool:
             raise ValueError("refine must be true or false")
         out["refine"] = value["refine"]
+    if value.get("style") is not None:
+        if not isinstance(value["style"], str) or len(value["style"].strip()) > 400:
+            raise ValueError("sprite style must be text up to 400 characters")
+        cleaned_style = value["style"].strip()
+        if cleaned_style:
+            out["style"] = cleaned_style
     if value.get("self_pin") is not None:
         sp = value["self_pin"]
         name, folder = _clean_file_ref(sp, "self_pin")

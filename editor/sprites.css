@@ -98,6 +98,16 @@
 }
 .sprite-check input { margin: 0; accent-color: var(--tungsten); }
 .sprite-prop-upload { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.sprite-prop-gallery-wrap { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); display: grid; gap: 8px; }
+.sprite-prop-gallery-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 600; color: var(--muted); }
+.sprite-prop-gallery-head button { padding: 3px 8px; font-size: 12px; }
+.sprite-prop-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); gap: 8px; max-height: 220px; overflow-y: auto; }
+.sprite-prop-card { display: grid; gap: 5px; padding: 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--room); }
+.sprite-prop-card img { display: block; width: 100%; height: 96px; object-fit: contain; border-radius: 3px; background: var(--sprite-matte, #484f57); }
+.sprite-prop-card b { font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sprite-prop-card-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.sprite-prop-card-actions :is(button, a, select) { font-size: 11px; padding: 2px 6px; min-height: 24px; }
+#spriteArtStyleCustom { width: clamp(160px, 20vw, 260px); }
 #spriteMotion { width: clamp(130px, 15vw, 208px); text-overflow: ellipsis; }
 .sprite-animation-controls .sprite-field { margin-right: 4px; }
 .sprite-animation-controls .sprite-action { min-height: 32px; }

@@ -2218,6 +2218,34 @@ async def sprite_self_pin(request):
     })
 
 
+async def list_props(request):
+    """List rendered 4 MP prop and turnaround PNGs in a project's props/ folder, newest first."""
+    name = store.slug(request.match_info["name"])
+    read_project(name)
+    subfolder = "%s/%s/props" % (store.ROOT, name)
+    folder = output_path(subfolder, "")
+    items = []
+    if os.path.isdir(folder):
+        for fname in os.listdir(folder):
+            if not fname.lower().endswith((".png", ".webp")):
+                continue
+            full = os.path.join(folder, fname)
+            if not os.path.isfile(full):
+                continue
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            items.append({
+                "file": fname,
+                "subfolder": subfolder,
+                "bytes": st.st_size,
+                "modified": st.st_mtime,
+            })
+    items.sort(key=lambda item: (-item["modified"], item["file"]))
+    return web.json_response({"props": items})
+
+
 async def sprite_prop(request):
     """Plan or queue a 4+ MP MiniMax-H3-Image static prop, paired state variant, or turnaround plate."""
     name = store.slug(request.match_info["name"])
@@ -3114,6 +3142,7 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/sprite-export", "sprite_export"),
     ("POST", "/h3take/api/project/{name}/sprite-atlas", "sprite_atlas"),
     ("POST", "/h3take/api/project/{name}/sprite-self-pin", "sprite_self_pin"),
+    ("GET", "/h3take/api/project/{name}/props", "list_props"),
     ("POST", "/h3take/api/project/{name}/props", "sprite_prop"),
     ("POST", "/h3take/api/project/{name}/cancel", "cancel"),
     ("GET", "/h3take/api/project/{name}/wait", "wait"),

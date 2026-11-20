@@ -1040,11 +1040,17 @@ def clip_prompt(project, clip):
                                                       if m["id"] in chosen and m.get("refmod") and not m.get("file")])
     voice = clip_voice(project, clip)
     is_sprite = clip.get("sprite") is not None
+    sprite_cfg = sprite.settings(clip["sprite"]) if is_sprite else None
     if is_sprite:
-        action = action + " " + sprite.instruction(sprite.settings(clip["sprite"]))
-    # Sprite Drafts with character references lock their visual style to the cast plates,
-    # never inheriting a video project's live-action/camera look (e.g. "creator talking to camera").
-    style = "" if (is_sprite and cast) else project.get("style", "")
+        action = action + " " + sprite.instruction(sprite_cfg)
+    # Sprite Drafts with character references lock their visual style to the cast plates
+    # (or an explicit sprite.style), never inheriting a video project's live-action/camera look.
+    if is_sprite and sprite_cfg.get("style"):
+        style = sprite_cfg["style"]
+    elif is_sprite and cast:
+        style = ""
+    else:
+        style = project.get("style", "")
     if has_references(project, clip):
         owner = None
         if voice:

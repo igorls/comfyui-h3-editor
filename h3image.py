@@ -117,7 +117,7 @@ def turnaround_prompt(view, description="", style="", camera="rpg", proportions=
         "left": "strict left-facing side profile in a calm neutral standing pose with feet together (NOT running)",
         "back": "strict rear back view facing directly away from the viewer in a calm neutral standing pose, showing the back of the head, hair, outfit and footwear with no face visible",
     }
-    refs = "<Picture 1> (front view) and <Picture 2> (side view)" if (view == "back" and has_side) else "<Picture 1> (front view)"
+    refs = "<Picture 1> (front view) and <Picture 2> (additional reference)" if has_side else "<Picture 1> (front view)"
     parts = ["Create a single full-body %s of the exact same character shown in %s." % (poses[view], refs)]
     if description and description.strip():
         parts.append(description.strip().rstrip(".") + ".")
@@ -203,7 +203,7 @@ def turnaround_graph(view, front_ref, side_ref=None, description="", style="", c
     )
     return prop_graph(
         text, width=width, height=height, seed=seed, filename_prefix=filename_prefix,
-        style_ref=front_ref, base_prop=side_ref if view == "back" else None,
+        style_ref=front_ref, base_prop=side_ref,
         models=models, bg_model=bg_model,
     )
 

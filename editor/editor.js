@@ -11735,7 +11735,7 @@ const spritesRoom = installSprites({
     const clip = { id: uid("c"), name: [name, motion, direction].join(" · "), cast,
       action: motionPrompt ?? (motion === "idle" ? "Stand in place and breathe." : "Run in place with a steady stride."),
       camera: "", speaker: "", dialogue: "", sound: "", music: "", seconds: 5, takes: [], active: null,
-      sprite: buildSpriteConfig({ camera, motion, direction, motionPrompt, canvas: extra.canvas, frames: extra.frames }) };
+      sprite: buildSpriteConfig({ camera, motion, direction, motionPrompt, canvas: extra.canvas, frames: extra.frames, style: extra.style }) };
     if (!cast.length) clip.sprite_group = actor;
     state.project.clips.push(clip);
     save();
@@ -11760,6 +11760,31 @@ const spritesRoom = installSprites({
       spriteExports.set(key, pending.catch((error) => { spriteExports.delete(key); throw error; }));
     }
     return spriteExports.get(key);
+  },
+  listProps() {
+    return api("/project/" + encodeURIComponent(state.folder) + "/props");
+  },
+  addPropToCast(actorId, asset, view) {
+    const person = (state.project.cast || []).find((p) => p.id === actorId);
+    if (!person) return;
+    checkpoint();
+    const entry = { file: asset.file, subfolder: asset.subfolder || "" };
+    if (view) entry.view = view;
+    if (!person.file) {
+      Object.assign(person, entry);
+    } else {
+      const existing = (person.pictures || []).find((p) => p.file === entry.file && (p.subfolder || "") === entry.subfolder);
+      if (existing) {
+        if (view) existing.view = view;
+        else delete existing.view;
+      } else {
+        person.pictures = [...(person.pictures || []), entry].slice(0, CAST_PICTURES - 1);
+      }
+    }
+    save();
+    void flush();
+    renderCast();
+    toast("Added " + asset.file + (view ? " (" + view + ")" : "") + " to " + person.name + ".");
   },
   async queueProp(payload) {
     const folder = state.folder;
