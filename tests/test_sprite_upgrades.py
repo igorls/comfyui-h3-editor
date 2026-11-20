@@ -244,6 +244,10 @@ class GlobalScaleWebPAndCacheTest(unittest.TestCase):
             self.assertEqual(from_cache.size, (7 * 160, 160))
             self.assertEqual(idx_cache.size, from_cache.size)
             self.assertEqual(from_cache.tobytes(), direct.tobytes())
+            # Loading all cached frames (indices=None) works for sprite_self_pin
+            all_cached = sprite.load_frame_cache(cache)
+            self.assertEqual(len(all_cached), 7)
+            self.assertEqual(all_cached[0].mode, "RGBA")
 
 
 class SpriteEfficiencyPinningAndViewRoutingTest(unittest.TestCase):
@@ -361,6 +365,9 @@ class NodesAndApiRegistrationTest(unittest.TestCase):
 
         api_src = (root / "editor_api.py").read_text(encoding="utf-8")
         ast.parse(api_src, filename="editor_api.py")
+        self.assertIn('("GET", "/h3take/api/queue", "render_queue")', api_src)
+        self.assertIn('("POST", "/h3take/api/queue/cancel", "cancel_queue")', api_src)
+        self.assertIn('("POST", "/h3take/api/queue/clear-history", "clear_queue_history")', api_src)
         self.assertIn('("POST", "/h3take/api/project/{name}/sprite-self-pin", "sprite_self_pin")', api_src)
         self.assertIn('("POST", "/h3take/api/project/{name}/props", "sprite_prop")', api_src)
         self.assertIn("export_from_cache", api_src)

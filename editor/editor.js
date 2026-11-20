@@ -22,6 +22,7 @@ const STEPPED = new Set(["15", "90"]);
 
 import { VfxRuntime } from "./vfx-runtime.js";
 import { buildSpriteConfig, CAST_VIEWS, installSprites } from "./sprites.js";
+import { installQueue } from "./queue.js";
 import { cropWindow, editCrop } from "./crop.js";
 import * as writer from "./writer.js";
 import { curveLevel, soundEnvelope, resumeSoundMixer, setMediaLevel, setSoundLevel, disconnectSound } from "./sound-envelope.js?v=track";
@@ -1206,6 +1207,8 @@ function morePictures(person) {
   const row = document.createElement("div");
   row.className = "picture-row";
   for (const asset of others) {
+    const card = document.createElement("div");
+    card.className = "picture-card";
     const cell = document.createElement("div");
     cell.className = "picture";
     const image = document.createElement("img");
@@ -1223,9 +1226,10 @@ function morePictures(person) {
       save();
       renderInspector();
     });
+    cell.append(image, remove);
     const view = castViewSelect(asset, "View tag for picture of " + person.name);
-    cell.append(image, view, remove);
-    row.append(cell);
+    card.append(cell, view);
+    row.append(card);
   }
   if (others.length < CAST_PICTURES - 1) {
     const add = document.createElement("button");
@@ -4097,7 +4101,7 @@ function drawInspector() {
 
   const timing = document.createElement("div");
   timing.className = "two";
-  const duration = plainField("Seconds", clip.sprite ? (clip.sprite.frames || 39) / FPS : clip.seconds, { type: "number" });
+  const duration = plainField("Seconds", clip.sprite ? Number(((clip.sprite.frames || 39) / FPS).toFixed(2)) : clip.seconds, { type: "number" });
   Object.assign(duration.input, { min: "0.5", max: "60", step: "any", required: true });
   duration.input.disabled = Boolean(clip.sprite);
   duration.input.dataset.key = "Seconds";
@@ -9618,40 +9622,9 @@ function seek(frame) {
 
 /* Rendering */
 
-function updateQueue() {
-  const box = $("queue");
-  const count = state.jobs.size;
-  $("cancelRenders").disabled = !count;
-  $("cancelFinals").disabled = ![...state.jobs.values()].some((job) => job.quality === "final");
-  if (!count) {
-    box.replaceChildren();
-    return;
-  }
-  const front = () => state.running || state.jobs.values().next().value;
-  const clip = state.running && clipOf(state.running.clip);
-  const waiting = count - (state.running ? 1 : 0);
-  const parts = [];
-  if (clip) parts.push(clip.name + ", " + Math.round((state.running.progress || 0) * 100) + "%");
-  else if (state.running) parts.push("Rendering");
-  if (waiting) parts.push(waiting + " waiting");
-  let chip = box.firstElementChild;
-  if (!chip) {
-    chip = document.createElement("button");
-    chip.className = "queue-chip";
-    chip.title = "Show the clip that is rendering";
-    chip.append(document.createElement("span"));
-    chip.addEventListener("click", () => {
-      const job = front();
-      if (!job || !clipOf(job.clip)) return;
-      if (spritesRoom.isOpen()) {
-        if (clipOf(job.clip).sprite) return spritesRoom.openClip(clipOf(job.clip));
-        $("videoMode").click();
-      }
-      selectClip(job.clip, state.project.timeline.find((i) => i.clip === job.clip)?.id ?? null);
-    });
-    box.append(chip);
-  }
-  chip.firstElementChild.textContent = parts.join(", ");
+function updateQueue(refresh = false) {
+  queueUi.render();
+  if (refresh) void queueUi.refresh();
 }
 
 function takeRangeStatus(take, first = 0, last = take?.frames || 0) {
@@ -9750,7 +9723,7 @@ async function renderClip(clip, quality, detail, upscaler, edit, seed, part) {
     if (folder !== state.folder) return;
     state.jobs.set(result.job.id, { ...result.job, step: 0, max: 0, progress: 0 });
     if (!unsaved()) adopt(result.project);
-    updateQueue();
+    updateQueue(true);
     renderAll();
     if (result.job?.finish_fallback) toast(result.job.finish_fallback);
     else if (result.job?.part) toast("Finishing " + timecode(result.job.part.in) + " – " + timecode(result.job.part.out - 1) + " from draft latents.");
@@ -9831,6 +9804,7 @@ function onBinary(buffer) {
 
 function onMessage({ type, data }) {
   if (type === "h3take_project") {
+    if (data.source === "render") void queueUi.refresh();
     if (data.folder !== state.folder || data.client === clientId) return;
     if ((data.revision || 0) > (state.project?.revision || 0)) refreshProject(data.source !== "render").catch(() => {});
     return;
@@ -11776,11 +11750,24 @@ const spritesRoom = installSprites({
     if (stride != null) body.stride = stride;
     return postJson("/project/" + encodeURIComponent(folder) + "/sprite-self-pin", body);
   },
+  async inspectSprite(clip, take, tile = 256) {
+    const folder = state.folder;
+    const key = [folder, clip.id, take.id, tile].join(".");
+    if (!spriteExports.has(key)) {
+      const pending = postJson("/project/" + encodeURIComponent(folder) + "/sprite-export", {
+        clip: clip.id, take: take.id, tile, fps: null,
+      });
+      spriteExports.set(key, pending.catch((error) => { spriteExports.delete(key); throw error; }));
+    }
+    return spriteExports.get(key);
+  },
   async queueProp(payload) {
     const folder = state.folder;
     await flush();
     if (folder !== state.folder) throw new Error("Project changed while queueing prop.");
-    return postJson("/project/" + encodeURIComponent(folder) + "/props", payload);
+    const res = await postJson("/project/" + encodeURIComponent(folder) + "/props", { ...payload, client_id: clientId });
+    void queueUi.refresh();
+    return res;
   },
   async download(name, options) {
     const folder = state.folder;
@@ -11799,4 +11786,29 @@ const spritesRoom = installSprites({
   },
 });
 
+const queueUi = installQueue({
+  state,
+  clipOf,
+  toast,
+  fetchQueue: () => api("/queue"),
+  cancelQueue: (body) => postJson("/queue/cancel", { ...body, client_id: clientId }),
+  clearQueueHistory: () => postJson("/queue/clear-history", {}),
+  async afterQueueCancel(cancelledIds) {
+    for (const id of cancelledIds) state.jobs.delete(id);
+    if (state.running && cancelledIds.includes(state.running.id)) state.running = null;
+    await refreshProject(false).catch(() => {});
+    renderAll();
+  },
+  openJobClip(clipId) {
+    const clip = clipOf(clipId);
+    if (!clip) return;
+    if (spritesRoom.isOpen()) {
+      if (clip.sprite) return spritesRoom.openClip(clip);
+      $("videoMode").click();
+    }
+    selectClip(clip.id, state.project.timeline.find((i) => i.clip === clip.id)?.id ?? null);
+  },
+});
+
+void queueUi.refresh();
 start().catch((error) => toast(error.message, true));

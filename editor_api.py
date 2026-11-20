@@ -1830,6 +1830,133 @@ def comfy_queue():
 
 
 SPRITE_EXPORTS = {}
+PROP_JOBS = {}
+QUEUE_HISTORY = []
+MAX_QUEUE_HISTORY = 25
+
+
+def _record_queue_history(entry):
+    """Record a finished, failed, or cancelled job for the editor's managed render queue UI."""
+    item = dict(entry)
+    item.setdefault("at", time.time())
+    job_id = item.get("id")
+    if job_id:
+        QUEUE_HISTORY[:] = [h for h in QUEUE_HISTORY if h.get("id") != job_id]
+    QUEUE_HISTORY.insert(0, item)
+    del QUEUE_HISTORY[MAX_QUEUE_HISTORY:]
+
+
+def _project_pending_lookup():
+    """Map prompt_id -> enriched job metadata across all projects on disk."""
+    found = {}
+    try:
+        names = os.listdir(root())
+    except OSError:
+        return found
+    for folder in names:
+        path = os.path.join(root(), folder, "project.json")
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        pending = data.get("pending") or []
+        if not pending:
+            continue
+        clips = {c.get("id"): c for c in data.get("clips") or [] if isinstance(c, dict)}
+        project_name = data.get("name") or folder
+        for job in pending:
+            pid = job.get("id")
+            if not pid:
+                continue
+            clip = clips.get(job.get("clip")) or {}
+            sprite_cfg = (job.get("saved") or {}).get("sprite") or clip.get("sprite")
+            kind = "sprite" if sprite_cfg else "clip"
+            found[pid] = {
+                "id": pid,
+                "kind": kind,
+                "folder": folder,
+                "project": project_name,
+                "clip": job.get("clip"),
+                "name": clip.get("name") or job.get("clip") or "Clip",
+                "quality": job.get("quality") or "draft",
+                "seed": job.get("seed"),
+                "size": job.get("size"),
+                "frames": job.get("frames"),
+                "part": job.get("part"),
+                "edit": bool(job.get("edit")),
+                "upscaler": job.get("upscaler"),
+                "sprite": {
+                    "direction": sprite_cfg.get("direction"),
+                    "camera": sprite_cfg.get("camera"),
+                    "motion": sprite_cfg.get("animation") or sprite_cfg.get("motion") or "run",
+                } if isinstance(sprite_cfg, dict) else None,
+            }
+    return found
+
+
+def _reconcile_prop_jobs(active_ids):
+    """Move completed or failed H3-Image prop jobs out of PROP_JOBS into QUEUE_HISTORY."""
+    from server import PromptServer
+
+    if not PROP_JOBS:
+        return
+    queue = PromptServer.instance.prompt_queue
+    for pid in list(PROP_JOBS):
+        if pid in active_ids:
+            continue
+        meta = PROP_JOBS.pop(pid, None)
+        if not meta:
+            continue
+        record = queue.get_history(prompt_id=pid).get(pid)
+        err = None
+        state = "done"
+        if record:
+            status = record.get("status") or {}
+            if status.get("status_str") == "error":
+                state = "failed"
+                err = failure(record)
+            elif any(msg[0] == "execution_interrupted" for msg in (status.get("messages") or [])):
+                state = "cancelled"
+        _record_queue_history({**meta, "state": state, "error": err})
+
+
+def build_queue_snapshot():
+    """Return ComfyUI's live running + pending queue enriched with H3 Editor project/prop metadata."""
+    from server import PromptServer
+
+    raw_running, raw_pending = PromptServer.instance.prompt_queue.get_current_queue()
+    pending_sorted = sorted(raw_pending, key=lambda entry: entry[0])
+    running_sorted = sorted(raw_running, key=lambda entry: entry[0])
+    active_ids = {entry[1] for entry in running_sorted} | {entry[1] for entry in pending_sorted}
+    _reconcile_prop_jobs(active_ids)
+    lookup = _project_pending_lookup()
+
+    def describe(entry, state, position):
+        pid = entry[1]
+        if pid in lookup:
+            return {**lookup[pid], "state": state, "position": position}
+        if pid in PROP_JOBS:
+            return {**PROP_JOBS[pid], "state": state, "position": position}
+        return {
+            "id": pid,
+            "kind": "comfyui",
+            "folder": None,
+            "project": None,
+            "clip": None,
+            "name": "ComfyUI workflow",
+            "quality": None,
+            "state": state,
+            "position": position,
+        }
+
+    return {
+        "running": [describe(e, "running", idx) for idx, e in enumerate(running_sorted)],
+        "pending": [describe(e, "queued", idx + 1) for idx, e in enumerate(pending_sorted)],
+        "history": list(QUEUE_HISTORY),
+    }
 
 
 def sprite_export_fps(body):
@@ -2046,6 +2173,7 @@ async def sprite_self_pin(request):
         return refused("Preferred self-pin frame must be an integer.")
 
     frames = None
+    total_frames = int(take.get("frames") or sheet.get("frames") or store.sprite.FRAMES)
     cache_name = sheet.get("frame_cache")
     if cache_name:
         try:
@@ -2055,21 +2183,28 @@ async def sprite_self_pin(request):
         if cache_path and os.path.isdir(cache_path):
             frames = await asyncio.to_thread(store.sprite.load_frame_cache, cache_path)
 
-    if not frames:
+    if not frames or len(frames) < stride + 1:
         source = output_path(take.get("subfolder"), take["file"])
-        if not os.path.isfile(source):
+        if os.path.isfile(source):
+            with tempfile.TemporaryDirectory() as tmp:
+                pattern = os.path.join(tmp, "f_%04d.png")
+                await run(["ffmpeg", "-y", "-v", "error", "-i", source, pattern])
+                files = sorted(f for f in os.listdir(tmp) if f.endswith(".png"))
+                frames = []
+                for fname in files:
+                    with Image.open(os.path.join(tmp, fname)) as im:
+                        frames.append(im.convert("RGB"))
+        elif not frames:
             return refused("The source movie for this take is missing.", 404)
-        with tempfile.TemporaryDirectory() as tmp:
-            pattern = os.path.join(tmp, "f_%04d.png")
-            await run(["ffmpeg", "-y", "-v", "error", "-i", source, pattern])
-            files = sorted(f for f in os.listdir(tmp) if f.endswith(".png"))
-            frames = []
-            for fname in files:
-                with Image.open(os.path.join(tmp, fname)) as im:
-                    frames.append(im.convert("RGB"))
 
     try:
-        chosen, rgb, pins = await asyncio.to_thread(store.sprite.pick_self_pin_frame, frames, stride, preferred)
+        if len(frames) >= stride + 1:
+            chosen, rgb, pins = await asyncio.to_thread(store.sprite.pick_self_pin_frame, frames, stride, preferred)
+        else:
+            # Sampled pose cache (e.g. 7 poses): pick a clean non-edge-touching pose and preserve the clip's stride pins.
+            pick_stride = max(1, len(frames) // 2)
+            chosen, rgb, _ = await asyncio.to_thread(store.sprite.pick_self_pin_frame, frames, pick_stride, preferred)
+            pins = [i for i in (0, stride, 2 * stride) if i < total_frames]
     except ValueError as error:
         return refused(error)
     target, asset = asset_target(name, ".png")
@@ -2096,8 +2231,94 @@ async def sprite_prop(request):
         return refused(error)
     if body.get("dry_run"):
         return web.json_response({"job": job, "graph": graph})
-    prompt_id = await queue_prompt(graph)
+    prompt_id = await queue_prompt(graph, body.get("client_id"))
+    PROP_JOBS[prompt_id] = {
+        "id": prompt_id,
+        "kind": "prop",
+        "folder": name,
+        "project": project.get("name") or name,
+        "clip": None,
+        "name": job["name"],
+        "quality": job["kind"].replace("_", " "),
+        "seed": job.get("seed"),
+        "size": job.get("native_size"),
+        "frames": 1,
+    }
     return web.json_response({"prompt_id": prompt_id, "job": job})
+
+
+async def render_queue(request):
+    """Live ComfyUI render queue enriched with H3 Editor project clips, sprites, props and recent history."""
+    return web.json_response(build_queue_snapshot())
+
+
+async def cancel_queue(request):
+    """Cancel one job, all waiting jobs, or all running + waiting jobs from H3 Editor's Render Queue UI."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        return refused("Send a cancellation target.")
+    snapshot = build_queue_snapshot()
+    job_id = body.get("id")
+    scope = body.get("scope")
+    if job_id:
+        targets = [item for item in (*snapshot["running"], *snapshot["pending"]) if item["id"] == job_id]
+        if not targets:
+            return refused("That render is no longer in the queue.", 404)
+    elif scope == "pending":
+        targets = list(snapshot["pending"])
+    elif scope == "all":
+        targets = [*snapshot["pending"], *snapshot["running"]]
+    elif scope == "project" and body.get("folder"):
+        folder = store.slug(body["folder"])
+        targets = [item for item in (*snapshot["pending"], *snapshot["running"]) if item.get("folder") == folder]
+    else:
+        return refused("Specify id, or scope: pending, all, or project.")
+
+    ids = [item["id"] for item in targets]
+    if ids:
+        try:
+            status, _ = await comfy("POST", "/queue", {"delete": ids})
+            if status != 200:
+                raise Refused("ComfyUI could not remove queued renders; try again")
+            running, _ = comfy_queue()
+            for item in targets:
+                if item["id"] in running:
+                    status, _ = await comfy("POST", "/interrupt", {"prompt_id": item["id"]})
+                    if status != 200:
+                        raise Refused("ComfyUI could not interrupt the active render; try again")
+        except Refused as error:
+            return refused(plain(error), 502)
+
+    by_folder = {}
+    for item in targets:
+        PROP_JOBS.pop(item["id"], None)
+        _record_queue_history({**item, "state": "cancelled", "error": None})
+        if item.get("folder") and item.get("kind") in ("clip", "sprite"):
+            by_folder.setdefault(item["folder"], []).append(item["id"])
+
+    for folder, folder_ids in by_folder.items():
+        try:
+            async with lock(folder):
+                data = read_project(folder)
+                changed = False
+                for pid in folder_ids:
+                    if store.pop_pending(data, pid):
+                        changed = True
+                if changed:
+                    commit(folder, data, "render", body.get("client_id"))
+        except web.HTTPException:
+            continue
+
+    return web.json_response({"cancelled": ids, "queue": build_queue_snapshot()})
+
+
+async def clear_queue_history(request):
+    """Clear recent finished/failed/cancelled entries from H3 Editor's Render Queue history."""
+    QUEUE_HISTORY.clear()
+    return web.json_response({"ok": True, "queue": build_queue_snapshot()})
 
 
 def take_has_latents(take):
@@ -2509,11 +2730,41 @@ async def watch_once():
             continue
         async with lock(folder):
             data = read_project(folder)
+            clips_by_id = {c.get("id"): c for c in data.get("clips") or [] if isinstance(c, dict)}
+            project_name = data.get("name") or folder
             for job, file, info, message in finished:
+                clip = clips_by_id.get(job.get("clip")) or {}
+                sprite_cfg = (job.get("saved") or {}).get("sprite") or clip.get("sprite")
                 if file:
                     store.finish_render(data, job["id"], file, info)
+                    _record_queue_history({
+                        "id": job["id"],
+                        "kind": "sprite" if sprite_cfg else "clip",
+                        "folder": folder,
+                        "project": project_name,
+                        "clip": job.get("clip"),
+                        "name": clip.get("name") or job.get("clip") or "Clip",
+                        "quality": job.get("quality") or "draft",
+                        "size": job.get("size"),
+                        "frames": (info or {}).get("frames") or job.get("frames"),
+                        "state": "done",
+                        "error": None,
+                    })
                 else:
                     store.fail_render(data, job["id"], message)
+                    _record_queue_history({
+                        "id": job["id"],
+                        "kind": "sprite" if sprite_cfg else "clip",
+                        "folder": folder,
+                        "project": project_name,
+                        "clip": job.get("clip"),
+                        "name": clip.get("name") or job.get("clip") or "Clip",
+                        "quality": job.get("quality") or "draft",
+                        "size": job.get("size"),
+                        "frames": job.get("frames"),
+                        "state": "failed",
+                        "error": message,
+                    })
             commit(folder, data, "render")
 
 
@@ -2830,6 +3081,9 @@ async def export(request):
 
 ROUTES = (
     ("GET", "/h3take/api/sizes", "sizes"),
+    ("GET", "/h3take/api/queue", "render_queue"),
+    ("POST", "/h3take/api/queue/cancel", "cancel_queue"),
+    ("POST", "/h3take/api/queue/clear-history", "clear_queue_history"),
     ("GET", "/h3take/editor", "page"),
     ("GET", "/h3take/api/projects", "projects"),
     ("POST", "/h3take/api/projects", "create"),

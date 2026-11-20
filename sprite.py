@@ -616,12 +616,25 @@ def save_frame_cache(folder, frames_by_index):
     return saved
 
 
-def load_frame_cache(folder, indices):
-    """Load cached lossless RGBA frames for the requested indices, or return None if any frame is missing."""
+def load_frame_cache(folder, indices=None):
+    """Load cached lossless RGBA frames.
+
+    When indices is provided, returns {idx: Image} (or None if any requested frame is missing).
+    When indices is None, returns all cached fNNNN.png frames as a sorted list (or None if empty).
+    """
     from PIL import Image
 
     if not folder or not os.path.isdir(folder):
         return None
+    if indices is None:
+        files = sorted(f for f in os.listdir(folder) if f.startswith("f") and f.endswith(".png"))
+        if not files:
+            return None
+        out = []
+        for fname in files:
+            with Image.open(os.path.join(folder, fname)) as im:
+                out.append(im.convert("RGBA"))
+        return out
     loaded = {}
     for idx in indices:
         path = os.path.join(folder, "f%04d.png" % int(idx))

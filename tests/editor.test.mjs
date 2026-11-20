@@ -15,6 +15,7 @@ import {
 import test from "node:test";
 import assert from "node:assert/strict";
 import { curveLevel, soundEnvelope, setSoundLevel, resumeSoundMixer, disconnectSound } from "../editor/sound-envelope.js";
+import { formatJobMeta, mergeQueueState, relativeTime, summarizeQueue } from "../editor/queue.js";
 
 const source = readFileSync(new URL("../editor/editor.js", import.meta.url), "utf8");
 
@@ -479,4 +480,46 @@ test("partial draft finalization detects split parts, blocks finished halves, an
   assert.equal(c.takeRangeStatus(partialFinal, 50, 150), "partial");
   assert.match(c.finishOff(clip, right), /already a final/);
   assert.equal(c.finishOff(clip, left), "");
+});
+
+test("managed render queue merges live progress, external ComfyUI jobs, props and summaries", () => {
+  const snapshot = {
+    running: [{ id: "p1", kind: "sprite", folder: "mascots", project: "Mascots", clip: "c1", name: "Mantis · run · E", quality: "draft", size: [512, 512], frames: 39, sprite: { direction: "E" } }],
+    pending: [
+      { id: "p2", kind: "prop", folder: "mascots", project: "Mascots", clip: null, name: "stone_lantern", quality: "prop", size: [2048, 2048], frames: 1, position: 1 },
+      { id: "p3", kind: "comfyui", folder: null, project: null, clip: null, name: "ComfyUI workflow", quality: null, position: 2 },
+    ],
+    history: [
+      { id: "p0", kind: "clip", folder: "mascots", clip: "c0", name: "Intro", quality: "draft", state: "failed", error: "OOM", at: 950 },
+    ],
+  };
+  const localJobs = new Map([
+    ["p1", { id: "p1", clip: "c1", stage: "Sampling", step: 4, max: 8, progress: 0.5 }],
+    ["p4", { id: "p4", clip: "c2", quality: "final", frames: 56 }],
+  ]);
+  const merged = mergeQueueState(snapshot, localJobs, localJobs.get("p1"), "mascots", (id) => (id === "c2" ? { id: "c2", name: "Hero close-up" } : null));
+  assert.equal(merged.running.length, 1);
+  assert.equal(merged.running[0].progress, 0.5);
+  assert.equal(merged.running[0].stage, "Sampling");
+  assert.equal(merged.pending.length, 3);
+  assert.equal(merged.pending[2].name, "Hero close-up");
+
+  const sum = summarizeQueue(merged);
+  assert.equal(sum.busy, true);
+  assert.equal(sum.runningCount, 1);
+  assert.equal(sum.pendingCount, 3);
+  assert.equal(sum.failedCount, 1);
+  assert.equal(sum.label, "Mantis · run · E · 50% · +3 queued");
+  assert.equal(sum.summary, "1 running · 3 waiting");
+
+  assert.deepEqual(formatJobMeta(merged.running[0], "mascots"), ["Sprite draft", "E", "512×512", "39f"]);
+  assert.deepEqual(formatJobMeta(merged.pending[0], "mascots"), ["4 MP prop", "2048×2048"]);
+  assert.deepEqual(formatJobMeta(merged.pending[1], "mascots"), ["ComfyUI"]);
+  assert.equal(relativeTime(950, 1000), "50s ago");
+  assert.equal(relativeTime(995, 1000), "just now");
+
+  const idleSum = summarizeQueue({ running: [], pending: [], history: snapshot.history });
+  assert.equal(idleSum.busy, false);
+  assert.equal(idleSum.label, "Queue · 1 failed");
+  assert.equal(idleSum.summary, "Idle");
 });

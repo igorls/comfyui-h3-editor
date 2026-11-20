@@ -50,15 +50,44 @@
         <p class="checks-foot">Measured from the pictures as clips render: cuts, takes that cut, fade or stop inside, soft clips, drift, VFX edges and your ratings.</p>
       </div>
       <div id="contextMenu" class="menu context-menu" popover role="menu" aria-label="Actions" tabindex="-1"></div>
-      <button id="renderMenuButton" class="quiet menu-button" aria-haspopup="menu" popovertarget="renderMenu">Render<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
-      <div id="renderMenu" class="menu" popover role="menu" aria-label="Batch renders">
-        <button id="renderAll" role="menuitem"><b>Render all drafts</b><span>Timeline clips that have no take yet</span></button>
-        <button id="renderFinals" role="menuitem"><b>Render all finals</b><span>Timeline clips whose selected take is not a final</span></button>
-        <button id="cancelFinals" role="menuitem" disabled><b>Cancel all finals</b><span>Stop queued and running finals in this project</span></button>
-        <button id="cancelRenders" role="menuitem" disabled><b>Cancel all renders</b><span>Stop queued and running renders in this project</span></button>
+      <div id="queue" class="queue">
+        <button id="queueButton" class="quiet queue-trigger" type="button" aria-haspopup="true" aria-expanded="false" popovertarget="queuePanel" title="Open the H3 Editor render queue">
+          <span id="queueLabel">Queue</span>
+          <svg class="queue-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg>
+          <i id="queueButtonBar" class="queue-trigger-bar" hidden aria-hidden="true"></i>
+        </button>
+        <div id="queuePanel" class="menu queue-panel" popover aria-label="Render queue">
+          <div class="queue-head">
+            <div>
+              <h2>Render queue</h2>
+              <span id="queueSummary" class="queue-summary">Idle</span>
+            </div>
+            <div class="queue-head-actions">
+              <button id="queueClearPending" class="quiet" type="button" disabled>Clear waiting</button>
+              <button id="queueStopAll" class="quiet danger" type="button" disabled>Stop all</button>
+            </div>
+          </div>
+          <div id="queueActive" class="queue-list" aria-live="polite"></div>
+          <div id="queueHistoryWrap" class="queue-history-wrap" hidden>
+            <div class="queue-subhead">
+              <span>Recent</span>
+              <button id="queueClearHistory" class="quiet" type="button">Clear</button>
+            </div>
+            <div id="queueHistory" class="queue-list"></div>
+          </div>
+        </div>
       </div>
-      <button id="export" class="primary">Export</button>
-      <div id="queue" class="queue"></div>
+      <span class="bar-sep workspace-actions-sep" aria-hidden="true"></span>
+      <div class="workspace-actions" role="group" aria-label="Render and export">
+        <button id="renderMenuButton" class="quiet menu-button" aria-haspopup="menu" popovertarget="renderMenu">Render<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+        <div id="renderMenu" class="menu" popover role="menu" aria-label="Batch renders">
+          <button id="renderAll" role="menuitem"><b>Render all drafts</b><span>Timeline clips that have no take yet</span></button>
+          <button id="renderFinals" role="menuitem"><b>Render all finals</b><span>Timeline clips whose selected take is not a final</span></button>
+          <button id="cancelFinals" role="menuitem" disabled><b>Cancel all finals</b><span>Stop queued and running finals in this project</span></button>
+          <button id="cancelRenders" role="menuitem" disabled><b>Cancel all renders</b><span>Stop queued and running renders in this project</span></button>
+        </div>
+        <button id="export" class="primary">Export</button>
+      </div>
     </div>
   </header>
 
@@ -203,9 +232,44 @@
           <div id="spriteCompass"></div><p id="spriteCoverage" class="sprite-caption"></p>
         </section>
         <section class="sprite-preview" aria-labelledby="spritePreviewTitle">
-          <div class="sprite-section-head"><h3 id="spritePreviewTitle">Game preview</h3><div class="sprite-actions"><button id="spriteGround" class="sprite-action">Load ground image</button><button id="spritePlain" class="sprite-action">Plain ground</button></div></div>
-          <canvas id="spriteArena" width="600" height="220" tabindex="0" aria-label="Game preview. Use WASD or arrow keys to move."></canvas>
-          <div class="sprite-transport"><div class="sprite-actions"><button class="quiet" id="spritePlay">Pause</button><button class="quiet" id="spriteStep">Next pose</button></div><span class="sprite-caption">WASD or arrow keys</span></div>
+          <div class="sprite-section-head">
+            <h3 id="spritePreviewTitle">Game preview</h3>
+            <div class="sprite-actions sprite-inspect-controls">
+              <select id="spriteZoom" aria-label="Preview zoom" title="Preview zoom (or scroll on canvas)">
+                <option value="1">1×</option>
+                <option value="2">2×</option>
+                <option value="3" selected>3×</option>
+                <option value="4">4×</option>
+                <option value="6">6×</option>
+              </select>
+              <select id="spriteBackdrop" aria-label="Preview backdrop" title="Preview background for cutout inspection">
+                <option value="matte">Matte</option>
+                <option value="checker">Checker</option>
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+              <button id="spritePivot" class="sprite-action" type="button" aria-pressed="false" title="Show ground pivot crosshair and tile bounds">Pivot</button>
+              <button id="spriteHd" class="sprite-action" type="button" aria-pressed="false" title="Inspect crisp 256 px lossless frames at zoom">HD 256</button>
+              <button id="spriteGround" class="sprite-action" type="button">Ground…</button>
+              <button id="spritePlain" class="sprite-action" type="button">Clear ground</button>
+            </div>
+          </div>
+          <canvas id="spriteArena" width="600" height="320" tabindex="0" aria-label="Game preview. Use WASD or arrow keys to move, scroll to zoom, Space to pause."></canvas>
+          <div class="sprite-transport">
+            <div class="sprite-actions">
+              <button class="quiet" id="spritePlay" type="button">Pause</button>
+              <button class="quiet" id="spritePrev" type="button" title="Previous pose ([)">Prev</button>
+              <button class="quiet" id="spriteStep" type="button" title="Next pose (])">Next</button>
+              <select id="spriteSpeed" aria-label="Playback speed" title="Playback speed">
+                <option value="0.25">0.25×</option>
+                <option value="0.5">0.5×</option>
+                <option value="1" selected>1×</option>
+              </select>
+              <button class="quiet" id="spriteCenter" type="button" title="Re-center sprite on stage">Center</button>
+            </div>
+            <span id="spritePoseReadout" class="sprite-caption">WASD or arrow keys · Scroll to zoom</span>
+          </div>
+          <div id="spritePoseStrip" class="sprite-pose-strip" role="group" aria-label="Pose inspector. Click a pose to inspect it up close."></div>
           <input id="spriteGroundFile" type="file" accept="image/*" hidden>
         </section>
       </div>

@@ -207,18 +207,55 @@ export function installSprites(editor) {
     last = 0,
     raf = 0,
     x = 0.5,
-    y = 0.62,
+    y = 0.68,
+    zoom = 3,
+    speed = 1,
+    backdrop = "matte",
+    showPivot = false,
+    hdMode = false,
     ground = null,
     busy = false,
     exporting = false;
+  const hdSheets = new Map();
+  let poseStripKey = "";
+  let poseButtons = [];
   let audition = null;
+  const ZOOM_LEVELS = [1, 2, 3, 4, 6];
   const open = () => !room.hidden;
   const project = () => editor.state.project;
   const chosen = (direction = dir) => pickedSprite(slots, prefs, camera, motion, direction);
   const current = () => audition || chosen();
   const style = () => $("spriteStyle").value;
-  function sheetUrl(row) {
-    return editor.viewUrl(row.take.sprite[style()], row.take.sprite.subfolder || row.take.subfolder);
+  function sheetUrl(row, overrideSheet = null) {
+    const sh = overrideSheet || row.take.sprite;
+    return editor.viewUrl(sh[style()], sh.subfolder || row.take.sprite.subfolder || row.take.subfolder);
+  }
+  function hdKey(row) {
+    return [folder, row.clip.id, row.take.id].join(":");
+  }
+  function activeDisplaySheet(row) {
+    if (!row) return null;
+    if (hdMode) {
+      const cached = hdSheets.get(hdKey(row));
+      if (cached && !cached.loading && !cached.error) return cached.sheet;
+    }
+    return row.take.sprite;
+  }
+  async function ensureHd(row) {
+    if (!hdMode || !row || !editor.inspectSprite) return;
+    const key = hdKey(row);
+    const baseTile = row.take.sprite.tile_size?.[0] || row.take.sprite.tile || 64;
+    if (baseTile >= 256 || hdSheets.has(key)) return;
+    hdSheets.set(key, { loading: true });
+    refresh();
+    try {
+      const sheet = await editor.inspectSprite(row.clip, row.take, 256);
+      hdSheets.set(key, { loading: false, sheet });
+    } catch (error) {
+      hdSheets.set(key, { loading: false, error: error.message || "HD preview unavailable" });
+      editor.toast("HD 256 preview unavailable: " + (error.message || "using base strip"), true);
+    }
+    refresh();
   }
   function remember(edit) {
     editor.checkpoint();
@@ -294,10 +331,13 @@ export function installSprites(editor) {
     audition = null;
     ground = null;
     pictures.clear();
+    hdSheets.clear();
+    poseStripKey = "";
+    poseButtons = [];
     keys.clear();
     pointer = null;
     x = 0.5;
-    y = 0.62;
+    y = 0.68;
     clock = 0;
     last = 0;
   }
@@ -481,6 +521,16 @@ export function installSprites(editor) {
       : "Preview mirrored " + partner;
     $("spriteMirror").disabled = !slots[partner]?.takes.length;
     $("spritePlay").textContent = paused ? "Play" : "Pause";
+    $("spriteZoom").value = String(zoom);
+    $("spriteBackdrop").value = backdrop;
+    $("spriteSpeed").value = String(speed);
+    $("spritePivot").setAttribute("aria-pressed", String(showPivot));
+    const hdEntry = show ? hdSheets.get(hdKey(show)) : null;
+    $("spriteHd").setAttribute("aria-pressed", String(hdMode));
+    $("spriteHd").disabled = !show;
+    $("spriteHd").textContent = hdMode && hdEntry?.loading ? "HD…" : "HD 256";
+    if (hdMode && show) void ensureHd(show);
+    syncPoseStrip(show);
     const ready = exportPicks().length;
     $("spriteAtlas").disabled = !actor || exporting || !ready;
     $("spriteAtlas").textContent = ready
@@ -505,24 +555,73 @@ export function installSprites(editor) {
     }
     return out;
   }
-  function paint() {
-    if (!slots || !open()) return;
-    const reviewed = current()?.take.sprite;
-    const phase = reviewed ? ((clock * reviewed.fps) % reviewed.poses) / reviewed.poses : 0;
-    for (const [node, row] of frames) {
-      const sh = row.take.sprite;
-      const pose = reviewed ? Math.floor(phase * sh.poses) : Math.floor(clock * sh.fps) % sh.poses;
-      node.style.backgroundPositionX = -pose * 64 + "px";
+  function currentPoseIndex(sh) {
+    if (!sh || !sh.poses) return 0;
+    const raw = Math.floor(clock * sh.fps) % sh.poses;
+    return ((raw % sh.poses) + sh.poses) % sh.poses;
+  }
+  function stepPose(delta) {
+    const row = current();
+    if (!row) return;
+    paused = true;
+    const sh = row.take.sprite;
+    const next = (currentPoseIndex(sh) + delta + sh.poses) % sh.poses;
+    clock = (next + 0.01) / (sh.fps || 12);
+    refresh();
+  }
+  function jumpToPose(index) {
+    const row = current();
+    if (!row) return;
+    paused = true;
+    const sh = row.take.sprite;
+    clock = (index + 0.01) / (sh.fps || 12);
+    refresh();
+  }
+  function syncPoseStrip(row) {
+    const strip = $("spritePoseStrip");
+    if (!strip) return;
+    if (!row) {
+      poseStripKey = "";
+      poseButtons = [];
+      strip.replaceChildren();
+      return;
     }
-    const w = Math.max(1, stage.clientWidth),
-      h = Math.max(1, stage.clientHeight);
-    if (stage.width !== w || stage.height !== h) {
-      stage.width = w;
-      stage.height = h;
+    const sh = activeDisplaySheet(row);
+    const url = sheetUrl(row, sh);
+    const key = [row.clip.id, row.take.id, row.mirror ? "m" : "", url, backdrop, sh.poses].join("|");
+    if (key !== poseStripKey) {
+      poseStripKey = key;
+      poseButtons = [];
+      strip.replaceChildren();
+      const backdropClass = backdrop !== "matte" ? " backdrop-" + backdrop : "";
+      for (let idx = 0; idx < sh.poses; idx++) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "sprite-pose-tile" + backdropClass;
+        btn.title = "Inspect pose " + (idx + 1) + " of " + sh.poses;
+        btn.setAttribute("aria-label", "Pose " + (idx + 1) + " of " + sh.poses);
+        btn.onclick = () => jumpToPose(idx);
+        const cell = document.createElement("i");
+        cell.style.backgroundImage = "url(" + url + ")";
+        cell.style.backgroundSize = sh.poses * 72 + "px 72px";
+        cell.style.backgroundPositionX = -idx * 72 + "px";
+        if (row.mirror) cell.style.transform = "scaleX(-1)";
+        const num = document.createElement("span");
+        num.textContent = String(idx + 1);
+        btn.append(cell, num);
+        poseButtons.push(btn);
+        strip.append(btn);
+      }
     }
-    ctx.fillStyle = "#555b5b";
-    ctx.fillRect(0, 0, w, h);
+    const active = currentPoseIndex(row.take.sprite);
+    for (let i = 0; i < poseButtons.length; i++) {
+      poseButtons[i].setAttribute("aria-pressed", String(i === active));
+    }
+  }
+  function drawBackdrop(w, h) {
     if (ground?.naturalWidth) {
+      ctx.fillStyle = "#555b5b";
+      ctx.fillRect(0, 0, w, h);
       const scale = Math.max(w / ground.width, h / ground.height);
       ctx.drawImage(
         ground,
@@ -531,27 +630,102 @@ export function installSprites(editor) {
         ground.width * scale,
         ground.height * scale,
       );
+      return;
     }
+    if (backdrop === "dark") {
+      ctx.fillStyle = "#141619";
+      ctx.fillRect(0, 0, w, h);
+    } else if (backdrop === "light") {
+      ctx.fillStyle = "#ecebe6";
+      ctx.fillRect(0, 0, w, h);
+    } else if (backdrop === "checker") {
+      const sq = 14;
+      ctx.fillStyle = "#464c56";
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = "#2d3138";
+      for (let yy = 0; yy < h; yy += sq) {
+        for (let xx = ((yy / sq) % 2) * sq; xx < w; xx += sq * 2) {
+          ctx.fillRect(xx, yy, sq, sq);
+        }
+      }
+    } else {
+      ctx.fillStyle = "#555b5b";
+      ctx.fillRect(0, 0, w, h);
+    }
+  }
+  function paint() {
+    if (!slots || !open()) return;
+    const reviewed = current()?.take.sprite;
+    const phase = reviewed ? (((clock * reviewed.fps) % reviewed.poses) + reviewed.poses) % reviewed.poses / reviewed.poses : 0;
+    for (const [node, row] of frames) {
+      const sh = row.take.sprite;
+      const pose = reviewed ? Math.floor(phase * sh.poses) : currentPoseIndex(sh);
+      node.style.backgroundPositionX = -pose * 64 + "px";
+    }
+    const w = Math.max(1, stage.clientWidth),
+      h = Math.max(1, stage.clientHeight);
+    if (stage.width !== w || stage.height !== h) {
+      stage.width = w;
+      stage.height = h;
+    }
+    drawBackdrop(w, h);
     const row = current();
-    if (!row) return;
-    const url = sheetUrl(row);
+    const readout = $("spritePoseReadout");
+    if (!row) {
+      if (readout) readout.textContent = "WASD or arrow keys · Scroll to zoom";
+      return;
+    }
+    const baseSh = row.take.sprite;
+    const sh = activeDisplaySheet(row);
+    const url = sheetUrl(row, sh);
     if (!pictures.has(url)) {
       const img = new Image();
       img.src = url;
       pictures.set(url, img);
     }
     const img = pictures.get(url);
+    const pose = currentPoseIndex(baseSh);
+    for (let i = 0; i < poseButtons.length; i++) {
+      poseButtons[i].setAttribute("aria-pressed", String(i === pose));
+    }
+    if (readout) {
+      const hdTag = sh !== baseSh ? " · HD " + (sh.tile_size?.[0] || sh.tile) + " px" : "";
+      const speedTag = speed !== 1 ? ` (${speed}×)` : "";
+      readout.textContent = `Pose ${pose + 1}/${baseSh.poses} · ${baseSh.fps} fps${speedTag} · ${zoom}×${hdTag}`;
+    }
     if (!img.naturalWidth) return;
-    const sh = row.take.sprite,
-      tw = sh.tile_size?.[0] || sh.tile,
-      th = sh.tile_size?.[1] || sh.tile,
-      pose = Math.floor(clock * sh.fps) % sh.poses;
+    const srcW = sh.tile_size?.[0] || sh.tile,
+      srcH = sh.tile_size?.[1] || sh.tile,
+      baseW = baseSh.tile_size?.[0] || baseSh.tile,
+      baseH = baseSh.tile_size?.[1] || baseSh.tile,
+      drawW = Math.round(baseW * zoom),
+      drawH = Math.round(baseH * zoom),
+      pivX = Math.round(baseSh.pivot[0] * zoom),
+      pivY = Math.round(baseSh.pivot[1] * zoom),
+      cx = Math.round(x * w),
+      cy = Math.round(y * h);
     ctx.save();
-    ctx.imageSmoothingEnabled = false;
-    ctx.translate(Math.round(x * w), Math.round(y * h));
+    ctx.imageSmoothingEnabled = sh !== baseSh && srcW > drawW;
+    ctx.translate(cx, cy);
     if (row.mirror) ctx.scale(-1, 1);
-    ctx.drawImage(img, pose * tw, 0, tw, th, -sh.pivot[0], -sh.pivot[1], tw, th);
+    ctx.drawImage(img, pose * srcW, 0, srcW, srcH, -pivX, -pivY, drawW, drawH);
     ctx.restore();
+    if (showPivot) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(240, 179, 84, 0.55)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(cx - pivX + 0.5, cy - pivY + 0.5, drawW - 1, drawH - 1);
+      ctx.setLineDash([]);
+      ctx.strokeStyle = "#f0b354";
+      ctx.beginPath();
+      ctx.moveTo(cx - 10, cy + 0.5);
+      ctx.lineTo(cx + 10, cy + 0.5);
+      ctx.moveTo(cx + 0.5, cy - 10);
+      ctx.lineTo(cx + 0.5, cy + 10);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
   function tick(now) {
     if (!open()) return;
@@ -573,15 +747,53 @@ export function installSprites(editor) {
         audition = null;
         refresh();
       }
-      const speed = (90 * dt) / Math.hypot(dx, dy);
-      x = Math.max(0.06, Math.min(0.94, x + (dx * speed) / stage.width));
-      y = Math.max(0.33, Math.min(0.94, y + (dy * speed) / stage.height));
+      const moveSpeed = (90 * dt) / Math.hypot(dx, dy);
+      x = Math.max(0.06, Math.min(0.94, x + (dx * moveSpeed) / stage.width));
+      y = Math.max(0.33, Math.min(0.94, y + (dy * moveSpeed) / stage.height));
     }
-    if (!paused) clock += dt;
+    if (!paused) clock += dt * speed;
     paint();
     raf = requestAnimationFrame(tick);
   }
+  function stepZoom(delta) {
+    const idx = ZOOM_LEVELS.indexOf(zoom);
+    const next = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, (idx === -1 ? 2 : idx) + delta));
+    if (ZOOM_LEVELS[next] !== zoom) {
+      zoom = ZOOM_LEVELS[next];
+      refresh();
+    }
+  }
+  stage.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    stepZoom(e.deltaY < 0 ? 1 : -1);
+  }, { passive: false });
   stage.onkeydown = (e) => {
+    if (e.key === " ") {
+      e.preventDefault();
+      paused = !paused;
+      refresh();
+      return;
+    }
+    if (e.key === "[" || e.key === ",") {
+      e.preventDefault();
+      stepPose(-1);
+      return;
+    }
+    if (e.key === "]" || e.key === ".") {
+      e.preventDefault();
+      stepPose(1);
+      return;
+    }
+    if (e.key === "+" || e.key === "=") {
+      e.preventDefault();
+      stepZoom(1);
+      return;
+    }
+    if (e.key === "-") {
+      e.preventDefault();
+      stepZoom(-1);
+      return;
+    }
     const h = inputs[e.key.toLowerCase()];
     if (h) {
       e.preventDefault();
@@ -845,16 +1057,37 @@ export function installSprites(editor) {
     if ($("spriteTile").value === "custom") $("spriteTileCustom").focus();
   };
   $("spriteStyle").onchange = refresh;
+  $("spriteZoom").onchange = (e) => {
+    zoom = Number(e.target.value) || 3;
+    refresh();
+  };
+  $("spriteBackdrop").onchange = (e) => {
+    backdrop = e.target.value || "matte";
+    refresh();
+  };
+  $("spritePivot").onclick = () => {
+    showPivot = !showPivot;
+    refresh();
+  };
+  $("spriteHd").onclick = () => {
+    hdMode = !hdMode;
+    refresh();
+  };
+  $("spriteSpeed").onchange = (e) => {
+    speed = Number(e.target.value) || 1;
+    refresh();
+  };
+  $("spriteCenter").onclick = () => {
+    x = 0.5;
+    y = 0.68;
+    paint();
+  };
   $("spritePlay").onclick = () => {
     paused = !paused;
     refresh();
   };
-  $("spriteStep").onclick = () => {
-    paused = true;
-    const fps = current()?.take.sprite.fps || 12;
-    clock = (Math.floor(clock * fps) + 1.001) / fps;
-    refresh();
-  };
+  $("spritePrev").onclick = () => stepPose(-1);
+  $("spriteStep").onclick = () => stepPose(1);
   $("spriteGround").onclick = () => $("spriteGroundFile").click();
   $("spritePlain").onclick = () => {
     editor.checkpoint();
