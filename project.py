@@ -17,6 +17,7 @@ try:
     from . import holds
     from . import style_timeline
     from . import vosr2
+    from . import motion_replace
     from . import patches as patching
     from .prompting import compose_prompt, compose_reference_prompt
 except ImportError:
@@ -25,6 +26,7 @@ except ImportError:
     import holds
     import style_timeline
     import vosr2
+    import motion_replace
     import patches as patching
     from prompting import compose_prompt, compose_reference_prompt
 
@@ -72,6 +74,8 @@ FORMAT_PRESETS = (*FORMATS, "3:2", "4:3", "7:5", "21:9")
 SHARP = "sharp"
 SHARP_UPSCALER = "relayvsr"
 SHARP_DETAIL = 1.0
+RELAYVSR_MODEL = "relayvsr_x2_lightx2v_int8_convrot.safetensors"
+RELAYVSR_VAE = "relayvsr_flash_vae_x2_fp32.safetensors"
 LANGUAGE = "English"
 # The range a recorded picture side must fall in before export trusts it.
 MIN_SIDE, MAX_SIDE = 16, 8192
@@ -581,10 +585,18 @@ def encoder_status(available):
 # download it, so the panel links to its page instead (manual).
 MINIMAX_LICENSE = ("MiniMax H3 Community License Agreement", "https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE")
 HYPERFLOW_LICENSE = ("MiniMax H3 Community License Agreement", "https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash/blob/main/LICENSE")
+SAM3_LICENSE = ("SAM License", "https://huggingface.co/Comfy-Org/sam3.1/blob/main/LICENSE")
+SWAP_LORA_LICENSE = ("MiniMax H3 Community License Agreement", "https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA/blob/main/LICENSE")
+MIT_SDPOSE_LICENSE = ("MIT License", "https://huggingface.co/Comfy-Org/SDPose")
+APACHE_RELAYVSR_LICENSE = ("Apache License 2.0", "https://huggingface.co/Comfy-Org/RelayVSR")
 SETUP_REPOS = {
     "Comfy-Org/MiniMax-H3": "4b53a35191437de05370da548e59aeabe2a5a09a",
     "VideoRebirthAI/hyperflow-h3-flash": "6834923e1a9ca4d15a2349a622b6677bea1404cb",
     "LBH-123-AI/Minimax_h3_latent_Upscaler": "85a0187096046badc0a71ab6bd6be182ab06c0f4",
+    "Comfy-Org/sam3.1": "7bb8374780a725b4353ed31f3a9395c9742b5621",
+    "akatz-ai/MiniMax-H3-Character-Swap-LoRA": "96ea3407b230b6f7df71c58c70e31df96bd7e533",
+    "Comfy-Org/SDPose": "acb43fbe8142b54d9ebd52b720b81dd4e14c8d81",
+    "Comfy-Org/RelayVSR": "202c35eb0a5bb64b7017d5a09ea9acea87b7a081",
 }
 SETUP_FILES = [
     {"id": "text_encoder", "title": "Text encoder, Qwen3-VL 32B", "needs": MODEL_CHOICES["clip"], "folder": "text_encoders",
@@ -706,12 +718,105 @@ MOTION_POSE = "sdpose_wholebody_fp16.safetensors"
 MOTION_DETECTOR = "rt_detr_v4-x-hgnet_fp16.safetensors"
 MOTION_CONTROL = "minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors"
 MOTION_CONTROL_V2 = "minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors"
+MOTION_SAM3 = "sam3.1_multiplex_fp16.safetensors"
+MOTION_SWAP_LORA = "h3_character_swap_v1.5.safetensors"
+MOTION_MODES = ("replace", "choreography")
+MOTION_STYLES = ("auto", "preserve", "photoreal")
+MOTION_MAX_SECONDS = 30
+SAM3_NODES = ("CheckpointLoaderSimple", "SAM3_Detect", "SAM3_VideoTrack", "SAM3_TrackToMask")
 MOTION_NODES = ("CheckpointLoaderSimple", "RTDETR_detect", "SDPoseKeypointExtractor",
                 "SDPoseDrawKeypoints", "ModelPatchLoader", "MiniMaxH3FunControlNetApply")
 
+MOTION_SETUP_GROUPS = ("replace", "pose", "sharp")
+MOTION_SETUP_FILES = [
+    {"id": "sam3", "group": "replace", "title": "SAM 3.1 subject segmentation & tracking",
+     "needs": [MOTION_SAM3], "check_prefix": "motion-checkpoints:", "folder": "checkpoints",
+     "repo": "Comfy-Org/sam3.1", "path": "checkpoints/sam3.1_multiplex_fp16.safetensors",
+     "bytes": 1745546848, "sha256": "9ba99c92703c2e8b4f47de2d34a539bb8e18923049e238b780d70dbe6368eb03",
+     "license": SAM3_LICENSE, "for": "replace"},
+    {"id": "swap_lora", "group": "replace", "title": "H3 Character Swap LoRA v1.5",
+     "needs": [MOTION_SWAP_LORA], "folder": "loras",
+     "repo": "akatz-ai/MiniMax-H3-Character-Swap-LoRA", "path": "h3_character_swap_v1.5.safetensors",
+     "bytes": 155110792, "sha256": "8f2c3c3eba161df8d0c6099598b4730f641f5ce01e04cd16d2427cff8a35218f",
+     "license": SWAP_LORA_LICENSE, "for": "replace"},
+    {"id": "rtdetr", "group": "pose", "title": "RT-DETR person detector",
+     "needs": [MOTION_DETECTOR], "folder": "diffusion_models",
+     "repo": "Comfy-Org/SDPose", "path": "diffusion_models/rt_detr_v4-x-hgnet_fp16.safetensors",
+     "bytes": 123968978, "sha256": "581f9af9bbabb664d1891cbccd823308b176ecd409146f954dfa39af3bec2476",
+     "license": MIT_SDPOSE_LICENSE, "for": "pose"},
+    {"id": "sdpose", "group": "pose", "title": "SDPose wholebody keypoint extractor",
+     "needs": [MOTION_POSE], "check_prefix": "motion-checkpoints:", "folder": "checkpoints",
+     "repo": "Comfy-Org/SDPose", "path": "checkpoints/sdpose_wholebody_fp16.safetensors",
+     "bytes": 1916645792, "sha256": "63d01f9a7494560693b24767f4469d59c9d3266b31ff0a253e74d1e611442721",
+     "license": MIT_SDPOSE_LICENSE, "for": "pose"},
+    {"id": "fun_controlnet_v2", "group": "pose", "title": "MiniMax H3 Fun ControlNet Union 2.0",
+     "needs": [MOTION_CONTROL_V2, MOTION_CONTROL], "check_prefix": "motion-control:", "folder": "model_patches",
+     "repo": "Comfy-Org/MiniMax-H3", "path": "model_patches/minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors",
+     "bytes": 4531220608, "sha256": "890af58bb350f0c2f6c409b1c67ea8f4196654297d037769b72de1e6f504c612",
+     "license": MINIMAX_LICENSE, "for": "pose"},
+    {"id": "relayvsr_model", "group": "sharp", "title": "RelayVSR 2x video upscaler",
+     "needs": [RELAYVSR_MODEL], "folder": "diffusion_models",
+     "repo": "Comfy-Org/RelayVSR", "path": "diffusion_models/relayvsr_x2_lightx2v_int8_convrot.safetensors",
+     "bytes": 5163295248, "sha256": "240e75e0c17cf2845d559b25254a230ff7458f81449d7a8c5e7e3fb8275c7b3c",
+     "license": APACHE_RELAYVSR_LICENSE, "for": "sharp"},
+    {"id": "relayvsr_vae", "group": "sharp", "title": "RelayVSR Flash VAE 2x",
+     "needs": [RELAYVSR_VAE], "folder": "vae",
+     "repo": "Comfy-Org/RelayVSR", "path": "vae/relayvsr_flash_vae_x2_fp32.safetensors",
+     "bytes": 127759464, "sha256": "b5bb0339acb5b52545911ea29a51b4c5b805776a779222b5a14591571f42e21c",
+     "license": APACHE_RELAYVSR_LICENSE, "for": "sharp"},
+]
+
+
+def _motion_file_found(entry, available):
+    prefix = entry.get("check_prefix")
+    if prefix:
+        files = available or ()
+        candidates = [name[len(prefix):] for name in sorted(files) if name.startswith(prefix)]
+        return next((name for base in entry["needs"] for name in candidates
+                     if name.replace("\\", "/").rsplit("/", 1)[-1] == base), None)
+    exact = pick_file(entry["needs"], available)
+    if exact is not None or available is None:
+        return exact
+    # Also match files stored inside subfolders (e.g. relayvsr/relayvsr_x2_lightx2v_int8_convrot.safetensors).
+    candidates = [name for name in sorted(available) if ":" not in name]
+    return next((name for base in entry["needs"] for name in candidates
+                 if name.replace("\\", "/").rsplit("/", 1)[-1] == base), None)
+
+
+def motion_setup_status(available, groups=None):
+    """Status of optional Hugging Face motion transfer models, grouped into replace, pose and sharp."""
+    selected = list(MOTION_SETUP_GROUPS) if not groups else [g for g in groups if g in MOTION_SETUP_GROUPS]
+    if groups is not None and not selected:
+        raise ValueError("groups must name one or more of %s" % (", ".join(MOTION_SETUP_GROUPS),))
+    rows = []
+    for entry in MOTION_SETUP_FILES:
+        found = _motion_file_found(entry, available)
+        rows.append({
+            "id": entry["id"], "group": entry["group"], "title": entry["title"],
+            "file": entry["needs"][0], "folder": entry["folder"], "bytes": entry["bytes"],
+            "for": entry["for"], "installed": found is not None, "found": found,
+            "source": "https://huggingface.co/%s" % entry["repo"],
+            "license": {"name": entry["license"][0], "url": entry["license"][1]},
+        })
+    by_group = {}
+    for g in MOTION_SETUP_GROUPS:
+        grows = [r for r in rows if r["group"] == g]
+        gmiss = [r for r in grows if not r["installed"]]
+        by_group[g] = {"installed": not gmiss, "missing": [r["id"] for r in gmiss],
+                       "bytes": sum(r["bytes"] for r in gmiss)}
+    missing = [r for r in rows if r["group"] in selected and not r["installed"]]
+    return {
+        "files": rows,
+        "groups": by_group,
+        "selected": selected,
+        "missing": [r["id"] for r in missing],
+        "bytes": sum(r["bytes"] for r in missing),
+        "ready": by_group["replace"]["installed"],
+    }
+
 
 def motion_status(available):
-    """The native pose graph uses the standard H3 block layout."""
+    """Capabilities for masked character replacement (`replace`) and pose-guided choreography (`choreography`)."""
     files = available or ()
 
     def model(folder, *names):
@@ -720,18 +825,56 @@ def motion_status(available):
         return next((name for base in names for name in candidates
                      if name.replace("\\", "/").rsplit("/", 1)[-1] == base), None)
 
+    sam3 = model("motion-checkpoints", MOTION_SAM3)
+    swap_lora = pick_file([MOTION_SWAP_LORA], available)
     pose = model("motion-checkpoints", MOTION_POSE)
-    control = model("motion-control", MOTION_CONTROL, MOTION_CONTROL_V2)
+    control = model("motion-control", MOTION_CONTROL_V2, MOTION_CONTROL)
     detector = pick_file([MOTION_DETECTOR.removesuffix(".safetensors") + "*"], available)
     base = pick_file(PROFILES["h3"]["unet"], available)
+    flash = pick_file(PROFILES["hyperflow"]["unet"], available)
     profile = "h3_turbo" if pick_file([PROFILES["h3_turbo"]["lora"][0]], available) else "h3"
-    missing = []
+
+    replace_missing = []
+    if available is not None and "sam3-nodes" not in files:
+        replace_missing.append("native ComfyUI SAM3 nodes")
+    if not sam3:
+        replace_missing.append(MOTION_SAM3)
+    if not (flash or base):
+        replace_missing.append(PROFILES["hyperflow"]["unet"][0])
+    replace_ready = not replace_missing
+
+    pose_missing = []
     if available is not None and "motion-nodes" not in files:
-        missing.append("the native ComfyUI pose and H3 ControlNet nodes")
-    missing.extend(label for found, label in ((pose, MOTION_POSE), (detector, MOTION_DETECTOR),
-                                               (control, MOTION_CONTROL), (base, PROFILES["h3"]["unet"][0])) if not found)
-    return {"available": not missing, "missing": missing, "profile": profile, "model": PROFILES[profile]["title"],
-            "pose": pose, "detector": detector, "control": control}
+        pose_missing.append("the native ComfyUI pose and H3 ControlNet nodes")
+    pose_missing.extend(label for found, label in (
+        (pose, MOTION_POSE), (detector, MOTION_DETECTOR),
+        (control, MOTION_CONTROL_V2), (base, PROFILES["h3"]["unet"][0]),
+    ) if not found)
+    pose_ready = not pose_missing
+
+    relayvsr = UPSCALERS["relayvsr"]["files"]
+    sharp_ready = bool(installed(relayvsr["model"], available) and installed(relayvsr["vae"], available))
+
+    available_any = replace_ready or pose_ready
+    missing = [] if available_any else list(dict.fromkeys(replace_missing + pose_missing))
+    default_mode = "choreography" if (pose_ready and not replace_ready) else "replace"
+    return {
+        "available": available_any,
+        "missing": missing,
+        "replace": replace_ready,
+        "replace_missing": replace_missing,
+        "pose_control": pose_ready,
+        "pose_missing": pose_missing,
+        "sharp_ready": sharp_ready,
+        "default_mode": default_mode,
+        "profile": profile,
+        "model": PROFILES[profile]["title"],
+        "pose": pose,
+        "detector": detector,
+        "control": control,
+        "sam3": sam3,
+        "swap_lora": swap_lora,
+    }
 
 
 def slug(name):
@@ -1071,27 +1214,379 @@ def still_node(asset):
     return {"class_type": "H3LoadStill", "inputs": {"file": file}}
 
 
-def wire_motion_transfer(graph, motion):
-    """Extract one person's poses from the chosen source frames and use a still for identity."""
+def motion_prompt(motion, user_prompt=""):
+    """Build the clean positive conditioning prompt for masked replacement or choreography."""
+    extra = str(user_prompt or "").strip()
+    if (motion.get("mode") or "choreography") == "replace":
+        if motion.get("style") == "photoreal":
+            prefix = (
+                "Completely replace the person in <Video 1> from the first frame to the last frame with the "
+                "photorealistic person in <Picture 1>, preserving <Picture 1>'s exact face, hair, and outfit "
+                "while matching the scene's lighting, shadows, framing, camera movement, and motion. "
+                "Leave the source background cleanly visible whenever the person exits.\n"
+            )
+        else:
+            prefix = (
+                "Completely replace the person in <Video 1> from the first frame to the last frame with the "
+                "character in <Picture 1>, matching <Picture 1>'s exact art style, face, hair, and outfit "
+                "while preserving the scene and motion. Leave the source background cleanly visible whenever the person exits.\n"
+            )
+        return prefix + extra
+    return (
+        "<Picture 1> defines the performer's face, hair, body and outfit. "
+        "The performer follows the pose guide's choreography and timing in a continuous full-body shot.\n"
+        + extra
+    )
+
+
+def resolve_motion_runtime(motion, available=None, detect_style=None):
+    """Validate motion settings and resolve installed checkpoints for a render graph."""
+    if not isinstance(motion, dict):
+        raise ValueError("motion transfer needs a character image and settings")
+    character = clean_asset(motion.get("character"), "the character image")
+    if not character:
+        raise ValueError("choose a character image for motion transfer")
+    settings = motion_status(available)
+    if not settings["available"]:
+        raise ValueError("motion transfer needs " + ", ".join(settings["missing"]))
+    mode = motion.get("mode") or settings["default_mode"]
+    if mode not in MOTION_MODES:
+        raise ValueError("motion mode must be one of %s" % (", ".join(MOTION_MODES),))
+    style = motion.get("style") or "auto"
+    if style not in MOTION_STYLES:
+        raise ValueError("character style must be one of %s" % (", ".join(MOTION_STYLES),))
+    if style == "auto":
+        detected = detect_style(character) if detect_style is not None else None
+        style = "preserve" if detected == "preserve" else "photoreal"
+
+    if mode == "replace":
+        if not settings["replace"]:
+            raise ValueError("character replacement needs " + ", ".join(settings["replace_missing"]))
+        pose_strength = clean_strength(motion.get("strength", 0.0), (0.0, 2.0), "motion strength")
+        if pose_strength > 0.0 and not settings["pose_control"]:
+            raise ValueError("pose reinforcement needs " + ", ".join(settings["pose_missing"]))
+        default_swap = (1.0 if style == "photoreal" else 0.5) if settings["swap_lora"] else 0.0
+        raw_swap = motion.get("swap_lora")
+        swap_strength = clean_strength(
+            default_swap if raw_swap is None else raw_swap, (0.0, 1.5), "character swap LoRA strength"
+        )
+        if swap_strength > 0.0 and not settings["swap_lora"]:
+            raise ValueError("character swap LoRA needs " + MOTION_SWAP_LORA)
+        expand_raw = motion.get("expand_px", 32)
+        if isinstance(expand_raw, bool) or not isinstance(expand_raw, (int, float)) or not 0 <= int(expand_raw) <= 128:
+            raise ValueError("mask expansion must be between 0 and 128 pixels")
+        out = {
+            "mode": "replace",
+            "style": style,
+            "character": character,
+            "strength": pose_strength,
+            "sam3": settings["sam3"],
+            "isolate": bool(motion.get("isolate", True)),
+            "plate": bool(motion.get("plate", True)),
+            "expand_px": int(expand_raw),
+            "swap_lora": settings["swap_lora"] if swap_strength > 0.0 else None,
+            "swap_lora_strength": swap_strength,
+        }
+        if pose_strength > 0.0:
+            out.update({k: settings[k] for k in ("pose", "detector", "control")})
+        if motion.get("sharp"):
+            out["sharp"] = True
+        return out
+
+    if not settings["pose_control"]:
+        raise ValueError("motion transfer needs " + ", ".join(settings["pose_missing"]))
+    out = {k: settings[k] for k in ("pose", "detector", "control", "profile")}
+    out.update(
+        mode="choreography",
+        style=style,
+        character=character,
+        strength=clean_strength(motion.get("strength", 1.0), (0.1, 2.0), "motion strength"),
+        sam3=settings["sam3"],
+        isolate=bool(motion.get("isolate", bool(settings["sam3"]))),
+        plate=False,
+    )
+    if motion.get("sharp"):
+        out["sharp"] = True
+    return out
+
+
+def wire_motion_transfer(graph, motion, *, hyperflow=False, width=384, frame_count=None, prompt_text="", seed=0,
+                         source_info=None, cache_hits=None):
+    """Wire single-pass or automatic multi-window pure-latent relay motion transfer onto `graph`."""
+    mode = motion.get("mode") or "choreography"
+    exact_frames = int(frame_count or graph["10"]["inputs"]["length"])
+    windows = motion_replace.plan_relay_windows(exact_frames)
+    multi = len(windows) > 1
+    hits = cache_hits or {}
+
     graph["214"] = still_node(motion["character"])
-    graph["10"]["inputs"]["ref_images.ref_image_0"] = ["214", 0]
-    graph["215"] = dict(class_type="UNETLoader", inputs={"unet_name": motion["detector"], "weight_dtype": "default"})
-    graph["216"] = dict(class_type="RTDETR_detect", inputs={
-        "model": ["215", 0], "image": ["213", 0], "threshold": 0.5, "class_name": "person", "max_detections": 1})
-    graph["217"] = dict(class_type="CheckpointLoaderSimple", inputs={"ckpt_name": motion["pose"]})
-    graph["218"] = dict(class_type="SDPoseKeypointExtractor", inputs={
-        "model": ["217", 0], "vae": ["217", 2], "image": ["213", 0], "bboxes": ["216", 0], "batch_size": 8})
-    graph["219"] = dict(class_type="SDPoseDrawKeypoints", inputs={
-        "keypoints": ["218", 0], "draw_body": True, "draw_head": True, "draw_hands": True, "draw_feet": True,
-        "draw_face": False, "stick_width": 4, "face_point_size": 2, "score_threshold": 0.3})
-    graph["220"] = dict(class_type="ModelPatchLoader", inputs={"name": motion["control"]})
-    graph["221"] = dict(class_type="MiniMaxH3FunControlNetApply", inputs={
-        "model": graph["9"]["inputs"]["model"], "vae": ["3", 0], "model_patch": ["220", 0], "control_video": ["219", 0],
-        "strength": motion["strength"], "start_percent": 0.0, "end_percent": 1.0})
-    graph["9"]["inputs"]["model"] = ["221", 0]
+    char_ref = ["214", 0]
+    char_file = "/".join(filter(None, (motion["character"].get("subfolder"), motion["character"].get("file"))))
+
+    sam3_ckpt = motion.get("sam3")
+    want_isolate = bool(sam3_ckpt and motion.get("isolate"))
+    need_sam3 = bool(sam3_ckpt) and (
+        (mode == "replace" and (motion.get("plate", True) or not hits.get("mask")))
+        or (want_isolate and not hits.get("cutout"))
+    )
+    if need_sam3:
+        graph["238"] = dict(class_type="CheckpointLoaderSimple", inputs={"ckpt_name": sam3_ckpt})
+    if want_isolate:
+        iso_inputs = {
+            "image": ["214", 0], "subject": "person", "backdrop": "white", "threshold": 0.35,
+            "character_file": char_file,
+        }
+        if "238" in graph:
+            iso_inputs["sam_model"] = ["238", 0]
+            iso_inputs["sam_clip"] = ["238", 1]
+        graph["239"] = dict(class_type="H3IsolateCharacter", inputs=iso_inputs)
+        char_ref = ["239", 0]
+
+    graph["10"]["inputs"]["ref_images.ref_image_0"] = char_ref
+    graph["10"]["inputs"]["prompt"] = prompt_text
+    graph["10"]["inputs"]["length"] = windows[0]["length"]
+
+    pose_strength = float(motion.get("strength", 0.0 if mode == "replace" else 1.0))
+    use_pose = pose_strength > 0.0 and motion.get("detector") and motion.get("pose") and motion.get("control")
+
+    if mode == "replace":
+        # Decode full-resolution RGB pixels cleanly (also supports >15s clips for windowed relay).
+        graph["213"]["inputs"]["reference_only"] = False
+        graph["213"]["inputs"]["frames_only"] = True
+
+        base_expand = int(motion.get("expand_px", 32))
+        scaled_expand = max(0, min(128, int(round(base_expand * (float(width) / 384.0)))))
+        track_inputs = {
+            "images": ["213", 0], "subject": "person", "expansion_px": scaled_expand,
+            "detect_threshold": 0.35, "track_threshold": 0.5,
+        }
+        if "238" in graph:
+            track_inputs["sam_model"] = ["238", 0]
+            track_inputs["sam_clip"] = ["238", 1]
+        if source_info:
+            track_inputs.update({
+                "source_file": source_info["file"],
+                "first": int(source_info["first"]),
+                "total_frames": int(source_info["total_frames"]),
+            })
+        graph["240"] = dict(class_type="H3TrackSubjectMask", inputs=track_inputs)
+
+        swap_strength = float(motion.get("swap_lora_strength", 0.0))
+        if swap_strength > 0.0 and motion.get("swap_lora"):
+            graph["230"] = dict(class_type="H3Lora", inputs={
+                "model": graph["5"]["inputs"]["model"], "lora_name": motion["swap_lora"],
+                "strength": swap_strength,
+            })
+            graph["5"]["inputs"]["model"] = ["230", 0]
+    elif multi:
+        graph["213"]["inputs"]["reference_only"] = False
+        graph["213"]["inputs"]["frames_only"] = True
+
+    if use_pose:
+        pose_inputs = {
+            "image": ["213", 0], "batch_size": 8,
+            "min_area_frac": 0.005, "min_valid_body_kps": 2, "kp_score_thresh": 0.3,
+        }
+        if source_info:
+            pose_inputs.update({
+                "source_file": source_info["file"],
+                "first": int(source_info["first"]),
+                "total_frames": int(source_info["total_frames"]),
+            })
+        if not (hits.get("pose") and source_info):
+            graph["215"] = dict(class_type="UNETLoader", inputs={"unet_name": motion["detector"], "weight_dtype": "default"})
+            graph["216"] = dict(class_type="RTDETR_detect", inputs={
+                "model": ["215", 0], "image": ["213", 0], "threshold": 0.5, "class_name": "person", "max_detections": 1})
+            graph["217"] = dict(class_type="CheckpointLoaderSimple", inputs={"ckpt_name": motion["pose"]})
+            pose_inputs.update({"model": ["217", 0], "vae": ["217", 2], "bboxes": ["216", 0]})
+        graph["218"] = dict(class_type="H3GatedSDPose", inputs=pose_inputs)
+        graph["219"] = dict(class_type="SDPoseDrawKeypoints", inputs={
+            "keypoints": ["218", 0], "draw_body": True, "draw_head": True, "draw_hands": True, "draw_feet": True,
+            "draw_face": False, "stick_width": 4, "face_point_size": 2, "score_threshold": 0.3})
+        graph["220"] = dict(class_type="ModelPatchLoader", inputs={"name": motion["control"]})
+
+    base_guider_model = list(graph["13"]["inputs"]["model"])
+    ctrl_node = "H3FlashControlNetApply" if hyperflow else "MiniMaxH3FunControlNetApply"
+
+    def attach_swap_guard(model_ref):
+        swap_lora_name = motion.get("swap_lora") or ""
+        cur_swap = float(motion.get("swap_lora_strength", 0.0))
+        boost = max(0.0, min(0.35, 1.25 - cur_swap)) if swap_lora_name else 0.0
+        graph["248"] = dict(class_type="H3SwapGuard", inputs={
+            "sampled": ["15", 0],
+            "masked_source": ["245", 0],
+            "model": list(model_ref),
+            "conditioning": ["10", 0],
+            "sampler": ["11", 0],
+            "sigmas": ["12", 0],
+            "seed": int(seed),
+            "swap_lora": swap_lora_name,
+            "boost_strength": round(boost, 2),
+            "min_change": 0.42,
+        })
+        graph["16"]["inputs"]["samples"] = ["248", 0]
+        return "248"
+
+    if not multi:
+        if mode == "replace":
+            # Always align ref_video_0 and source mask to exact 5 + 17k grid length so
+            # MiniMaxH3ReferenceToVideo never truncates the tail and dissolves the character.
+            graph["260"] = dict(class_type="H3SliceBatch", inputs={
+                "start": 0, "length": windows[0]["length"], "images": ["213", 0], "mask": ["240", 1],
+            })
+            graph["10"]["inputs"]["ref_videos.ref_video_0"] = ["260", 0]
+            graph["245"] = dict(class_type="H3ApplyEditMask", inputs={
+                "latent": ["10", 1], "vae": ["3", 0], "source_video": ["260", 0], "mask": ["260", 1],
+                "overlap_frames": 0,
+            })
+            graph["15"]["inputs"]["latent_image"] = ["245", 0]
+        if use_pose:
+            graph["221"] = dict(class_type=ctrl_node, inputs={
+                "model": graph["9"]["inputs"]["model"], "vae": ["3", 0], "model_patch": ["220", 0],
+                "control_video": ["219", 0], "strength": pose_strength, "start_percent": 0.0, "end_percent": 1.0,
+            })
+            graph["9"]["inputs"]["model"] = ["221", 0]
+        if mode == "replace":
+            attach_swap_guard(graph["13"]["inputs"]["model"])
+        return windows
+
+    # Multi-window pure-latent relay (>141 frames / 5.9s -> up to 30s):
+    # Window 0 uses the primary take/sampler/decode nodes (10/13/15/16) with sliced inputs.
+    w0 = windows[0]
+    w0_slice_inputs = {"start": w0["start"], "length": w0["length"], "images": ["213", 0]}
+    if mode == "replace":
+        w0_slice_inputs["mask"] = ["240", 1]
+    graph["260"] = dict(class_type="H3SliceBatch", inputs=w0_slice_inputs)
+    if mode == "replace":
+        graph["10"]["inputs"]["ref_videos.ref_video_0"] = ["260", 0]
+        graph["245"] = dict(class_type="H3ApplyEditMask", inputs={
+            "latent": ["10", 1], "vae": ["3", 0], "source_video": ["260", 0], "mask": ["260", 1],
+            "overlap_frames": 0,
+        })
+        graph["15"]["inputs"]["latent_image"] = ["245", 0]
+    if use_pose:
+        graph["261"] = dict(class_type="H3SliceBatch", inputs={"start": w0["start"], "length": w0["length"], "images": ["219", 0]})
+        graph["221"] = dict(class_type=ctrl_node, inputs={
+            "model": base_guider_model, "vae": ["3", 0], "model_patch": ["220", 0],
+            "control_video": ["261", 0], "strength": pose_strength, "start_percent": 0.0, "end_percent": 1.0,
+        })
+        graph["13"]["inputs"]["model"] = ["221", 0]
+
+    prev_sampler = attach_swap_guard(graph["13"]["inputs"]["model"]) if mode == "replace" else "15"
+    prev_decoded = ["16", 0]
+    base_take_inputs = copy.deepcopy(graph["10"]["inputs"])
+
+    for idx, win in enumerate(windows[1:], start=1):
+        base = 300 + 20 * idx
+        k_slice = str(base)
+        k_pslice = str(base + 1)
+        k_ctrl = str(base + 2)
+        k_take = str(base + 3)
+        k_mask = str(base + 4)
+        k_guider = str(base + 5)
+        k_sampler = str(base + 6)
+        k_decode = str(base + 7)
+        k_join = str(base + 8)
+        k_noise = str(base + 9)
+
+        slice_inputs = {"start": win["start"], "length": win["length"], "images": ["213", 0]}
+        if mode == "replace":
+            slice_inputs["mask"] = ["240", 1]
+        graph[k_slice] = dict(class_type="H3SliceBatch", inputs=slice_inputs)
+
+        win_model = base_guider_model
+        if use_pose:
+            graph[k_pslice] = dict(class_type="H3SliceBatch", inputs={
+                "start": win["start"], "length": win["length"], "images": ["219", 0],
+            })
+            graph[k_ctrl] = dict(class_type=ctrl_node, inputs={
+                "model": base_guider_model, "vae": ["3", 0], "model_patch": ["220", 0],
+                "control_video": [k_pslice, 0], "strength": pose_strength, "start_percent": 0.0, "end_percent": 1.0,
+            })
+            win_model = [k_ctrl, 0]
+
+        win_take_inputs = copy.deepcopy(base_take_inputs)
+        win_take_inputs["length"] = win["length"]
+        if mode == "replace":
+            win_take_inputs["ref_videos.ref_video_0"] = [k_slice, 0]
+        else:
+            # Choreography mode carries the prior window's last 22 latent frames directly via H3Take.carry.
+            win_take_inputs.update({
+                "carry": [prev_sampler, 0], "hold_frames": win["overlap"],
+                "align": "video", "audio_hold": "off", "video_mode": "off",
+            })
+        graph[k_take] = dict(class_type="H3Take", inputs=win_take_inputs)
+
+        if mode == "replace":
+            graph[k_mask] = dict(class_type="H3ApplyEditMask", inputs={
+                "latent": [k_take, 1], "vae": ["3", 0],
+                "source_video": [k_slice, 0], "mask": [k_slice, 1],
+                "prev_latent": [prev_sampler, 0], "overlap_frames": win["overlap"],
+            })
+            win_latent = [k_mask, 0]
+        else:
+            win_latent = [k_take, 1]
+
+        graph[k_noise] = {"class_type": "RandomNoise", "inputs": {"noise_seed": (int(seed) + idx) & 0x7fffffff}}
+        graph[k_guider] = dict(class_type="BasicGuider", inputs={"model": win_model, "conditioning": [k_take, 0]})
+        graph[k_sampler] = dict(class_type="SamplerCustomAdvanced", inputs={
+            "noise": [k_noise, 0], "guider": [k_guider, 0], "sampler": ["11", 0],
+            "sigmas": ["12", 0], "latent_image": win_latent,
+        })
+        graph[k_decode] = dict(class_type="VAEDecode", inputs={"samples": [k_sampler, 0], "vae": ["3", 0]})
+        is_last = idx == len(windows) - 1
+        graph[k_join] = dict(class_type="H3JoinWindow", inputs={
+            "prev_images": prev_decoded, "next_images": [k_decode, 0],
+            "overlap_frames": win["overlap"], "blend_frames": 4,
+            "trim_to": exact_frames if is_last else 0,
+        })
+        prev_sampler = k_sampler
+        prev_decoded = [k_join, 0]
+
+    graph["18"]["inputs"]["images"] = prev_decoded
+    graph["18"]["inputs"].pop("audio", None)
+    graph.pop("17", None)
+    graph.pop("20", None)
+    return windows
 
 
-def render_graph(project, folder, clip, take, quality, seed, available=None, patches=None, finish=None, edit=None, finish_window=None):
+def wire_motion_plate(graph, motion):
+    """Keep latent masking across single-window refine and optionally composite the zero-halo source plate."""
+    if (motion.get("mode") or "choreography") != "replace":
+        return
+    if "248" in graph:
+        # Ensure single-window refine, audio decode, and hold save all read the swap-verified Window 0 latent.
+        if "82" in graph:
+            graph["82"]["inputs"]["samples"] = ["248", 0]
+        if "17" in graph:
+            graph["17"]["inputs"]["samples"] = ["248", 0]
+        if "20" in graph:
+            graph["20"]["inputs"]["latent"] = ["248", 0]
+    if "83" in graph and "80" in graph and "240" in graph:
+        # Keep the source background locked across a single-window final's refine pass too.
+        src_ref = ["260", 0] if "260" in graph else ["213", 0]
+        mask_ref = ["260", 1] if "260" in graph else ["240", 1]
+        graph["246"] = dict(class_type="H3ApplyEditMask", inputs={
+            "latent": ["80", 1], "vae": ["3", 0], "source_video": src_ref, "mask": mask_ref,
+            "overlap_frames": 0,
+        })
+        graph["83"]["inputs"]["take"] = ["246", 0]
+    if not motion.get("plate", True):
+        return
+    decoded = list(graph["18"]["inputs"]["images"])
+    plate_inputs = {
+        "generated": decoded, "source": ["213", 0], "source_mask": ["240", 0],
+        "subject": "person", "src_expand_px": 18, "gen_expand_px": 4, "feather_sigma": 4.0,
+    }
+    if "238" in graph:
+        plate_inputs["sam_model"] = ["238", 0]
+        plate_inputs["sam_clip"] = ["238", 1]
+    graph["250"] = dict(class_type="H3CompositeSourcePlate", inputs=plate_inputs)
+    graph["18"]["inputs"]["images"] = ["250", 0]
+
+
+def render_graph(project, folder, clip, take, quality, seed, available=None, patches=None, finish=None, edit=None,
+                 finish_window=None, check_cache=None):
     """One clip as a ComfyUI graph, saved as its own file in the project.
 
     available is the set of model files ComfyUI lists, used to find a profile's files.
@@ -1102,10 +1597,24 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     """
     if clip.get("kind") == "footage":
         raise ValueError("%s is imported footage. Extend or bridge it to generate from it" % clip.get("name", "this clip"))
-    if not str(clip.get("action", "")).strip():
+    active_motion = (edit.get("motion") if edit else None) or clip.get("motion")
+    if not str(clip.get("action", "")).strip() and not active_motion:
         raise ValueError("describe what happens in this clip before rendering it")
     if quality not in QUALITIES:
         raise ValueError("quality must be one of %s" % (tuple(QUALITIES),))
+    motion_src = None
+    if edit and edit.get("motion"):
+        motion_src = {"file": edit["file"], "subfolder": edit.get("subfolder") or "",
+                      "in": int(edit["in"]), "out": int(edit["out"]),
+                      "frames": int(edit.get("frames") or edit["out"])}
+    elif clip.get("motion"):
+        src = clip["motion"].get("source") or {}
+        motion_src = {"file": src["file"], "subfolder": src.get("subfolder") or "",
+                      "in": int(src["in"]), "out": int(src["out"]),
+                      "frames": int(src.get("frames") or src["out"])}
+    exact_motion_frames = (motion_src["out"] - motion_src["in"]) if motion_src else 0
+    multi_window = bool(active_motion and exact_motion_frames > motion_replace.SINGLE_MAX_FRAMES)
+
     width, height, enlarged = render_size(project, quality)
     config = sprite.settings(clip.get("sprite"))
     if config:
@@ -1113,22 +1622,46 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             raise ValueError("Sprite Draft needs an independent shot")
         width, height = sprite.canvas_size(config, quality)
         enlarged = False
+    is_replace_motion = bool(active_motion and (active_motion.get("mode") or "choreography") == "replace")
+    if is_replace_motion and not config and quality == "draft":
+        # Masked character replacement needs ~0.5 MP (medium, e.g. 544x960) so empty-prompt swaps
+        # commit cleanly from frame 0 instead of sticking to <Video 1>'s original performer.
+        med_w, med_h = format_sizes(project_format(project))["medium"]
+        if width * height < med_w * med_h:
+            width, height = med_w, med_h
+    use_sharp = not config and quality != "draft" and (
+        size_name(project, quality) == SHARP or bool(active_motion and active_motion.get("sharp"))
+    )
+    if use_sharp:
+        if is_replace_motion:
+            # Masked replacement on Sharp (RelayVSR 2x) samples at medium (544x960 / 960x544) before
+            # exact 2x RelayVSR to 1088x1920 / 1920x1088: 2.1x faster, ~18 GB less VRAM, and matches
+            # H3 Ref2VA's ~0.5 MP video-reference canvas for reliable empty-prompt swaps.
+            width, height = format_sizes(project_format(project))["medium"]
+        enlarged = False
+    if multi_window:
+        # Multi-window relay tiles 124f windows; skip single-pass latent refine (use Sharp RelayVSR instead).
+        enlarged = False
     _, profile = project_profile(project, available, clip)
     size = dict(QUALITIES[quality], width=width, height=height, steps=profile["steps"][quality])
     if not enlarged:
         # The project asked for finals at the size they are sampled at.
         size.pop("refine", None)
     models = project_models(project, available, clip)
-    references = bool(edit) or has_references(project, clip)
+    references = bool(edit) or bool(active_motion) or has_references(project, clip)
     # A family's fl2va model takes a prompt alone. Anything with references goes to its ref2va model.
     unet = models["unet"] if references or not models.get("unet_text") else models["unet_text"]
     hyperflow = is_hyperflow(unet)
+    if is_replace_motion and not config and hyperflow and size["steps"] < 6:
+        size["steps"] = 6
     link = clip.get("link")
     length = linked_length(link, clip.get("seconds", 5)) if link else snap_frames(clip.get("seconds", 5))
     if finish_window is not None:
         length = int(finish_window[1])
     elif edit:
-        length = 5 + 17 * math.ceil((edit["out"] - edit["in"] - 5) / 17)
+        length = motion_replace.snap_grid_frames(edit["out"] - edit["in"])
+    elif motion_src:
+        length = motion_replace.snap_grid_frames(exact_motion_frames)
     if config:
         length = config.get("frames", sprite.FRAMES)
     guides = clean_mid_guides(clip, length)
@@ -1179,7 +1712,12 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     # harsher with each one: on a chorus sung as a head and four extensions, 5, 18, 33 and 46% harsher than the
     # head. With none, and the held frames' far end redrawn (CONTEXT_NOISE), the skin turned glossy and waxy over
     # the chain. At half: +1% by the third clip and +12% by the fifth, with the skin's texture kept.
-    realism = realism_strength(project, size) * (LINKED_REALISM if clip.get("link") else 1.0)
+    # Do not inject photographic Realism Slider grain onto stylized character replacements.
+    stylized_motion = bool(
+        active_motion and (active_motion.get("mode") or "choreography") == "replace"
+        and active_motion.get("style", "preserve") != "photoreal"
+    )
+    realism = 0.0 if stylized_motion else realism_strength(project, size) * (LINKED_REALISM if clip.get("link") else 1.0)
     if realism and models.get("lora") and installed(models["lora"], available):
         # The Realism Slider, on the model both passes sample with. Without it a final still renders.
         lora_inputs = {"model": model, "lora_name": models["lora"], "strength": realism}
@@ -1203,26 +1741,39 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         model = [node, 0]
     graph["5"]["inputs"]["model"] = model
     take_inputs = graph["10"]["inputs"]
-    if edit:
+    if active_motion and motion_src:
+        # Load real look-ahead frames up to the grid-snapped render length when the source video has them,
+        # so MiniMaxH3ReferenceToVideo never truncates <Video 1> and dissolves the subject at the tail.
+        windows_needed = motion_replace.plan_relay_windows(exact_motion_frames)
+        needed_frames = windows_needed[-1]["start"] + windows_needed[-1]["length"]
+        src_total = max(motion_src["out"], int(motion_src.get("frames") or motion_src["out"]))
+        load_last = min(src_total, motion_src["in"] + needed_frames)
+        src_file = "/".join(filter(None, (motion_src["subfolder"], motion_src["file"])))
+        graph["213"] = dict(class_type="H3LoadClip", inputs={
+            "file": src_file,
+            "first": motion_src["in"], "last": load_last, "reference_only": True,
+        })
+        source_info = {"file": src_file, "first": motion_src["in"], "last": load_last, "total_frames": src_total}
+        cache_hits = check_cache(source_info, active_motion.get("character"), active_motion) if check_cache else None
+        user_notes = edit["prompt"] if edit else str(clip.get("action") or "")
+        prompt_text = motion_prompt(active_motion, user_notes)
+        wire_motion_transfer(
+            graph, active_motion, hyperflow=hyperflow, width=size["width"],
+            frame_count=exact_motion_frames, prompt_text=prompt_text, seed=int(seed),
+            source_info=source_info, cache_hits=cache_hits,
+        )
+    elif edit:
         graph["213"] = dict(class_type="H3LoadClip", inputs={
             "file": "/".join(filter(None, (edit["subfolder"], edit["file"]))),
             "first": edit["in"], "last": edit["out"], "reference_only": True,
         })
-        if edit.get("motion"):
-            wire_motion_transfer(graph, edit["motion"])
-            take_inputs["prompt"] = (
-                "<Picture 1> defines the performer's face, hair, body and outfit. "
-                "The performer follows the pose guide's choreography and timing in a continuous full-body shot.\n"
-                + edit["prompt"]
-            )
-        else:
-            take_inputs["ref_videos.ref_video_0"] = ["213", 0]
-            take_inputs["prompt"] = (
-                "Edit <Video 1>. Preserve its motion, timing and framing wherever the requested change allows.\n"
-                + ("<Picture 1> is the replacement first frame. Carry its visual changes through the shot.\n"
-                   if clip.get("first") else "")
-                + edit["prompt"]
-            )
+        take_inputs["ref_videos.ref_video_0"] = ["213", 0]
+        take_inputs["prompt"] = (
+            "Edit <Video 1>. Preserve its motion, timing and framing wherever the requested change allows.\n"
+            + ("<Picture 1> is the replacement first frame. Carry its visual changes through the shot.\n"
+               if clip.get("first") else "")
+            + edit["prompt"]
+        )
     if config and not config.get("motion"):
         guide = config.get("guide")
         if guide:
@@ -1259,13 +1810,14 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             for idx, _ in enumerate(sp_frames):
                 take_inputs["mid_images.mid_image_%s" % idx] = ["209", 0]
     index = 0
-    for _, pictures in cast_pictures(project, clip):
-        # A member's pictures sit together, in the order the prompt numbers them.
-        for asset in pictures:
-            node = str(50 + index)
-            graph[node] = still_node(asset)
-            take_inputs["ref_images.ref_image_%s" % index] = [node, 0]
-            index += 1
+    if not active_motion:
+        for _, pictures in cast_pictures(project, clip):
+            # A member's pictures sit together, in the order the prompt numbers them.
+            for asset in pictures:
+                node = str(50 + index)
+                graph[node] = still_node(asset)
+                take_inputs["ref_images.ref_image_%s" % index] = [node, 0]
+                index += 1
     voice = clip_voice(project, clip)
     if voice:
         sound = voice["voice"]
@@ -1329,7 +1881,9 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         add_refine(graph, refine_size(project) if enlarged else (width, height), tail, models["latent_upscaler"])
         if length > LONG_TAKE:
             add_refine_windows(graph)
-    if not config and quality != "draft" and size_name(project, quality) == SHARP:
+    if active_motion:
+        wire_motion_plate(graph, active_motion)
+    if use_sharp:
         add_sharp(graph, refine_size(project), available)
     if finish:
         start_from_take(graph, clip, finish, length, finish_window)
@@ -1394,7 +1948,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         # Partial finishes and edit-draft finishes leave the full draft's latents intact on the draft take.
         graph.pop("20", None)
     elif edit:
-        if quality == "draft":
+        if quality == "draft" and not active_motion and "20" in graph:
             # Keep the draft's sampled latents so later partial/full finals can refine them without re-sampling;
             # partial=True stops extend/bridge holds from misaligning them against the assembled video.
             graph["20"]["inputs"]["partial"] = True
@@ -1510,14 +2064,15 @@ def add_sharp(graph, size, available=None):
     """
     _, files = pick_upscaler(SHARP_UPSCALER, available)
     width, height = size
+    picture = list(graph["18"]["inputs"]["images"])
     graph.update({
         "31": {"class_type": "UNETLoader", "inputs": {"unet_name": files["model"], "weight_dtype": "default"}},
         "32": {"class_type": "VAELoader", "inputs": {"vae_name": files["vae"]}},
-        "33": {"class_type": "RelayVSRConditioning", "inputs": {"model": ["31", 0], "images": ["16", 0]}},
+        "33": {"class_type": "RelayVSRConditioning", "inputs": {"model": ["31", 0], "images": picture}},
         "34": {"class_type": "KSampler", "inputs": {
             "model": ["31", 0], "seed": 0, "steps": 1, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple",
             "positive": ["33", 0], "negative": ["33", 0], "latent_image": ["33", 1], "denoise": 1.0}},
-        "35": {"class_type": "VSRDecode", "inputs": {"vae": ["32", 0], "samples": ["34", 0], "images": ["16", 0], "detail": SHARP_DETAIL}},
+        "35": {"class_type": "VSRDecode", "inputs": {"vae": ["32", 0], "samples": ["34", 0], "images": picture, "detail": SHARP_DETAIL}},
         "36": {"class_type": "ImageScale", "inputs": {
             "image": ["35", 0], "upscale_method": "lanczos", "width": width, "height": height, "crop": "disabled"}},
     })
@@ -2361,7 +2916,7 @@ HOLD = 39
 HANDOVER = 9
 MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
-               "first", "last", "language", "track", "bin", "profile", "loras", "style_markers", "mid_guides", "sprite")
+               "first", "last", "language", "track", "bin", "profile", "loras", "style_markers", "mid_guides", "sprite", "motion")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
 PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "patches", "realism", "checkpoints", "text_encoder", "text_projection", "vae", "audio_vae", "sizes")
 # The model files set_project names, and their keys in the project's models. A projection only
@@ -2397,7 +2952,7 @@ END_HOLD = 22
 # (it dissolved or cut instead), and at 153 in 4 of 6.
 BRIDGE_SECONDS = 6.375
 LINK_TITLES = {"extend_after": "After ", "extend_before": "Before ", "bridge": "Bridge from ", "merge": "Merge from "}
-SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides", "sprite")
+SAVED_FIELDS = ("action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides", "sprite", "motion")
 
 
 def new_id(prefix):
@@ -2495,6 +3050,11 @@ def planned_frames(clip):
     take = active_take(clip)
     if take:
         return take["frames"]
+    if clip.get("motion"):
+        src = clip["motion"].get("source") or {}
+        span = int(src.get("out") or 0) - int(src.get("in") or 0)
+        if span > 0:
+            return span
     if clip.get("link"):
         return linked_length(clip["link"], clip.get("seconds", 5))
     if clip.get("sprite") is not None:
@@ -2582,6 +3142,8 @@ def clean_clip_fields(fields):
             out[side] = clean_asset(out[side], "a %s frame" % side)
     if "track" in out:
         out["track"] = clean_track(out["track"])
+    if "motion" in out:
+        out["motion"] = clean_motion_field(out["motion"])
     if out.get("profile") is not None and not isinstance(out["profile"], str):
         raise ValueError("profile is a profile id, or null for the project's")
     if "bin" in out and out["bin"] is not None and not isinstance(out["bin"], str):
@@ -2602,6 +3164,170 @@ def check_bin(project, fields):
     """A clip can only be filed in a bin the project has."""
     if fields.get("bin") is not None:
         find_bin(project, fields["bin"])
+
+
+def clean_motion_field(value):
+    """Validate a clip's stored motion transfer recipe (or None to clear it)."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("motion must be an object")
+    src = value.get("source")
+    if not isinstance(src, dict):
+        raise ValueError("motion needs a source take and frame range")
+    asset = clean_asset(src, "motion source")
+    first, last = src.get("in"), src.get("out")
+    if type(first) is not int or type(last) is not int or first < 0 or last <= first:
+        raise ValueError("motion source needs integer in and out frames")
+    if not 2 * FPS <= last - first <= MOTION_MAX_SECONDS * FPS:
+        raise ValueError("motion transfer takes between 2 and %s seconds" % MOTION_MAX_SECONDS)
+    character = clean_asset(value.get("character"), "the character image")
+    if not character:
+        raise ValueError("choose a character image for motion transfer")
+    mode = value.get("mode") or "replace"
+    if mode not in MOTION_MODES:
+        raise ValueError("motion mode must be one of %s" % (", ".join(MOTION_MODES),))
+    style = value.get("style") or "auto"
+    if style not in MOTION_STYLES:
+        raise ValueError("character style must be one of %s" % (", ".join(MOTION_STYLES),))
+    strength_limits = (0.0, 2.0) if mode == "replace" else (0.1, 2.0)
+    strength_default = 0.0 if mode == "replace" else 1.0
+    strength = clean_strength(value.get("strength", strength_default), strength_limits, "motion strength")
+    expand_raw = value.get("expand_px", 32)
+    if isinstance(expand_raw, bool) or not isinstance(expand_raw, (int, float)) or not 0 <= int(expand_raw) <= 128:
+        raise ValueError("mask expansion must be between 0 and 128 pixels")
+    cleaned = {
+        "source": {
+            "clip": str(src.get("clip") or ""),
+            "take": str(src.get("take") or ""),
+            "file": asset["file"],
+            "subfolder": asset["subfolder"],
+            "in": first,
+            "out": last,
+            "frames": int(src.get("frames") or last),
+        },
+        "character": character,
+        "mode": mode,
+        "style": style,
+        "strength": strength,
+        "isolate": bool(value.get("isolate", True)),
+        "plate": bool(value.get("plate", mode == "replace")),
+        "expand_px": int(expand_raw),
+    }
+    if value.get("cast"):
+        cleaned["cast"] = str(value["cast"])
+    if value.get("swap_lora") is not None:
+        cleaned["swap_lora"] = clean_strength(value["swap_lora"], (0.0, 1.5), "character swap LoRA strength")
+    if value.get("sharp"):
+        cleaned["sharp"] = True
+    return cleaned
+
+
+def add_motion_clip(project, clip_id, *, take=None, first=0, last=None, motion=None, action="",
+                    name=None, item_id=None, start=None, place=True, replace_item=False):
+    """Create a first-class normal clip driven by motion transfer.
+
+    With place=False (default in the dialog), the clip is added to Clips without modifying the timeline.
+    With replace_item=True, the selected timeline placement is swapped to the new clip in place (no ripple).
+    With place=True and replace_item=False, the clip is inserted on the timeline after the source item.
+    """
+    source_clip = find_clip(project, clip_id)
+    takes = source_clip.get("takes") or []
+    source_take = (next((t for t in takes if t["id"] == take), None) if take else active_take(source_clip))
+    if not source_take:
+        raise ValueError("choose a clip with a rendered or imported take for motion transfer")
+    if not isinstance(motion, dict):
+        raise ValueError("motion transfer needs a character image or cast member")
+    total_frames = int(source_take["frames"])
+    in_frame = 0 if first is None else first
+    out_frame = total_frames if last is None else last
+    if type(in_frame) is not int or type(out_frame) is not int or not 0 <= in_frame < out_frame <= total_frames:
+        raise ValueError("the motion range must fall inside the source take")
+    if not 2 * FPS <= out_frame - in_frame <= MOTION_MAX_SECONDS * FPS:
+        raise ValueError("select between 2 and %s seconds of the source take" % MOTION_MAX_SECONDS)
+
+    cast_id = motion.get("cast")
+    cast_member = None
+    if cast_id:
+        cast_member = find_cast(project, cast_id)
+        pic = ({"file": cast_member["file"], "subfolder": cast_member.get("subfolder") or ""}
+               if cast_member.get("file")
+               else next(({"file": p["file"], "subfolder": p.get("subfolder") or ""}
+                          for p in (cast_member.get("pictures") or []) if isinstance(p, dict) and p.get("file")), None))
+        if not pic:
+            raise ValueError("%s has no picture to use for motion transfer" % cast_member["name"])
+        character = pic
+    else:
+        character = clean_asset(motion.get("character"), "the character image")
+        if not character:
+            raise ValueError("choose a character image or cast member for motion transfer")
+
+    spec = clean_motion_field({
+        **motion,
+        "character": character,
+        **({"cast": cast_member["id"]} if cast_member else {}),
+        "source": {
+            "clip": source_clip["id"],
+            "take": source_take["id"],
+            "file": source_take["file"],
+            "subfolder": source_take.get("subfolder") or "",
+            "in": in_frame,
+            "out": out_frame,
+            "frames": total_frames,
+        },
+    })
+    default_name = ("%s · %s" % (cast_member["name"], source_clip["name"])) if cast_member else ("Motion · %s" % source_clip["name"])
+    clip_name = str(name or "").strip()[:80] or default_name[:80]
+    clip = {
+        "id": new_id("c"),
+        "name": clip_name,
+        "action": str(action or "").strip(),
+        "camera": "", "speaker": "", "dialogue": "", "sound": "", "music": "",
+        "seconds": round((out_frame - in_frame) / float(FPS), 3),
+        "takes": [],
+        "active": None,
+        "motion": spec,
+    }
+    if cast_member:
+        clip["cast"] = [cast_member["id"]]
+    if source_clip.get("bin"):
+        clip["bin"] = source_clip["bin"]
+    project.setdefault("clips", []).append(clip)
+
+    placed = None
+    span = out_frame - in_frame
+    if replace_item:
+        anchor_item = None
+        if item_id:
+            anchor_item = next((i for i in project.get("timeline", []) if i["id"] == item_id), None)
+        if anchor_item is None:
+            anchor_item = next((i for i in ordered(project) if i["clip"] == source_clip["id"]), None)
+        if anchor_item is not None:
+            anchor_item["clip"] = clip["id"]
+            anchor_item["in"] = 0
+            anchor_item["out"] = span
+            anchor_item.pop("take", None)
+            anchor_item.pop("speed", None)
+            settle(project)
+            placed = anchor_item
+    elif place:
+        anchor_item = None
+        if item_id:
+            anchor_item = next((i for i in project.get("timeline", []) if i["id"] == item_id), None)
+        if anchor_item is None:
+            anchor_item = next((i for i in ordered(project) if i["clip"] == source_clip["id"]), None)
+        if start is not None:
+            at = max(0, int(start))
+            shift_from(project, at, span)
+        elif anchor_item is not None:
+            at = item_end(anchor_item)
+            shift_from(project, at, span)
+        else:
+            at = scene_end(project)
+        placed = {"id": new_id("i"), "clip": clip["id"], "start": at, "in": 0, "out": span}
+        project.setdefault("timeline", []).append(placed)
+        settle(project)
+    return clip, placed
 
 
 def clean_track(value):
@@ -2674,7 +3400,7 @@ def update_clip(project, clip_id, fields):
     if "mid_guides" in fields or (("seconds" in fields or "sprite" in fields) and clip.get("mid_guides")):
         fields["mid_guides"] = clean_mid_guides(dict(clip, **fields))
     for key, value in fields.items():
-        if value is None and key in ("first", "last", "track", "bin", "profile", "loras", "sprite"):
+        if value is None and key in ("first", "last", "track", "bin", "profile", "loras", "sprite", "motion"):
             clip.pop(key, None)
         else:
             clip[key] = value
@@ -3620,7 +4346,7 @@ UPSCALERS = {
     "relayvsr": {
         "title": "RelayVSR",
         "about": "Fast: seconds a clip, about 16 GB of GPU memory. Sharpens the edges that are there; it does not add new texture.",
-        "files": {"model": "relayvsr_x2_lightx2v_int8_convrot.safetensors", "vae": "relayvsr_flash_vae_x2_fp32.safetensors"},
+        "files": {"model": RELAYVSR_MODEL, "vae": RELAYVSR_VAE},
         "source": "Comfy-Org/RelayVSR", "detail": True,
     },
     "seedvr2": {
@@ -3773,7 +4499,7 @@ def plan_upscale(project, folder, clip_id, available=None, detail=None, upscaler
     return job, upscale_graph(folder, clip, take, source, name, files, detail)
 
 
-def prompt_edit(clip, edit, available=None):
+def prompt_edit(clip, edit, available=None, detect_style=None):
     if not isinstance(edit, dict):
         raise ValueError("send an edit with a source take, in and out frames, and a prompt")
     source = next((take for take in clip.get("takes", []) if take["id"] == edit.get("take")), None)
@@ -3782,9 +4508,10 @@ def prompt_edit(clip, edit, available=None):
     first, last = edit.get("in"), edit.get("out")
     if type(first) is not int or type(last) is not int or not 0 <= first < last <= source["frames"]:
         raise ValueError("the edit range must fall inside the source take")
-    if not 2 * FPS <= last - first <= 15 * FPS:
-        raise ValueError("select between 2 and 15 seconds of the source take")
     motion = edit.get("motion")
+    max_seconds = MOTION_MAX_SECONDS if motion is not None else 15
+    if not 2 * FPS <= last - first <= max_seconds * FPS:
+        raise ValueError("select between 2 and %s seconds of the source take" % max_seconds)
     prompt = edit.get("prompt", "")
     if not isinstance(prompt, str) or (motion is None and not prompt.strip()) or len(prompt) > 12000:
         raise ValueError("write an edit prompt of up to 12,000 characters")
@@ -3796,15 +4523,7 @@ def prompt_edit(clip, edit, available=None):
     if motion is not None:
         if not isinstance(motion, dict) or picture:
             raise ValueError("motion transfer takes a character image and a motion strength")
-        character = clean_asset(motion.get("character"), "the character image")
-        if not character:
-            raise ValueError("choose a character image for motion transfer")
-        settings = motion_status(available)
-        if not settings["available"]:
-            raise ValueError("motion transfer needs " + ", ".join(settings["missing"]))
-        info["motion"] = {k: settings[k] for k in ("pose", "detector", "control", "profile")}
-        info["motion"].update(character=character, strength=clean_strength(motion.get("strength", 1), (0.1, 2.0),
-                                                                            "motion strength"))
+        info["motion"] = resolve_motion_runtime(motion, available, detect_style=detect_style)
     return source, info
 
 
@@ -4056,7 +4775,7 @@ def _plan_partial_finish(project, folder, clip, base_draft, composite_source, ex
 
 
 def plan_render(project, folder, clip_id, quality, seed=None, available=None, detail=None, upscaler=None,
-                patches=None, edit=None, part=None, has_latents=None):
+                patches=None, edit=None, part=None, has_latents=None, detect_style=None, check_cache=None):
     """The graph for a new take, and the job that will turn its file into a take. detail and upscaler are for an upscale only.
 
     patches is the installed patch nodes by id, as project_patches takes them.
@@ -4071,18 +4790,42 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
         return plan_upscale(project, folder, clip_id, available, detail, upscaler)
     clip = find_clip(project, clip_id)
     original = clip
+    motion_audio = None
     if edit is not None:
-        source, edit = prompt_edit(clip, edit, available)
+        source, edit = prompt_edit(clip, edit, available, detect_style=detect_style)
         clip = {"id": clip_id, "name": clip["name"], "profile": clip.get("profile"), "loras": clip.get("loras"),
                 "action": edit["prompt"], "first": edit.get("first")}
         if edit.get("motion"):
-            clip["profile"] = edit["motion"]["profile"]
-            # Keep text encoder and VAE choices while using the known-compatible standard H3 checkpoint.
+            motion = edit["motion"]
+            if (motion.get("mode") or "choreography") == "choreography":
+                clip["profile"] = motion["profile"]
+                # Keep text encoder and VAE choices while using the known-compatible standard H3 checkpoint.
+                project = dict(project, models={key: value for key, value in (project.get("models") or {}).items()
+                                                if key not in ("unet", "unet_text")})
+                clip["action"] = clip["action"] or "A full-body performance."
+            else:
+                clip["action"] = clip["action"] or "Preserve the source performance and camera."
+    elif clip.get("motion"):
+        stored = clean_motion_field(clip["motion"])
+        resolved = resolve_motion_runtime(stored, available, detect_style=detect_style)
+        resolved["source"] = stored["source"]
+        if stored.get("cast"):
+            resolved["cast"] = stored["cast"]
+        clip = dict(clip, motion=resolved)
+        motion_audio = {
+            "file": stored["source"]["file"],
+            "subfolder": stored["source"].get("subfolder") or "",
+            "in": stored["source"]["in"],
+            "out": stored["source"]["out"],
+        }
+        if (resolved.get("mode") or "choreography") == "choreography" and not clip.get("profile"):
+            clip["profile"] = resolved["profile"]
             project = dict(project, models={key: value for key, value in (project.get("models") or {}).items()
                                             if key not in ("unet", "unet_text")})
-            clip["action"] = clip["action"] or "A full-body performance."
     finish = None
     if quality == FINISH_QUALITY:
+        if clip.get("motion"):
+            raise ValueError("use Render final to render a motion transfer clip at final quality")
         if any(j["clip"] == clip_id for j in project.get("pending", [])):
             raise ValueError("%s is already rendering" % clip["name"])
         current = active_take(clip)
@@ -4127,9 +4870,13 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
     if seed in (None, ""):
         seed = random.randrange(2 ** 31)
     take = new_id("t")
-    graph = render_graph(project, folder, clip, take, quality, int(seed), available, patches, finish, edit)
+    graph = render_graph(project, folder, clip, take, quality, int(seed), available, patches, finish, edit,
+                         check_cache=check_cache)
+    saved = {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS}
+    if original.get("motion"):
+        saved["motion"] = copy.deepcopy(original["motion"])
     job = {"clip": clip_id, "take": take, "quality": quality, "seed": int(seed),
-           "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
+           "saved": saved,
            "models": dict(render_models(graph), profile=project_profile(project, available, clip)[0],
                           profile_title=project_profile(project, available, clip)[1]["title"],
                           steps=graph["12"]["inputs"]["steps"], sampler=graph["11"]["inputs"]["sampler_name"])}
@@ -4140,7 +4887,7 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
         job["size"] = [graph["36"]["inputs"]["width"], graph["36"]["inputs"]["height"]]
         job["upscaler"], job["detail"] = SHARP_UPSCALER, SHARP_DETAIL
         job["models"]["video_upscaler"] = graph["31"]["inputs"]["unet_name"]
-    elif clip.get("sprite") or tuple(render_size(project, quality)[:2]) != tuple(frame_size(project, quality)):
+    elif clip.get("sprite") or clip.get("motion") or tuple(render_size(project, quality)[:2]) != tuple(frame_size(project, quality)):
         # A size the project chose. A take that records none is at the usual size for its format.
         job["size"] = [graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]]
     if finish:
@@ -4148,10 +4895,14 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
         job["finished"] = finish["id"]
     if clip.get("track"):
         # Once rendered, the take's sound is replaced by this exact slice of the track.
-        job["track"] = dict(clip["track"], seconds=graph["10"]["inputs"]["length"] / float(FPS))
+        track_frames = (motion_audio["out"] - motion_audio["in"]) if motion_audio else graph["10"]["inputs"]["length"]
+        job["track"] = dict(clip["track"], seconds=track_frames / float(FPS))
+    if motion_audio:
+        job["motion_audio"] = motion_audio
     if edit:
         job["edit"] = edit
-        job["size"] = list(take_size(project, source))
+        if not ("36" in graph and edit["in"] == 0 and edit["out"] == source["frames"]):
+            job["size"] = list(take_size(project, source))
         job["saved"] = {k: copy.deepcopy(original.get(k)) for k in SAVED_FIELDS}
         if source.get("source"):
             job["source"] = source["source"]
@@ -4262,6 +5013,10 @@ def merge_editor_save(base, mine, current):
             if clip.get("link") or clip.get("kind") == "footage":
                 raise ValueError("Sprite Draft needs an independent generated shot")
             clip["sprite"] = sprite.settings(clip["sprite"])
+        if clip.get("motion") is not None:
+            if clip.get("kind") == "footage":
+                raise ValueError("motion transfer belongs to a generated clip")
+            clip["motion"] = clean_motion_field(clip["motion"])
         if "mid_guides" in clip:
             clip["mid_guides"] = clean_mid_guides(clip)
         stored = existing.get(clip["id"])
@@ -4534,6 +5289,9 @@ def describe(project):
         if clip.get("sprite"):
             entry["sprite"] = clip["sprite"]
             entry["seconds"] = (clip["sprite"].get("frames", sprite.FRAMES) if isinstance(clip["sprite"], dict) else sprite.FRAMES) / FPS
+        if clip.get("motion"):
+            entry["motion"] = {"mode": clip["motion"].get("mode"), "style": clip["motion"].get("style"),
+                               "source": clip["motion"].get("source", {}).get("clip")}
         if take and take.get("sprite"):
             entry["sprite_sheet"] = take["sprite"]
         if clip.get("mid_guides"):
@@ -4659,6 +5417,19 @@ def apply_op(project, op, names):
         if op.get("fields"):
             update_clip(project, clip["id"], op["fields"])
         result = {"clip": clip["id"], "item": item["id"]}
+    elif kind == "add_motion_transfer":
+        motion_payload = dict(op.get("motion") or {})
+        if motion_payload.get("cast"):
+            motion_payload["cast"] = _resolve(motion_payload["cast"], names, "cast")
+        clip, item = add_motion_clip(
+            project, clip_id, take=op.get("take"), first=op.get("in", 0), last=op.get("out"),
+            motion=motion_payload, action=op.get("action") or "", name=op.get("name"),
+            item_id=item_id, start=op.get("start"), place=op.get("place", True),
+            replace_item=bool(op.get("replace_item", False)),
+        )
+        if op.get("fields"):
+            update_clip(project, clip["id"], op["fields"])
+        result = {"clip": clip["id"], "item": item["id"] if item else None}
     elif kind == "choose_take":
         choose_take(project, clip_id, op["take"])
         result = {"clip": clip_id}

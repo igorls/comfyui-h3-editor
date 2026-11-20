@@ -20,6 +20,14 @@ below. You can use them in your own workflows too.
 | H3 HyperFlow Loader | Loads a HyperFlow H3 Flash checkpoint: a GGUF file in any quantization, or an INT8 safetensors file |
 | H3 HyperFlow Sigmas | The 4, 6 or 8-step schedule a HyperFlow checkpoint samples, for euler without CFG |
 | H3 Small Text Encoder | A Qwen3-VL 4B or 8B in place of H3's 32B text encoder, through a ClipProj projection; see [models](models.md#a-smaller-text-encoder) |
+| H3 Track Subject Mask | Tracks one subject across video frames with SAM 3.1 and returns both a tight raw mask and an exit-safe Euclidean-dilated mask |
+| H3 Isolate Character | Segments a character reference still onto a clean white or gray backdrop with SAM 3.1 |
+| H3 Gated SDPose Extractor | Runs SDPose only inside detected person boxes and filters partial ghost skeletons, keeping empty exit frames cleanly blank |
+| H3 Slice Batch | Slices a frame window from an image and/or mask batch with safe tail padding for windowed relay |
+| H3 Apply Edit Mask | Locks source video latents outside a binary `1-4-4-4-4` / `32 px` pooled subject mask, with optional `22`-frame pure-latent carry across relay windows |
+| H3 Join Window | Stitches sequential decoded relay windows across their latent-locked overlap with a short midpoint crossfade and optional exact trim |
+| H3 Composite Source Plate | Zero-halo, zero-flyaway source plate compositor using asymmetric source/generated union masks (`18 px / 4 px`) and local normalized-convolution illumination matching |
+| H3 Flash ControlNet Apply | Adapts MiniMax H3 Fun ControlNet Union (v1 5-block or v2.0 10-block) onto 49-block HyperFlow H3 Flash Ref2VA |
 
 ## Templates
 
@@ -131,3 +139,28 @@ On HyperFlow H3 Flash INT8, one- and two-guide tests on two short moving shots
 reached the stills within one frame while motion continued. The guides also
 changed how much the subject moved elsewhere in the shot. Check the approach
 and exit around each guide on your own checkpoint. [Test results](editing-render-tests.md)
+
+## Motion transfer and windowed relay
+
+For masked character replacement and pose-guided motion transfer up to 30 seconds:
+
+- **H3 Track Subject Mask** detects the largest subject on frame 0 with SAM 3.1,
+  tracks it across the clip, and outputs both the raw binary mask (for plate
+  compositing) and a dilated mask (`expand_mask_safe`) that leaves all-zero exit
+  frames untouched.
+- **H3 Apply Edit Mask** pools pixel masks across H3's `1-4-4-4-4` temporal spans
+  and binary `32×32 px` DiT patch cells (`pooled_region_steps`), guaranteeing exact
+  token alignment on both standard H3 and HyperFlow Flash. On relay windows after
+  window 0, connect `prev_latent` with `overlap_frames=22` (7 latent steps, exact
+  `1-4-4-4-4-1-4` boundary) to carry the prior window's latents directly with zero
+  VAE re-encode drift.
+- **H3 Join Window** stitches consecutive decoded windows across their locked overlap
+  (4-frame midpoint crossfade by default) and optionally trims the final batch to the
+  exact source frame count (`trim_to`).
+- **H3 Composite Source Plate** dilates `source_mask` asymmetrically (`18 px` default
+  to cover hair flyaways) unioned with a tight `4 px` generated-subject mask, estimates
+  smooth local RGB lighting offsets from the clean background collar outside the union,
+  and applies harmonization only to non-character pixels.
+- **H3 Flash ControlNet Apply** maps 50-block H3 Fun ControlNet injection indices onto
+  49-block HyperFlow Flash (where block 9 was pruned) and supplies standard 8-channel
+  `adaln_t_table` embeddings during sampling.

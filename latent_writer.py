@@ -64,6 +64,45 @@ def region_steps(mask, steps, height, width):
     return mask.movedim(0, 1).unsqueeze(0).clamp(0.0, 1.0)
 
 
+def pooled_region_steps(mask, steps, height, width):
+    """Union per-frame pixel masks across H3's 1-4-4-4-4 temporal spans and 32px DiT cells.
+
+    Returns a strictly binary {0.0, 1.0} [1, 1, steps, height, width] latent mask aligned to
+    2x2 VAE patch cells (32x32 pixels). Strict binary cell alignment prevents boundary bleed on
+    Standard H3 and guarantees every video token hits an exact entry in HyperFlow Flash's
+    TwoTimeEmbedder EndpointState lookup (1 -> t_video->r_video, 0 -> stationary t_pin_v).
+    All-zero exit frames stay cleanly 0.0.
+    """
+    spans = [(1, 4, 4, 4, 4)[i % 5] for i in range(steps)]
+    total_frames = sum(spans)
+    mask = mask.float()
+    if mask.ndim == 2:
+        mask = mask.unsqueeze(0)
+    elif mask.ndim > 3:
+        mask = mask.reshape((-1,) + tuple(mask.shape[-2:]))
+    if mask.shape[0] == 1:
+        mask = mask.expand(total_frames, -1, -1)
+    elif mask.shape[0] < total_frames:
+        pad = mask[-1:].expand(total_frames - mask.shape[0], -1, -1)
+        mask = torch.cat([mask, pad], dim=0)
+    else:
+        mask = mask[:total_frames]
+    pixel_h, pixel_w = height * 16, width * 16
+    if tuple(mask.shape[1:]) != (pixel_h, pixel_w):
+        mask = F.interpolate(mask[:, None], size=(pixel_h, pixel_w), mode="bilinear", align_corners=False)[:, 0]
+    mask = (mask > 0.5).float()
+    rows, offset = [], 0
+    for span in spans:
+        rows.append(mask[offset:offset + span].amax(dim=0))
+        offset += span
+    stacked = torch.stack(rows)[:, None]  # [steps, 1, pixel_h, pixel_w]
+    pooled = F.max_pool2d(stacked, 32, 32)[:, 0]  # [steps, height//2, width//2]
+    lat_mask = pooled.repeat_interleave(2, dim=-2).repeat_interleave(2, dim=-1)
+    if lat_mask.shape[-2] < height or lat_mask.shape[-1] < width:
+        lat_mask = F.pad(lat_mask, (0, width - lat_mask.shape[-1], 0, height - lat_mask.shape[-2]), mode="replicate")
+    return lat_mask[:, :height, :width][None, None].contiguous()
+
+
 def carry_tail(latent, steps, ticks):
     """The last frames of a finished take, still in latent form, so a later pass never re-encodes them."""
     video, audio = latent["samples"].unbind()
@@ -71,7 +110,7 @@ def carry_tail(latent, steps, ticks):
 
 
 def write_holds(latent, video_latent=None, video_first=0, audio_latent=None, audio_first=0,
-                video_curve=None, audio_curve=None, region=None):
+                video_curve=None, audio_curve=None, region=None, pooled_region=False):
     """Return a new latent dict with the held streams written and a nested noise mask set."""
     import comfy.nested_tensor
 
@@ -93,7 +132,8 @@ def write_holds(latent, video_latent=None, video_first=0, audio_latent=None, aud
     video_mask = torch.tensor(video_curve, dtype=torch.float32, device=video.device)
     video_mask = video_mask.view(1, 1, steps, 1, 1).expand(1, 1, steps, height, width).contiguous()
     if region is not None:
-        video_mask = torch.maximum(video_mask, region_steps(region, steps, height, width).to(video_mask))
+        mapper = pooled_region_steps if pooled_region else region_steps
+        video_mask = torch.maximum(video_mask, mapper(region, steps, height, width).to(video_mask))
     audio_mask = torch.tensor(audio_curve, dtype=torch.float32, device=audio.device)
     audio_mask = audio_mask.view(1, 1, 1, ticks).expand(1, 1, audio.shape[2], ticks).contiguous()
 

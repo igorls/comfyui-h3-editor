@@ -12,7 +12,7 @@ import torch
 from comfy_api.latest import InputImpl, io, ui
 from PIL import Image, ImageOps
 
-from .latent_writer import carry_tail, encode_audio, encode_video, write_holds
+from .latent_writer import carry_tail, encode_audio, encode_video, fit_frames, pooled_region_steps, write_holds
 from . import h3lora
 from .twins import with_twins
 from . import hyperflow
@@ -23,6 +23,7 @@ from . import media
 from . import holds
 from . import style_timeline
 from . import vosr2
+from . import motion_replace
 
 # Why a HyperFlow .gguf cannot load here (the gguf package, which this pack's requirements install),
 # or None. The INT8 safetensors files load either way.
@@ -892,18 +893,615 @@ class H3RefineLatent(io.ComfyNode):
         return io.NodeOutput(out)
 
 
+def _sam3_track_person(sam_model, sam_clip, images, subject="person", detect_threshold=0.35, track_threshold=0.5):
+    """Detect and track the primary subject across an IMAGE batch [N, H, W, C] via native SAM3 nodes."""
+    from comfy_extras.nodes_sam3 import SAM3_Detect, SAM3_TrackToMask, SAM3_VideoTrack
+
+    tokens = sam_clip.tokenize(subject or "person")
+    cond = sam_clip.encode_from_tokens_scheduled(tokens)
+
+    init_mask = None
+    first_masks = SAM3_Detect.execute(
+        model=sam_model, image=images[:1], conditioning=cond,
+        threshold=detect_threshold, refine_iterations=2, individual_masks=True,
+    )[0]
+    if first_masks is not None and first_masks.ndim == 3 and first_masks.shape[0] > 0:
+        areas = (first_masks > 0.5).float().sum(dim=(1, 2))
+        if float(areas.max().item()) > 0.0:
+            best_idx = int(areas.argmax().item())
+            init_mask = first_masks[best_idx:best_idx + 1]
+
+    track = SAM3_VideoTrack.execute(
+        images=images, model=sam_model, initial_mask=init_mask, conditioning=cond,
+        detection_threshold=track_threshold, max_objects=1, detect_interval=1,
+    )[0]
+    return SAM3_TrackToMask.execute(track_data=track, object_indices="")[0]
+
+
+def _slice_with_pad(tensor, start, length):
+    total = tensor.shape[0]
+    if total == 0:
+        raise ValueError("cannot slice an empty batch")
+    s = max(0, min(int(start), total - 1))
+    e = s + max(1, int(length))
+    piece = tensor[s:min(e, total)]
+    if piece.shape[0] < int(length):
+        idx = motion_replace.reflect_pad_indices(piece.shape[0], int(length))
+        piece = piece[torch.tensor(idx, device=piece.device, dtype=torch.long)]
+    return piece.contiguous()
+
+
+class H3GatedSDPose(io.ComfyNode):
+    """SDPose extractor that never falls back to full-image hallucination on absent-person frames,
+    and reuses cached per-frame keypoints beside the source video when available."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3GatedSDPose",
+            display_name="H3 Gated SDPose Extractor",
+            category="MinimaxH3",
+            description="Run SDPose only inside detected person boxes, reusing cached keypoints beside the source video when available.",
+            inputs=[
+                io.Image.Input("image"),
+                io.Model.Input("model", optional=True),
+                io.Vae.Input("vae", optional=True),
+                io.BoundingBox.Input("bboxes", optional=True),
+                io.Int.Input("batch_size", default=8, min=1, max=64, optional=True),
+                io.Float.Input("min_area_frac", default=0.005, min=0.0, max=0.5, step=0.001, optional=True),
+                io.Int.Input("min_valid_body_kps", default=2, min=0, max=18, optional=True),
+                io.Float.Input("kp_score_thresh", default=0.3, min=0.0, max=1.0, step=0.05, optional=True),
+                io.String.Input("source_file", default="", optional=True),
+                io.Int.Input("first", default=0, min=0, max=100000, optional=True),
+                io.Int.Input("total_frames", default=0, min=0, max=100000, optional=True),
+            ],
+            outputs=[io.Custom("POSE_KEYPOINT").Output("keypoints")],
+        )
+
+    @classmethod
+    def execute(cls, image, model=None, vae=None, bboxes=None, batch_size=8, min_area_frac=0.005,
+                min_valid_body_kps=2, kp_score_thresh=0.3, source_file="", first=0, total_frames=0) -> io.NodeOutput:
+        import logging
+
+        count, height, width, _ = image.shape
+        src_path = output_file(source_file) if source_file else None
+        kp_frames = None
+        if src_path:
+            kp_frames = motion_replace.load_pose_cache(src_path, first, first + count, min_area_frac=min_area_frac)
+            if kp_frames is not None:
+                logging.info("[H3GatedSDPose] Reused cached keypoints for %s frames %s..%s",
+                             os.path.basename(src_path), first, first + count)
+        if kp_frames is None:
+            if model is None or vae is None or bboxes is None:
+                raise ValueError("H3GatedSDPose cache miss: connect model, vae, and bboxes to extract keypoints")
+            from comfy_extras.nodes_sdpose import SDPoseKeypointExtractor
+
+            gated, _ = motion_replace.gate_bboxes(bboxes, count, height, width, min_area_frac=min_area_frac)
+            kp_frames = SDPoseKeypointExtractor.execute(model, vae, image, batch_size=batch_size, bboxes=gated)[0]
+            if src_path:
+                motion_replace.save_pose_cache(
+                    src_path, first, kp_frames, total_frames=total_frames or (first + count),
+                    min_area_frac=min_area_frac,
+                )
+        cleaned = motion_replace.filter_pose_keypoints(
+            kp_frames, min_valid_body_kps=min_valid_body_kps, score_thresh=kp_score_thresh
+        )
+        return io.NodeOutput(cleaned)
+
+
+class H3IsolateCharacter(io.ComfyNode):
+    """Segment the character reference still with SAM3 onto a clean neutral backdrop, caching the cutout beside it."""
+
+    BACKDROPS = {"white": 1.0, "light_gray": 0.85, "mid_gray": 0.5}
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3IsolateCharacter",
+            display_name="H3 Isolate Character",
+            category="MinimaxH3",
+            description="Strip distracting backgrounds and props from a character still using SAM3, reusing cached cutouts.",
+            inputs=[
+                io.Image.Input("image"),
+                io.Model.Input("sam_model", optional=True),
+                io.Clip.Input("sam_clip", optional=True),
+                io.String.Input("subject", default="person", optional=True),
+                io.Combo.Input("backdrop", options=list(cls.BACKDROPS), default="white", optional=True),
+                io.Float.Input("threshold", default=0.35, min=0.05, max=0.95, step=0.05, optional=True),
+                io.String.Input("character_file", default="", optional=True),
+            ],
+            outputs=[io.Image.Output(display_name="isolated")],
+        )
+
+    @classmethod
+    def execute(cls, image, sam_model=None, sam_clip=None, subject="person", backdrop="white",
+                threshold=0.35, character_file="") -> io.NodeOutput:
+        import logging
+
+        char_path = output_file(character_file) if character_file else None
+        if char_path:
+            cached = motion_replace.load_cutout_cache(char_path, subject=subject, backdrop=backdrop, threshold=threshold)
+            if cached is not None:
+                logging.info("[H3IsolateCharacter] Reused cached cutout for %s", os.path.basename(char_path))
+                return io.NodeOutput(torch.from_numpy(cached).to(device=image.device, dtype=image.dtype))
+        if sam_model is None or sam_clip is None:
+            raise ValueError("H3IsolateCharacter cache miss: connect sam_model and sam_clip")
+        from comfy_extras.nodes_sam3 import SAM3_Detect
+
+        tokens = sam_clip.tokenize(subject or "person")
+        cond = sam_clip.encode_from_tokens_scheduled(tokens)
+        masks = SAM3_Detect.execute(
+            model=sam_model, image=image[:1], conditioning=cond,
+            threshold=threshold, refine_iterations=4, individual_masks=False,
+        )[0]
+        if masks is None or masks.numel() == 0 or float((masks > 0.5).float().sum().item()) <= 0.0:
+            return io.NodeOutput(image)
+        alpha = masks[:1].to(device=image.device, dtype=image.dtype)
+        if alpha.shape[-2:] != image.shape[1:3]:
+            alpha = torch.nn.functional.interpolate(
+                alpha[:, None], size=tuple(image.shape[1:3]), mode="bilinear", align_corners=False
+            )[:, 0]
+        alpha = alpha.clamp(0.0, 1.0)[..., None]
+        fill = float(cls.BACKDROPS.get(backdrop, 1.0))
+        comp = (image[..., :3] * alpha + fill * (1.0 - alpha)).clamp(0.0, 1.0)
+        if char_path:
+            motion_replace.save_cutout_cache(
+                char_path, comp[0].detach().cpu().float().numpy(),
+                subject=subject, backdrop=backdrop, threshold=threshold,
+            )
+        return io.NodeOutput(comp)
+
+
+class H3TrackSubjectMask(io.ComfyNode):
+    """Track one performer with SAM3 and produce both a tight raw mask and an exit-safe expanded mask,
+    caching raw per-frame masks beside the source video for instant reuse across re-renders and splits."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3TrackSubjectMask",
+            display_name="H3 Track Subject Mask",
+            category="MinimaxH3",
+            description="Track the performer with SAM3 and dilate safely, reusing cached masks beside the source video when available.",
+            inputs=[
+                io.Image.Input("images"),
+                io.Model.Input("sam_model", optional=True),
+                io.Clip.Input("sam_clip", optional=True),
+                io.String.Input("subject", default="person", optional=True),
+                io.Int.Input("expansion_px", default=32, min=0, max=256, optional=True),
+                io.Float.Input("detect_threshold", default=0.35, min=0.05, max=0.95, step=0.05, optional=True),
+                io.Float.Input("track_threshold", default=0.5, min=0.05, max=0.95, step=0.05, optional=True),
+                io.String.Input("source_file", default="", optional=True),
+                io.Int.Input("first", default=0, min=0, max=100000, optional=True),
+                io.Int.Input("total_frames", default=0, min=0, max=100000, optional=True),
+            ],
+            outputs=[
+                io.Mask.Output(display_name="raw_mask"),
+                io.Mask.Output(display_name="expanded_mask"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, images, sam_model=None, sam_clip=None, subject="person", expansion_px=32,
+                detect_threshold=0.35, track_threshold=0.5, source_file="", first=0, total_frames=0) -> io.NodeOutput:
+        import logging
+
+        count, height, width = int(images.shape[0]), int(images.shape[1]), int(images.shape[2])
+        src_path = output_file(source_file) if source_file else None
+        raw_np = None
+        if src_path:
+            cached = motion_replace.load_mask_cache(
+                src_path, first, first + count, subject=subject,
+                detect_threshold=detect_threshold, track_threshold=track_threshold,
+            )
+            if cached is not None:
+                logging.info("[H3TrackSubjectMask] Reused cached SAM3 masks for %s frames %s..%s",
+                             os.path.basename(src_path), first, first + count)
+                if cached.shape[1] != height or cached.shape[2] != width:
+                    cached = motion_replace._resize_mask_nearest_or_bilinear(cached, height, width).astype(np.float32)
+                raw_np = cached
+        if raw_np is None:
+            if sam_model is None or sam_clip is None:
+                raise ValueError("H3TrackSubjectMask cache miss: connect sam_model and sam_clip")
+            raw = _sam3_track_person(
+                sam_model, sam_clip, images, subject=subject,
+                detect_threshold=detect_threshold, track_threshold=track_threshold,
+            )
+            raw_np = raw.detach().cpu().numpy().astype(np.float32)
+            if src_path:
+                motion_replace.save_mask_cache(
+                    src_path, first, raw_np, total_frames=total_frames or (first + count),
+                    subject=subject, detect_threshold=detect_threshold, track_threshold=track_threshold,
+                )
+        expanded_np = motion_replace.expand_mask_safe(raw_np, expansion_px=expansion_px)
+        return io.NodeOutput(torch.from_numpy(raw_np).float(), torch.from_numpy(expanded_np))
+
+
+class H3SliceBatch(io.ComfyNode):
+    """Slice an IMAGE and/or MASK batch for one relay window, cloning the last frame if snapped past the end."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3SliceBatch",
+            display_name="H3 Slice Batch",
+            category="MinimaxH3",
+            description="Slice a frame window from an image batch and/or mask batch with safe tail padding.",
+            inputs=[
+                io.Int.Input("start", default=0, min=0, max=100000),
+                io.Int.Input("length", default=124, min=1, max=3600),
+                io.Image.Input("images", optional=True),
+                io.Mask.Input("mask", optional=True),
+            ],
+            outputs=[
+                io.Image.Output(display_name="images"),
+                io.Mask.Output(display_name="mask"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, start=0, length=124, images=None, mask=None) -> io.NodeOutput:
+        out_img = _slice_with_pad(images, start, length) if images is not None else torch.zeros((1, 1, 1, 3), dtype=torch.float32)
+        if mask is not None:
+            m = mask.unsqueeze(0) if mask.ndim == 2 else mask
+            out_mask = _slice_with_pad(m, start, length)
+        else:
+            out_mask = torch.zeros((1, 1, 1), dtype=torch.float32)
+        return io.NodeOutput(out_img, out_mask)
+
+
+class H3ApplyEditMask(io.ComfyNode):
+    """Lock the source video latent outside a binary 1-4-4-4-4 / 32px pooled subject mask,
+    with optional pure-latent carry from a previous relay window."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3ApplyEditMask",
+            display_name="H3 Apply Edit Mask",
+            category="MinimaxH3",
+            description="Preserve source background latents on Standard H3 and HyperFlow Flash with strict 32px cell pooling and optional windowed relay carry.",
+            inputs=[
+                io.Latent.Input("latent"),
+                io.Vae.Input("vae"),
+                io.Image.Input("source_video"),
+                io.Mask.Input("mask"),
+                io.Latent.Input("prev_latent", optional=True),
+                io.Int.Input("overlap_frames", default=22, min=0, max=124, optional=True),
+            ],
+            outputs=[io.Latent.Output(display_name="latent")],
+        )
+
+    @classmethod
+    def execute(cls, latent, vae, source_video, mask, prev_latent=None, overlap_frames=22) -> io.NodeOutput:
+        import comfy.nested_tensor
+
+        video, audio = latent["samples"].unbind()
+        _, _, steps, lat_h, lat_w = video.shape
+        target_h, target_w = lat_h * 16, lat_w * 16
+        total_frames = latent_frames(steps)
+
+        src = source_video[..., :3]
+        if src.shape[0] < total_frames:
+            src = torch.cat([src, src[-1:].expand(total_frames - src.shape[0], -1, -1, -1)], dim=0)
+        else:
+            src = src[:total_frames]
+        source_lat = vae.encode(fit_frames(src, target_w, target_h)).to(video).clone()
+
+        video_mask = pooled_region_steps(mask, steps, lat_h, lat_w).to(device=video.device, dtype=torch.float32)
+        if prev_latent is not None and int(overlap_frames) > 0:
+            ov_steps = video_steps(int(overlap_frames))
+            prev_video, _ = prev_latent["samples"].unbind()
+            if prev_video.shape[2] < ov_steps or tuple(prev_video.shape[3:]) != (lat_h, lat_w):
+                raise ValueError("previous relay window latent does not match overlap/canvas (%s vs %s)"
+                                 % (tuple(prev_video.shape), (ov_steps, lat_h, lat_w)))
+            # Pure latent-space carry across the 22-frame overlap (zero VAE re-encode drift),
+            # softening the final overlap step inside the subject mask to avoid a hard cut cliff.
+            source_lat[:, :, :ov_steps] = prev_video[:, :, -ov_steps:].to(source_lat)
+            video_mask = motion_replace.apply_overlap_mask(video_mask, ov_steps, tail_ramp=0.45)
+
+        audio_mask = torch.ones_like(audio, dtype=torch.float32)
+
+        out = dict(latent)
+        out["samples"] = comfy.nested_tensor.NestedTensor((source_lat, audio))
+        out["noise_mask"] = comfy.nested_tensor.NestedTensor((video_mask, audio_mask))
+        return io.NodeOutput(out)
+
+
+class H3JoinWindow(io.ComfyNode):
+    """Join two decoded relay windows cleanly across their latent-locked overlap."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3JoinWindow",
+            display_name="H3 Join Window",
+            category="MinimaxH3",
+            description="Stitch sequential windowed relay outputs across their locked overlap.",
+            inputs=[
+                io.Image.Input("prev_images"),
+                io.Image.Input("next_images"),
+                io.Int.Input("overlap_frames", default=22, min=0, max=124, optional=True),
+                io.Int.Input("blend_frames", default=4, min=0, max=22, optional=True),
+                io.Int.Input("trim_to", default=0, min=0, max=100000, optional=True),
+            ],
+            outputs=[io.Image.Output(display_name="images")],
+        )
+
+    @classmethod
+    def execute(cls, prev_images, next_images, overlap_frames=22, blend_frames=4, trim_to=0) -> io.NodeOutput:
+        joined = motion_replace.join_window_frames(
+            prev_images.detach().cpu().numpy(),
+            next_images.detach().cpu().numpy(),
+            overlap_frames=overlap_frames,
+            blend_frames=blend_frames,
+        )
+        if int(trim_to) > 0:
+            joined = joined[:int(trim_to)]
+        return io.NodeOutput(torch.from_numpy(joined).to(device=prev_images.device, dtype=prev_images.dtype))
+
+
+class H3CompositeSourcePlate(io.ComfyNode):
+    """Zero-halo, zero-flyaway source plate compositor using asymmetric M_src|M_gen union and local illumination matching."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3CompositeSourcePlate",
+            display_name="H3 Composite Source Plate",
+            category="MinimaxH3",
+            description="Carry the exact source plate outside the asymmetric source+generated union with local illumination harmonization.",
+            inputs=[
+                io.Image.Input("generated"),
+                io.Image.Input("source"),
+                io.Mask.Input("source_mask"),
+                io.Model.Input("sam_model", optional=True),
+                io.Clip.Input("sam_clip", optional=True),
+                io.String.Input("subject", default="person", optional=True),
+                io.Int.Input("src_expand_px", default=18, min=0, max=96, optional=True),
+                io.Int.Input("gen_expand_px", default=4, min=0, max=64, optional=True),
+                io.Float.Input("feather_sigma", default=4.0, min=0.0, max=32.0, step=0.5, optional=True),
+            ],
+            outputs=[io.Image.Output(display_name="images")],
+        )
+
+    @classmethod
+    def execute(cls, generated, source, source_mask, sam_model=None, sam_clip=None,
+                subject="person", src_expand_px=18, gen_expand_px=4, feather_sigma=4.0) -> io.NodeOutput:
+        gen_mask_np = None
+        if sam_model is not None and sam_clip is not None:
+            gen_mask = _sam3_track_person(sam_model, sam_clip, generated, subject=subject)
+            gen_mask_np = gen_mask.detach().cpu().numpy()
+
+        comp = motion_replace.composite_plate_harmonized(
+            generated.detach().cpu().numpy(),
+            source.detach().cpu().numpy(),
+            source_mask.detach().cpu().numpy(),
+            gen_mask_np=gen_mask_np,
+            src_expand_px=src_expand_px,
+            gen_expand_px=gen_expand_px,
+            feather_sigma=feather_sigma,
+        )
+        return io.NodeOutput(torch.from_numpy(comp).to(device=generated.device, dtype=generated.dtype))
+
+
+def _find_adaln_curve():
+    """Locate the standard 8-channel adaln_t_table required to drive H3 Fun ControlNet on HyperFlow Flash."""
+    from safetensors import safe_open
+
+    preferred = [
+        "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+    ]
+    candidates = folder_paths.get_filename_list("diffusion_models")
+    ordered_files = [f for name in preferred for f in candidates if f.replace("\\", "/").endswith(name)]
+    ordered_files.extend(
+        f for f in candidates
+        if f not in ordered_files and "minimax_h3" in f.lower() and "hyperflow" not in f.lower() and f.endswith(".safetensors")
+    )
+    for rel in ordered_files:
+        path = folder_paths.get_full_path("diffusion_models", rel)
+        if not path:
+            continue
+        try:
+            with safe_open(path, framework="pt", device="cpu") as ckpt:
+                if "adaln_t_table" in ckpt.keys():
+                    return ckpt.get_tensor("adaln_t_table")
+        except Exception:
+            continue
+    raise FileNotFoundError(
+        "HyperFlow Flash pose control requires adaln_t_table from a standard MiniMax H3 checkpoint in models/diffusion_models"
+    )
+
+
+class H3FlashControlNetApply(io.ComfyNode):
+    """Apply MiniMax H3 Fun ControlNet Union (v1 5-block or v2.0 10-block) to 49-block HyperFlow Flash Ref2VA."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3FlashControlNetApply",
+            display_name="H3 Flash ControlNet Apply",
+            category="MinimaxH3",
+            description="Adapt H3 Fun ControlNet Union v1/v2.0 to 49-block HyperFlow Flash Ref2VA.",
+            inputs=[
+                io.Model.Input("model"),
+                io.Vae.Input("vae"),
+                io.ModelPatch.Input("model_patch"),
+                io.Float.Input("strength", default=0.75, min=0.0, max=4.0, step=0.01, optional=True),
+                io.Float.Input("start_percent", default=0.0, min=0.0, max=1.0, step=0.01, optional=True),
+                io.Float.Input("end_percent", default=1.0, min=0.0, max=1.0, step=0.01, optional=True),
+                io.Image.Input("control_video", optional=True),
+                io.Mask.Input("mask", optional=True),
+                io.Image.Input("source_video", optional=True),
+            ],
+            outputs=[io.Model.Output()],
+        )
+
+    @classmethod
+    def execute(cls, model, vae, model_patch, strength=0.75, start_percent=0.0, end_percent=1.0,
+                control_video=None, mask=None, source_video=None) -> io.NodeOutput:
+        from comfy.patcher_extension import WrappersMP
+        from comfy_extras.nodes_minimax_h3 import MiniMaxH3FunControlBlockPatch, MiniMaxH3FunControlPatch
+
+        if strength == 0 or (control_video is None and mask is None):
+            return io.NodeOutput(model)
+
+        backbone = model.get_model_object("diffusion_model")
+        if len(backbone.blocks) != 49 or not hasattr(backbone, "endpoint_time_embedder"):
+            raise ValueError("H3FlashControlNetApply expects 49-block HyperFlow Flash Ref2VA")
+
+        orig_layers = tuple(model_patch.model.injection_layers)
+        flash_layers = motion_replace.flash_controlnet_layer_map(orig_layers)
+        curve = _find_adaln_curve()
+
+        class FlashFunPatch(MiniMaxH3FunControlPatch):
+            def diffusion_model_wrapper(self, executor, x, timestep, context, transformer_options=None, **kwargs):
+                original = backbone._time_embedding
+                previous_override = vars(backbone).get("_time_embedding")
+                self.control_time = None
+
+                def embed(unique_t, device, dtype):
+                    if self.active:
+                        table = curve.to(device=device)
+                        times = torch.tensor(unique_t, device=device, dtype=torch.float32)
+                        position = times.clamp(0, 1) * (len(table) - 1)
+                        lower = position.floor().long().clamp(max=len(table) - 2)
+                        self.control_time = torch.lerp(
+                            table[lower], table[lower + 1], (position - lower).unsqueeze(1)
+                        )
+                    return original(unique_t, device, dtype)
+
+                backbone._time_embedding = embed
+                try:
+                    return super().diffusion_model_wrapper(
+                        executor, x, timestep, context, transformer_options or {}, **kwargs
+                    )
+                finally:
+                    if previous_override is None:
+                        del backbone._time_embedding
+                    else:
+                        backbone._time_embedding = previous_override
+                    self.control_time = None
+
+            def after_block(self, block_index, args, out):
+                if self.active:
+                    if self.control_time is None or self.control_time.shape != (args["t_emb"].shape[0], 8):
+                        raise RuntimeError("Flash and ControlNet timestep rows did not align")
+                    args = dict(args, t_emb=self.control_time)
+                return super().after_block(block_index, args, out)
+
+        result = model.clone()
+        sampling = result.get_model_object("model_sampling")
+        patch = FlashFunPatch(
+            model_patch,
+            vae,
+            control_video[..., :3].movedim(-1, 1) if control_video is not None else None,
+            mask,
+            source_video[..., :3].movedim(-1, 1) if mask is not None and source_video is not None else None,
+            strength,
+            float(sampling.percent_to_sigma(start_percent)),
+            float(sampling.percent_to_sigma(end_percent)),
+        )
+        result.add_wrapper(WrappersMP.DIFFUSION_MODEL, patch.diffusion_model_wrapper)
+        blocks = result.model_options.get("transformer_options", {}).get("patches_replace", {}).get("dit", {})
+        for original_index, flash_index in zip(orig_layers, flash_layers, strict=True):
+            replaced = MiniMaxH3FunControlBlockPatch(patch, original_index, blocks.get(("double_block", flash_index)))
+            result.set_model_patch_replace(replaced, "dit", "double_block", flash_index)
+        return io.NodeOutput(result)
+
+
+class H3SwapGuard(io.ComfyNode):
+    """Detect when Window 0 of a masked character replacement stayed stuck on the source person and auto-retry once."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3SwapGuard",
+            display_name="H3 Swap Guard",
+            category="MinimaxH3",
+            description="Check masked latent change after Window 0 and retry once with boosted character-swap LoRA and a fresh seed if the swap did not take.",
+            inputs=[
+                io.Latent.Input("sampled"),
+                io.Latent.Input("masked_source"),
+                io.Model.Input("model"),
+                io.Conditioning.Input("conditioning"),
+                io.Sampler.Input("sampler"),
+                io.Sigmas.Input("sigmas"),
+                io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff),
+                io.String.Input("swap_lora", default="", optional=True),
+                io.Float.Input("boost_strength", default=0.35, min=0.0, max=1.5, step=0.05, optional=True),
+                io.Float.Input("min_change", default=0.42, min=0.0, max=2.0, step=0.02, optional=True),
+            ],
+            outputs=[io.Latent.Output(display_name="latent")],
+        )
+
+    @classmethod
+    def execute(cls, sampled, masked_source, model, conditioning, sampler, sigmas, seed=0,
+                swap_lora="", boost_strength=0.35, min_change=0.42) -> io.NodeOutput:
+        import logging
+        from comfy_extras.nodes_custom_sampler import BasicGuider, RandomNoise, SamplerCustomAdvanced
+
+        mask_nested = masked_source.get("noise_mask")
+        if mask_nested is None:
+            return io.NodeOutput(sampled)
+        samp_video, _ = sampled["samples"].unbind()
+        src_video, _ = masked_source["samples"].unbind()
+        video_mask, _ = mask_nested.unbind()
+        score = motion_replace.latent_swap_score(
+            samp_video.detach().cpu().float().numpy(),
+            src_video.detach().cpu().float().numpy(),
+            video_mask.detach().cpu().float().numpy(),
+        )
+        if score is None or score >= float(min_change):
+            return io.NodeOutput(sampled)
+
+        logging.info("[H3SwapGuard] Window 0 masked change %.3f < %.3f; retrying once with boosted swap LoRA and fresh seed",
+                     score, float(min_change))
+        retry_model = model
+        if swap_lora and float(boost_strength) > 0.0:
+            lora_path = folder_paths.get_full_path("loras", swap_lora)
+            if lora_path:
+                retry_model = h3lora.apply(retry_model, lora_path, swap_lora, float(boost_strength), "auto", 1.0, 0.0)
+        retry_seed = (int(seed) + 7919) & 0x7fffffff
+        noise = RandomNoise.execute(retry_seed)[0]
+        guider = BasicGuider.execute(retry_model, conditioning)[0]
+        retried = SamplerCustomAdvanced.execute(noise, guider, sampler, sigmas, masked_source)[0]
+        retry_video, _ = retried["samples"].unbind()
+        retry_score = motion_replace.latent_swap_score(
+            retry_video.detach().cpu().float().numpy(),
+            src_video.detach().cpu().float().numpy(),
+            video_mask.detach().cpu().float().numpy(),
+        )
+        if retry_score is not None and retry_score > score:
+            logging.info("[H3SwapGuard] Retry improved masked change %.3f -> %.3f; keeping retried Window 0",
+                         score, retry_score)
+            return io.NodeOutput(retried)
+        return io.NodeOutput(sampled)
+
+
 NODE_CLASS_MAPPINGS = {"H3SpriteGuide": H3SpriteGuide, "H3DefringeMatte": H3DefringeMatte, "H3SpriteSheet": H3SpriteSheet, "H3Take": H3Take, "H3LoadClip": H3LoadClip, "H3SaveHold": H3SaveHold, "H3LoadStill": H3LoadStill, "H3LoadSound": H3LoadSound,
                        "H3VOSR2Video": H3VOSR2Video,
                        "H3StyleGuider": H3StyleGuider,
                        "H3Lora": H3Lora, "H3LoadTake": H3LoadTake, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
                        "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder,
-                       "H3NInferTextEncoder": H3NInferTextEncoder}
+                       "H3NInferTextEncoder": H3NInferTextEncoder,
+                       "H3GatedSDPose": H3GatedSDPose, "H3IsolateCharacter": H3IsolateCharacter,
+                       "H3TrackSubjectMask": H3TrackSubjectMask, "H3SliceBatch": H3SliceBatch,
+                       "H3ApplyEditMask": H3ApplyEditMask, "H3JoinWindow": H3JoinWindow,
+                       "H3SwapGuard": H3SwapGuard,
+                       "H3CompositeSourcePlate": H3CompositeSourcePlate, "H3FlashControlNetApply": H3FlashControlNetApply}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3SpriteGuide": "H3 Sprite Motion Guide", "H3DefringeMatte": "H3 Defringe Matte", "H3SpriteSheet": "H3 Sprite Sheet", "H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
                               "H3VOSR2Video": "H3 VOSR2 Video (experimental)",
                               "H3StyleGuider": "H3 Style Guider (experimental)",
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3LoadTake": "H3 Load Take", "H3RefineLatent": "H3 Refine Latent",
                               "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas",
                               "H3SmallTextEncoder": "H3 Small Text Encoder",
-                              "H3NInferTextEncoder": "H3 NInfer Text Encoder"}
+                              "H3NInferTextEncoder": "H3 NInfer Text Encoder",
+                              "H3GatedSDPose": "H3 Gated SDPose Extractor", "H3IsolateCharacter": "H3 Isolate Character",
+                              "H3TrackSubjectMask": "H3 Track Subject Mask", "H3SliceBatch": "H3 Slice Batch",
+                              "H3ApplyEditMask": "H3 Apply Edit Mask", "H3JoinWindow": "H3 Join Window",
+                              "H3SwapGuard": "H3 Swap Guard",
+                              "H3CompositeSourcePlate": "H3 Composite Source Plate", "H3FlashControlNetApply": "H3 Flash ControlNet Apply"}
 # The editor's graphs name each node's twin, an id no other pack registers (see twins.py).
 NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = with_twins(NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS)

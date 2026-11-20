@@ -16,9 +16,52 @@ const clientId = (() => {
 // and takes longer than the first pass on most cards: without its own labels it read as "Decoding the sound" throughout.
 const STAGES = { 10: "Reading the prompt", 15: "Sampling", 16: "Decoding the picture", 17: "Decoding the sound", 80: "Preparing the final size",
   216: "Finding the performer", 218: "Tracking poses", 219: "Drawing the pose guide",
+  238: "Loading SAM 3.1", 239: "Isolating the character", 240: "Tracking subject mask (SAM 3.1)",
+  245: "Applying edit mask", 246: "Applying refine edit mask", 248: "Checking character swap", 250: "Compositing source plate",
+  260: "Slicing window 1", 261: "Slicing pose window 1",
+  31: "Loading RelayVSR 2x", 33: "Preparing RelayVSR 2x", 34: "Upscaling 2x (RelayVSR)", 35: "Decoding RelayVSR 2x", 36: "Finishing 2x size",
   82: "Enlarging", 83: "Enlarging", 90: "Refining at final size", 91: "Decoding the final picture", 18: "Assembling", 19: "Saving" };
-// The nodes that report steps: the first pass, and a final's refine pass.
-const STEPPED = new Set(["15", "90"]);
+// The nodes that report steps: the first pass, a final's refine pass, RelayVSR, and windowed relay samplers.
+const STEPPED = new Set(["15", "34", "90"]);
+const MOTION_MAX_SECONDS = 30;
+
+function stageForNode(node) {
+  const key = String(node || "");
+  if (STAGES[key]) return STAGES[key];
+  const id = Number(key);
+  if (Number.isInteger(id) && id >= 320) {
+    const win = Math.floor((id - 300) / 20) + 1;
+    const offset = (id - 300) % 20;
+    if (offset === 0) return "Slicing window " + win;
+    if (offset === 1) return "Slicing pose window " + win;
+    if (offset === 3) return "Preparing window " + win;
+    if (offset === 4) return "Locking relay window " + win;
+    if (offset === 6) return "Sampling window " + win;
+    if (offset === 7) return "Decoding window " + win;
+    if (offset === 8) return "Joining window " + win;
+  }
+  return "";
+}
+
+function isSteppedNode(node) {
+  const key = String(node || "");
+  if (STEPPED.has(key)) return true;
+  const id = Number(key);
+  return Number.isInteger(id) && id >= 320 && (id - 300) % 20 === 6;
+}
+
+function motionStageForNode(stages, node) {
+  const key = String(node || "");
+  if (!key || !Array.isArray(stages)) return null;
+  const direct = stages.find((s) => Array.isArray(s.nodes) && s.nodes.includes(key));
+  if (direct) return direct.id;
+  const id = Number(key);
+  if (Number.isInteger(id) && id >= 260) {
+    const sampling = stages.find((s) => s.id === "sampling");
+    if (sampling) return sampling.id;
+  }
+  return null;
+}
 
 import { VfxRuntime } from "./vfx-runtime.js";
 import { buildSpriteConfig, CAST_VIEWS, installSprites } from "./sprites.js";
@@ -215,6 +258,7 @@ function adopt(project, { external = false } = {}) {
     return;
   }
   state.project = project;
+  motionTabState.report = null;
   ensureFormatChoices(project);
   syncJobs();
   if (!clipOf(state.clip)) state.clip = null;
@@ -313,7 +357,10 @@ function snapFrames(seconds) {
 
 function plannedFrames(clip) {
   const take = activeTake(clip);
-  return take ? take.frames : clip.link ? linkedFrames(clip.link, clip.seconds) : clip.sprite ? (clip.sprite.frames || 39) : snapFrames(clip.seconds);
+  if (take) return take.frames;
+  const src = clip.motion?.source;
+  if (src && src.out > src.in) return src.out - src.in;
+  return clip.link ? linkedFrames(clip.link, clip.seconds) : clip.sprite ? (clip.sprite.frames || 39) : snapFrames(clip.seconds);
 }
 
 // An unrendered clip follows its seconds on the timeline, and the clips after it move along.
@@ -647,26 +694,80 @@ async function uploadPicture(file) {
   return api("/project/" + state.folder + "/asset", { method: "POST", body: form });
 }
 
+const FOOTAGE_EXT = /\.(mp4|mov|mkv|webm|avi|m4v|png|jpe?g|webp)$/i;
+const PICTURE_EXT = /\.(png|jpe?g|webp)$/i;
+const AUDIO_EXT = /\.(wav|mp3|flac|ogg|m4a|aac|opus)$/i;
+
+function isPictureFile(file) {
+  return Boolean(file && (/^image\/(png|jpeg|webp)$/i.test(file.type || "") || PICTURE_EXT.test(file.name || "")));
+}
+
+function isFootageFile(file) {
+  return Boolean(file && (/^video\//i.test(file.type || "") || isPictureFile(file) || FOOTAGE_EXT.test(file.name || "")));
+}
+
+function isAudioFile(file) {
+  return Boolean(file && (/^audio\//i.test(file.type || "") || AUDIO_EXT.test(file.name || "")));
+}
+
+function isFileDrag(event) {
+  const types = [...(event.dataTransfer?.types || [])];
+  if (!types.includes("Files")) return false;
+  if (draggedClip || types.includes("text/h3clip") || types.includes(TAKE_DRAG) || types.includes("application/x-h3-cast")) return false;
+  return true;
+}
+
 // Real footage and pictures become clips on the server, sized and timed like the renders.
-async function importFootage() {
-  const file = await pickFile($("importFile"));
-  if (!file) return;
-  const form = new FormData();
-  form.append("file", file);
-  form.append("client", clientId);
-  const bin = selectedBin();
-  if (bin) form.append("bin", bin.id);
-  toast("Importing " + file.name);
+async function importFootageFiles(files, { place = true, start = null, bin = undefined } = {}) {
+  const list = [...(files || [])].filter(isFootageFile);
+  if (!list.length) {
+    toast("Drop a video (MP4, MOV, WebM, MKV) or a picture (PNG, JPEG, WebP).", true);
+    return [];
+  }
+  const folder = state.folder;
+  const targetBin = bin === undefined ? (selectedBin()?.id || null) : bin;
+  let nextStart = place && Number.isFinite(start) ? Math.max(0, Math.round(start)) : null;
+  const imported = [];
+  toast(list.length === 1 ? "Importing " + list[0].name : "Importing " + list.length + " files…");
   try {
     await flush();
-    const result = await api("/project/" + state.folder + "/import", { method: "POST", body: form });
-    if (!unsaved()) adopt(result.project);
-    setCollectionOpen("clips", true);
-    selectClip(result.clip, result.item);
-    toast(file.name + " is on the timeline.");
+    for (const file of list) {
+      if (state.folder !== folder) break;
+      const form = new FormData();
+      form.append("file", file);
+      form.append("client", clientId);
+      form.append("place", place ? "true" : "false");
+      if (nextStart !== null) form.append("start", String(nextStart));
+      if (targetBin) form.append("bin", targetBin);
+      const result = await api("/project/" + folder + "/import", { method: "POST", body: form });
+      if (state.folder !== folder) break;
+      if (!unsaved()) adopt(result.project);
+      imported.push(result);
+      if (nextStart !== null && Number.isFinite(result.frames)) nextStart += result.frames;
+    }
+    if (imported.length) {
+      setCollectionOpen("clips", true);
+      const first = imported[0];
+      const last = imported.at(-1);
+      selectClip(last.clip, place ? last.item : null);
+      if (place) {
+        const at = Number.isFinite(start) ? " at " + timecode(Math.max(0, Math.round(start))) : "";
+        toast(imported.length === 1 ? list[0].name + " is on the timeline" + at + "." : "Imported " + imported.length + " clips to the timeline" + at + ".");
+      } else {
+        const where = targetBin && binOf(targetBin) ? binOf(targetBin).name : "Clips";
+        toast(imported.length === 1 ? list[0].name + " imported to " + where + "." : "Imported " + imported.length + " clips to " + where + ".");
+      }
+    }
   } catch (error) {
     toast(error.message, true);
   }
+  return imported;
+}
+
+async function importFootage() {
+  const file = await pickFile($("importFile"));
+  if (!file) return;
+  await importFootageFiles([file], { place: true });
 }
 
 // A voice with no picture, such as a narrator. Its lines use the voice; it never appears in the shot.
@@ -810,6 +911,35 @@ function pickFile(input) {
     input.oncancel = () => resolve(null);
     input.click();
   });
+}
+
+async function addCastFiles(files) {
+  const list = [...(files || [])].filter(isPictureFile);
+  if (!list.length) return toast("Drop a PNG, JPEG or WebP picture to add to Cast.", true);
+  try {
+    let lastPerson = null;
+    for (const file of list) {
+      const asset = await uploadPicture(file);
+      checkpoint();
+      state.project.cast = state.project.cast || [];
+      const base = (file.name || "").replace(/\.[^.]+$/, "").trim().slice(0, 60);
+      const name = base || ("Person " + (state.project.cast.length + 1));
+      const person = { id: uid("p"), name, description: "", ...asset };
+      state.project.cast.push(person);
+      lastPerson = person;
+    }
+    if (lastPerson) {
+      setCollectionOpen("cast", true);
+      state.person = lastPerson.id;
+      state.clip = null;
+      state.item = null;
+      save();
+      renderAll();
+      toast(list.length === 1 ? lastPerson.name + " added to Cast." : "Added " + list.length + " cast members.");
+    }
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 async function addCastMember() {
@@ -1531,7 +1661,9 @@ function clipStatus(clip) {
 
 function clipSeconds(clip) {
   const take = activeTake(clip);
-  return (take ? take.frames / FPS : clip.sprite ? (clip.sprite.frames || 39) / FPS : clip.seconds).toFixed(1) + " s";
+  const src = clip.motion?.source;
+  const frames = take ? take.frames : src && src.out > src.in ? src.out - src.in : null;
+  return (frames != null ? frames / FPS : clip.sprite ? (clip.sprite.frames || 39) / FPS : clip.seconds).toFixed(1) + " s";
 }
 
 // Run the pointer across a thumbnail to scrub through the clip, frame strip permitting.
@@ -1723,6 +1855,7 @@ const ICONS = {
   pin: '<path d="M9 4h6l-.9 5.2 3.4 3.3H6.5l3.4-3.3z"/><path d="M12 12.5V20"/>',
   restore: '<path d="M5 12a7 7 0 1 0 2.1-5"/><path d="M5 4.5v3.7h3.7"/>',
   settings: '<path d="M4.5 7.5H13M17 7.5h2.5M4.5 16.5H7M11 16.5h8.5"/><circle cx="15" cy="7.5" r="2"/><circle cx="9" cy="16.5" r="2"/>',
+  motion: '<circle cx="13.5" cy="5.5" r="2"/><path d="M8.5 11.5l3-2.5 3.5 1 2.5-2.5M11.5 9l-1 5.5 4.5 2 1.5 3.5M10.5 14.5l-3.5 4.5"/>',
 };
 
 function icon(name) {
@@ -3867,7 +4000,7 @@ function renderTabs(tabs) {
     tab.setAttribute("role", "tab");
     tab.setAttribute("aria-selected", String(state.tab === id));
     tab.tabIndex = state.tab === id ? 0 : -1;
-    const mark = { Shot: "shot", Footage: "shot", Takes: "takes", Timeline: "timeline", Project: "project",
+    const mark = { Shot: "shot", Footage: "shot", Takes: "takes", Timeline: "timeline", Motion: "motion", Project: "project",
       "Cast member": "person", Bin: "project", Sound: "wave", Track: "wave", VFX: "sparkle" }[label];
     if (mark) tab.append(icon(mark));
     const words = document.createElement("span");
@@ -3975,7 +4108,7 @@ function drawInspector() {
   else if (clip && clip.kind === "footage") tabs.push(["shot", "Footage"], ["takes", "Takes", clip.takes.length]);
   else if (clip) tabs.push(["shot", "Shot"], ["takes", "Takes", clip.takes.length]);
   if (placed) tabs.push(["timeline", "Timeline"]);
-  tabs.push(["project", "Project"]);
+  tabs.push(["motion", "Motion"], ["project", "Project"]);
   const key = person ? "p" + person.id : clip ? "c" + clip.id : bin ? "b" + bin.id : sound ? "s" + sound.id : "";
   if (key !== inspected) {
     if (key && state.tab === "project") state.tab = "shot";
@@ -3984,6 +4117,10 @@ function drawInspector() {
   }
   if (!tabs.some(([id]) => id === state.tab)) state.tab = tabs[0][0];
   renderTabs(tabs);
+  if (state.tab === "motion") {
+    renderMotionTab(panel, clip);
+    return;
+  }
   if (state.tab === "project") {
     renderScene(panel, Boolean(key));
     return;
@@ -4101,9 +4238,10 @@ function drawInspector() {
 
   const timing = document.createElement("div");
   timing.className = "two";
-  const duration = plainField("Seconds", clip.sprite ? Number(((clip.sprite.frames || 39) / FPS).toFixed(2)) : clip.seconds, { type: "number" });
+  const motionFrames = clip.motion?.source ? clip.motion.source.out - clip.motion.source.in : 0;
+  const duration = plainField("Seconds", clip.sprite ? Number(((clip.sprite.frames || 39) / FPS).toFixed(2)) : motionFrames > 0 ? Number((motionFrames / FPS).toFixed(3)) : clip.seconds, { type: "number" });
   Object.assign(duration.input, { min: "0.5", max: "60", step: "any", required: true });
-  duration.input.disabled = Boolean(clip.sprite);
+  duration.input.disabled = Boolean(clip.sprite || clip.motion);
   duration.input.dataset.key = "Seconds";
   const durationHint = document.createElement("small");
   durationHint.id = "shotDurationHint";
@@ -4140,17 +4278,23 @@ function drawInspector() {
     field("Camera", clip.camera, (v) => (clip.camera = v), { placeholder: "Slow push in" }),
     duration.wrap,
   );
-  const happens = field("What happens", clip.action, (v) => (clip.action = v), { big: true, placeholder: "Describe what we see and hear, in the order it happens." });
+  const happens = field(clip.motion ? "Character / scene notes" : "What happens", clip.action, (v) => (clip.action = v), {
+    big: true,
+    placeholder: clip.motion
+      ? "Optional: brief hair, outfit or style note."
+      : "Describe what we see and hear, in the order it happens.",
+  });
   const happensLabel = happens.querySelector("span");
   happensLabel.classList.add("label-row");
-  happensLabel.append(rewriteButton(clip));
+  if (!clip.motion) happensLabel.append(rewriteButton(clip));
+  if (state.tab === "shot" && clip.motion) parts.push(motionSection(clip));
   if (state.tab === "shot") parts.push(section("Shot", [
     happens,
     timing,
-    ...(state.project.cast?.some((p) => p.file || p.refmod) ? castPicker(clip) : []),
+    ...(!clip.motion && state.project.cast?.some((p) => p.file || p.refmod) ? castPicker(clip) : []),
     ...framesFor(clip),
   ], "shot"));
-  if (state.tab === "shot" && !clip.link) parts.push(spriteSection(clip));
+  if (state.tab === "shot" && !clip.link && !clip.motion) parts.push(spriteSection(clip));
   const spriteTake = activeTake(clip);
   if (spriteTake?.sprite && ["shot", "takes"].includes(state.tab)) parts.push(spritePlayback(clip, spriteTake));
   if (state.tab === "shot") {
@@ -4329,13 +4473,14 @@ function upscaleControls(clip) {
   return upscale;
 }
 
-const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides", "sprite"];
+const SAVED_FIELDS = ["action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "track", "style_markers", "mid_guides", "sprite", "motion"];
 
 function restoreTakeFields(clip, saved) {
   for (const name of SAVED_FIELDS) {
     if (name in saved) clip[name] = structuredClone(saved[name]);
   }
   if (!saved.sprite) delete clip.sprite;
+  if (!saved.motion) delete clip.motion;
   if (!saved.mid_guides?.length) delete clip.mid_guides;
 }
 
@@ -4426,7 +4571,7 @@ function versions(clip) {
   compare.setAttribute("aria-pressed", String(Boolean(comparison)));
   button("Edit with prompt", () => openPromptEdit(clip), Boolean(jobFor(clip.id)));
   const motionOff = motionUnavailable(clip);
-  button("Motion transfer", () => openPromptEdit(clip, null, true), Boolean(motionOff), "", motionOff);
+  button("Motion transfer", () => openMotionTransfer(clip), Boolean(motionOff), "", motionOff);
   if (clip.kind !== "footage") {
     button("Keep seed", () => {
       checkpoint();
@@ -4767,6 +4912,610 @@ function spriteChoice(label, options, value, choose) {
   select.value = value;
   select.onchange = () => choose(select.value);
   return wrap;
+}
+
+function motionSection(clip) {
+  const m = clip.motion;
+  const src = m.source || {};
+  const frames = Math.max(0, (src.out || 0) - (src.in || 0));
+  const win = motionWindowSummary(frames);
+  const member = m.cast ? (state.project.cast || []).find((p) => p.id === m.cast) : null;
+  const sourceClip = src.clip ? clipOf(src.clip) : null;
+  const card = document.createElement("div");
+  card.className = "motion-summary-card";
+
+  const row = document.createElement("div");
+  row.className = "motion-summary-row";
+  if (m.character?.file) {
+    const thumb = document.createElement("img");
+    thumb.className = "motion-summary-thumb";
+    thumb.src = viewUrl(m.character.file, m.character.subfolder || "");
+    thumb.alt = member?.name || "Character reference";
+    row.append(thumb);
+  }
+  const info = document.createElement("div");
+  info.className = "motion-summary-info";
+  const title = document.createElement("b");
+  title.textContent = member ? member.name : (m.character?.file || "Character image");
+  const meta = document.createElement("span");
+  meta.className = "motion-summary-meta";
+  const sourceName = sourceClip?.name || src.file || "Source clip";
+  meta.textContent = sourceName + " · " + timecode(src.in || 0) + " – " + timecode(Math.max(0, (src.out || 1) - 1))
+    + " · " + (frames / FPS).toFixed(2) + " s";
+  info.append(title, meta);
+  row.append(info);
+  card.append(row);
+
+  const badges = document.createElement("div");
+  badges.className = "motion-badges";
+  const tags = [m.mode === "choreography" ? "Pose choreography" : "Replace character"];
+  if (m.mode !== "choreography") tags.push(m.style === "photoreal" ? "Photoreal" : m.style === "preserve" ? "Keep style" : "Auto style");
+  if (win.windows > 1) tags.push(win.label);
+  if (m.mode !== "choreography" && m.plate !== false) tags.push("Zero-halo plate");
+  if (m.sharp || state.project.sizes?.final === "sharp") tags.push("Sharp 2x");
+  for (const label of tags) {
+    const badge = document.createElement("span");
+    badge.className = "motion-badge";
+    badge.textContent = label;
+    badges.append(badge);
+  }
+  card.append(badges);
+
+  const actions = document.createElement("div");
+  actions.className = "motion-summary-actions";
+  const busy = Boolean(jobFor(clip.id));
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "quiet";
+  editBtn.textContent = "Edit settings";
+  editBtn.disabled = busy;
+  editBtn.addEventListener("click", () => openMotionTransfer(clip));
+  actions.append(editBtn);
+  const pipeBtn = document.createElement("button");
+  pipeBtn.type = "button";
+  pipeBtn.className = "quiet";
+  pipeBtn.textContent = "Inspect pipeline";
+  pipeBtn.addEventListener("click", () => showTab("motion"));
+  actions.append(pipeBtn);
+  const current = activeTake(clip);
+  if (current && current.quality === "draft" && !busy) {
+    const finalBtn = document.createElement("button");
+    finalBtn.type = "button";
+    finalBtn.className = "quiet";
+    finalBtn.textContent = (m.sharp || state.project.sizes?.final === "sharp") ? "Re-render Sharp final" : "Re-render final";
+    finalBtn.addEventListener("click", () => renderClip(clip, "final"));
+    actions.append(finalBtn);
+  }
+  card.append(actions);
+  return section("Motion transfer", [card], "shot");
+}
+
+const motionTabState = {
+  folder: null,
+  clipId: null,
+  seq: 0,
+  report: null,
+  error: null,
+  loading: false,
+};
+
+function formatMotionBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n >= 1048576) return (n / 1048576).toFixed(2) + " MB";
+  if (n >= 1024) return Math.round(n / 1024) + " KB";
+  return n + " B";
+}
+
+function openMotionPreview(url, title, subtitle = "") {
+  let dialog = $("motionPreviewDialog");
+  if (!dialog) {
+    dialog = document.createElement("dialog");
+    dialog.id = "motionPreviewDialog";
+    dialog.className = "mp-preview-dialog";
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) dialog.close();
+    });
+    document.body.append(dialog);
+  }
+  const head = document.createElement("div");
+  head.className = "mp-preview-dialog-head";
+  const titles = document.createElement("div");
+  const h = document.createElement("h3");
+  h.textContent = title;
+  titles.append(h);
+  if (subtitle) {
+    const p = document.createElement("p");
+    p.textContent = subtitle;
+    titles.append(p);
+  }
+  const closeBtn = iconButton("close", "Close preview", () => dialog.close());
+  head.append(titles, closeBtn);
+
+  const body = document.createElement("div");
+  body.className = "mp-preview-dialog-body";
+  const img = document.createElement("img");
+  img.src = url;
+  img.alt = title;
+  body.append(img);
+
+  const foot = document.createElement("div");
+  foot.className = "mp-preview-dialog-foot";
+  const openLink = document.createElement("a");
+  openLink.href = url;
+  openLink.target = "_blank";
+  openLink.rel = "noopener";
+  openLink.textContent = "Open full image in new tab";
+  const doneBtn = document.createElement("button");
+  doneBtn.type = "button";
+  doneBtn.className = "quiet";
+  doneBtn.textContent = "Close";
+  doneBtn.addEventListener("click", () => dialog.close());
+  foot.append(openLink, doneBtn);
+
+  dialog.replaceChildren(head, body, foot);
+  if (!dialog.open) dialog.showModal();
+}
+
+function refreshMotionLive(job) {
+  if (state.tab !== "motion" || !motionTabState.report) return;
+  if (job && motionTabState.report.clip && job.clip === motionTabState.report.clip.id) {
+    drawMotionReport($("inspBody"), motionTabState.report);
+  }
+}
+
+function renderMotionTab(panel, selectedClip, force = false) {
+  if (!state.folder || !state.project) {
+    panel.replaceChildren();
+    return;
+  }
+  const preferredId = (selectedClip && (selectedClip.motion || selectedClip.kind === "footage"))
+    ? selectedClip.id
+    : (motionTabState.folder === state.folder && motionTabState.clipId && clipOf(motionTabState.clipId))
+      ? motionTabState.clipId
+      : null;
+
+  const sameTarget = !force
+    && motionTabState.folder === state.folder
+    && motionTabState.clipId === preferredId
+    && motionTabState.report
+    && !motionTabState.loading;
+
+  if (sameTarget) {
+    drawMotionReport(panel, motionTabState.report);
+    return;
+  }
+
+  motionTabState.folder = state.folder;
+  motionTabState.clipId = preferredId;
+  motionTabState.loading = true;
+  motionTabState.error = null;
+  const seq = ++motionTabState.seq;
+  const folder = state.folder;
+
+  if (motionTabState.report && motionTabState.folder === folder) {
+    drawMotionReport(panel, motionTabState.report);
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "mp-empty";
+    empty.textContent = "Loading motion pipeline status…";
+    panel.replaceChildren(empty);
+  }
+
+  const query = preferredId ? "?clip=" + encodeURIComponent(preferredId) : "";
+  api("/project/" + folder + "/motion" + query)
+    .then((report) => {
+      if (seq !== motionTabState.seq || state.folder !== folder) return;
+      motionTabState.loading = false;
+      motionTabState.report = report;
+      if (report.clip?.id) motionTabState.clipId = report.clip.id;
+      if (state.tab === "motion") drawMotionReport($("inspBody"), report);
+    })
+    .catch((error) => {
+      if (seq !== motionTabState.seq || state.folder !== folder) return;
+      motionTabState.loading = false;
+      motionTabState.error = error.message;
+      if (state.tab === "motion") {
+        const msg = document.createElement("p");
+        msg.className = "mp-empty";
+        msg.textContent = "Could not load motion pipeline status: " + error.message;
+        $("inspBody").replaceChildren(msg);
+      }
+    });
+}
+
+function drawMotionReport(panel, report) {
+  const nodes = [];
+  const inspectedClip = report.clip ? clipOf(report.clip.id) : null;
+  const activeJob = inspectedClip ? jobFor(inspectedClip.id) : null;
+  const liveStageId = activeJob ? motionStageForNode(report.clip?.stages, activeJob.node) : null;
+
+  // Header & clip switcher
+  const head = document.createElement("div");
+  head.className = "mp-head";
+  const headRow = document.createElement("div");
+  headRow.className = "mp-head-row";
+  const headTitle = document.createElement("div");
+  headTitle.className = "mp-head-title";
+  const h2 = document.createElement("h2");
+  h2.textContent = "Motion pipeline";
+  const sub = document.createElement("p");
+  sub.className = "mp-head-sub";
+  const mCount = (report.motion_clips || []).length;
+  const cCount = (report.caches || []).length;
+  sub.textContent = mCount + " motion clip" + (mCount === 1 ? "" : "s")
+    + " · " + cCount + " cached artifact" + (cCount === 1 ? "" : "s");
+  headTitle.append(h2, sub);
+
+  const headActions = document.createElement("div");
+  headActions.className = "mp-head-actions";
+  headActions.append(iconButton("restore", "Refresh pipeline status", () => {
+    renderMotionTab(panel, inspectedClip, true);
+  }));
+  if (inspectedClip) {
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "quiet";
+    editBtn.textContent = inspectedClip.motion ? "Edit" : "Motion…";
+    editBtn.disabled = Boolean(activeJob);
+    editBtn.addEventListener("click", () => openMotionTransfer(inspectedClip));
+    headActions.append(editBtn);
+  }
+  headRow.append(headTitle, headActions);
+  head.append(headRow);
+
+  // Switch between motion clips and source footage clips
+  const choices = [];
+  for (const mc of report.motion_clips || []) {
+    choices.push({ id: mc.id, label: mc.name + " · " + (mc.mode === "choreography" ? "Pose" : "Replace") + " (" + (mc.frames / FPS).toFixed(1) + "s)" });
+  }
+  for (const c of state.project.clips || []) {
+    if (!c.motion && c.kind === "footage") {
+      choices.push({ id: c.id, label: c.name + " · Source footage" });
+    }
+  }
+  if (choices.length) {
+    const picker = document.createElement("div");
+    picker.className = "mp-picker";
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", "Inspect clip");
+    for (const ch of choices) {
+      const opt = document.createElement("option");
+      opt.value = ch.id;
+      opt.textContent = ch.label;
+      if (report.clip && report.clip.id === ch.id) opt.selected = true;
+      select.append(opt);
+    }
+    select.addEventListener("change", () => {
+      motionTabState.clipId = select.value;
+      const target = clipOf(select.value);
+      if (target) selectClip(target.id);
+      else renderMotionTab(panel, null, true);
+    });
+    picker.append(select);
+    head.append(picker);
+  }
+  nodes.push(head);
+
+  // Live execution banner when this clip is actively rendering
+  if (activeJob) {
+    const live = document.createElement("div");
+    live.className = "mp-live";
+    const row = document.createElement("div");
+    row.className = "mp-live-row";
+    const dot = document.createElement("span");
+    dot.className = "mp-live-dot";
+    const stageText = document.createElement("b");
+    stageText.textContent = activeJob.stage || "Running motion pipeline…";
+    const nodeTag = document.createElement("span");
+    nodeTag.className = "mp-live-node";
+    nodeTag.textContent = (activeJob.max ? "Step " + (activeJob.step || 0) + "/" + activeJob.max + " · " : "")
+      + (activeJob.node ? "#" + activeJob.node : "");
+    row.append(dot, stageText, nodeTag);
+    live.append(row);
+    if (activeJob.max > 0) {
+      const track = document.createElement("div");
+      track.className = "mp-live-track";
+      const fill = document.createElement("div");
+      fill.className = "mp-live-fill";
+      fill.style.width = Math.min(100, Math.round((activeJob.progress || 0) * 100)) + "%";
+      track.append(fill);
+      live.append(track);
+    }
+    nodes.push(live);
+  }
+
+  async function clearMotionCache(kind, file, label) {
+    try {
+      const res = await postJson("/project/" + state.folder + "/motion/cache/clear", { kind, file: file || "" });
+      toast(res.removed ? "Cleared " + label + " (" + res.removed + " file" + (res.removed === 1 ? "" : "s") + ")." : "No cached files to clear.");
+      motionTabState.report = null;
+      renderMotionTab($("inspBody"), inspectedClip, true);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  // Pipeline stage cards
+  if (report.clip && Array.isArray(report.clip.stages) && report.clip.stages.length) {
+    const stagesWrap = document.createElement("div");
+    stagesWrap.className = "mp-stages";
+    report.clip.stages.forEach((stage, idx) => {
+      const isRunning = Boolean(liveStageId && liveStageId === stage.id);
+      const effectiveStatus = isRunning ? "running" : (stage.status || "ready");
+      const card = document.createElement("div");
+      card.className = "mp-stage is-" + effectiveStatus;
+      card.dataset.stage = stage.id;
+
+      const top = document.createElement("div");
+      top.className = "mp-stage-top";
+      const idBox = document.createElement("div");
+      idBox.className = "mp-stage-id";
+      const num = document.createElement("span");
+      num.className = "mp-stage-num";
+      num.textContent = String(idx + 1);
+      const titles = document.createElement("div");
+      titles.className = "mp-stage-titles";
+      const title = document.createElement("b");
+      title.textContent = stage.title;
+      const comp = document.createElement("span");
+      comp.className = "mp-stage-comp";
+      const nodeIds = (stage.nodes || []).length ? " · " + stage.nodes.map((n) => "#" + n).join(" ") : "";
+      comp.textContent = (stage.component || "") + nodeIds;
+      comp.title = comp.textContent;
+      titles.append(title, comp);
+      idBox.append(num, titles);
+
+      const pill = document.createElement("span");
+      pill.className = "mp-pill " + effectiveStatus;
+      pill.textContent = isRunning ? (activeJob.stage || "Running") : (stage.badge || effectiveStatus);
+      top.append(idBox, pill);
+      card.append(top);
+
+      if (stage.detail) {
+        const detail = document.createElement("p");
+        detail.className = "mp-stage-detail";
+        detail.textContent = stage.detail;
+        card.append(detail);
+      }
+
+      if (stage.coverage && stage.coverage.total > 0) {
+        const cov = document.createElement("div");
+        cov.className = "mp-cov";
+        const track = document.createElement("div");
+        track.className = "mp-cov-track";
+        const total = stage.coverage.total;
+        for (const [a, b] of stage.coverage.spans || []) {
+          const span = document.createElement("span");
+          span.className = "mp-cov-span";
+          span.style.left = ((a / total) * 100).toFixed(2) + "%";
+          span.style.width = (Math.max(1, b - a) / total * 100).toFixed(2) + "%";
+          span.title = "Cached frames " + a + "–" + (b - 1);
+          track.append(span);
+        }
+        const meta = document.createElement("div");
+        meta.className = "mp-cov-meta";
+        const pct = Math.round((stage.coverage.cached / total) * 100);
+        const left = document.createElement("span");
+        left.textContent = "Cached coverage: " + stage.coverage.cached + "/" + total + "f (" + pct + "%)";
+        const right = document.createElement("span");
+        right.textContent = (stage.coverage.spans || []).map(([a, b]) => a + "–" + (b - 1)).join(", ");
+        meta.append(left, right);
+        cov.append(track, meta);
+        card.append(cov);
+      }
+
+      if (Array.isArray(stage.windows) && stage.windows.length) {
+        const wins = document.createElement("div");
+        wins.className = "mp-windows";
+        for (const w of stage.windows) {
+          const chip = document.createElement("span");
+          chip.className = "mp-win-chip";
+          chip.textContent = "W" + w.index + " " + w.start + "–" + Math.max(w.start, w.end - 1)
+            + (w.overlap ? " (+" + w.overlap + "f)" : "");
+          wins.append(chip);
+        }
+        card.append(wins);
+      }
+
+      // Visual output inspection per stage
+      if (stage.id === "cutout" && (stage.preview_url || stage.original_url)) {
+        const box = document.createElement("div");
+        box.className = "mp-preview-box";
+        const pair = document.createElement("div");
+        pair.className = "mp-cutout-pair";
+        const addThumb = (url, label) => {
+          const holder = document.createElement("div");
+          holder.className = "mp-cutout-card";
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "mp-preview-btn";
+          btn.title = "Inspect " + label;
+          const img = document.createElement("img");
+          img.src = url;
+          img.alt = label;
+          img.loading = "lazy";
+          btn.append(img);
+          btn.addEventListener("click", () => openMotionPreview(url, stage.title + " · " + label, stage.detail || ""));
+          const cap = document.createElement("span");
+          cap.textContent = label;
+          holder.append(btn, cap);
+          pair.append(holder);
+        };
+        if (stage.original_url) addThumb(stage.original_url, "Original");
+        if (stage.preview_url) addThumb(stage.preview_url, "SAM3 Cutout");
+        box.append(pair);
+        if (stage.cache) {
+          const foot = document.createElement("div");
+          foot.className = "mp-preview-foot";
+          const note = document.createElement("span");
+          note.textContent = "Cached cutout reused across renders";
+          const clearBtn = document.createElement("button");
+          clearBtn.type = "button";
+          clearBtn.className = "mp-link danger";
+          clearBtn.textContent = "Clear cache";
+          clearBtn.addEventListener("click", () => clearMotionCache(stage.cache.kind, stage.cache.file, "character cutout cache"));
+          foot.append(note, clearBtn);
+          box.append(foot);
+        }
+        card.append(box);
+      } else if (stage.preview_url) {
+        const box = document.createElement("div");
+        box.className = "mp-preview-box";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "mp-preview-btn";
+        btn.title = "Click to inspect full resolution";
+        const img = document.createElement("img");
+        img.src = stage.preview_url;
+        img.alt = stage.title + " preview";
+        img.loading = "lazy";
+        btn.append(img);
+        const legend = stage.id === "segmentation"
+          ? "Cyan: raw SAM 3.1 mask · Amber: expanded edit halo"
+          : stage.id === "pose"
+            ? "RT-DETR + SDPose 18-joint skeleton overlay"
+            : "Active rendered take filmstrip";
+        btn.addEventListener("click", () => openMotionPreview(stage.preview_url, stage.title, legend));
+        box.append(btn);
+        const foot = document.createElement("div");
+        foot.className = "mp-preview-foot";
+        const cap = document.createElement("span");
+        cap.textContent = legend;
+        const acts = document.createElement("div");
+        acts.className = "mp-mini-actions";
+        const zoomBtn = document.createElement("button");
+        zoomBtn.type = "button";
+        zoomBtn.className = "mp-link";
+        zoomBtn.textContent = "Inspect";
+        zoomBtn.addEventListener("click", () => openMotionPreview(stage.preview_url, stage.title, legend));
+        acts.append(zoomBtn);
+        if (stage.cache) {
+          const clearBtn = document.createElement("button");
+          clearBtn.type = "button";
+          clearBtn.className = "mp-link danger";
+          clearBtn.textContent = "Clear";
+          clearBtn.addEventListener("click", () => clearMotionCache(stage.cache.kind, stage.cache.file, stage.title.toLowerCase() + " cache"));
+          acts.append(clearBtn);
+        }
+        foot.append(cap, acts);
+        box.append(foot);
+        card.append(box);
+      }
+
+      stagesWrap.append(card);
+    });
+    nodes.push(stagesWrap);
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "mp-empty";
+    empty.textContent = "No motion transfer or source footage clips in this project yet. Import a video and choose Motion transfer to inspect every pipeline stage and intermediate output here.";
+    nodes.push(empty);
+  }
+
+  // Project-wide stored caches inventory
+  const cacheDetails = document.createElement("details");
+  cacheDetails.className = "section";
+  cacheDetails.open = true;
+  const cacheSummary = document.createElement("summary");
+  cacheSummary.textContent = "Stored caches";
+  const cacheCount = document.createElement("span");
+  cacheCount.className = "filled";
+  const totalBytes = (report.caches || []).reduce((acc, c) => acc + (c.size_bytes || 0), 0);
+  cacheCount.textContent = (report.caches || []).length
+    ? report.caches.length + " · " + formatMotionBytes(totalBytes)
+    : "Empty";
+  cacheSummary.append(cacheCount);
+  cacheDetails.append(cacheSummary);
+
+  if ((report.caches || []).length) {
+    const list = document.createElement("ul");
+    list.className = "mp-cache-list";
+    for (const c of report.caches) {
+      const li = document.createElement("li");
+      li.className = "mp-cache-row";
+      const tag = document.createElement("span");
+      tag.className = "mp-cache-tag " + c.kind;
+      tag.textContent = c.kind === "mask" ? "SAM3" : c.kind === "pose" ? "Pose" : "Cutout";
+      const info = document.createElement("div");
+      info.className = "mp-cache-info";
+      const b = document.createElement("b");
+      b.textContent = c.label || c.cache_file;
+      const small = document.createElement("small");
+      small.textContent = (c.total_frames ? c.cached_frames + "/" + c.total_frames + "f · " : "") + formatMotionBytes(c.size_bytes);
+      info.append(b, small);
+      li.append(tag, info);
+      if (c.preview_url) {
+        const viewBtn = document.createElement("button");
+        viewBtn.type = "button";
+        viewBtn.className = "mp-link";
+        viewBtn.textContent = "View";
+        viewBtn.addEventListener("click", () => openMotionPreview(c.preview_url, (c.label || "Cache") + " · " + tag.textContent, c.cache_file || ""));
+        li.append(viewBtn);
+      }
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "mp-link danger";
+      delBtn.textContent = "Clear";
+      delBtn.addEventListener("click", () => clearMotionCache(c.kind, c.file, (c.label || c.kind) + " cache"));
+      li.append(delBtn);
+      list.append(li);
+    }
+    cacheDetails.append(list);
+    const clearAll = document.createElement("button");
+    clearAll.type = "button";
+    clearAll.className = "quiet";
+    clearAll.textContent = "Clear all motion caches";
+    clearAll.addEventListener("click", () => clearMotionCache("all", "", "all motion caches"));
+    cacheDetails.append(clearAll);
+  } else {
+    const none = document.createElement("p");
+    none.className = "hint";
+    none.textContent = "SAM 3.1 masks, RT-DETR + SDPose keypoints, and character cutouts are cached automatically on first render and reused across splits.";
+    cacheDetails.append(none);
+  }
+  nodes.push(cacheDetails);
+
+  // Pipeline models checklist
+  const modelDetails = document.createElement("details");
+  modelDetails.className = "section";
+  const installedCount = (report.models || []).filter((m) => m.installed).length;
+  const totalModels = (report.models || []).length;
+  modelDetails.open = installedCount < totalModels;
+  const modelSummary = document.createElement("summary");
+  modelSummary.textContent = "Pipeline models";
+  const modelCount = document.createElement("span");
+  modelCount.className = "filled";
+  modelCount.textContent = installedCount + "/" + totalModels + " ready";
+  modelSummary.append(modelCount);
+  modelDetails.append(modelSummary);
+
+  const modelList = document.createElement("ul");
+  modelList.className = "mp-model-list";
+  for (const m of report.models || []) {
+    const li = document.createElement("li");
+    li.className = "mp-model-row";
+    const dot = document.createElement("span");
+    dot.className = "mp-model-dot" + (m.installed ? "" : " missing");
+    const name = document.createElement("span");
+    name.className = "mp-model-name";
+    name.textContent = m.title;
+    name.title = m.title;
+    const st = document.createElement("span");
+    st.className = "mp-model-state";
+    st.textContent = m.installed ? "Ready" : (m.bytes ? gb(m.bytes) : "Missing");
+    li.append(dot, name, st);
+    modelList.append(li);
+  }
+  modelDetails.append(modelList);
+  const manageBtn = document.createElement("button");
+  manageBtn.type = "button";
+  manageBtn.className = "quiet";
+  manageBtn.textContent = "Manage models…";
+  manageBtn.addEventListener("click", () => openModels(null));
+  modelDetails.append(manageBtn);
+  nodes.push(modelDetails);
+
+  panel.replaceChildren(...nodes);
 }
 
 function spriteSection(clip) {
@@ -5943,30 +6692,46 @@ function bindSound(block, id) {
   });
 }
 
-// Lays a sound file under the cut at the playhead, on the first lane where nothing is in its way.
-async function addSound() {
-  const file = await pickFile($("soundFile"));
-  if (!file) return;
-  toast("Adding " + file.name + ".");
+// Lays a sound file under the cut at start (default playhead), on the first lane where nothing is in its way.
+async function addSoundFiles(files, atFrame = null) {
+  const list = [...(files || [])].filter(isAudioFile);
+  if (!list.length) return toast("Drop an audio file (WAV, MP3, FLAC, OGG, M4A).", true);
+  let nextStart = Math.max(0, Math.round(Number.isFinite(atFrame) ? atFrame : state.playhead));
+  toast(list.length === 1 ? "Adding " + list[0].name + "." : "Adding " + list.length + " sound files…");
   try {
-    const form = new FormData();
-    form.append("file", file);
-    const asset = await api("/project/" + state.folder + "/asset?sound=1", { method: "POST", body: form });
-    const start = Math.max(0, Math.round(state.playhead));
-    const frames = Math.max(1, Math.round(asset.seconds * FPS));
-    const sounds = state.project.sounds || [];
-    const clear = (lane) => !sounds.some((s) => (s.lane || 0) === lane && s.start < start + frames && start < s.start + s.frames);
-    const lane = [...Array(SOUND_LANES).keys()].find(clear) ?? 0;
-    checkpoint();
-    const sound = { id: uid("s"), name: file.name.replace(/\.[^.]+$/, "").slice(0, 80) || "Sound", file: asset.file, subfolder: asset.subfolder,
-      seconds: asset.seconds, start, offset: 0, frames, gain: 1, lane };
-    state.project.sounds = [...sounds, sound];
-    save();
-    selectSound(sound.id);
-    toast(sound.name + " is on the timeline, on Sound " + (lane + 2) + ". Drag it to move it, and its ends to trim it.");
+    let lastSound = null;
+    for (const file of list) {
+      const form = new FormData();
+      form.append("file", file);
+      const asset = await api("/project/" + state.folder + "/asset?sound=1", { method: "POST", body: form });
+      const start = nextStart;
+      const frames = Math.max(1, Math.round(asset.seconds * FPS));
+      const sounds = state.project.sounds || [];
+      const clear = (lane) => !sounds.some((s) => (s.lane || 0) === lane && s.start < start + frames && start < s.start + s.frames);
+      const lane = [...Array(SOUND_LANES).keys()].find(clear) ?? 0;
+      checkpoint();
+      const sound = { id: uid("s"), name: file.name.replace(/\.[^.]+$/, "").slice(0, 80) || "Sound", file: asset.file, subfolder: asset.subfolder,
+        seconds: asset.seconds, start, offset: 0, frames, gain: 1, lane };
+      state.project.sounds = [...sounds, sound];
+      lastSound = sound;
+      nextStart = start + frames;
+    }
+    if (lastSound) {
+      save();
+      selectSound(lastSound.id);
+      toast(list.length === 1
+        ? lastSound.name + " is on the timeline, on Sound " + (lastSound.lane + 2) + ". Drag it to move it, and its ends to trim it."
+        : "Added " + list.length + " sounds to the timeline.");
+    }
   } catch (error) {
     toast(error.message, true);
   }
+}
+
+async function addSound() {
+  const file = await pickFile($("soundFile"));
+  if (!file) return;
+  await addSoundFiles([file], state.playhead);
 }
 
 function renderSoundPanel(panel, sound) {
@@ -7549,46 +8314,75 @@ function promptEditRange(clip, take, selected) {
 
 let promptEditTarget = null;
 function motionUnavailable(clip) {
-  if (!activeTake(clip)) return "Render or import a take first";
+  if (!clip) return "Select a clip first";
+  if (!activeTake(clip) && !clip.motion) return "Render or import a take first";
   if (jobFor(clip.id)) return "The clip is rendering";
-  if (state.motion?.available) return "";
-  return "Motion transfer needs " + (state.motion?.missing?.join(", ") || "a compatible ComfyUI backend");
+  return "";
 }
 
-function openPromptEdit(clip, item, motion = false) {
+function motionWindowSummary(frames) {
+  const total = Math.max(0, Math.round(Number(frames) || 0));
+  if (total <= 141) return { windows: 1, label: "Single pass" };
+  let windows = 0;
+  let pos = 0;
+  while (pos < total) {
+    windows += 1;
+    if (total - pos <= 141) break;
+    pos += 102;
+  }
+  return { windows, label: windows + "-window relay" };
+}
+
+function motionRequiredGroups(mode, poseStrength, quality) {
+  const groups = [];
+  if (mode === "replace") {
+    groups.push("replace");
+    if (Number(poseStrength) > 0) groups.push("pose");
+  } else {
+    groups.push("pose");
+  }
+  if (quality === "sharp") groups.push("sharp");
+  return groups;
+}
+
+function motionRangeBounds(clip, take, item) {
+  if (clip.motion?.source) {
+    const src = clip.motion.source;
+    const total = Math.max(src.frames || 0, src.out || 0);
+    return { a: src.in || 0, b: src.out || total, total, clamped: false };
+  }
+  if (!take) return null;
+  const raw = promptEditRange(clip, take, item) || { a: 0, b: take.frames };
+  const maxFrames = MOTION_MAX_SECONDS * FPS;
+  const clamped = raw.b - raw.a > maxFrames;
+  const b = clamped ? raw.a + maxFrames : raw.b;
+  return { a: raw.a, b, total: take.frames, clamped };
+}
+
+function openPromptEdit(clip, item) {
   const take = activeTake(clip);
   if (!take || jobFor(clip.id)) return;
-  const unavailable = motion && motionUnavailable(clip);
-  if (unavailable) return toast(unavailable, true);
   const range = promptEditRange(clip, take, item);
   if (!range || range.b - range.a < 2 * FPS || range.b - range.a > 15 * FPS) {
     toast("Mark 2 to 15 seconds within this clip with In and Out, or trim it to that length.", true);
     return;
   }
-  promptEditTarget = { folder: state.folder, clip: clip.id, take: take.id, in: range.a, out: range.b, motion };
+  promptEditTarget = { folder: state.folder, clip: clip.id, take: take.id, in: range.a, out: range.b };
   $("promptEditForm").reset();
-  $("promptEditTitle").textContent = motion ? "Motion transfer" : "Edit with prompt";
-  $("promptEditTextLabel").textContent = motion ? "Scene direction (optional)" : "What should change?";
-  $("promptEditText").required = !motion;
-  $("promptEditText").placeholder = motion ? "Full-body shot in a charcoal dance studio with a gray floor."
-    : "Turn the scene into black and white. Keep the same framing and movement.";
-  $("promptEditImageLabel").textContent = motion ? "Character reference image" : "Replacement first frame (optional)";
-  $("promptEditFirst").required = motion;
-  $("motionStrengthField").hidden = !motion;
-  $("motionStrengthValue").value = "1.0";
+  $("promptEditTitle").textContent = "Edit with prompt";
+  $("promptEditTextLabel").textContent = "What should change?";
+  $("promptEditText").required = true;
+  $("promptEditText").placeholder = "Turn the scene into black and white. Keep the same framing and movement.";
+  $("promptEditImageLabel").textContent = "Replacement first frame (optional)";
+  $("promptEditFirst").required = false;
   $("promptEditRange").textContent = clip.name + " · " + timecode(range.a) + " – " + timecode(range.b - 1)
     + " · " + ((range.b - range.a) / FPS).toFixed(2) + " s";
-  $("promptEditStatus").textContent = motion
-    ? "Use footage of one performer and a clear full-body character image. Uses " + state.motion.model + " and keeps the source audio."
-    : "The edit appears in Takes and keeps the source audio.";
+  $("promptEditStatus").textContent = "The edit appears in Takes and keeps the source audio.";
   $("promptEditStatus").classList.remove("bad");
   $("promptEdit").showModal();
 }
 
 $("promptEditCancel").addEventListener("click", () => $("promptEdit").close());
-$("motionStrength").addEventListener("input", event => {
-  $("motionStrengthValue").value = Number(event.target.value).toFixed(1);
-});
 $("promptEdit").addEventListener("cancel", event => {
   if ($("promptEditRender").disabled) event.preventDefault();
 });
@@ -7597,7 +8391,7 @@ $("promptEditForm").addEventListener("submit", async event => {
   const target = promptEditTarget;
   const status = $("promptEditStatus"), go = $("promptEditRender"), cancel = $("promptEditCancel");
   const prompt = $("promptEditText").value.trim();
-  if (!target.motion && !prompt) {
+  if (!prompt) {
     status.classList.add("bad");
     status.textContent = "Describe what should change.";
     $("promptEditText").focus();
@@ -7606,28 +8400,708 @@ $("promptEditForm").addEventListener("submit", async event => {
   const clip = clipOf(target.clip);
   go.disabled = cancel.disabled = true;
   status.classList.remove("bad");
-  const title = target.motion ? "Motion transfer" : "Prompt edit";
-  status.textContent = "Queueing " + title.toLowerCase() + "…";
+  status.textContent = "Queueing prompt edit…";
   try {
     if (target.folder !== state.folder || !clip?.takes.some(take => take.id === target.take))
       throw new Error("The source take is unavailable. Reopen the render dialog.");
     const edit = { take: target.take, in: target.in, out: target.out, prompt };
     const file = $("promptEditFirst").files[0];
-    if (target.motion) {
-      if (!file) throw new Error("Choose a character reference image.");
-      edit.motion = { character: await uploadPicture(file), strength: Number($("motionStrength").value) };
-    } else if (file) edit.first = await uploadPicture(file);
+    if (file) edit.first = await uploadPicture(file);
     if (target.folder !== state.folder) throw new Error("The project changed. Reopen the render dialog.");
     if (!await renderClip(clip, $("promptEditQuality").value, undefined, undefined, edit))
       throw new Error("The edit was not queued. Check whether the clip is already rendering.");
     $("promptEdit").close();
     if (clip.id === state.clip) showTab("takes");
-    toast(title + " queued. The new take will appear in Takes.");
+    toast("Prompt edit queued. The new take will appear in Takes.");
   } catch (error) {
     status.textContent = error.message;
     status.classList.add("bad");
   } finally {
     go.disabled = cancel.disabled = false;
+  }
+});
+
+let motionTarget = null;
+let motionSelectedCast = null;
+let motionSelectedCatalog = null;
+let motionDroppedFile = null;
+let motionSwapTouched = false;
+const motionSetup = { report: null, timer: 0, was: null, expanded: false };
+const motionSetupJob = () => motionSetup.report?.job || null;
+const motionSetupRunning = () => motionSetupJob()?.state === "running";
+
+async function loadMotionSetup() {
+  try {
+    const report = await api("/models/motion");
+    motionSetup.report = report;
+    if (report?.motion) state.motion = report.motion;
+  } catch (_) {
+    motionSetup.report = null;
+  }
+  return motionSetup.report;
+}
+
+function watchMotionSetup() {
+  if (motionSetup.timer) return;
+  motionSetup.was = motionSetupJob()?.state || null;
+  motionSetup.timer = setInterval(async () => {
+    await loadMotionSetup();
+    const now = motionSetupJob()?.state || null;
+    if ($("motionTransferDialog").open) drawMotionModels();
+    if (now === "running") return;
+    clearInterval(motionSetup.timer);
+    motionSetup.timer = 0;
+    if (motionSetup.was !== "running") return;
+    motionSetup.was = now;
+    await refreshProjects(state.folder).catch(() => {});
+    if ($("motionTransferDialog").open) drawMotionModels();
+    updateTools();
+    renderInspector();
+    if (now === "done") toast("Motion transfer models are ready.");
+    else if (now === "failed") toast("The motion model download stopped: " + (motionSetupJob()?.error || "it failed") + ".", true);
+  }, 1000);
+}
+
+function updateMotionRangeSummary() {
+  if (!motionTarget) return;
+  const a = Math.max(0, Math.round(Number($("motionIn").value) || 0));
+  const b = Math.max(a + 1, Math.round(Number($("motionOut").value) || 0));
+  const frames = Math.max(0, b - a);
+  const win = motionWindowSummary(frames);
+  const suffix = win.windows > 1 ? " · " + win.label : "";
+  $("motionDialogRange").textContent = motionTarget.sourceName + " · " + timecode(a) + " – " + timecode(Math.max(0, b - 1))
+    + " · " + (frames / FPS).toFixed(2) + " s" + suffix;
+}
+
+function setMotionStrengthDisplay(value) {
+  const out = $("motionStrengthValue");
+  if (out) out.value = Number(value).toFixed(2);
+}
+
+function setMotionSwapDisplay(value) {
+  const out = $("motionSwapLoraValue");
+  if (out) out.value = Number(value).toFixed(2);
+}
+
+function syncMotionModeControls(resetStrength = false) {
+  const mode = $("motionMode").value;
+  const replace = mode === "replace";
+  $("motionStyleField").hidden = !replace;
+  $("motionSwapLoraField").hidden = !replace;
+  $("motionPlateField").hidden = !replace;
+  const strength = $("motionStrength");
+  strength.min = replace ? "0" : "0.1";
+  if (resetStrength) strength.value = replace ? "0" : "1";
+  else if (!replace && Number(strength.value) < 0.1) strength.value = "1";
+  const label = $("motionStrengthLabel");
+  if (label && label.firstChild) {
+    label.firstChild.textContent = replace ? "Pose reinforcement (0 = fast video-ref) " : "Pose strength ";
+  }
+  setMotionStrengthDisplay(strength.value);
+  $("motionNotesLabel").textContent = replace ? "Character / scene notes (optional)" : "Scene direction (optional)";
+  $("motionNotes").placeholder = replace
+    ? "Optional: brief hair, outfit or style note (helpful when mapping a full-body still onto a close-up)."
+    : "Full-body shot in a charcoal dance studio with a gray floor.";
+  drawMotionModels();
+}
+
+function motionMemberPicture(person) {
+  if (!person) return null;
+  if (person.file) return { file: person.file, subfolder: person.subfolder || "" };
+  const first = (person.pictures || []).find((row) => row?.file);
+  return first ? { file: first.file, subfolder: first.subfolder || "" } : null;
+}
+
+function motionCastMembers(project, catalog) {
+  const seenCatalog = new Set();
+  const rows = [];
+  for (const person of project?.cast || []) {
+    if (person.catalog?.id) seenCatalog.add(person.catalog.id);
+    const pic = motionMemberPicture(person);
+    if (!pic) continue;
+    rows.push({ kind: "cast", id: person.id, name: person.name, ...pic });
+  }
+  for (const entry of catalog || []) {
+    if (seenCatalog.has(entry.id)) continue;
+    const pic = motionMemberPicture(entry);
+    if (!pic) continue;
+    rows.push({ kind: "catalog", id: entry.id, name: entry.name, ...pic });
+  }
+  return rows;
+}
+
+let motionCharBlobUrl = null;
+
+function revokeMotionBlob() {
+  if (motionCharBlobUrl) {
+    URL.revokeObjectURL(motionCharBlobUrl);
+    motionCharBlobUrl = null;
+  }
+}
+
+function updateMotionCharPreview() {
+  const drop = $("motionCharDrop");
+  const preview = $("motionCharPreview");
+  const empty = $("motionCharEmpty");
+  const thumb = $("motionCharThumb");
+  const nameEl = $("motionCharName");
+  const subEl = $("motionCharSub");
+  const clearBtn = $("motionCharClear");
+  if (!drop || !preview || !empty) return;
+  revokeMotionBlob();
+
+  const pickedFile = motionDroppedFile || $("motionCharFile").files?.[0];
+  let thumbSrc = "";
+  let title = "";
+  let sub = "";
+  let canClear = true;
+
+  if (pickedFile) {
+    motionCharBlobUrl = URL.createObjectURL(pickedFile);
+    thumbSrc = motionCharBlobUrl;
+    title = pickedFile.name;
+    sub = "Uploaded image · drop another or click Upload image…";
+  } else if (motionSelectedCast) {
+    const member = (state.project?.cast || []).find((p) => p.id === motionSelectedCast);
+    const pic = motionMemberPicture(member);
+    if (member && pic) {
+      thumbSrc = assetUrl(pic);
+      title = member.name;
+      sub = "Project Cast member";
+    }
+  } else if (motionSelectedCatalog) {
+    const entry = (state.catalog || []).find((e) => e.id === motionSelectedCatalog);
+    const pic = motionMemberPicture(entry);
+    if (entry && pic) {
+      thumbSrc = assetUrl(pic);
+      title = entry.name;
+      sub = "From Cast catalog · adds to project on render";
+    }
+  } else if (motionTarget?.existingCharacter?.file) {
+    thumbSrc = assetUrl(motionTarget.existingCharacter);
+    title = motionTarget.existingCharacter.file;
+    sub = "Current character reference";
+    canClear = false;
+  }
+
+  const hasChoice = Boolean(thumbSrc);
+  drop.classList.toggle("has-choice", hasChoice);
+  preview.hidden = !hasChoice;
+  empty.hidden = hasChoice;
+  if (hasChoice) {
+    thumb.src = thumbSrc;
+    nameEl.textContent = title;
+    subEl.textContent = sub;
+    if (clearBtn) clearBtn.hidden = !canClear;
+  }
+}
+
+function drawMotionCastPicker() {
+  const box = $("motionCastPicker");
+  const members = motionCastMembers(state.project, state.catalog);
+  box.replaceChildren();
+  if (!members.length) {
+    const empty = document.createElement("p");
+    empty.className = "motion-cast-empty";
+    empty.textContent = "No cast members with pictures yet — upload or drop an image below.";
+    box.append(empty);
+    updateMotionCharPreview();
+    return;
+  }
+  for (const member of members) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "motion-cast-chip";
+    chip.setAttribute("role", "radio");
+    const active = member.kind === "cast"
+      ? motionSelectedCast === member.id
+      : motionSelectedCatalog === member.id;
+    chip.setAttribute("aria-checked", String(active));
+    const img = document.createElement("img");
+    img.src = assetUrl(member);
+    img.alt = "";
+    const name = document.createElement("span");
+    name.textContent = member.name;
+    chip.append(img, name);
+    if (member.kind === "catalog") {
+      const tag = document.createElement("span");
+      tag.className = "motion-cast-tag";
+      tag.textContent = "Catalog";
+      chip.append(tag);
+    }
+    chip.addEventListener("click", () => {
+      if (member.kind === "cast") {
+        motionSelectedCast = motionSelectedCast === member.id ? null : member.id;
+        motionSelectedCatalog = null;
+      } else {
+        motionSelectedCatalog = motionSelectedCatalog === member.id ? null : member.id;
+        motionSelectedCast = null;
+      }
+      if (motionSelectedCast || motionSelectedCatalog) {
+        motionDroppedFile = null;
+        $("motionCharFile").value = "";
+      }
+      drawMotionCastPicker();
+    });
+    box.append(chip);
+  }
+  updateMotionCharPreview();
+}
+
+function drawMotionModels() {
+  const panel = $("motionModelsPanel");
+  const mode = $("motionMode").value;
+  const poseStrength = Number($("motionStrength").value) || 0;
+  const quality = $("motionQuality").value;
+  const needed = motionRequiredGroups(mode, poseStrength, quality);
+  const report = motionSetup.report;
+  const status = report?.motion || state.motion;
+  const job = motionSetupJob();
+  const running = job?.state === "running";
+  const liveRows = new Map((job?.files || []).map((row) => [row.id, row]));
+
+  const missingGroups = report
+    ? needed.filter((g) => !(report.groups?.[g]?.installed))
+    : [];
+  const allMissingGroups = report
+    ? Object.entries(report.groups || {}).filter(([, info]) => !info.installed).map(([g]) => g)
+    : [];
+  const showGroups = motionSetup.expanded ? ["replace", "pose", "sharp"] : needed;
+  const needsModels = missingGroups.length > 0;
+
+  let backendBlocked = "";
+  if (status) {
+    if (mode === "replace" && !status.replace) backendBlocked = "Character replacement needs " + status.replace_missing.join(", ") + ".";
+    else if ((mode === "choreography" || poseStrength > 0) && !status.pose_control) backendBlocked = "Pose control needs " + status.pose_missing.join(", ") + ".";
+    else if (quality === "sharp" && !status.sharp_ready) backendBlocked = "Sharp 2x needs RelayVSR models.";
+  }
+
+  panel.hidden = !(needsModels || running || motionSetup.expanded || Boolean(backendBlocked));
+  if (!report) {
+    $("motionModelsTitle").textContent = "Motion models";
+    $("motionModelsSummary").textContent = backendBlocked || "";
+    $("motionModelsList").replaceChildren();
+    $("motionModelsProgress").hidden = true;
+    $("motionModelsDownload").hidden = true;
+    $("motionModelsStop").hidden = true;
+    $("motionModelsHint").textContent = "";
+    $("motionDialogSubmit").disabled = Boolean(backendBlocked);
+    return;
+  }
+
+  const shownFiles = report.files.filter((f) => showGroups.includes(f.group) || liveRows.has(f.id));
+  const downloadGroups = missingGroups.length ? missingGroups : allMissingGroups;
+  const missingIds = new Set(downloadGroups.flatMap((g) => report.groups?.[g]?.missing || []));
+  const downloadBytes = report.files.filter((f) => missingIds.has(f.id))
+    .reduce((sum, f) => sum + Math.max(0, f.bytes - (f.partial || 0)), 0);
+
+  $("motionModelsTitle").textContent = needsModels ? "Missing motion models" : "Optional motion models";
+  $("motionModelsSummary").textContent = needsModels
+    ? gb(downloadBytes) + " needed for current settings"
+    : allMissingGroups.length ? "Ready for current settings · " + gb(downloadBytes) + " optional remaining" : "All packs installed";
+
+  $("motionModelsList").replaceChildren(...shownFiles.map((file) => {
+    const row = document.createElement("li");
+    const live = liveRows.get(file.id);
+    const name = document.createElement("div");
+    name.className = "setup-name";
+    const title = document.createElement("b");
+    title.textContent = file.title;
+    const where = document.createElement("small");
+    where.textContent = file.file + " in " + (file.folder_shown || "models/" + file.folder);
+    where.title = file.file + " in " + (file.folder_path || "models/" + file.folder);
+    const terms = document.createElement("small");
+    const link = document.createElement("a");
+    link.href = file.license.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = file.license.name;
+    terms.append("License: ", link);
+    name.append(title, where, terms);
+    const size = document.createElement("span");
+    size.className = "packer-size";
+    size.textContent = gb(file.bytes);
+    const say = document.createElement("span");
+    say.className = "setup-state";
+    if (live) {
+      say.textContent = FILE_STATES[live.state] || live.state;
+      if (live.state === "downloading" && live.done) say.textContent += ", " + Math.floor((100 * live.done) / live.bytes) + "%";
+      if (live.error) say.textContent += ": " + live.error;
+      say.classList.toggle("bad", live.state === "failed");
+      say.classList.toggle("good", live.state === "done" || live.state === "skipped");
+    } else if (file.installed) {
+      say.textContent = "In place";
+      say.classList.add("good");
+    } else if (file.partial) {
+      say.textContent = gb(file.partial) + " partial";
+    } else {
+      say.textContent = file.group === "replace" ? "Replace pack" : file.group === "pose" ? "Pose pack" : "Sharp 2x";
+    }
+    row.append(name, size, say);
+    if (live && live.state !== "waiting" && live.state !== "not started") {
+      const bar = document.createElement("div");
+      bar.className = "opener-bar";
+      const fill = document.createElement("i");
+      fill.style.width = Math.floor((100 * live.done) / Math.max(1, live.bytes)) + "%";
+      bar.append(fill);
+      row.append(bar);
+    }
+    return row;
+  }));
+
+  const progress = $("motionModelsProgress");
+  progress.hidden = !job;
+  if (job) {
+    const share = job.bytes ? job.done / job.bytes : 0;
+    const pct = Math.floor(share * 100);
+    $("motionModelsFill").style.width = pct + "%";
+    progress.querySelector(".opener-bar")?.setAttribute("aria-valuenow", String(pct));
+    const words = [gb(job.done) + " of " + gb(job.bytes)];
+    if (running && job.rate) words.push(gb(job.rate) + "/s", timeLeft((job.bytes - job.done) / job.rate));
+    if (job.state === "stopped") words.push("stopped (resumable)");
+    if (job.state === "failed") words.push(job.error || "failed");
+    $("motionModelsProgressText").textContent = words.filter(Boolean).join(", ") + ".";
+  }
+
+  const dl = $("motionModelsDownload");
+  dl.hidden = running || !downloadGroups.length;
+  dl.disabled = false;
+  dl.dataset.groups = downloadGroups.join(",");
+  dl.textContent = needsModels
+    ? "Download required (" + gb(downloadBytes) + ")"
+    : "Download optional packs (" + gb(downloadBytes) + ")";
+  $("motionModelsStop").hidden = !running;
+  const hint = $("motionModelsHint");
+  hint.classList.remove("bad");
+  if (backendBlocked && !needsModels) {
+    hint.textContent = backendBlocked;
+    hint.classList.add("bad");
+  } else if (job?.state === "failed" && !running) {
+    hint.textContent = job.error || "Download failed.";
+    hint.classList.add("bad");
+  } else {
+    hint.textContent = needsModels ? "Downloads from Hugging Face with sha256 verification." : "";
+  }
+  $("motionDialogSubmit").disabled = Boolean(backendBlocked) || needsModels || running;
+}
+
+async function openMotionTransfer(clip, item = null) {
+  const unavailable = motionUnavailable(clip);
+  if (unavailable) return toast(unavailable, true);
+  const editing = Boolean(clip.motion?.source);
+  const take = activeTake(clip);
+  const bounds = motionRangeBounds(clip, take, item);
+  if (!bounds || bounds.total < 2 * FPS) {
+    return toast("Select a clip of at least 2 seconds for motion transfer.", true);
+  }
+  if (bounds.b - bounds.a < 2 * FPS) {
+    return toast("Mark 2 to 30 seconds within this clip with In and Out, or adjust the range.", true);
+  }
+  const sourceClip = editing && clip.motion.source.clip ? clipOf(clip.motion.source.clip) : clip;
+  const anchorItem = editing ? null
+    : (item || state.project.timeline.find((i) => i.id === state.item && i.clip === clip.id)
+      || sorted().find((i) => i.clip === clip.id) || null);
+  motionTarget = {
+    folder: state.folder,
+    editClip: editing ? clip.id : null,
+    clip: editing ? (clip.motion.source.clip || clip.id) : clip.id,
+    take: editing ? clip.motion.source.take : take.id,
+    item: anchorItem?.id || null,
+    source: editing ? structuredClone(clip.motion.source) : null,
+    existingCharacter: editing ? structuredClone(clip.motion.character) : null,
+    sourceName: sourceClip?.name || clip.motion?.source?.file || clip.name,
+    total: bounds.total,
+  };
+  motionSetup.expanded = false;
+  $("motionDialogForm").reset();
+  $("motionAdvanced").open = false;
+
+  const existing = editing ? clip.motion : null;
+  const defaultMode = existing?.mode || (state.motion?.default_mode || "replace");
+  $("motionDialogTitle").textContent = editing ? "Edit motion transfer" : "Motion transfer";
+  $("motionDialogSubmit").textContent = editing ? "Save & render" : "Create & render";
+  $("motionMode").value = defaultMode;
+  $("motionStyle").value = existing?.style || "auto";
+  const defaultQuality = existing?.sharp ? "sharp"
+    : (editing && activeTake(clip)?.quality === "final" ? "final" : "draft");
+  $("motionQuality").value = defaultQuality;
+  const placementField = $("motionPlacementField");
+  if (placementField) {
+    placementField.hidden = editing || !anchorItem;
+    $("motionPlacement").value = "clips";
+  }
+  $("motionNotes").value = editing ? (clip.action || "") : "";
+  $("motionIn").min = "0";
+  $("motionIn").max = String(Math.max(0, bounds.total - 2 * FPS));
+  $("motionIn").value = String(bounds.a);
+  $("motionOut").min = String(2 * FPS);
+  $("motionOut").max = String(bounds.total);
+  $("motionOut").value = String(bounds.b);
+  $("motionIsolate").checked = existing ? existing.isolate !== false : true;
+  $("motionPlate").checked = existing ? existing.plate !== false : true;
+  const defaultSwap = existing?.swap_lora ?? ($("motionStyle").value === "preserve" ? 0.5 : 1.0);
+  $("motionSwapLora").value = String(defaultSwap);
+  setMotionSwapDisplay(defaultSwap);
+  motionSwapTouched = existing?.swap_lora !== undefined;
+  $("motionStrength").value = String(existing?.strength ?? (defaultMode === "replace" ? 0 : 1));
+  motionSelectedCast = existing?.cast || null;
+  motionSelectedCatalog = null;
+  motionDroppedFile = null;
+
+  drawMotionCastPicker();
+  updateMotionRangeSummary();
+  syncMotionModeControls(false);
+
+  const status = $("motionDialogStatus");
+  status.classList.remove("bad");
+  status.textContent = editing
+    ? "Queues a new take on this clip."
+    : bounds.clamped
+      ? "Clamped to first 30 s · adjust In/Out in Advanced."
+      : "Keeps source audio and leaves your timeline untouched.";
+
+  $("motionTransferDialog").showModal();
+  await Promise.all([loadMotionSetup(), loadCatalog()]);
+  if ($("motionTransferDialog").open) {
+    drawMotionCastPicker();
+    if (!existing && state.motion?.default_mode && $("motionMode").value !== state.motion.default_mode) {
+      $("motionMode").value = state.motion.default_mode;
+      syncMotionModeControls(true);
+    } else {
+      drawMotionModels();
+    }
+    if (motionSetupRunning()) watchMotionSetup();
+  }
+}
+
+$("motionDialogCancel").addEventListener("click", () => $("motionTransferDialog").close());
+$("motionTransferDialog").addEventListener("close", revokeMotionBlob);
+$("motionTransferDialog").addEventListener("cancel", (event) => {
+  if ($("motionDialogSubmit").disabled && $("motionDialogCancel").disabled) event.preventDefault();
+});
+$("motionPlacement")?.addEventListener("change", () => {
+  const status = $("motionDialogStatus");
+  if (!status || status.classList.contains("bad") || motionTarget?.editClip) return;
+  status.textContent = $("motionPlacement").value === "replace"
+    ? "Swaps the selected timeline clip in place without shifting other clips."
+    : "Keeps source audio and leaves your timeline untouched.";
+});
+$("motionMode").addEventListener("change", () => syncMotionModeControls(true));
+$("motionStyle").addEventListener("change", () => {
+  if (!motionSwapTouched) {
+    const val = $("motionStyle").value === "preserve" ? 0.5 : 1.0;
+    $("motionSwapLora").value = String(val);
+    setMotionSwapDisplay(val);
+  }
+});
+$("motionQuality").addEventListener("change", () => drawMotionModels());
+$("motionStrength").addEventListener("input", (event) => {
+  setMotionStrengthDisplay(event.target.value);
+  drawMotionModels();
+});
+$("motionSwapLora").addEventListener("input", (event) => {
+  motionSwapTouched = true;
+  setMotionSwapDisplay(event.target.value);
+});
+$("motionIn").addEventListener("input", updateMotionRangeSummary);
+$("motionOut").addEventListener("input", updateMotionRangeSummary);
+$("motionCharFile").addEventListener("change", () => {
+  if ($("motionCharFile").files[0]) {
+    motionDroppedFile = null;
+    motionSelectedCast = null;
+    motionSelectedCatalog = null;
+    drawMotionCastPicker();
+  } else {
+    updateMotionCharPreview();
+  }
+});
+$("motionCharPickBtn")?.addEventListener("click", () => $("motionCharFile").click());
+$("motionCharDrop")?.addEventListener("click", (event) => {
+  if (event.target.closest("button, input")) return;
+  if (!$("motionCharDrop").classList.contains("has-choice")) $("motionCharFile").click();
+});
+$("motionCharDrop")?.addEventListener("keydown", (event) => {
+  if ((event.key === "Enter" || event.key === " ") && !event.target.closest("button")) {
+    event.preventDefault();
+    $("motionCharFile").click();
+  }
+});
+$("motionCharClear")?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  motionDroppedFile = null;
+  motionSelectedCast = null;
+  motionSelectedCatalog = null;
+  $("motionCharFile").value = "";
+  drawMotionCastPicker();
+});
+dropTarget($("motionCharDrop"), (file) => {
+  motionDroppedFile = file;
+  motionSelectedCast = null;
+  motionSelectedCatalog = null;
+  $("motionCharFile").value = "";
+  drawMotionCastPicker();
+}, "a character picture");
+$("motionModelsToggle").addEventListener("click", async () => {
+  motionSetup.expanded = !motionSetup.expanded;
+  if (!motionSetup.report) await loadMotionSetup();
+  drawMotionModels();
+});
+$("motionModelsDownload").addEventListener("click", async () => {
+  const btn = $("motionModelsDownload");
+  const groups = (btn.dataset.groups || "replace").split(",").filter(Boolean);
+  btn.disabled = true;
+  try {
+    motionSetup.report = await postJson("/models/motion/download", { groups });
+    if (motionSetup.report?.motion) state.motion = motionSetup.report.motion;
+    watchMotionSetup();
+  } catch (error) {
+    $("motionModelsHint").textContent = error.message;
+    $("motionModelsHint").classList.add("bad");
+  }
+  btn.disabled = false;
+  drawMotionModels();
+});
+$("motionModelsStop").addEventListener("click", async () => {
+  $("motionModelsStop").disabled = true;
+  try {
+    motionSetup.report = await postJson("/models/motion/cancel", {});
+    if (motionSetup.report?.motion) state.motion = motionSetup.report.motion;
+  } catch (error) {
+    toast(error.message, true);
+  }
+  $("motionModelsStop").disabled = false;
+  drawMotionModels();
+});
+
+$("motionDialogForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const target = motionTarget;
+  if (!target) return;
+  const status = $("motionDialogStatus");
+  const go = $("motionDialogSubmit");
+  const cancel = $("motionDialogCancel");
+  const inFrame = Math.round(Number($("motionIn").value));
+  const outFrame = Math.round(Number($("motionOut").value));
+  const span = outFrame - inFrame;
+  if (!Number.isInteger(inFrame) || !Number.isInteger(outFrame) || inFrame < 0 || outFrame > target.total || outFrame <= inFrame) {
+    status.classList.add("bad");
+    status.textContent = "In and Out frames must fall inside the source clip (0 to " + target.total + ").";
+    return;
+  }
+  if (span < 2 * FPS || span > MOTION_MAX_SECONDS * FPS) {
+    status.classList.add("bad");
+    status.textContent = "Select between 2 and " + MOTION_MAX_SECONDS + " seconds (" + (2 * FPS) + " to " + (MOTION_MAX_SECONDS * FPS) + " frames).";
+    return;
+  }
+  const file = motionDroppedFile || $("motionCharFile").files[0];
+  if (!motionSelectedCast && !motionSelectedCatalog && !file && !target.existingCharacter) {
+    status.classList.add("bad");
+    status.textContent = "Choose a cast member or upload a character reference image.";
+    return;
+  }
+  go.disabled = cancel.disabled = true;
+  status.classList.remove("bad");
+  status.textContent = target.editClip ? "Saving motion transfer & queueing render…" : "Creating clip & queueing motion transfer…";
+  try {
+    if (target.folder !== state.folder) throw new Error("The project changed. Reopen the dialog.");
+    await flush();
+    if (target.folder !== state.folder) throw new Error("The project changed. Reopen the dialog.");
+    let chosenCastId = motionSelectedCast;
+    let character = target.existingCharacter;
+    if (file) {
+      character = await uploadPicture(file);
+    } else if (motionSelectedCatalog) {
+      const imported = await postJson("/project/" + target.folder + "/ops", {
+        ops: [{ op: "add_cast_from_catalog", catalog: motionSelectedCatalog }],
+        client: clientId,
+      });
+      if (target.folder !== state.folder) throw new Error("The project changed. Reopen the dialog.");
+      const freshCast = await api("/project/" + target.folder);
+      if (target.folder !== state.folder) throw new Error("The project changed. Reopen the dialog.");
+      adopt(freshCast);
+      chosenCastId = imported.results?.[0]?.cast || null;
+      const member = (state.project.cast || []).find((p) => p.id === chosenCastId);
+      const pic = motionMemberPicture(member);
+      if (!pic) throw new Error("The selected catalog member has no picture.");
+      character = pic;
+    } else if (chosenCastId) {
+      const member = (state.project.cast || []).find((p) => p.id === chosenCastId);
+      const pic = motionMemberPicture(member);
+      if (!pic) throw new Error("The selected cast member has no picture.");
+      character = pic;
+    }
+    const mode = $("motionMode").value;
+    const style = $("motionStyle").value;
+    const qualityChoice = $("motionQuality").value;
+    const renderQuality = qualityChoice === "draft" ? "draft" : "final";
+    const notes = $("motionNotes").value.trim();
+    const motionPayload = {
+      mode,
+      style,
+      strength: Number($("motionStrength").value),
+      isolate: $("motionIsolate").checked,
+      plate: mode === "replace" ? $("motionPlate").checked : false,
+    };
+    if (mode === "replace" && motionSwapTouched) {
+      motionPayload.swap_lora = Number($("motionSwapLora").value);
+    }
+    if (qualityChoice === "sharp") motionPayload.sharp = true;
+    if (chosenCastId) motionPayload.cast = chosenCastId;
+    motionPayload.character = character;
+
+    let ops;
+    if (target.editClip) {
+      motionPayload.source = { ...target.source, in: inFrame, out: outFrame };
+      const fields = { motion: motionPayload, action: notes, seconds: Number((span / FPS).toFixed(3)) };
+      fields.cast = chosenCastId ? [chosenCastId] : [];
+      ops = [
+        { op: "update_clip", clip: target.editClip, fields },
+        { op: "render", clip: target.editClip, quality: renderQuality, client_id: clientId },
+      ];
+    } else {
+      const placement = (!$("motionPlacementField")?.hidden && $("motionPlacement")?.value) || "clips";
+      const replaceInPlace = placement === "replace" && Boolean(target.item);
+      const addOp = {
+        op: "add_motion_transfer",
+        as: "mt",
+        clip: target.clip,
+        take: target.take,
+        in: inFrame,
+        out: outFrame,
+        motion: motionPayload,
+        action: notes,
+        place: replaceInPlace,
+        replace_item: replaceInPlace,
+      };
+      if (target.item) addOp.item = target.item;
+      ops = [addOp, { op: "render", clip: "$mt", quality: renderQuality, client_id: clientId }];
+    }
+    const reply = await postJson("/project/" + target.folder + "/ops", { ops, client: clientId });
+    if (target.folder !== state.folder) return;
+    const fresh = await api("/project/" + target.folder);
+    if (target.folder !== state.folder) return;
+    adopt(fresh);
+    const created = reply.results?.[0];
+    const focusClip = target.editClip || created?.clip;
+    const focusItem = target.editClip
+      ? (state.project.timeline.find((i) => i.clip === target.editClip)?.id || null)
+      : (created?.item || null);
+    if (focusClip) {
+      setCollectionOpen("clips", true);
+      selectClip(focusClip, focusItem);
+    }
+    $("motionTransferDialog").close();
+    toast(target.editClip
+      ? "Motion transfer updated and queued."
+      : focusItem
+        ? "Replaced clip on the timeline and queued render."
+        : "Created motion transfer clip in Clips and queued render.");
+  } catch (error) {
+    status.textContent = error.message;
+    status.classList.add("bad");
+  } finally {
+    go.disabled = cancel.disabled = false;
+    if ($("motionTransferDialog").open) drawMotionModels();
   }
 });
 
@@ -8591,7 +10065,7 @@ function itemActions(item) {
   ];
   return [
     act("Edit with prompt", () => openPromptEdit(clip, item), { off: !rendered ? "Render a take first" : busy ? "The clip is rendering" : "" }),
-    act("Motion transfer", () => openPromptEdit(clip, item, true), { off: motionUnavailable(clip) }),
+    act("Motion transfer", () => openMotionTransfer(clip, item), { off: motionUnavailable(clip) }),
     ...footageFinish,
     ...generate, "-", ...render,
     act("Crop and reframe", () => openPlacementCrop(item), { off: rendered ? "" : "Render a take first" }),
@@ -8621,7 +10095,7 @@ function clipActions(clip) {
     act("Open in viewer", () => { setSource(clip.id); showFrame(); showWorkspacePanel("viewer"); }),
     act("Open in inspector", () => { showTab("shot"); showWorkspacePanel("inspector"); }),
     act("Edit with prompt", () => openPromptEdit(clip), { off: !activeTake(clip) ? "Render a take first" : busy ? "The clip is rendering" : "" }),
-    act("Motion transfer", () => openPromptEdit(clip, null, true), { off: motionUnavailable(clip) }),
+    act("Motion transfer", () => openMotionTransfer(clip), { off: motionUnavailable(clip) }),
     ...footageFinish,
     ...render,
     act("Add to the end of the cut", () => {
@@ -9686,6 +11160,8 @@ function finishOff(clip, item) {
   const shown = activeTake(clip);
   const hasDraft = Boolean(shown && (shown.quality === "draft" || (shown.quality === "final" && shown.final_ranges?.length)));
   if (!hasDraft) return "Choose a draft take to finish";
+  if (shown.edit?.motion) return "Open Motion transfer and choose Final";
+  if (clip.motion) return "Use Render final to render a motion transfer clip at final quality";
   if (clip.sprite && !shown.sprite) return "Choose a Sprite Draft take to finish with sprite settings";
   const range = finishRange(clip, shown, item);
   if (!range) return "Move the In and Out range over this clip to finish a part";
@@ -9710,7 +11186,7 @@ async function renderClip(clip, quality, detail, upscaler, edit, seed, part) {
   const folder = state.folder;
   if (jobFor(clip.id)) return;
   const shown = activeTake(clip);
-  if (!edit && quality !== "upscale" && !(quality === "finish" && (shown?.sprite || shown?.edit)) && !clip.action.trim()) {
+  if (!edit && quality !== "upscale" && !(quality === "finish" && (shown?.sprite || shown?.edit)) && !clip.motion && !clip.action.trim()) {
     selectClip(clip.id);
     toast("Describe what happens in " + clip.name + " before rendering it.", true);
     return;
@@ -9836,13 +11312,16 @@ function onMessage({ type, data }) {
   }
   if (type === "executing" && data.node) {
     const vosr = job.upscaler === "vosr2" && { "31": "Loading VOSR2", "19": "Upscaling frames" }[data.node];
-    job.stage = vosr || STAGES[data.node] || job.stage;
-    if (!STEPPED.has(String(data.node))) job.max = 0;
+    job.node = String(data.node);
+    job.stage = vosr || stageForNode(data.node) || job.stage;
+    if (!isSteppedNode(data.node)) job.max = 0;
     showFrame();
-  } else if ((type === "progress" && STEPPED.has(String(data.node))) || type === "h3take_upscale_frame") {
+    refreshMotionLive(job);
+  } else if ((type === "progress" && isSteppedNode(data.node)) || type === "h3take_upscale_frame") {
+    if (data.node) job.node = String(data.node);
     job.step = data.value;
     job.max = data.max;
-    job.stage = type === "h3take_upscale_frame" ? "Upscaling frames" : STAGES[data.node];
+    job.stage = type === "h3take_upscale_frame" ? "Upscaling frames" : stageForNode(data.node);
     job.progress = data.value / data.max;
     updateQueue();
     const bar = document.querySelector(".block.rendering .bar");
@@ -9855,9 +11334,16 @@ function onMessage({ type, data }) {
       });
     }
     showLive(job);
+    refreshMotionLive(job);
+  } else if (type === "executed" && ["239", "240", "218"].includes(String(data.node))) {
+    // Preprocessing cache just populated (cutout, SAM3 mask, or SDPose keypoints); refresh previews live if viewing Motion tab.
+    motionTabState.report = null;
+    if (state.tab === "motion") renderMotionTab($("inspBody"), clipOf(job.clip), true);
   } else if (type === "executed" && String(data.node) === "19") {
+    job.node = "19";
     job.stage = "Adding the take";
     showFrame();
+    refreshMotionLive(job);
   } else if (type === "execution_error") {
     job.reported = true;
     toast("The render of " + (clipOf(job.clip)?.name || "a clip") + " failed: " + (data.exception_message || "see the ComfyUI log"), true);
@@ -10722,29 +12208,69 @@ $("importClip").addEventListener("click", importFootage);
 $("newBin").addEventListener("click", addBin);
 
 // Clips drag onto a bin to file them there, or onto the loose list to take them out of their bin.
+// Dropping external video or image files onto Clips (or a bin) imports them directly without placing on the timeline.
 const clipList = $("clips");
 clipList.addEventListener("dragover", (event) => {
   const clip = clipOf(draggedClip);
-  if (!clip) return;
-  const target = dropBin(event);
-  if ((binOf(clip.bin)?.id || null) === target) {
-    showDrop(undefined);
+  if (clip) {
+    const target = dropBin(event);
+    if ((binOf(clip.bin)?.id || null) === target) {
+      showDrop(undefined);
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    showDrop(target);
     return;
   }
+  if (!isFileDrag(event)) return;
   event.preventDefault();
-  event.dataTransfer.dropEffect = "move";
-  showDrop(target);
+  event.dataTransfer.dropEffect = "copy";
+  clipList.classList.add("drop-file");
+  showDrop(dropBin(event));
 });
 clipList.addEventListener("dragleave", (event) => {
-  if (!clipList.contains(event.relatedTarget)) showDrop(undefined);
+  if (!clipList.contains(event.relatedTarget)) {
+    clipList.classList.remove("drop-file");
+    showDrop(undefined);
+  }
 });
 clipList.addEventListener("drop", (event) => {
   const clip = clipOf(draggedClip);
+  const target = dropBin(event);
+  clipList.classList.remove("drop-file");
   showDrop(undefined);
-  if (!clip) return;
+  if (clip) {
+    event.preventDefault();
+    fileClip(clip, target);
+    return;
+  }
+  if (!isFileDrag(event)) return;
   event.preventDefault();
-  fileClip(clip, dropBin(event));
+  event.stopPropagation();
+  void importFootageFiles([...(event.dataTransfer?.files || [])], { place: false, bin: target });
 });
+
+// Dropping images onto the Cast list adds them as cast members.
+const castList = $("cast");
+if (castList) {
+  castList.addEventListener("dragover", (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    castList.classList.add("drop-hot");
+  });
+  castList.addEventListener("dragleave", (event) => {
+    if (!castList.contains(event.relatedTarget)) castList.classList.remove("drop-hot");
+  });
+  castList.addEventListener("drop", (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    castList.classList.remove("drop-hot");
+    void addCastFiles([...(event.dataTransfer?.files || [])]);
+  });
+}
 $("close").addEventListener("click", () => window.parent.postMessage("h3-editor-close", location.origin));
 let batchRendering = false;
 async function renderTimelineClips(quality) {
@@ -10753,8 +12279,8 @@ async function renderTimelineClips(quality) {
   const waiting = sorted().map((i) => clipOf(i.clip)).filter((c, i, all) => c && c.kind !== "footage" && all.indexOf(c) === i
     && (quality === "draft" ? !c.takes.length : activeTake(c)?.quality !== "final"));
   if (!waiting.length) return toast(quality === "draft" ? "Every clip on the timeline already has a render." : "Every generated clip on the timeline already shows a final.");
-  const ready = waiting.filter((c) => c.action.trim() && !jobFor(c.id));
-  const blank = waiting.filter((c) => !c.action.trim());
+  const ready = waiting.filter((c) => (c.action.trim() || c.motion) && !jobFor(c.id));
+  const blank = waiting.filter((c) => !c.action.trim() && !c.motion);
   batchRendering = true;
   try {
     if (ready.length) {
@@ -11005,7 +12531,7 @@ $("toTimeline").addEventListener("click", () => {
 $("split").addEventListener("click", splitAtPlayhead);
 $("extendBack").addEventListener("click", () => addLinked("extend_before"));
 $("editWithPrompt").addEventListener("click", () => openPromptEdit(clipOf(state.clip)));
-$("motionTransfer").addEventListener("click", () => openPromptEdit(clipOf(state.clip), null, true));
+$("motionTransfer").addEventListener("click", () => openMotionTransfer(clipOf(state.clip)));
 $("extendForward").addEventListener("click", () => addLinked("extend_after"));
 $("bridge").addEventListener("click", () => addLinked("bridge"));
 $("bridgeHold").addEventListener("click", () => addLinked("bridge", "hold"));
@@ -11125,19 +12651,65 @@ viewerScreen.addEventListener("drop", event => {
   const pair = comparisonTakes(clip);
   if (take && take !== (pair?.a || activeTake(clip)) && take !== pair?.b) toggleComparison(clip, take);
 });
-lane.addEventListener("dragover", (event) => {
-  const types = event.dataTransfer.types;
-  if (!types.includes(TAKE_DRAG) && !types.includes("text/h3clip")) return;
-  event.preventDefault();
-  if (types.includes(TAKE_DRAG)) event.dataTransfer.dropEffect = "copy";
+const tlContent = $("tlContent");
+const dropLine = $("dropLine");
+const dropLineTime = $("dropLineTime");
+
+function timelineDropFrame(event) {
+  const rect = lane.getBoundingClientRect();
+  const frame = Math.max(0, Math.round((event.clientX - rect.left) / state.zoom));
+  return snap(frame, snapPoints(null));
+}
+
+function showTimelineDrop(start) {
   lane.classList.add("drop");
-});
-lane.addEventListener("dragleave", () => lane.classList.remove("drop"));
-lane.addEventListener("drop", (event) => {
-  event.preventDefault();
+  if (!dropLine) return;
+  dropLine.hidden = false;
+  dropLine.style.left = px(start) + "px";
+  if (dropLineTime) dropLineTime.textContent = timecode(start);
+}
+
+function clearTimelineDrop() {
   lane.classList.remove("drop");
-  const frame = Math.max(0, Math.round((event.clientX - lane.getBoundingClientRect().left) / state.zoom));
-  const start = snap(frame, snapPoints(null));
+  if (dropLine) dropLine.hidden = true;
+}
+
+tlContent.addEventListener("dragover", (event) => {
+  const types = [...(event.dataTransfer?.types || [])];
+  const internal = types.includes(TAKE_DRAG) || types.includes("text/h3clip");
+  const files = isFileDrag(event);
+  if (!internal && !files) return;
+  if (internal && !event.target.closest("#laneV")) {
+    clearTimelineDrop();
+    return;
+  }
+  event.preventDefault();
+  event.dataTransfer.dropEffect = (files || types.includes(TAKE_DRAG)) ? "copy" : "move";
+  showTimelineDrop(timelineDropFrame(event));
+});
+tlContent.addEventListener("dragleave", (event) => {
+  if (!tlContent.contains(event.relatedTarget)) clearTimelineDrop();
+});
+tlContent.addEventListener("drop", (event) => {
+  const types = [...(event.dataTransfer?.types || [])];
+  const internal = types.includes(TAKE_DRAG) || types.includes("text/h3clip");
+  const files = isFileDrag(event);
+  if (!internal && !files) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const start = timelineDropFrame(event);
+  clearTimelineDrop();
+  if (files) {
+    const dropped = [...(event.dataTransfer?.files || [])];
+    const footage = dropped.filter(isFootageFile);
+    const audio = dropped.filter((f) => !isFootageFile(f) && isAudioFile(f));
+    if (footage.length) void importFootageFiles(footage, { place: true, start });
+    if (audio.length) void addSoundFiles(audio, start);
+    if (!footage.length && !audio.length) {
+      toast("Drop a video (MP4, MOV, WebM, MKV), picture (PNG, JPEG, WebP), or audio file onto the timeline.", true);
+    }
+    return;
+  }
   const take = event.dataTransfer.getData(TAKE_DRAG);
   if (take) {
     const [clipId, takeId] = take.split(":");
@@ -11150,6 +12722,14 @@ lane.addEventListener("drop", (event) => {
   placeOnTimeline(clip, start);
   save();
   renderTimeline();
+});
+
+// Prevent accidental full-window navigation if a dropped file lands just outside a drop zone.
+window.addEventListener("dragover", (event) => {
+  if (isFileDrag(event)) event.preventDefault();
+});
+window.addEventListener("drop", (event) => {
+  if (isFileDrag(event)) event.preventDefault();
 });
 $("laneV").addEventListener("pointerdown", (event) => {
   if (event.target !== lane && !event.target.classList.contains("gapmark")) return;

@@ -438,6 +438,37 @@ frames framed within 8% of it, so a shot that pushes and pulls all the way
 through is barely judged. A camera that travels far, such as walking through a
 house, shows a new background by design, and may be listed.
 
+## Motion transfer models
+
+Motion transfer uses optional models that download from Hugging Face right inside
+the **Motion transfer** dialog (verified against pinned commits and sha256 hashes,
+resumable if stopped). You only need the pack for the mode you use:
+
+| Pack | File | Folder | Size | Where to get it | License |
+|---|---|---|---|---|---|
+| Replace (1.90 GB) | `sam3.1_multiplex_fp16.safetensors` | `models/checkpoints` | 1.75 GB | [Comfy-Org/sam3.1](https://huggingface.co/Comfy-Org/sam3.1), `checkpoints/` | SAM License |
+| Replace | `h3_character_swap_v1.5.safetensors` | `models/loras` | 155 MB | [akatz-ai/MiniMax-H3-Character-Swap-LoRA](https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA) | MiniMax H3 Community License |
+| Pose & Choreography (6.57 GB) | `rt_detr_v4-x-hgnet_fp16.safetensors` | `models/diffusion_models` | 124 MB | [Comfy-Org/SDPose](https://huggingface.co/Comfy-Org/SDPose), `diffusion_models/` | MIT |
+| Pose & Choreography | `sdpose_wholebody_fp16.safetensors` | `models/checkpoints` | 1.92 GB | [Comfy-Org/SDPose](https://huggingface.co/Comfy-Org/SDPose), `checkpoints/` | MIT |
+| Pose & Choreography | `minimax_h3_fun_controlnet_union_2.0_pruned_int8_convrot.safetensors` | `models/model_patches` | 4.53 GB | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3), `model_patches/` | MiniMax H3 Community License |
+| Sharp 2× Upscaler (5.29 GB) | `relayvsr_x2_lightx2v_int8_convrot.safetensors` | `models/diffusion_models` | 5.16 GB | [Comfy-Org/RelayVSR](https://huggingface.co/Comfy-Org/RelayVSR), `diffusion_models/` | Apache 2.0 |
+| Sharp 2× Upscaler | `relayvsr_flash_vae_x2_fp32.safetensors` | `models/vae` | 128 MB | [Comfy-Org/RelayVSR](https://huggingface.co/Comfy-Org/RelayVSR), `vae/` | Apache 2.0 |
+
+- **Replace character in scene** runs directly on HyperFlow H3 Flash (or standard H3)
+  with the 1.90 GB Replace pack. Stylized replacements (`preserve`) suppress the
+  photographic Realism Slider automatically.
+- **Sharp finals on character replacement** sample at Medium (`544×960` / `960×544`)
+  before running RelayVSR 2× to `1088×1920` / `1920×1088`, keeping peak VRAM lower
+  while preserving crisp character edges and exact source plates.
+- **New scene from pose** (or optional pose reinforcement in replace mode) also
+  requires a standard MiniMax H3 checkpoint in `models/diffusion_models`.
+- **Windowed relay (5.9–30 s):** clips over 141 frames automatically tile into
+  124-frame windows sharing 22 latent-locked frames (`stride = 102`) in a single
+  graph, keeping VRAM constant and render time linear.
+- Agents and scripts can query and download the same packs via
+  `GET /h3take/api/models/motion`, `POST /h3take/api/models/motion/download`
+  (`{"groups": ["replace"]}`), and `POST /h3take/api/models/motion/cancel`.
+
 ## Long takes
 
 A shot that has to stay one continuous moment, such as a singer through a whole

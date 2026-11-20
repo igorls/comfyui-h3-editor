@@ -331,6 +331,7 @@
           <div class="lane v" id="laneV"></div>
           <div class="lane a" id="laneA"></div>
           <div class="range" id="range" hidden><span class="range-in">In</span><span class="range-out">Out</span></div>
+          <div class="drop-line" id="dropLine" hidden><span id="dropLineTime"></span></div>
           <div class="playhead" id="playhead"></div>
         </div>
       </div>
@@ -510,11 +511,87 @@
       <p id="promptEditRange" class="exporter-summary"></p>
       <label class="field"><span id="promptEditTextLabel">What should change?</span><textarea id="promptEditText" rows="4" maxlength="12000" required autofocus placeholder="Turn the scene into black and white. Keep the same framing and movement."></textarea></label>
       <label class="field"><span id="promptEditImageLabel">Replacement first frame (optional)</span><input id="promptEditFirst" type="file" accept="image/png,image/jpeg,image/webp"></label>
-      <label class="field" id="motionStrengthField" hidden><span>Motion strength <output id="motionStrengthValue" for="motionStrength">1.0</output></span><input id="motionStrength" type="range" min="0.1" max="2" step="0.1" value="1"></label>
       <label class="choice"><span>Render quality</span><select id="promptEditQuality"><option value="draft">Draft</option><option value="final">Final</option></select></label>
       <p id="promptEditStatus" class="hint" aria-live="polite">The edit appears in Takes and keeps the source audio.</p>
     </div>
     <div class="exporter-foot"><span class="spacer"></span><button id="promptEditRender" class="primary" type="submit">Render new take</button></div>
+  </form>
+</dialog>
+
+<dialog id="motionTransferDialog" class="keys exporter motion-dialog" aria-labelledby="motionDialogTitle">
+  <form id="motionDialogForm" class="motion-dialog-form">
+    <div class="keys-head">
+      <div class="motion-head-title">
+        <h2 id="motionDialogTitle">Motion transfer</h2>
+        <p id="motionDialogRange" class="motion-dialog-range"></p>
+      </div>
+      <button id="motionDialogCancel" class="quiet" type="button">Cancel</button>
+    </div>
+    <div class="exporter-body motion-dialog-body">
+      <section id="motionModelsPanel" class="motion-models" hidden aria-label="Motion transfer models">
+        <div class="motion-models-head"><b id="motionModelsTitle">Motion models</b><span id="motionModelsSummary" class="hint"></span></div>
+        <ul id="motionModelsList" class="setup-files motion-models-list"></ul>
+        <div id="motionModelsProgress" class="setup-overall" hidden>
+          <div class="opener-bar" role="progressbar" aria-label="Motion model download" aria-valuemin="0" aria-valuemax="100"><i id="motionModelsFill"></i></div>
+          <p id="motionModelsProgressText" class="setup-progress" aria-live="polite"></p>
+        </div>
+        <div class="motion-models-actions">
+          <button id="motionModelsDownload" class="quiet" type="button">Download missing models</button>
+          <button id="motionModelsStop" class="quiet" type="button" hidden>Stop</button>
+          <span id="motionModelsHint" class="hint"></span>
+        </div>
+      </section>
+      <div class="field motion-char-field">
+        <div class="motion-field-head">
+          <span>Character</span>
+          <button id="motionCharPickBtn" class="quiet small" type="button">Upload image…</button>
+        </div>
+        <div id="motionCastPicker" class="motion-cast-list" role="radiogroup" aria-label="Choose a cast member or upload an image"></div>
+        <div id="motionCharDrop" class="motion-char-drop" tabindex="0" role="button" aria-label="Choose or drop a character reference image">
+          <input id="motionCharFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+          <div id="motionCharPreview" class="motion-char-preview" hidden>
+            <img id="motionCharThumb" alt="">
+            <div class="motion-char-meta">
+              <b id="motionCharName"></b>
+              <small id="motionCharSub"></small>
+            </div>
+            <button id="motionCharClear" class="quiet small" type="button">Clear</button>
+          </div>
+          <div id="motionCharEmpty" class="motion-char-empty">
+            <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V6m0 0-4 4m4-4 4 4M4 17v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1"/></svg>
+            <span>Drop a character image here, or click to browse</span>
+            <small>PNG, JPEG or WebP</small>
+          </div>
+        </div>
+      </div>
+      <div class="halves">
+        <label class="choice"><span>Transfer mode</span><select id="motionMode"><option value="replace">Replace character in scene</option><option value="choreography">New scene from pose</option></select></label>
+        <label class="choice" id="motionStyleField"><span>Character style</span><select id="motionStyle"><option value="auto">Auto (detect from image)</option><option value="photoreal">Match scene lighting (photoreal)</option><option value="preserve">Keep reference style (anime / 2D)</option></select></label>
+      </div>
+      <div class="halves">
+        <label class="choice"><span>Render quality</span><select id="motionQuality"><option value="draft">Draft</option><option value="final">Final</option><option value="sharp">Final · Sharp (2× RelayVSR)</option></select></label>
+        <label class="choice" id="motionPlacementField"><span>Timeline</span><select id="motionPlacement"><option value="clips">Keep in Clips (don't change cut)</option><option value="replace">Replace selected clip in place</option></select></label>
+      </div>
+      <label class="field"><span id="motionNotesLabel">Character / scene notes (optional)</span><textarea id="motionNotes" rows="2" maxlength="12000" placeholder="Brief hair, outfit, or lighting note for close-ups…"></textarea></label>
+      <details class="motion-advanced" id="motionAdvanced">
+        <summary>Advanced</summary>
+        <div class="motion-advanced-body">
+          <div class="halves" id="motionRangeFields">
+            <label class="field"><span>In frame</span><input id="motionIn" type="number" min="0" step="1" value="0"></label>
+            <label class="field"><span>Out frame</span><input id="motionOut" type="number" min="48" step="1" value="124"></label>
+          </div>
+          <label class="field" id="motionStrengthField"><span id="motionStrengthLabel">Pose reinforcement (0 = fast video-ref) <output id="motionStrengthValue" for="motionStrength">0.0</output></span><input id="motionStrength" type="range" min="0" max="2" step="0.05" value="0"></label>
+          <label class="field" id="motionSwapLoraField"><span>Character Swap LoRA <output id="motionSwapLoraValue" for="motionSwapLora">0.5</output></span><input id="motionSwapLora" type="range" min="0" max="1.5" step="0.05" value="0.5"></label>
+          <label class="check" id="motionIsolateField"><input id="motionIsolate" type="checkbox" checked><span>Strip background from character reference (SAM3)</span></label>
+          <label class="check" id="motionPlateField"><input id="motionPlate" type="checkbox" checked><span>Keep exact source background (zero-halo plate)</span></label>
+          <button id="motionModelsToggle" class="quiet" type="button">Manage optional motion models…</button>
+        </div>
+      </details>
+    </div>
+    <div class="exporter-foot">
+      <p id="motionDialogStatus" class="motion-foot-status" aria-live="polite"></p>
+      <button id="motionDialogSubmit" class="primary" type="submit">Create &amp; render</button>
+    </div>
   </form>
 </dialog>
 

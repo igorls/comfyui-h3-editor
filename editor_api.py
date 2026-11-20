@@ -344,9 +344,13 @@ def available_models():
     for kind in ("diffusion_models", "unet_gguf", "loras", "latent_upscale_models", "text_encoders", "clip", "vae"):
         if kind in folder_paths.folder_names_and_paths:
             names.update(folder_paths.get_filename_list(kind))
+    if all(name in comfy_nodes.NODE_CLASS_MAPPINGS for name in store.SAM3_NODES):
+        names.add("sam3-nodes")
     if all(name in comfy_nodes.NODE_CLASS_MAPPINGS for name in store.MOTION_NODES):
         names.add("motion-nodes")
+    if "checkpoints" in folder_paths.folder_names_and_paths:
         names.update("motion-checkpoints:" + name for name in folder_paths.get_filename_list("checkpoints"))
+    if "model_patches" in folder_paths.folder_names_and_paths:
         names.update("motion-control:" + name for name in folder_paths.get_filename_list("model_patches"))
     names.update(store.REFMOD_PREFIX + name for name in refmod_files() or [])
     names.update(vosr2.capabilities(comfy_nodes.NODE_CLASS_MAPPINGS, folder_paths.models_dir))
@@ -367,9 +371,9 @@ def setup_folder(kind):
     return paths[0] if paths else os.path.join(folder_paths.models_dir, kind)
 
 
-def setup_plan(status):
+def setup_plan(status, catalog=None):
     """What a download fetches: each missing file of status, with its URL, size, hash and the path it lands at."""
-    entries = {entry["id"]: entry for entry in store.SETUP_FILES}
+    entries = {entry["id"]: entry for entry in (catalog if catalog is not None else store.SETUP_FILES)}
     plan = []
     for name in status["missing"]:
         entry = entries[name]
@@ -402,14 +406,10 @@ def free_space(plan):
     return short
 
 
-def setup_report():
-    available = available_models()
-    status = store.setup_status(available)
-    plan = setup_plan(status)
+def _annotate_setup_rows(status, plan):
+    home = os.path.dirname(os.path.realpath(folder_paths.models_dir))
     for row in status["files"]:
         row["folder_path"] = setup_folder(row["folder"])
-        # Shown as models/<folder> when it is inside ComfyUI's models folder, which says more than a long path.
-        home = os.path.dirname(os.path.realpath(folder_paths.models_dir))
         inside = os.path.realpath(row["folder_path"])
         row["folder_shown"] = os.path.relpath(inside, home).replace(os.sep, "/") if inside.startswith(home + os.sep) else row["folder_path"]
         part = next((item["dest"] + fetch.PART for item in plan if item["id"] == row["id"]), None)
@@ -417,6 +417,22 @@ def setup_report():
     status["short"] = free_space(plan)
     status["job"] = fetch.status()
     return status
+
+
+def setup_report():
+    available = available_models()
+    status = store.setup_status(available)
+    plan = setup_plan(status, store.SETUP_FILES)
+    return _annotate_setup_rows(status, plan)
+
+
+def motion_setup_report(groups=None):
+    available = available_models()
+    status = store.motion_setup_status(available, groups)
+    plan = setup_plan(status, store.MOTION_SETUP_FILES)
+    report = _annotate_setup_rows(status, plan)
+    report["motion"] = store.motion_status(available)
+    return report
 
 
 def setup_placed(item):
@@ -436,7 +452,7 @@ async def model_setup(request):
 async def model_setup_download(request):
     """Download the missing setup files into their folders. Takes no body: the server's own list says what and where."""
     status = store.setup_status(available_models())
-    plan = setup_plan(status)
+    plan = setup_plan(status, store.SETUP_FILES)
     if not plan:
         return web.json_response(setup_report())
     short = free_space(plan)
@@ -455,6 +471,52 @@ async def model_setup_cancel(request):
     """Stop the download. What was written stays, and the next download carries on from it."""
     fetch.cancel()
     return web.json_response(setup_report())
+
+
+async def motion_model_setup(request):
+    """Optional motion transfer models (replace, pose, sharp): installed status, sizes and active download."""
+    raw = request.query.get("groups")
+    groups = [g.strip() for g in raw.split(",") if g.strip()] if raw else None
+    try:
+        return web.json_response(motion_setup_report(groups))
+    except ValueError as error:
+        return refused(plain(error))
+
+
+async def motion_model_download(request):
+    """Download missing optional motion models for the chosen group(s) from Hugging Face."""
+    try:
+        body = await request.json() if request.can_read_body else {}
+    except ValueError:
+        body = {}
+    groups = body.get("groups") if isinstance(body, dict) else None
+    if groups is None:
+        groups = ["replace"]
+    if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
+        return refused("groups must be a list of motion model groups")
+    try:
+        status = store.motion_setup_status(available_models(), groups)
+    except ValueError as error:
+        return refused(plain(error))
+    plan = setup_plan(status, store.MOTION_SETUP_FILES)
+    if not plan:
+        return web.json_response(motion_setup_report(groups))
+    short = free_space(plan)
+    if short:
+        row = short[0]
+        return refused("there is not enough room in %s: the download needs %.1f GB and %.1f GB is free"
+                       % (row["folder"], row["needs"] / 1e9, row["free"] / 1e9), 507, short=short)
+    try:
+        fetch.start(plan, setup_placed)
+    except fetch.Refused as error:
+        return refused(error, 409)
+    return web.json_response(motion_setup_report(groups))
+
+
+async def motion_model_cancel(request):
+    """Stop an active motion model download; partial files remain so it can resume."""
+    fetch.cancel()
+    return web.json_response(motion_setup_report())
 
 
 def node_definitions():
@@ -2360,12 +2422,55 @@ def take_has_latents(take):
     return store.holds.has_take(store.holds.hold_path(path))
 
 
+def detect_motion_style(character):
+    """Classify a character reference asset on disk as 'preserve' (2D/anime) or 'photoreal'."""
+    if not isinstance(character, dict) or not character.get("file"):
+        return "photoreal"
+    try:
+        path = output_path(character.get("subfolder"), character["file"])
+        if not os.path.exists(path):
+            return "photoreal"
+        return store.motion_replace.classify_character_style(path)
+    except Exception:
+        return "photoreal"
+
+
+def _output_rel_path(rel_file):
+    base = os.path.realpath(folder_paths.get_output_directory())
+    rel = str(rel_file or "").replace("\\", "/").lstrip("/")
+    path = os.path.realpath(os.path.join(base, *rel.split("/")))
+    if not path.startswith(base + os.sep):
+        raise web.HTTPBadRequest(text="that file is outside the output folder")
+    return path
+
+
+def check_motion_cache(source_info, character, motion):
+    """Check which preprocessing caches (SAM3 masks, SDPose keypoints, character cutout) already hit on disk."""
+    hits = {"mask": False, "pose": False, "cutout": False}
+    try:
+        if source_info and source_info.get("file"):
+            src_path = _output_rel_path(source_info["file"])
+            first, last = int(source_info["first"]), int(source_info["last"])
+            hits["mask"] = store.motion_replace.has_mask_cache(src_path, first, last, subject="person")
+            hits["pose"] = store.motion_replace.has_pose_cache(src_path, first, last)
+    except Exception:
+        pass
+    try:
+        if isinstance(character, dict) and character.get("file"):
+            char_path = output_path(character.get("subfolder"), character["file"])
+            hits["cutout"] = store.motion_replace.has_cutout_cache(char_path, subject="person", backdrop="white")
+    except Exception:
+        pass
+    return hits
+
+
 async def start_render(data, folder, clip_id, quality, seed=None, client_id=None, detail=None, upscaler=None,
                        patches=None, edit=None, part=None):
     """Queue one render. patches is the installed patch nodes, for a batch that has read them already."""
     job, graph = store.plan_render(data, folder, clip_id, quality or "draft", seed, available_models(), detail, upscaler,
                                    installed_patches() if patches is None else patches, edit, part=part,
-                                   has_latents=take_has_latents)
+                                   has_latents=take_has_latents, detect_style=detect_motion_style,
+                                   check_cache=check_motion_cache)
     job["id"] = await queue_prompt(graph, client_id)
     store.add_pending(data, job)
     return job
@@ -2475,7 +2580,8 @@ async def operations(request):
                     planned, _ = store.plan_render(copy.deepcopy(work), folder, clip_id, op.get("quality") or "draft",
                                                    op.get("seed"), available_models(), op.get("detail"), op.get("upscaler"),
                                                    patches, op.get("edit"), part=op.get("part"),
-                                                   has_latents=take_has_latents)
+                                                   has_latents=take_has_latents, detect_style=detect_motion_style,
+                                                   check_cache=check_motion_cache)
                     later.append((index, op, clip_id, planned.get("loads") or planned["models"]["unet"]))
                     results.append(None)
                 elif kind == "cancel":
@@ -2631,14 +2737,60 @@ async def assemble_splice(rendered, splice):
     return target
 
 
+async def mux_motion_audio(rendered, motion_audio):
+    """Trim a motion-transfer clip to its exact source frame span and lay the exact source audio slice,
+    preserving the rendered video's full resolution (e.g. 1088x1920 Sharp RelayVSR)."""
+    source = output_path(motion_audio["subfolder"], motion_audio["file"])
+    first, last = int(motion_audio["in"]), int(motion_audio["out"])
+    expected = last - first
+    info = await video_info(rendered)
+    if info["frames"] < expected:
+        raise web.HTTPInternalServerError(text="the motion transfer render is shorter than the selected range")
+    start_sec = first / float(store.FPS)
+    dur_sec = expected / float(store.FPS)
+    samples = expected * 48000 // store.FPS
+    sound = await asyncio.to_thread(media.has_sound, source)
+    temporary = rendered + ".motion.mp4"
+    args = ["ffmpeg", "-y", "-v", "error", "-i", rendered]
+    if sound:
+        args.extend(["-i", source, "-map", "0:v:0", "-map", "1:a:0",
+                     "-af", "atrim=start=%.6f:duration=%.6f,asetpts=PTS-STARTPTS,aresample=48000,apad=whole_len=%d,atrim=end_sample=%d"
+                     % (start_sec, dur_sec, samples, samples),
+                     "-c:a", "aac", "-b:a", "192k", "-ar", "48000"])
+    else:
+        args.extend(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0",
+                     "-af", "atrim=end_sample=%d" % samples,
+                     "-c:a", "aac", "-b:a", "192k", "-ar", "48000"])
+    if info["frames"] == expected:
+        args.extend(["-c:v", "copy"])
+    else:
+        args.extend(["-vf", f"trim=end_frame={expected},setpts=PTS-STARTPTS",
+                     "-c:v", "libx264", "-crf", "15", "-pix_fmt", "yuv420p"])
+    args.extend(["-movflags", "+faststart", temporary])
+    try:
+        await run(args)
+        if (await video_info(temporary))["frames"] != expected:
+            raise web.HTTPInternalServerError(text="the motion clip did not match the selected frame count")
+        os.replace(temporary, rendered)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return rendered
+
+
 async def assemble_prompt_edit(rendered, edit):
     """Replace exactly the requested source frames, retaining the original audio stream."""
     source = output_path(edit["subfolder"], edit["file"])
     first, last, total = edit["in"], edit["out"], edit["frames"]
     original = await video_info(source, count=False)
-    if (await video_info(rendered))["frames"] < last - first:
+    rendered_info = await video_info(rendered)
+    if rendered_info["frames"] < last - first:
         raise web.HTTPInternalServerError(text="the generated video is shorter than the selected edit range")
-    width, height = original["width"], original["height"]
+    # Preserve higher rendered resolution (e.g. Sharp RelayVSR) when replacing the entire clip.
+    if first == 0 and last == total and rendered_info["width"] > original["width"]:
+        width, height = rendered_info["width"], rendered_info["height"]
+    else:
+        width, height = original["width"], original["height"]
     filters, segments = [], []
     if first:
         filters.append(f"[1:v]trim=end_frame={first},setsar=1,setpts=PTS-STARTPTS[prefix]")
@@ -2746,6 +2898,8 @@ async def watch_once():
                 elif job.get("edit"):
                     path = await assemble_prompt_edit(path, job["edit"])
                     file = dict(file, filename=os.path.basename(path))
+                elif job.get("motion_audio"):
+                    path = await mux_motion_audio(path, job["motion_audio"])
                 if job.get("track") and not job.get("splice"):
                     await lay_track(path, job["track"])
                 info = await probe_file(path)
@@ -3107,6 +3261,524 @@ async def export(request):
     })
 
 
+def _extract_rgb_frames(video_path, indices):
+    """Decode only the requested 0-based frame indices from video_path as uint8 RGB numpy arrays."""
+    import numpy as np
+
+    wanted = sorted({int(i) for i in indices if int(i) >= 0})
+    if not wanted:
+        return {}
+    wanted_set = set(wanted)
+    stop = wanted[-1] + 1
+    found = {}
+    try:
+        import av
+
+        with av.open(video_path) as container:
+            stream = container.streams.video[0]
+            for idx, frame in enumerate(container.decode(stream)):
+                if idx in wanted_set:
+                    found[idx] = frame.to_ndarray(format="rgb24")
+                if idx + 1 >= stop:
+                    break
+        return found
+    except Exception:
+        pass
+    # Fallback via ffmpeg rawvideo when PyAV is unavailable
+    import subprocess
+    from PIL import Image
+
+    info = media.video_info(video_path, count=False)
+    w, h = int(info["width"]), int(info["height"])
+    for idx in wanted:
+        ts = idx / float(store.FPS)
+        out = subprocess.check_output(
+            media.command(["ffmpeg", "-v", "error", "-ss", f"{ts:.6f}", "-i", video_path,
+                           "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        )
+        if len(out) == w * h * 3:
+            found[idx] = np.frombuffer(out, dtype=np.uint8).reshape((h, w, 3))
+    return found
+
+
+def _project_folder_path(folder):
+    return os.path.join(root(), store.slug(folder))
+
+
+def _project_rel_path(folder, abs_path):
+    base = os.path.realpath(folder_paths.get_output_directory())
+    real = os.path.realpath(abs_path)
+    proj = os.path.realpath(_project_folder_path(folder))
+    if not (real == proj or real.startswith(proj + os.sep)):
+        raise web.HTTPForbidden(text="path outside project")
+    return os.path.relpath(real, base).replace("\\", "/")
+
+
+def _safe_project_file(folder, rel_file):
+    real = _output_rel_path(rel_file)
+    proj = os.path.realpath(_project_folder_path(folder))
+    if not real.startswith(proj + os.sep):
+        raise web.HTTPForbidden(text="path outside project")
+    return real
+
+
+def _view_output_url(filename, subfolder=""):
+    from urllib.parse import urlencode
+
+    return "/view?" + urlencode({"type": "output", "filename": filename, "subfolder": subfolder or ""})
+
+
+def _preview_url(folder, kind, rel_file, first=0, last=0, expand_px=32, bust=0):
+    from urllib.parse import urlencode
+
+    params = {"kind": kind, "file": rel_file}
+    if kind != "cutout":
+        params.update({"first": int(first), "last": int(last)})
+    if kind == "mask":
+        params["expand_px"] = int(expand_px)
+    if bust:
+        params["v"] = int(bust)
+    return "/h3take/api/project/%s/motion/preview?%s" % (folder, urlencode(params))
+
+
+def _motion_pipeline_report(data, folder, clip_id=None, available=None):
+    """Build complete Motion Transfer pipeline status, stage breakdown, and project cache inventory."""
+    available = available_models() if available is None else available
+    ms = store.motion_status(available)
+    setup = motion_setup_report()
+    models = []
+    for f in setup.get("files") or []:
+        models.append({
+            "id": f["id"], "title": f["title"], "group": f.get("group") or "replace",
+            "installed": bool(f.get("installed")), "bytes": int(f.get("bytes") or 0),
+        })
+    # Also surface RelayVSR 2x (Sharp) and base/flash H3 status
+    relay_ok = any(row["id"] == "relayvsr" and row["installed"] for row in store.upscaler_status(available))
+    models.append({
+        "id": "relayvsr", "title": "RelayVSR 2x (Sharp upscale)", "group": "upscale",
+        "installed": bool(relay_ok), "bytes": 0,
+    })
+
+    clips = data.get("clips") or []
+    clip_map = {c["id"]: c for c in clips}
+    motion_clips = []
+    source_ids = set()
+    for c in clips:
+        if c.get("motion"):
+            m = c["motion"]
+            src = m.get("source") or {}
+            if src.get("clip"):
+                source_ids.add(src["clip"])
+            take = store.active_take(c)
+            motion_clips.append({
+                "id": c["id"], "name": c.get("name") or "Motion",
+                "mode": m.get("mode") or "replace",
+                "style": m.get("style") or "auto",
+                "frames": int(src.get("out", 0)) - int(src.get("in", 0)),
+                "rendered": bool(take),
+                "quality": take.get("quality") if take else None,
+            })
+
+    # Inventory all cached masks, poses, and cutouts across the project
+    caches = []
+    seen_sources = set()
+    seen_chars = set()
+
+    def scan_source(rel_file, label, clip_ref_id=None):
+        if not rel_file or rel_file in seen_sources:
+            return
+        seen_sources.add(rel_file)
+        try:
+            src_path = _safe_project_file(folder, rel_file)
+        except web.HTTPException:
+            return
+        if not os.path.exists(src_path):
+            return
+        m_sum = store.motion_replace.mask_cache_summary(src_path, subject="person")
+        if m_sum:
+            bust = int(os.path.getmtime(m_sum["path"]))
+            first_span = m_sum["spans"][0] if m_sum["spans"] else [0, m_sum["frames"]]
+            caches.append({
+                "kind": "mask", "label": label, "clip": clip_ref_id, "file": rel_file,
+                "cache_file": m_sum["file"], "size_bytes": m_sum["size_bytes"],
+                "cached_frames": m_sum["cached_frames"], "total_frames": m_sum["frames"],
+                "spans": m_sum["spans"],
+                "preview_url": _preview_url(folder, "mask", rel_file, first_span[0], first_span[1], 32, bust),
+            })
+        p_sum = store.motion_replace.pose_cache_summary(src_path)
+        if p_sum:
+            bust = int(os.path.getmtime(p_sum["path"]))
+            first_span = p_sum["spans"][0] if p_sum["spans"] else [0, p_sum["frames"]]
+            caches.append({
+                "kind": "pose", "label": label, "clip": clip_ref_id, "file": rel_file,
+                "cache_file": p_sum["file"], "size_bytes": p_sum["size_bytes"],
+                "cached_frames": p_sum["cached_frames"], "total_frames": p_sum["frames"],
+                "detected_frames": p_sum["detected_frames"], "spans": p_sum["spans"],
+                "preview_url": _preview_url(folder, "pose", rel_file, first_span[0], first_span[1], 0, bust),
+            })
+
+    def scan_character(asset, label):
+        if not isinstance(asset, dict) or not asset.get("file"):
+            return
+        rel_file = "/".join(filter(None, (asset.get("subfolder"), asset.get("file"))))
+        if not rel_file or rel_file in seen_chars:
+            return
+        seen_chars.add(rel_file)
+        try:
+            char_path = _safe_project_file(folder, rel_file)
+        except web.HTTPException:
+            return
+        c_sum = store.motion_replace.cutout_cache_summary(char_path, subject="person", backdrop="white")
+        if c_sum:
+            bust = int(os.path.getmtime(c_sum["path"]))
+            caches.append({
+                "kind": "cutout", "label": label, "file": rel_file,
+                "cache_file": c_sum["file"], "size_bytes": c_sum["size_bytes"],
+                "preview_url": _preview_url(folder, "cutout", rel_file, bust=bust),
+            })
+
+    for c in clips:
+        if c.get("motion"):
+            src = c["motion"].get("source") or {}
+            src_rel = "/".join(filter(None, (src.get("subfolder"), src.get("file"))))
+            src_clip = clip_map.get(src.get("clip"))
+            scan_source(src_rel, (src_clip.get("name") if src_clip else src.get("file")) or c.get("name"), src.get("clip"))
+            char = c["motion"].get("character")
+            cast_member = next((p for p in (data.get("cast") or []) if p["id"] == c["motion"].get("cast")), None)
+            scan_character(char, (cast_member.get("name") if cast_member else None) or (char or {}).get("file") or "Character")
+        elif c.get("kind") == "footage" or c["id"] in source_ids:
+            t = store.active_take(c)
+            if t and t.get("file"):
+                scan_source("/".join(filter(None, (t.get("subfolder"), t.get("file")))), c.get("name") or t["file"], c["id"])
+
+    # Pick inspected clip
+    target = clip_map.get(clip_id) if clip_id else None
+    if target is None and motion_clips:
+        target = clip_map.get(motion_clips[0]["id"])
+    if target is None:
+        target = next((c for c in clips if c.get("kind") == "footage"), None)
+
+    clip_report = None
+    if target is not None:
+        if target.get("motion"):
+            m = target["motion"]
+            src = m.get("source") or {}
+            mode = m.get("mode") or "replace"
+            style_cfg = m.get("style") or "auto"
+            char = m.get("character") or {}
+            resolved_style = detect_motion_style(char) if style_cfg == "auto" else style_cfg
+            swap_default = (1.0 if resolved_style == "photoreal" else 0.5) if ms.get("swap_lora") else 0.0
+            swap_eff = float(m["swap_lora"]) if m.get("swap_lora") is not None else swap_default
+            pose_strength = float(m.get("strength", 0.0 if mode == "replace" else 1.0))
+            in_f, out_f = int(src.get("in") or 0), int(src.get("out") or 0)
+            exact_f = max(1, out_f - in_f)
+            src_total = max(out_f, int(src.get("frames") or out_f))
+            windows = store.motion_replace.plan_relay_windows(exact_f)
+            needed_f = windows[-1]["start"] + windows[-1]["length"]
+            load_last = min(src_total, in_f + needed_f)
+            src_rel = "/".join(filter(None, (src.get("subfolder"), src.get("file"))))
+            char_rel = "/".join(filter(None, (char.get("subfolder"), char.get("file"))))
+            expand_px = int(m.get("expand_px", 32))
+            draft_w, draft_h, _ = store.render_size(data, "draft")
+            if mode == "replace":
+                med_w, med_h = store.format_sizes(store.project_format(data))["medium"]
+                if draft_w * draft_h < med_w * med_h:
+                    draft_w, draft_h = med_w, med_h
+            profile_id, profile = store.project_profile(data, available, target)
+            draft_steps = max(6, profile["steps"]["draft"]) if mode == "replace" and profile_id == "hyperflow" else profile["steps"]["draft"]
+
+            src_path = None
+            char_path = None
+            try:
+                src_path = _safe_project_file(folder, src_rel) if src_rel else None
+            except web.HTTPException:
+                pass
+            try:
+                char_path = _safe_project_file(folder, char_rel) if char_rel else None
+            except web.HTTPException:
+                pass
+
+            m_sum = store.motion_replace.mask_cache_summary(src_path, subject="person") if src_path else None
+            m_hit = bool(src_path and store.motion_replace.has_mask_cache(src_path, in_f, load_last, subject="person"))
+            p_sum = store.motion_replace.pose_cache_summary(src_path) if src_path else None
+            p_hit = bool(src_path and store.motion_replace.has_pose_cache(src_path, in_f, load_last))
+            c_sum = store.motion_replace.cutout_cache_summary(char_path, subject="person", backdrop="white") if char_path else None
+            c_hit = bool(c_sum)
+
+            isolate_on = bool(m.get("isolate", True))
+            plate_on = mode == "replace" and bool(m.get("plate", True))
+            sharp_on = bool(m.get("sharp") or store.size_name(data, "final") == store.SHARP)
+            active_t = store.active_take(target)
+
+            stages = [
+                {
+                    "id": "source", "title": "Source frames", "component": "H3LoadClip",
+                    "nodes": ["213"],
+                    "status": "ready" if (src_path and os.path.exists(src_path)) else "missing",
+                    "badge": f"{exact_f}f ({exact_f / store.FPS:.2f}s)",
+                    "detail": (f"Frames {in_f}–{out_f - 1} of {src_total}"
+                               + (f" (+{load_last - out_f}f real look-ahead to {load_last})" if load_last > out_f
+                                  else f" (reflect-padded +{needed_f - exact_f}f to grid)" if needed_f > exact_f else " (exact grid)")),
+                },
+                {
+                    "id": "cutout", "title": "Character cutout & style", "component": "H3IsolateCharacter",
+                    "nodes": ["214", "239"],
+                    "status": ("off" if not isolate_on else "cached" if c_hit else "ready" if ms.get("sam3") else "missing"),
+                    "badge": ("Bypassed" if not isolate_on else "Cached" if c_hit else "Uncached"),
+                    "detail": (f"Style: {style_cfg}" + (f" -> {resolved_style}" if style_cfg == "auto" else "")
+                               + f" · Swap LoRA {swap_eff:.2f}"
+                               + (f" · {c_sum['size_bytes'] // 1024} KB" if c_sum else "")),
+                    "original_url": _view_output_url(char.get("file", ""), char.get("subfolder", "")) if char.get("file") else None,
+                    "preview_url": _preview_url(folder, "cutout", char_rel, bust=int(os.path.getmtime(c_sum["path"]))) if c_sum else None,
+                    "cache": {"kind": "cutout", "file": char_rel} if c_sum else None,
+                },
+                {
+                    "id": "segmentation", "title": "Subject segmentation", "component": "SAM 3.1 · H3TrackSubjectMask",
+                    "nodes": ["238", "240", "245"],
+                    "status": ("off" if mode != "replace" else "cached" if m_hit else "partial" if m_sum else "ready" if ms.get("replace") else "missing"),
+                    "badge": ("Off (pose mode)" if mode != "replace" else "Cached" if m_hit else f"Partial ({m_sum['cached_frames']}/{m_sum['frames']}f)" if m_sum else "Not cached"),
+                    "detail": (f"Expand {expand_px}px · "
+                               + (f"Reused on next render · {m_sum['cached_frames']}/{m_sum['frames']}f ({m_sum['size_bytes'] / 1048576:.2f} MB)"
+                                  if m_hit and m_sum else
+                                  f"Cached spans: {m_sum['spans']} ({m_sum['size_bytes'] / 1048576:.2f} MB)" if m_sum
+                                  else "Will run SAM 3.1 once and cache beside source video")),
+                    "coverage": {"cached": m_sum["cached_frames"], "total": m_sum["frames"], "spans": m_sum["spans"]} if m_sum else None,
+                    "preview_url": (_preview_url(folder, "mask", src_rel, in_f, load_last, expand_px, int(os.path.getmtime(m_sum["path"])))
+                                    if m_sum and mode == "replace" else None),
+                    "cache": {"kind": "mask", "file": src_rel} if m_sum else None,
+                },
+                {
+                    "id": "pose", "title": "Pose keypoints", "component": "RT-DETR + SDPose · H3GatedSDPose",
+                    "nodes": ["215", "216", "217", "218", "219"],
+                    "status": ("off" if pose_strength <= 0 else "cached" if p_hit else "partial" if p_sum else "ready" if ms.get("pose_control") else "missing"),
+                    "badge": ("Off (0.0)" if pose_strength <= 0 else "Cached · loaders skipped" if p_hit else f"Partial ({p_sum['cached_frames']}/{p_sum['frames']}f)" if p_sum else "Not cached"),
+                    "detail": (f"ControlNet strength {pose_strength:.2f}"
+                               + (f" · {p_sum['detected_frames']}/{p_sum['cached_frames']}f with pose ({p_sum['size_bytes'] // 1024} KB)" if p_sum else
+                                  " · No pose reinforcement (SAM3 mask + video ref only)" if pose_strength <= 0 else " · Will run RT-DETR + SDPose once and cache")),
+                    "coverage": {"cached": p_sum["cached_frames"], "total": p_sum["frames"], "spans": p_sum["spans"]} if p_sum else None,
+                    "preview_url": (_preview_url(folder, "pose", src_rel, in_f, load_last, 0, int(os.path.getmtime(p_sum["path"])))
+                                    if p_sum else None),
+                    "cache": {"kind": "pose", "file": src_rel} if p_sum else None,
+                },
+                {
+                    "id": "sampling", "title": "Diffusion & Swap Guard", "component": "H3Take + H3SwapGuard",
+                    "nodes": ["10", "15", "248", "16"],
+                    "status": "ready",
+                    "badge": f"{len(windows)} window{'s' if len(windows) != 1 else ''} · {draft_w}×{draft_h}",
+                    "detail": (f"Draft floor {draft_w}×{draft_h}, {draft_steps} steps · "
+                               + ("Swap Guard auto-retry on Window 0" if mode == "replace" else "Pose ControlNet choreography")
+                               + (f" · {len(windows)} relay windows (22f soft overlap)" if len(windows) > 1 else "")),
+                    "windows": [
+                        {"index": idx + 1, "start": in_f + w["start"], "end": min(out_f, in_f + w["start"] + w["length"]),
+                         "length": w["length"], "overlap": w["overlap"]}
+                        for idx, w in enumerate(windows)
+                    ],
+                },
+                {
+                    "id": "plate", "title": "Plate composite & output", "component": "H3CompositeSourcePlate" + (" + RelayVSR 2x" if sharp_on else ""),
+                    "nodes": ["250", "33", "34", "35", "36", "18", "19"],
+                    "status": "cached" if active_t else ("ready" if (not sharp_on or relay_ok) else "missing"),
+                    "badge": (f"{active_t['quality'].title()} · {active_t['frames']}f" if active_t else ("Sharp 2x ready" if sharp_on else "Pending render")),
+                    "detail": (("Zero-halo plate on (src +18px / gen +4px)" if plate_on else "Source plate off")
+                               + (" · RelayVSR 2x final enabled" if sharp_on else "")
+                               + (f" · Active take {active_t.get('size', [0, 0])[0]}×{active_t.get('size', [0, 0])[1]}" if active_t and active_t.get("size") else "")),
+                    "preview_url": _view_output_url(active_t["strip"]["sprite"], active_t.get("subfolder", ""))
+                                   if active_t and active_t.get("strip", {}).get("sprite") else None,
+                },
+            ]
+            clip_report = {
+                "id": target["id"], "kind": "motion", "name": target.get("name") or "Motion",
+                "mode": mode, "style": style_cfg, "resolved_style": resolved_style,
+                "swap_lora": swap_eff, "exact_frames": exact_f, "grid_frames": needed_f,
+                "stages": stages,
+            }
+        else:
+            t = store.active_take(target)
+            src_rel = "/".join(filter(None, (t.get("subfolder"), t.get("file")))) if t and t.get("file") else ""
+            src_path = None
+            try:
+                src_path = _safe_project_file(folder, src_rel) if src_rel else None
+            except web.HTTPException:
+                pass
+            m_sum = store.motion_replace.mask_cache_summary(src_path, subject="person") if src_path else None
+            p_sum = store.motion_replace.pose_cache_summary(src_path) if src_path else None
+            stages = [
+                {
+                    "id": "segmentation", "title": "Cached SAM 3.1 masks", "component": "H3TrackSubjectMask",
+                    "nodes": ["240"],
+                    "status": "cached" if m_sum else "ready",
+                    "badge": f"{m_sum['cached_frames']}/{m_sum['frames']}f" if m_sum else "Not segmented yet",
+                    "detail": (f"Spans {m_sum['spans']} · {m_sum['size_bytes'] / 1048576:.2f} MB — reused automatically by all splits"
+                               if m_sum else "Run Motion transfer on this footage to populate reusable SAM 3.1 masks."),
+                    "coverage": {"cached": m_sum["cached_frames"], "total": m_sum["frames"], "spans": m_sum["spans"]} if m_sum else None,
+                    "preview_url": (_preview_url(folder, "mask", src_rel, m_sum["spans"][0][0], m_sum["spans"][0][1], 32, int(os.path.getmtime(m_sum["path"])))
+                                    if m_sum and m_sum["spans"] else None),
+                    "cache": {"kind": "mask", "file": src_rel} if m_sum else None,
+                },
+                {
+                    "id": "pose", "title": "Cached pose keypoints", "component": "RT-DETR + SDPose",
+                    "nodes": ["218"],
+                    "status": "cached" if p_sum else "ready",
+                    "badge": f"{p_sum['cached_frames']}/{p_sum['frames']}f" if p_sum else "Not extracted yet",
+                    "detail": (f"{p_sum['detected_frames']}/{p_sum['cached_frames']}f with person · {p_sum['size_bytes'] // 1024} KB"
+                               if p_sum else "Cached automatically whenever pose reinforcement or choreography runs."),
+                    "coverage": {"cached": p_sum["cached_frames"], "total": p_sum["frames"], "spans": p_sum["spans"]} if p_sum else None,
+                    "preview_url": (_preview_url(folder, "pose", src_rel, p_sum["spans"][0][0], p_sum["spans"][0][1], 0, int(os.path.getmtime(p_sum["path"])))
+                                    if p_sum and p_sum["spans"] else None),
+                    "cache": {"kind": "pose", "file": src_rel} if p_sum else None,
+                },
+            ]
+            clip_report = {
+                "id": target["id"], "kind": "source", "name": target.get("name") or "Footage",
+                "stages": stages,
+            }
+
+    return {
+        "capabilities": {"replace": bool(ms.get("replace")), "pose_control": bool(ms.get("pose_control")),
+                         "swap_lora": bool(ms.get("swap_lora")), "relayvsr": bool(relay_ok)},
+        "models": models,
+        "clip": clip_report,
+        "motion_clips": motion_clips,
+        "caches": caches,
+    }
+
+
+async def motion_pipeline_status(request):
+    folder = store.slug(request.match_info["name"])
+    data = read_project(folder)
+    clip_id = request.query.get("clip") or None
+    report = await asyncio.to_thread(_motion_pipeline_report, data, folder, clip_id)
+    return web.json_response(report)
+
+
+async def motion_preview(request):
+    folder = store.slug(request.match_info["name"])
+    kind = request.query.get("kind") or ""
+    rel_file = request.query.get("file") or ""
+    if kind not in ("mask", "pose", "cutout") or not rel_file:
+        return refused("send kind (mask, pose, or cutout) and file")
+    target = _safe_project_file(folder, rel_file)
+    if not os.path.exists(target):
+        return refused("source file not found", 404)
+    if kind == "cutout":
+        summary = store.motion_replace.cutout_cache_summary(target, subject="person", backdrop="white")
+        if not summary:
+            return refused("character cutout is not cached yet", 404)
+        return web.FileResponse(summary["path"], headers={"Cache-Control": "no-cache"})
+
+    first = max(0, int(request.query.get("first") or 0))
+    last = max(0, int(request.query.get("last") or 0))
+    expand_px = max(0, min(128, int(request.query.get("expand_px") or 32)))
+
+    def build_sheet():
+        if kind == "mask":
+            summary = store.motion_replace.mask_cache_summary(target, subject="person")
+            if not summary or not summary["spans"]:
+                raise FileNotFoundError("segmentation mask is not cached yet")
+            lo = first if last > first else summary["spans"][0][0]
+            hi = min(last, summary["frames"]) if last > first else summary["spans"][0][1]
+            # Pick frames that are actually cached inside [lo, hi)
+            cached_indices = []
+            for a, b in summary["spans"]:
+                ca, cb = max(lo, a), min(hi, b)
+                if cb > ca:
+                    cached_indices.extend(range(ca, cb))
+            if not cached_indices:
+                a, b = summary["spans"][0]
+                cached_indices = list(range(a, b))
+            picked = [cached_indices[i] for i in store.motion_replace.sample_frame_indices(0, len(cached_indices), 6)]
+            frames_map = _extract_rgb_frames(target, picked)
+            rgbs, indices, masks = [], [], []
+            for fidx in picked:
+                if fidx not in frames_map:
+                    continue
+                m = store.motion_replace.load_mask_cache(target, fidx, fidx + 1, subject="person")
+                if m is None:
+                    continue
+                rgbs.append(frames_map[fidx])
+                indices.append(fidx)
+                masks.append(m[0])
+            return store.motion_replace.render_mask_sheet(rgbs, indices, masks, expand_px=expand_px)
+
+        summary = store.motion_replace.pose_cache_summary(target)
+        if not summary or not summary["spans"]:
+            raise FileNotFoundError("pose keypoints are not cached yet")
+        lo = first if last > first else summary["spans"][0][0]
+        hi = min(last, summary["frames"]) if last > first else summary["spans"][0][1]
+        cached_indices = []
+        for a, b in summary["spans"]:
+            ca, cb = max(lo, a), min(hi, b)
+            if cb > ca:
+                cached_indices.extend(range(ca, cb))
+        if not cached_indices:
+            a, b = summary["spans"][0]
+            cached_indices = list(range(a, b))
+        picked = [cached_indices[i] for i in store.motion_replace.sample_frame_indices(0, len(cached_indices), 6)]
+        frames_map = _extract_rgb_frames(target, picked)
+        rgbs, indices, kps = [], [], []
+        for fidx in picked:
+            if fidx not in frames_map:
+                continue
+            kp = store.motion_replace.load_pose_cache(target, fidx, fidx + 1)
+            if kp is None:
+                continue
+            rgbs.append(frames_map[fidx])
+            indices.append(fidx)
+            kps.append(kp[0])
+        return store.motion_replace.render_pose_sheet(rgbs, indices, kps)
+
+    try:
+        jpeg = await asyncio.to_thread(build_sheet)
+    except FileNotFoundError as error:
+        return refused(str(error), 404)
+    except (ValueError, OSError) as error:
+        return refused(plain(error))
+    return web.Response(body=jpeg, content_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+
+async def motion_cache_clear(request):
+    folder = store.slug(request.match_info["name"])
+    body = await request.json()
+    kind = body.get("kind") or "all"
+    rel_file = body.get("file") or ""
+    if kind not in ("mask", "pose", "cutout", "all"):
+        return refused("kind must be mask, pose, cutout, or all")
+    removed = []
+    if kind == "all" and not rel_file:
+        proj = _project_folder_path(folder)
+        for sub in ("clips", "assets"):
+            d = os.path.join(proj, sub)
+            if not os.path.isdir(d):
+                continue
+            for entry in os.listdir(d):
+                if (".mask." in entry and entry.endswith(".npz")) or entry.endswith(".pose.json.gz") or (".iso." in entry and entry.endswith(".png")):
+                    full = os.path.join(d, entry)
+                    try:
+                        os.remove(full)
+                        removed.append(entry)
+                    except OSError:
+                        pass
+    else:
+        if not rel_file:
+            return refused("send file to clear a specific cache")
+        target = _safe_project_file(folder, rel_file)
+        candidates = []
+        if kind in ("mask", "all"):
+            candidates.append(store.motion_replace.mask_cache_path(target, "person"))
+        if kind in ("pose", "all"):
+            candidates.append(store.motion_replace.pose_cache_path(target))
+        if kind in ("cutout", "all"):
+            candidates.append(store.motion_replace.cutout_cache_path(target, "person", "white"))
+        for path in candidates:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                    removed.append(os.path.basename(path))
+                except OSError:
+                    pass
+    return web.json_response({"removed": len(removed), "files": removed})
+
+
 ROUTES = (
     ("GET", "/h3take/api/sizes", "sizes"),
     ("GET", "/h3take/api/queue", "render_queue"),
@@ -3119,6 +3791,9 @@ ROUTES = (
     ("GET", "/h3take/api/models/setup", "model_setup"),
     ("POST", "/h3take/api/models/setup/download", "model_setup_download"),
     ("POST", "/h3take/api/models/setup/cancel", "model_setup_cancel"),
+    ("GET", "/h3take/api/models/motion", "motion_model_setup"),
+    ("POST", "/h3take/api/models/motion/download", "motion_model_download"),
+    ("POST", "/h3take/api/models/motion/cancel", "motion_model_cancel"),
     ("GET", "/h3take/api/presets", "presets"),
     ("PUT", "/h3take/api/presets", "save_presets"),
     ("GET", "/h3take/api/cast-catalog", "cast_catalog"),
@@ -3133,6 +3808,9 @@ ROUTES = (
     ("GET", "/h3take/api/project/{name}/storage", "project_storage"),
     ("POST", "/h3take/api/project/{name}/storage", "project_storage"),
     ("GET", "/h3take/api/project/{name}/summary", "summary"),
+    ("GET", "/h3take/api/project/{name}/motion", "motion_pipeline_status"),
+    ("GET", "/h3take/api/project/{name}/motion/preview", "motion_preview"),
+    ("POST", "/h3take/api/project/{name}/motion/cache/clear", "motion_cache_clear"),
     ("GET", "/h3take/api/project/{name}/cuts", "cuts"),
     ("GET", "/h3take/api/project/{name}/detail", "detail"),
     ("GET", "/h3take/api/project/{name}/history", "history"),

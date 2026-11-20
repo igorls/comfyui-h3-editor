@@ -231,16 +231,21 @@ optionally supply a replacement first frame. The result appears under **Takes**
 as a full-length alternate with the original sound and the picture outside the
 edit range intact.
 
-**Motion transfer (experimental).** Choose **Motion transfer** on an imported
-or generated take. Mark 2–15 seconds with one visible performer and choose a
-full-body character image. Adjust **Motion strength** to change how closely the
-render follows the tracked pose. Use **Scene direction** to describe the framing
-and background. The model regenerates the scene, so background details,
-hands, and foot contact can drift. The result is a new take with source audio.
-This mode uses the standard MiniMax H3 checkpoint (with Turbo when installed)
-and requires the native SDPose, RT-DETR, and H3 Fun ControlNet Union models.
-See the [ComfyUI pose-control workflow](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_fun_controlnet_union.json)
-for the model files and their installation folders.
+**Motion transfer.** Choose **Motion transfer** in **Generate**, the clip's
+context menu, or **Takes** on imported footage or a generated clip, and select
+2–30 seconds of one performer. Pick a cast member or upload a character image,
+then choose **Replace character in scene** (masked replacement on the original
+background using SAM 3.1, Character Swap LoRA, and zero-halo plate compositing,
+with **Keep reference style** for stylized/anime characters or **Match scene
+lighting** for photorealistic people) or **New scene from pose** (pose-guided
+choreography via RT-DETR, gated SDPose, and H3 Fun ControlNet Union 2.0). Clips
+longer than 5.9 seconds automatically tile into seamless 124-frame latent-locked
+relay windows (`22`-frame overlap) in a single graph so VRAM stays constant.
+The result is a normal clip placed right after the source on the timeline with
+the exact source audio, so you can trim, split, extend, add VFX, or re-render
+Draft → Final / Sharp 2× from the inspector. Missing optional models download
+from Hugging Face with sha256 verification right inside the Motion transfer
+dialog; see [motion transfer models](docs/models.md#motion-transfer-models).
 
 **Compare takes.** In **Takes**, click **Compare takes**, Ctrl-click or
 Command-click a second take, or drag it into the viewer. Play or step

@@ -570,3 +570,163 @@ test("ollama requests keep_alive: 0 when sharing the GPU with ComfyUI", async ()
     globalThis.fetch = realFetch;
   }
 });
+
+test("motion transfer helpers cover SAVED_FIELDS, plannedFrames, window counts, required packs, and relay stages", () => {
+  const c = vm.createContext({ FPS: 24, MOTION_MAX_SECONDS: 30, structuredClone,
+    activeTake: (clip) => (clip.takes || []).find((t) => t.id === clip.active) || (clip.takes || []).at(-1) || null,
+    linkedFrames: () => 141, snapFrames: () => 124, jobFor: () => null,
+    promptEditRange: (clip, take) => ({ a: 0, b: take.frames }),
+  });
+  vm.runInContext(source.match(/^const STAGES = [\s\S]*?^const STEPPED = .*$/m)[0], c);
+  vm.runInContext(source.match(/^const SAVED_FIELDS.*$/m)[0], c);
+  functions(c, [
+    "stageForNode", "isSteppedNode", "plannedFrames", "clipSeconds",
+    "restoreTakeFields", "motionUnavailable", "motionWindowSummary",
+    "motionRequiredGroups", "motionRangeBounds",
+  ]);
+
+  // SAVED_FIELDS includes motion and restoreTakeFields restores/clears it
+  assert.ok(vm.runInContext("SAVED_FIELDS", c).includes("motion"));
+  const motionRecipe = { mode: "replace", style: "preserve", source: { clip: "c0", in: 0, out: 230, frames: 230 }, character: { file: "rin.png" } };
+  const clip = { id: "c1", seconds: 5, action: "", takes: [], motion: motionRecipe };
+  assert.equal(c.plannedFrames(clip), 230);
+  assert.equal(c.clipSeconds(clip), (230 / 24).toFixed(1) + " s");
+  c.restoreTakeFields(clip, { action: "plain" });
+  assert.equal(clip.motion, undefined);
+  c.restoreTakeFields(clip, { action: "", motion: motionRecipe });
+  assert.deepEqual(clip.motion, motionRecipe);
+
+  // Window relay summary matches 124f / 22f overlap / 141f single-pass threshold
+  assert.equal(JSON.stringify(c.motionWindowSummary(120)), JSON.stringify({ windows: 1, label: "Single pass" }));
+  assert.equal(JSON.stringify(c.motionWindowSummary(141)), JSON.stringify({ windows: 1, label: "Single pass" }));
+  assert.equal(JSON.stringify(c.motionWindowSummary(230)), JSON.stringify({ windows: 2, label: "2-window relay" }));
+  assert.equal(JSON.stringify(c.motionWindowSummary(720)), JSON.stringify({ windows: 7, label: "7-window relay" }));
+
+  // Required model packs for each combination
+  assert.equal(JSON.stringify(c.motionRequiredGroups("replace", 0, "draft")), JSON.stringify(["replace"]));
+  assert.equal(JSON.stringify(c.motionRequiredGroups("replace", 0.75, "sharp")), JSON.stringify(["replace", "pose", "sharp"]));
+  assert.equal(JSON.stringify(c.motionRequiredGroups("choreography", 1.0, "final")), JSON.stringify(["pose"]));
+  assert.equal(JSON.stringify(c.motionRequiredGroups("choreography", 1.0, "sharp")), JSON.stringify(["pose", "sharp"]));
+
+  // Range bounds clamp >30s source clips to 30s default and preserve existing motion source bounds
+  const longClip = { id: "f1", takes: [{ id: "t1", frames: 960 }], active: "t1" };
+  assert.equal(JSON.stringify(c.motionRangeBounds(longClip, longClip.takes[0], null)), JSON.stringify({ a: 0, b: 720, total: 960, clamped: true }));
+  assert.equal(JSON.stringify(c.motionRangeBounds(clip, null, null)), JSON.stringify({ a: 0, b: 230, total: 230, clamped: false }));
+
+  // motionUnavailable allows opening the dialog for a clip with a take or an existing motion clip
+  assert.equal(c.motionUnavailable(longClip), "");
+  assert.equal(c.motionUnavailable(clip), "");
+  assert.notEqual(c.motionUnavailable({ id: "blank", takes: [] }), "");
+
+  // STAGES and STEPPED cover SAM 3.1, plate, RelayVSR 2x, and dynamic multi-window relay samplers
+  assert.equal(c.stageForNode("240"), "Tracking subject mask (SAM 3.1)");
+  assert.equal(c.stageForNode("250"), "Compositing source plate");
+  assert.equal(c.stageForNode("34"), "Upscaling 2x (RelayVSR)");
+  assert.equal(c.stageForNode("324"), "Locking relay window 2");
+  assert.equal(c.stageForNode("326"), "Sampling window 2");
+  assert.equal(c.stageForNode("328"), "Joining window 2");
+  assert.equal(c.stageForNode("346"), "Sampling window 3");
+  assert.equal(c.isSteppedNode("15"), true);
+  assert.equal(c.isSteppedNode("34"), true);
+  assert.equal(c.isSteppedNode("326"), true);
+  assert.equal(c.isSteppedNode("346"), true);
+  assert.equal(c.isSteppedNode("328"), false);
+});
+
+test("motion clips with empty action pass both single renderClip and batch renderTimelineClips guards", async () => {
+  const clips = [
+    { id: "m1", name: "Rin · eira3", action: "", takes: [], motion: { mode: "replace", source: { in: 0, out: 120 } } },
+    { id: "blank", name: "Blank", action: "", takes: [] },
+  ];
+  const calls = [];
+  const c = vm.createContext({
+    state: { folder: "proj", project: { clips }, jobs: new Map() }, clientId: "test",
+    batchRendering: false, batchCancelling: false,
+    sorted: () => [{ clip: "m1" }, { clip: "blank" }],
+    clipOf: (id) => clips.find((clip) => clip.id === id),
+    activeTake: (clip) => clip.takes.at(-1) || null,
+    jobFor: () => null, flush: async () => {}, unsaved: () => false,
+    selectClip() {}, toast() {}, adopt() {}, updateQueue() {}, renderAll() {},
+    api: async () => ({ clips }),
+    postJson: async (path, body) => {
+      calls.push({ path, body });
+      return { job: { id: "j1", clip: body.clip || "m1", quality: body.quality || "draft" }, project: { clips } };
+    },
+  });
+  functions(c, ["renderClip", "renderTimelineClips"]);
+
+  assert.equal(await c.renderClip(clips[0], "draft"), true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, "/project/proj/render");
+
+  calls.length = 0;
+  await c.renderTimelineClips("draft");
+  assert.equal(calls.length, 1);
+  assert.equal(JSON.stringify(calls[0].body.ops.map(({ clip, quality }) => [clip, quality])), '[["m1","draft"]]');
+});
+
+test("drag-and-drop file classifiers and motionCastMembers project+catalog picker helpers", () => {
+  const c = vm.createContext({});
+  for (const name of ["FOOTAGE_EXT", "PICTURE_EXT", "AUDIO_EXT"]) {
+    const m = source.match(new RegExp(`const ${name} = [^;]+;`));
+    assert.ok(m, `missing ${name}`);
+    vm.runInContext(m[0], c);
+  }
+  functions(c, ["isPictureFile", "isFootageFile", "isAudioFile", "motionMemberPicture", "motionCastMembers"]);
+
+  assert.equal(c.isFootageFile({ name: "dance.mp4", type: "video/mp4" }), true);
+  assert.equal(c.isFootageFile({ name: "clip.MOV", type: "" }), true);
+  assert.equal(c.isFootageFile({ name: "still.webp", type: "image/webp" }), true);
+  assert.equal(c.isFootageFile({ name: "song.mp3", type: "audio/mpeg" }), false);
+  assert.equal(c.isAudioFile({ name: "song.mp3", type: "audio/mpeg" }), true);
+  assert.equal(c.isAudioFile({ name: "voice.WAV", type: "" }), true);
+  assert.equal(c.isPictureFile({ name: "ruby.png", type: "image/png" }), true);
+  assert.equal(c.isPictureFile({ name: "dance.mp4", type: "video/mp4" }), false);
+
+  const project = {
+    cast: [
+      { id: "p1", name: "Maya", file: "maya.png", subfolder: "proj/assets", catalog: { id: "cat1" } },
+      { id: "p2", name: "VoiceOnly", voice: { file: "v.wav" } },
+      { id: "p3", name: "AltOnly", pictures: [{ file: "alt.png", subfolder: "proj/assets" }] },
+    ],
+  };
+  const catalog = [
+    { id: "cat1", name: "Maya", file: "maya.png", subfolder: "cat" },
+    { id: "cat2", name: "Ruby", file: "ruby.png", subfolder: "cat" },
+    { id: "cat3", name: "Narrator", voice: { file: "n.wav" } },
+  ];
+  const rows = c.motionCastMembers(project, catalog);
+  assert.equal(JSON.stringify(rows.map((r) => [r.kind, r.id, r.name, r.file])), JSON.stringify([
+    ["cast", "p1", "Maya", "maya.png"],
+    ["cast", "p3", "AltOnly", "alt.png"],
+    ["catalog", "cat2", "Ruby", "ruby.png"],
+  ]));
+});
+
+test("motion tab helpers map SwapGuard (248) and relay windows to live pipeline stages", () => {
+  const c = vm.createContext({});
+  for (const name of ["STAGES", "STEPPED"]) {
+    const m = source.match(new RegExp(`const ${name} = [^;]+;`));
+    assert.ok(m, `missing ${name}`);
+    vm.runInContext(m[0], c);
+  }
+  functions(c, ["stageForNode", "isSteppedNode", "motionStageForNode", "formatMotionBytes"]);
+
+  assert.equal(c.stageForNode("248"), "Checking character swap");
+  const stages = [
+    { id: "source", nodes: ["213"] },
+    { id: "cutout", nodes: ["214", "239"] },
+    { id: "segmentation", nodes: ["238", "240", "245"] },
+    { id: "pose", nodes: ["215", "216", "217", "218", "219"] },
+    { id: "sampling", nodes: ["10", "15", "248", "16"] },
+    { id: "plate", nodes: ["250", "34", "19"] },
+  ];
+  assert.equal(c.motionStageForNode(stages, "240"), "segmentation");
+  assert.equal(c.motionStageForNode(stages, "248"), "sampling");
+  assert.equal(c.motionStageForNode(stages, "260"), "sampling");
+  assert.equal(c.motionStageForNode(stages, "326"), "sampling");
+  assert.equal(c.motionStageForNode(stages, "250"), "plate");
+  assert.equal(c.motionStageForNode(stages, "99"), null);
+  assert.equal(c.formatMotionBytes(2097152), "2.00 MB");
+  assert.equal(c.formatMotionBytes(4096), "4 KB");
+});

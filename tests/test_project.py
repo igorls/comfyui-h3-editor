@@ -1697,5 +1697,332 @@ class ExportTest(unittest.TestCase):
             export_command(self.project, {}, "o.mp4")
 
 
+class MotionTransferIntegrationTest(unittest.TestCase):
+    REPLACE_FILES = HYPERFLOW | FINALS | {
+        "sam3-nodes",
+        "motion-checkpoints:" + project_module.MOTION_SAM3,
+        project_module.MOTION_SWAP_LORA,
+        project_module.RELAYVSR_MODEL,
+        project_module.RELAYVSR_VAE,
+    }
+    POSE_FILES = REPLACE_FILES | BASE_TURBO | {
+        "motion-nodes",
+        project_module.MOTION_DETECTOR,
+        "motion-checkpoints:" + project_module.MOTION_POSE,
+        "motion-control:" + project_module.MOTION_CONTROL_V2,
+    }
+
+    def _project_with_footage(self, frames=230, fmt="9:16"):
+        project = new_project("Dance")
+        set_project(project, {"format": fmt})
+        src_take = {"id": "f1", "file": "eira3.mp4", "subfolder": "h3take_projects/dance/clips",
+                    "frames": frames, "quality": "footage", "size": [544, 960]}
+        src, item = project_module.add_footage(project, "eira3", src_take)
+        # Second clip after footage to confirm placement shifts later items cleanly
+        after, after_item = add_clip(project, {"action": "Closing shot."})
+        return project, src, item, after_item
+
+    def test_add_motion_transfer_creates_normal_clip_after_source_with_cast_or_image(self):
+        project, src, src_item, after_item = self._project_with_footage(230)
+        names = {}
+        apply_op(project, {"op": "add_cast", "as": "hero", "fields": {
+            "name": "Rin", "file": "rin.png", "subfolder": "h3take_projects/dance/assets",
+        }}, names)
+        res = apply_op(project, {
+            "op": "add_motion_transfer", "as": "mt", "clip": src["id"], "item": src_item["id"],
+            "in": 0, "out": 230, "motion": {"cast": "$hero", "mode": "replace", "style": "preserve"},
+        }, names)
+        mc = project_module.find_clip(project, res["clip"])
+        mi = next(i for i in project["timeline"] if i["id"] == res["item"])
+        self.assertNotEqual(mc.get("kind"), "footage")
+        self.assertEqual(mc["cast"], [names["hero"]["cast"]])
+        self.assertEqual(mc["motion"]["character"]["file"], "rin.png")
+        self.assertEqual(project_module.planned_frames(mc), 230)
+        # Placed right after source clip, shifting the following clip down
+        self.assertEqual(mi["start"], 230)
+        self.assertEqual((mi["in"], mi["out"]), (0, 230))
+        self.assertEqual(after_item["start"], 460)
+        self.assertIn("motion", describe(project)["clips"][-1])
+
+        # One-off image character works too
+        c2, _ = project_module.add_motion_clip(
+            project, src["id"], first=10, last=130,
+            motion={"character": {"file": "alt.png", "subfolder": "s"}, "mode": "replace"},
+            place=False,
+        )
+        self.assertEqual(project_module.planned_frames(c2), 120)
+        self.assertNotIn("cast", c2)
+
+    def test_motion_range_accepts_2_to_30_seconds_and_rejects_outside(self):
+        project, src, _, _ = self._project_with_footage(800)
+        # 2s (48f) and 30s (720f) succeed
+        c_min, _ = project_module.add_motion_clip(
+            project, src["id"], first=0, last=48, motion={"character": {"file": "a.png"}}, place=False)
+        c_max, _ = project_module.add_motion_clip(
+            project, src["id"], first=0, last=720, motion={"character": {"file": "a.png"}}, place=False)
+        self.assertEqual((project_module.planned_frames(c_min), project_module.planned_frames(c_max)), (48, 720))
+        for bad_range in ((0, 47), (0, 721), (10, 10), (0, 801)):
+            with self.subTest(bad_range=bad_range), self.assertRaises(ValueError):
+                project_module.add_motion_clip(
+                    project, src["id"], first=bad_range[0], last=bad_range[1],
+                    motion={"character": {"file": "a.png"}}, place=False,
+                )
+
+    def test_single_window_replace_graph_suppresses_realism_and_guards_cast_pictures(self):
+        project, src, _, _ = self._project_with_footage(120)
+        hero = add_cast(project, {"name": "Rin", "file": "rin.png", "subfolder": "a"})
+        mc, _ = project_module.add_motion_clip(
+            project, src["id"], first=0, last=120,
+            motion={"cast": hero["id"], "mode": "replace", "style": "preserve"},
+        )
+        # Stylized replace final: Realism Slider ("95") is suppressed, cast_pictures ("50") not duplicated
+        job, graph = plan_render(project, "dance", mc["id"], "final", seed=7, available=self.REPLACE_FILES)
+        self.assertEqual(graph["238"]["class_type"], "CheckpointLoaderSimple")
+        self.assertEqual(graph["239"]["class_type"], "H3IsolateCharacter")
+        self.assertEqual(graph["240"]["class_type"], "H3TrackSubjectMask")
+        self.assertEqual(graph["230"]["class_type"], "H3Lora")
+        self.assertEqual(graph["230"]["inputs"]["strength"], 0.5)
+        self.assertEqual(graph["245"]["class_type"], "H3ApplyEditMask")
+        self.assertEqual(graph["246"]["class_type"], "H3ApplyEditMask")  # refine mask
+        self.assertEqual(graph["250"]["class_type"], "H3CompositeSourcePlate")
+        self.assertEqual(graph["10"]["inputs"]["ref_images.ref_image_0"], ["239", 0])
+        self.assertNotIn("50", graph)
+        self.assertNotIn("95", graph)
+        self.assertEqual(job["motion_audio"], {
+            "file": "eira3.mp4", "subfolder": "h3take_projects/dance/clips", "in": 0, "out": 120,
+        })
+        self.assertEqual(job["saved"]["motion"]["mode"], "replace")
+        self.assertNotIn("sam3", job["saved"]["motion"])
+
+        # Photoreal replace final keeps Realism Slider ("95") and defaults swap LoRA to 1.0
+        update_clip(project, mc["id"], {"motion": {**mc["motion"], "style": "photoreal", "plate": False}})
+        _, photo_graph = plan_render(project, "dance", mc["id"], "final", seed=7, available=self.REPLACE_FILES)
+        self.assertIn("95", photo_graph)
+        self.assertEqual(photo_graph["230"]["inputs"]["strength"], 1.0)
+        # plate=False skips H3CompositeSourcePlate ("250") while still locking refine latent via "246"
+        self.assertNotIn("250", photo_graph)
+        self.assertIn("246", photo_graph)
+
+    def test_multi_window_relay_graph_for_230f_and_30s_clips(self):
+        project, src, _, _ = self._project_with_footage(230)
+        mc, _ = project_module.add_motion_clip(
+            project, src["id"], first=0, last=230,
+            motion={"character": {"file": "rin.png"}, "mode": "replace", "style": "preserve"},
+        )
+        job, graph = plan_render(project, "dance", mc["id"], "draft", seed=1, available=self.REPLACE_FILES)
+        # Window 0 (124f) + Window 1 (141f, overlap 22f, pure-latent carry from "15")
+        self.assertEqual(graph["10"]["inputs"]["length"], 124)
+        self.assertEqual(graph["260"]["class_type"], "H3SliceBatch")
+        self.assertEqual((graph["260"]["inputs"]["start"], graph["260"]["inputs"]["length"]), (0, 124))
+        self.assertEqual(graph["320"]["class_type"], "H3SliceBatch")
+        self.assertEqual((graph["320"]["inputs"]["start"], graph["320"]["inputs"]["length"]), (102, 141))
+        self.assertEqual(graph["248"]["class_type"], "H3SwapGuard")
+        self.assertEqual(graph["324"]["class_type"], "H3ApplyEditMask")
+        self.assertEqual(graph["324"]["inputs"]["prev_latent"], ["248", 0])
+        self.assertEqual(graph["324"]["inputs"]["overlap_frames"], 22)
+        self.assertEqual(graph["329"]["class_type"], "RandomNoise")
+        self.assertEqual(graph["329"]["inputs"]["noise_seed"], 2)
+        self.assertEqual(graph["326"]["inputs"]["noise"], ["329", 0])
+        self.assertEqual(graph["328"]["class_type"], "H3JoinWindow")
+        self.assertEqual(graph["328"]["inputs"]["trim_to"], 230)
+        # Zero-halo plate runs once on stitched full clip
+        self.assertEqual(graph["250"]["inputs"]["generated"], ["328", 0])
+        self.assertEqual(graph["18"]["inputs"]["images"], ["250", 0])
+        self.assertNotIn("17", graph)
+        self.assertNotIn("20", graph)
+        self.assertEqual(job["motion_audio"]["out"], 230)
+
+        # Multi-window choreography uses H3Take.carry + H3GatedSDPose + per-window ControlNet
+        mc_pose, _ = project_module.add_motion_clip(
+            project, src["id"], first=0, last=230,
+            motion={"character": {"file": "rin.png"}, "mode": "choreography", "strength": 1.1},
+        )
+        _, pgraph = plan_render(project, "dance", mc_pose["id"], "draft", seed=2, available=self.POSE_FILES)
+        self.assertEqual(pgraph["218"]["class_type"], "H3GatedSDPose")
+        self.assertEqual(pgraph["221"]["class_type"], "MiniMaxH3FunControlNetApply")
+        self.assertEqual(pgraph["322"]["class_type"], "MiniMaxH3FunControlNetApply")
+        self.assertEqual(pgraph["323"]["inputs"]["carry"], ["15", 0])
+        self.assertEqual(pgraph["323"]["inputs"]["hold_frames"], 22)
+        self.assertEqual(pgraph["323"]["inputs"]["align"], "video")
+
+        # Pose reinforcement on HyperFlow Flash uses H3FlashControlNetApply
+        update_clip(project, mc["id"], {"motion": {**mc["motion"], "strength": 0.75}})
+        _, flash_pose = plan_render(project, "dance", mc["id"], "draft", seed=3, available=self.POSE_FILES)
+        self.assertEqual(flash_pose["221"]["class_type"], "H3FlashControlNetApply")
+        self.assertEqual(flash_pose["322"]["class_type"], "H3FlashControlNetApply")
+
+    def test_sharp_replace_samples_at_medium_then_relayvsr_2x(self):
+        project, src, _, _ = self._project_with_footage(230, fmt="9:16")
+        set_project(project, {"sizes": {"final": "sharp"}})
+        mc, _ = project_module.add_motion_clip(
+            project, src["id"], first=0, last=230,
+            motion={"character": {"file": "rin.png"}, "mode": "replace", "style": "preserve"},
+        )
+        job, graph = plan_render(project, "dance", mc["id"], "final", seed=4, available=self.REPLACE_FILES)
+        # Samples at medium (544x960) then RelayVSR 2x to refine size (1088x1920)
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (544, 960))
+        self.assertEqual(graph["33"]["inputs"]["images"], ["250", 0])
+        self.assertEqual(graph["35"]["inputs"]["images"], ["250", 0])
+        self.assertEqual((graph["36"]["inputs"]["width"], graph["36"]["inputs"]["height"]), (1088, 1920))
+        self.assertEqual(job["size"], [1088, 1920])
+        self.assertNotIn("80", graph)
+
+        # Per-clip motion.sharp=True works even when project sizes.final is "full"
+        set_project(project, {"sizes": {"final": "full"}})
+        update_clip(project, mc["id"], {"motion": {**mc["motion"], "sharp": True}})
+        job2, graph2 = plan_render(project, "dance", mc["id"], "final", seed=5, available=self.REPLACE_FILES)
+        self.assertEqual((graph2["10"]["inputs"]["width"], graph2["10"]["inputs"]["height"]), (544, 960))
+        self.assertEqual(job2["size"], [1088, 1920])
+        self.assertIn("36", graph2)
+        self.assertNotIn("80", graph2)
+
+    def test_auto_style_draft_floor_lookahead_and_swap_guard(self):
+        # Source video has 342 frames; split is 88..137 (49f -> grid length 56f).
+        project, src, _, _ = self._project_with_footage(342, fmt="9:16")
+        mc, _ = project_module.add_motion_clip(
+            project, src["id"], first=88, last=137,
+            motion={"character": {"file": "photo.jpg"}, "mode": "replace"},
+        )
+        # Default style is auto -> resolves to photoreal (swap_lora 1.0) when detector says photoreal.
+        self.assertEqual(mc["motion"]["style"], "auto")
+        job, graph = plan_render(project, "dance", mc["id"], "draft", seed=11, available=self.REPLACE_FILES,
+                                 detect_style=lambda asset: "photoreal")
+        # Replace drafts floor at medium (544x960) and 6 steps on HyperFlow Flash.
+        self.assertEqual((graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]), (544, 960))
+        self.assertEqual(graph["12"]["inputs"]["steps"], 6)
+        self.assertEqual(graph["230"]["inputs"]["strength"], 1.0)
+        # Loads 56 real look-ahead frames (88..144) and aligns ref_video_0 via H3SliceBatch so
+        # MiniMaxH3ReferenceToVideo never truncates <Video 1> down to 39 frames.
+        self.assertEqual((graph["213"]["inputs"]["first"], graph["213"]["inputs"]["last"]), (88, 144))
+        self.assertEqual(graph["260"]["class_type"], "H3SliceBatch")
+        self.assertEqual((graph["260"]["inputs"]["start"], graph["260"]["inputs"]["length"]), (0, 56))
+        self.assertEqual(graph["10"]["inputs"]["ref_videos.ref_video_0"], ["260", 0])
+        self.assertEqual(graph["248"]["class_type"], "H3SwapGuard")
+        self.assertEqual(graph["16"]["inputs"]["samples"], ["248", 0])
+        # Final trim/audio still targets exact split 88..137.
+        self.assertEqual((job["motion_audio"]["in"], job["motion_audio"]["out"]), (88, 137))
+
+        # Auto style switches to preserve (swap_lora 0.5, no Realism Slider) for cel-shaded anime.
+        _, anime_graph = plan_render(project, "dance", mc["id"], "final", seed=11, available=self.REPLACE_FILES,
+                                     detect_style=lambda asset: "preserve")
+        self.assertEqual(anime_graph["230"]["inputs"]["strength"], 0.5)
+        self.assertNotIn("95", anime_graph)
+        self.assertEqual(anime_graph["82"]["inputs"]["samples"], ["248", 0])
+        self.assertEqual(anime_graph["246"]["inputs"]["source_video"], ["260", 0])
+
+        # Split at the very end of the source (293..342) clamps load_last to 342 and still pads via 260.
+        tail_mc, _ = project_module.add_motion_clip(
+            project, src["id"], first=293, last=342,
+            motion={"character": {"file": "photo.jpg"}, "mode": "replace"},
+        )
+        _, tail_graph = plan_render(project, "dance", tail_mc["id"], "draft", seed=12, available=self.REPLACE_FILES)
+        self.assertEqual((tail_graph["213"]["inputs"]["first"], tail_graph["213"]["inputs"]["last"]), (293, 342))
+        self.assertEqual(tail_graph["260"]["inputs"]["length"], 56)
+
+    def test_cached_segmentation_and_pose_elide_heavy_model_loaders(self):
+        project, src, _, _ = self._project_with_footage(230)
+        mc, _ = project_module.add_motion_clip(
+            project, src["id"], first=0, last=120,
+            motion={"character": {"file": "photo.jpg"}, "mode": "replace", "plate": False, "strength": 0.75},
+        )
+        # Cache miss wires SAM3 (238), RT-DETR (215/216), and SDPose (217), plus source_file for saving.
+        _, miss = plan_render(project, "dance", mc["id"], "draft", seed=1, available=self.POSE_FILES,
+                              check_cache=lambda src_info, ch, m: {"mask": False, "pose": False, "cutout": False})
+        for key in ("238", "215", "216", "217"):
+            self.assertIn(key, miss)
+        self.assertEqual(miss["240"]["inputs"]["source_file"], "h3take_projects/dance/clips/eira3.mp4")
+        self.assertEqual(miss["218"]["inputs"]["source_file"], "h3take_projects/dance/clips/eira3.mp4")
+        self.assertEqual(miss["239"]["inputs"]["character_file"], "photo.jpg")
+
+        # Full cache hit with plate=False elides SAM3 (238) and RT-DETR/SDPose (215/216/217) completely!
+        _, hit = plan_render(project, "dance", mc["id"], "draft", seed=1, available=self.POSE_FILES,
+                             check_cache=lambda src_info, ch, m: {"mask": True, "pose": True, "cutout": True})
+        for key in ("238", "215", "216", "217"):
+            self.assertNotIn(key, hit)
+        self.assertIn("240", hit)
+        self.assertIn("218", hit)
+        self.assertIn("239", hit)
+        self.assertNotIn("sam_model", hit["240"]["inputs"])
+        self.assertNotIn("model", hit["218"]["inputs"])
+        self.assertNotIn("bboxes", hit["218"]["inputs"])
+
+        # With plate=True, SAM3 (238) stays for M_gen on the newly generated clip, while RT-DETR/SDPose are still elided.
+        update_clip(project, mc["id"], {"motion": {**mc["motion"], "plate": True}})
+        _, plate_hit = plan_render(project, "dance", mc["id"], "draft", seed=1, available=self.POSE_FILES,
+                                   check_cache=lambda src_info, ch, m: {"mask": True, "pose": True, "cutout": True})
+        self.assertIn("238", plate_hit)
+        for key in ("215", "216", "217"):
+            self.assertNotIn(key, plate_hit)
+
+    def test_motion_setup_files_and_status_are_pinned_and_grouped(self):
+        import fetch
+
+        for entry in project_module.MOTION_SETUP_FILES:
+            url = project_module.setup_url(entry)
+            self.assertTrue(fetch.allowed(url), url)
+            self.assertRegex(url, r"^https://huggingface\.co/[\w.-]+/[\w.-]+/resolve/[0-9a-f]{40}/")
+            self.assertRegex(entry["sha256"], r"^[0-9a-f]{64}$")
+            self.assertGreater(entry["bytes"], 0)
+            self.assertEqual(entry["needs"][0].rsplit("/", 1)[-1], entry["path"].rsplit("/", 1)[-1])
+
+        empty = project_module.motion_setup_status(set())
+        self.assertFalse(empty["ready"])
+        self.assertAlmostEqual(empty["groups"]["replace"]["bytes"] / 1e9, 1.90, delta=0.05)
+        self.assertAlmostEqual(empty["groups"]["pose"]["bytes"] / 1e9, 6.57, delta=0.05)
+        self.assertAlmostEqual(empty["groups"]["sharp"]["bytes"] / 1e9, 5.29, delta=0.05)
+        self.assertEqual(project_module.motion_status(set())["default_mode"], "replace")
+
+        only_replace = project_module.motion_setup_status(self.REPLACE_FILES, ["replace"])
+        self.assertTrue(only_replace["ready"])
+        self.assertEqual(only_replace["missing"], [])
+        self.assertEqual(only_replace["bytes"], 0)
+
+        # Subfolder paths (e.g. relayvsr/relayvsr_x2_lightx2v_int8_convrot.safetensors) must count as installed
+        sharp_subfolder = {
+            "relayvsr/" + project_module.RELAYVSR_MODEL,
+            "relayvsr\\" + project_module.RELAYVSR_VAE,
+        }
+        sharp_status = project_module.motion_setup_status(sharp_subfolder, ["sharp"])
+        self.assertTrue(sharp_status["groups"]["sharp"]["installed"])
+        self.assertEqual(sharp_status["missing"], [])
+        self.assertEqual(sharp_status["bytes"], 0)
+
+        # Keep in Clips (place=False) must NOT touch the timeline
+        proj2 = project_module.new_project("SplitTest")
+        proj2["clips"] = [{
+            "id": "src", "kind": "footage", "name": "dance", "action": "",
+            "seconds": 10.0, "takes": [{"id": "t0", "file": "dance.mp4", "subfolder": "s", "frames": 240}], "active": "t0",
+        }]
+        proj2["timeline"] = [
+            {"id": "i1", "clip": "src", "start": 0, "in": 0, "out": 60},
+            {"id": "i2", "clip": "src", "start": 60, "in": 60, "out": 120},
+            {"id": "i3", "clip": "src", "start": 120, "in": 120, "out": 240},
+        ]
+        res_clips = project_module.apply_op(proj2, {
+            "op": "add_motion_transfer", "clip": "src", "take": "t0", "in": 60, "out": 120,
+            "item": "i2", "place": False, "replace_item": False,
+            "motion": {"character": {"file": "a.png", "subfolder": "s"}, "mode": "replace"},
+        }, {})
+        self.assertIsNone(res_clips["item"])
+        self.assertEqual([i["id"] for i in proj2["timeline"]], ["i1", "i2", "i3"])
+        self.assertEqual([i["clip"] for i in proj2["timeline"]], ["src", "src", "src"])
+        self.assertEqual([i["start"] for i in proj2["timeline"]], [0, 60, 120])
+
+        # Replace selected split item in place (replace_item=True) swaps only i2 with zero ripple
+        res_rep = project_module.apply_op(proj2, {
+            "op": "add_motion_transfer", "clip": "src", "take": "t0", "in": 60, "out": 120,
+            "item": "i2", "place": True, "replace_item": True,
+            "motion": {"character": {"file": "a.png", "subfolder": "s"}, "mode": "replace"},
+        }, {})
+        self.assertEqual(res_rep["item"], "i2")
+        self.assertEqual([i["id"] for i in proj2["timeline"]], ["i1", "i2", "i3"])
+        self.assertEqual([i["clip"] for i in proj2["timeline"]], ["src", res_rep["clip"], "src"])
+        self.assertEqual([i["start"] for i in proj2["timeline"]], [0, 60, 120])
+        self.assertEqual((proj2["timeline"][1]["in"], proj2["timeline"][1]["out"]), (0, 60))
+
+        with self.assertRaises(ValueError):
+            project_module.motion_setup_status(set(), ["unknown_group"])
+
+
 if __name__ == "__main__":
     unittest.main()
