@@ -1039,8 +1039,12 @@ def clip_prompt(project, clip):
     action = name_unpictured(clip.get("action", ""), [m for m in project.get("cast", [])
                                                       if m["id"] in chosen and m.get("refmod") and not m.get("file")])
     voice = clip_voice(project, clip)
-    if clip.get("sprite") is not None:
+    is_sprite = clip.get("sprite") is not None
+    if is_sprite:
         action = action + " " + sprite.instruction(sprite.settings(clip["sprite"]))
+    # Sprite Drafts with character references lock their visual style to the cast plates,
+    # never inheriting a video project's live-action/camera look (e.g. "creator talking to camera").
+    style = "" if (is_sprite and cast) else project.get("style", "")
     if has_references(project, clip):
         owner = None
         if voice:
@@ -1049,11 +1053,11 @@ def clip_prompt(project, clip):
         auto_pin = sprite_auto_pin(project, clip)
         sp_pin = (clip.get("sprite") or {}).get("self_pin") if isinstance(clip.get("sprite"), dict) else None
         return compose_reference_prompt(
-            project.get("style", ""), action, subjects=cast,
+            style, action, subjects=cast,
             first_frame=bool(frame_of(clip, "first") or auto_pin or sp_pin),
             last_frame=bool(frame_of(clip, "last") or auto_pin) or arrives_on_pin(clip.get("link")), voice=owner, **fields,
         )
-    return compose_prompt(project.get("style", ""), action, **fields)
+    return compose_prompt(style, action, **fields)
 
 
 def still_node(asset):
@@ -4740,10 +4744,12 @@ def plan_prop_render(project, folder, spec, seed=None, available=None):
     name = slug(spec.get("name") or kind)
     width, height = h3image.resolve_size(spec.get("size", "square"))
     seed = random.randint(1, 2**31 - 1) if seed is None else int(seed)
-    style = spec.get("style", project.get("style", ""))
-    camera = spec.get("camera", "rpg")
     style_ref = clean_asset(spec.get("style_ref"), "style_ref") if spec.get("style_ref") else None
     base_prop = clean_asset(spec.get("base_prop"), "base_prop") if spec.get("base_prop") else None
+    # When a style_ref plate is supplied and no explicit style override is given, lock to the plate
+    # rather than inheriting a video project's live-action look.
+    style = spec["style"] if "style" in spec else ("" if style_ref else project.get("style", ""))
+    camera = spec.get("camera", "rpg")
     bg_model = None if spec.get("cutout") == "edge" else sprite.matte_model(available)
     prefix = "%s/%s/props/%s" % (ROOT, folder, name)
     if kind == "turnaround":

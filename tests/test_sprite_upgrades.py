@@ -348,6 +348,49 @@ class SpriteEfficiencyPinningAndViewRoutingTest(unittest.TestCase):
         self.assertEqual(sgraph["10"]["inputs"]["mid_frames"], "26, 52")
         self.assertEqual(sgraph["209"]["inputs"]["file"], "pins/pin_f26.png")
 
+    def test_sprite_draft_with_cast_does_not_inherit_live_action_video_project_style(self):
+        self.proj["style"] = "live-action footage of a creator talking to her camera, 35mm lens, natural skin"
+        project.update_clip(self.proj, self.clip["id"], {"sprite": {"direction": "E", "canvas": "square"}})
+        _, graph = project.plan_render(self.proj, "HeroKit", self.clip["id"], "draft", seed=7)
+        prompt = graph["10"]["inputs"]["prompt"]
+        self.assertNotIn("creator talking to her camera", prompt)
+        self.assertNotIn("live-action footage", prompt)
+        self.assertIn("exact art style", prompt)
+
+        # Style-ref 4 MP prop also locks to style_ref instead of leaking the video project's live-action look
+        _, pgraph = project.plan_prop_render(self.proj, "HeroKit", {
+            "kind": "prop", "name": "lantern", "description": "Carved stone lantern",
+            "style_ref": {"file": "plate_S.png", "subfolder": "refs"},
+        }, seed=8)
+        self.assertNotIn("creator talking to her camera", pgraph["10"]["inputs"]["prompt"])
+
+    def test_birefnet_matte_remeasures_layout_on_shaded_backdrop_preventing_half_size_sprites(self):
+        # Simulate a non-uniform warm studio gradient backdrop where cheap background-key cutout()
+        # sees the whole 512x512 canvas, while BiRefNet cleanly isolates the 260px character.
+        grad = np.zeros((512, 512, 3), dtype=np.uint8)
+        grad[:, :, 0] = np.linspace(180, 245, 512, dtype=np.uint8)[None, :]
+        grad[:, :, 1] = np.linspace(160, 230, 512, dtype=np.uint8)[:, None]
+        grad[:, :, 2] = 175
+        base = Image.fromarray(grad, "RGB")
+        ImageDraw.Draw(base).rectangle((190, 140, 322, 400), fill=(40, 80, 180))
+        frames = [base.copy() for _ in range(39)]
+
+        mask = np.zeros((512, 512), dtype=np.float32)
+        mask[140:400, 190:322] = 1.0
+
+        full, _, layout = sprite.strips(
+            frames, 7, masks_for=lambda idx: [mask for _ in idx], canvas="square"
+        )
+        # Layout must reflect the real 260px BiRefNet silhouette, NOT the 512px canvas!
+        self.assertAlmostEqual(layout["height"], 260.0, delta=2.0)
+        self.assertAlmostEqual(layout["ground"], 400.0, delta=2.0)
+        # Rendered tile body height should match BODY (~48px), never half-size (~24px)!
+        cell0 = full.crop((0, 0, 64, 64))
+        bb = cell0.getchannel("A").point(lambda v: 255 if v >= 128 else 0).getbbox()
+        self.assertIsNotNone(bb)
+        self.assertGreaterEqual(bb[3] - bb[1], 45)
+        self.assertLessEqual(bb[3] - bb[1], 50)
+
 
 class NodesAndApiRegistrationTest(unittest.TestCase):
     def test_nodes_and_editor_api_syntax_and_registrations(self):

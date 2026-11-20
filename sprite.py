@@ -264,18 +264,19 @@ def instruction(config):
         if "motion" not in config and "guide" not in config
         else "performing the described movement in place"
     )
-    poses = "Match the poses and foot contacts in <Video 1>, keeping the same proportions and equipment. "
+    poses = "Match the poses and foot contacts in <Video 1>, keeping the exact art style, colors, proportions and equipment. "
     if config.get("motion") == "prompt":
         if config.get("animation"):
             poses = (
                 "Perform the full gesture cleanly from start to finish and return to the initial pose, "
-                "with consistent proportions and equipment. "
+                "keeping the exact art style, colors, proportions and equipment. "
             )
         else:
-            poses = "Loop the movement with consistent proportions and equipment. "
+            poses = "Loop the movement, keeping the exact art style, colors, proportions and equipment. "
     elif config.get("motion") == "idle":
         motion = "resting in its natural standing pose"
-        poses = ("Make one subtle repeating idle gesture and return to the initial pose. "
+        poses = ("Make one subtle repeating idle gesture and return to the initial pose, "
+                 "keeping the exact art style, colors, proportions and equipment. "
                  "Keep every ground contact planted and the body in the same spot. ")
     return (
         "Single full-body game character "
@@ -743,6 +744,27 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
         if len(masks) != len(indices):
             raise ValueError("expected one foreground mask per sprite pose")
         selected = [with_matte(frames[n], mask) for n, mask in zip(indices, masks)]
+        if previous is None:
+            # Re-measure silhouette height, horizontal center, and ground contact from the actual
+            # foreground matte (BiRefNet) instead of the coarse background-key cutout, which can
+            # fall back to the full canvas on tinted/lit backdrops and shrink the sprite to half size.
+            ref_boxes = []
+            for img in selected:
+                sx, sy = ref_w / float(img.width), ref_h / float(img.height)
+                bb = img.getchannel("A").point(lambda v: 255 if v >= 128 else 0).getbbox()
+                if bb:
+                    ref_boxes.append((bb[0] * sx, bb[1] * sy, bb[2] * sx, bb[3] * sy))
+            if ref_boxes:
+                height = float(np.median([b[3] - b[1] for b in ref_boxes]))
+                center = float(np.median([(b[0] + b[2]) / 2.0 for b in ref_boxes]))
+                ground = float(np.percentile([b[3] for b in ref_boxes], 90))
+                layout["height"] = height
+                layout["center"] = center
+                layout["ground"] = ground
+                if full_action and global_scale is None:
+                    left, right = min(b[0] for b in ref_boxes), max(b[2] for b in ref_boxes)
+                    layout["center"] = (left + right) / 2.0
+                    layout["height"] = max(height, (right - left) * BODY / (TILE - 2))
     selected_by_index = dict(zip(indices, selected))
     if cache_dir is not None:
         save_frame_cache(cache_dir, selected_by_index)
