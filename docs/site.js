@@ -1449,7 +1449,7 @@ function whileVisible(video, allowed) {
         if (sp !== null) targetProgress = sp;
       }
       const diff = targetProgress - progress;
-      progress = Math.abs(diff) < 0.001 ? targetProgress : progress + diff * (dragging ? 0.35 : 0.18);
+      progress = Math.abs(diff) < 0.001 ? targetProgress : progress + diff * 0.18;
       applyVisuals(progress);
       syncVideos();
       rafId = requestAnimationFrame(tick);
@@ -1471,11 +1471,25 @@ function whileVisible(video, allowed) {
       }
     }, { passive: true });
 
-    const setFromPointer = (e) => {
+    // Each wipe covers its own stretch of progress (see applyVisuals): the Replace line runs over
+    // 0.08..0.44 and the Rescene line over 0.56..0.92. A drag moves one line, and that line sits
+    // under the pointer.
+    let dragWipe = 0;
+    const pickWipe = (nx) => {
+      const w1 = clamp01((progress - 0.08) / 0.36);
+      const w2 = clamp01((progress - 0.56) / 0.36);
+      if (w2 > 0.02) return 1;
+      if (w1 < 0.98) return 0;
+      // Replace fills the picture: one line is parked at each edge, so take the nearer one.
+      return nx > 0.5 ? 1 : 0;
+    };
+    const setFromPointer = (e, start) => {
       const r = mtViewport.getBoundingClientRect();
       const nx = clamp01((e.clientX - r.left) / Math.max(1, r.width));
+      if (start) dragWipe = pickWipe(nx);
       manualOverride = true;
-      targetProgress = 1 - nx;
+      targetProgress = (dragWipe ? 0.56 : 0.08) + 0.36 * (1 - nx);
+      progress = targetProgress;
       if (hint) hint.textContent = "Dragging the wipe";
       ensureTick();
     };
@@ -1484,10 +1498,10 @@ function whileVisible(video, allowed) {
       if (viewMode !== "wipe") return;
       dragging = true;
       mtViewport.setPointerCapture(e.pointerId);
-      setFromPointer(e);
+      setFromPointer(e, true);
     });
     mtViewport.addEventListener("pointermove", (e) => {
-      if (dragging) setFromPointer(e);
+      if (dragging) setFromPointer(e, false);
     });
     const endDrag = () => { dragging = false; };
     mtViewport.addEventListener("pointerup", endDrag);
