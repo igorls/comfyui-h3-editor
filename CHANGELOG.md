@@ -5,6 +5,21 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## 0.14.0, 2026-11-21
+
+- **Sprites workspace.** Choose **Sprites** beside **Video** to build a character's animations in four or eight directions. Name a loop, describe the movement once and draft each direction with heading-matched references. Compare takes in sync, mirror a direction, and walk the character around an offline test room.
+- Sprite canvases are square 512×512, portrait 256×384 or landscape 384×256, with 39, 56 or 73 frame clips. Tag cast pictures by view (front, side, back, left) so each direction uses only the plates that match.
+- **Close loop** pins a clean mid-stride frame from the selected take at the start, the stride and twice the stride, so a walk or run closes without a jump.
+- Auto cutout adds `H3DefringeMatte` edge defringing after BiRefNet. Each take keeps a lossless frame cache, so atlases re-export at 64, 128, 160 or 256 px, or any even size from 32 to 512, without decoding the video again. Atlases export as PNG and WebP with Animwright JSON, at the loop's own rate or at 24 fps.
+- **Props & plates** renders static props, paired state variants and character turnaround plates at 4 MP or more with P-H3-Image, in the project's sprite art style. Generated props appear in a gallery and become a cast reference with one click. It needs ComfyUI's `PH3ImageConditioning` node and the P-H3-Image files listed in the README.
+- **Motion transfer: Replace.** Put a cast member into a source clip. SAM 3.1 tracks the subject, SDPose reads the movement, and the new character is composited onto the untouched source picture. Long clips render in windows that carry their latents across.
+- **Motion transfer: Rescene.** Carry the same performance into a new place described by the prompt, without the source background.
+- Motion transfer has Realism presets F1, F1-Fast and F2. Masks, poses and cutouts are saved beside the clip and reused on the next render. A **Motion** tab in the side panel shows the six stages as they run, with previews of the mask, the pose and the cutout.
+- **Render queue.** See the running job, waiting clips, sprites, props and recent failures inside the editor, and stop or remove single jobs.
+- **Finish part of a draft.** Refine only the trimmed range of a draft from its cached latents. **Project storage** lists hold caches no clip uses any more and clears them.
+- Sprite renders no longer pick up a video project's style, and BiRefNet cutouts keep the sprite at full size on the canvas.
+- Writing with a local Ollama model now unloads it after each reply, so it does not hold GPU memory that ComfyUI needs.
+
 ## 0.13.0, 2026-11-18
 
 - Experimental Sprite Draft adds a directional motion guide to independent shots. Choose a cardinal facing and an eye-level, RPG or overhead view. Preview the loop at game size and download transparent illustrated and indexed PNG strips. Finish draft keeps the selected take’s seed, loop timing, scale and pivot.

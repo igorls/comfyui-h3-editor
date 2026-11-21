@@ -662,7 +662,7 @@ Named loops use `sprite.motion="prompt"`, `sprite.animation` for the animation n
 
 ### Static Props, Paired State Variants & Turnaround Plates (`POST /h3take/api/project/{name}/props`)
 
-Queue or dry-run a ≥ 4 MP **MiniMax-H3-Image** render (with optional BiRefNet cutout and `H3DefringeMatte` edge defringing) via `POST /h3take/api/project/{name}/props`:
+Queue or dry-run a ≥ 4 MP **P-H3-Image** render (with optional BiRefNet cutout and `H3DefringeMatte` edge defringing) via `POST /h3take/api/project/{name}/props`:
 
 - `kind`: `"prop"` (static 42° game prop), `"state_variant"` (pixel-locked edit of `base_prop`, e.g. `unlit → lit`), or `"turnaround"` (neutral standing character view plate).
 - `name`: output slug saved under `h3take_projects/{name}/props/{slug}`.
