@@ -30,6 +30,7 @@
       <a href="#showcase">Showcase</a>
       <a href="#editor">Editor</a>
       <a href="#sprites">Sprites</a>
+      <a href="#motion">Motion</a>
       <a href="#features">Features</a>
       <a href="#install">Install</a>
       <a href="#agents">Agents</a>
@@ -41,6 +42,7 @@
         <a href="#showcase">Showcase</a>
         <a href="#editor">Editor</a>
         <a href="#sprites">Sprites</a>
+        <a href="#motion">Motion</a>
         <a href="#features">Features</a>
         <a href="#install">Install</a>
         <a href="#agents">Agents</a>
@@ -193,78 +195,168 @@
 
   <section class="section wrap" id="sprites" aria-labelledby="sprites-title">
     <div class="head">
-      <h2 id="sprites-title">Game sprites, from one character.</h2>
-      <p>Switch the workspace to <strong>Sprites</strong> to build directional character loops and matching props. Derive clean turnaround plates at 4&nbsp;MP with MiniMax-H3-Image, tag each view in Cast, and render 8-way runs, idles and named gestures with BiRefNet defringing. Click the stage or use WASD to walk Vesper around — nothing was retouched.</p>
+      <h2 id="sprites-title">Game sprites, props &amp; VFX, from one character.</h2>
+      <p>Switch the workspace to <strong>Sprites</strong> to make animated characters, props and effects for a game. P-H3-Image draws the 4&nbsp;MP turnaround plates, the enemy and the props. HyperFlow H3 Flash renders the loops and the effect strips, and BiRefNet cuts them out for the atlas. The fight below plays by itself. Click the arena to cast, or change the backdrop to check the cutouts.</p>
     </div>
     <div class="window">
       <div class="spr-room" id="spr-demo">
         <div class="spr-stage">
           <div class="spr-canvas-wrap">
-            <canvas id="spr-canvas" width="760" height="420" tabindex="0" aria-label="Interactive 8-way pixel art sprite showcase. Click, drag, or use WASD and arrow keys to move Vesper. Press L to toggle the lantern."></canvas>
+            <canvas id="spr-canvas" width="760" height="440" tabindex="0" aria-label="Auto-playing anime idle battler showcase: Aurelia the Astral Sorceress battling the Void Sentinel with HyperFlow H3 Flash spell effects. Click the arena to cast a spell, or press Space for Astral Nova."></canvas>
             <div class="spr-hud" aria-live="polite">
-              <span id="spr-readout">Run · S · 12 fps</span>
-              <span class="spr-hint">WASD or drag · Click lantern</span>
+              <span id="spr-readout">Wave 1 · Auto Battle</span>
+              <span class="spr-hint">Click arena to cast</span>
             </div>
           </div>
           <div class="spr-controls">
-            <div class="spr-seg" role="group" aria-label="Animation">
-              <button type="button" class="spr-btn" data-spr-motion="run" aria-pressed="true">Run (8-way)</button>
-              <button type="button" class="spr-btn" data-spr-motion="idle" aria-pressed="false">Idle (4-way)</button>
-            </div>
-            <div class="spr-dirs" role="group" aria-label="Facing direction">
-              <button type="button" class="spr-dir" data-spr-dir="NW" aria-pressed="false">NW</button>
-              <button type="button" class="spr-dir" data-spr-dir="N" aria-pressed="false">N</button>
-              <button type="button" class="spr-dir" data-spr-dir="NE" aria-pressed="false">NE</button>
-              <button type="button" class="spr-dir" data-spr-dir="W" aria-pressed="false">W</button>
-              <button type="button" class="spr-dir" data-spr-dir="E" aria-pressed="false">E</button>
-              <button type="button" class="spr-dir" data-spr-dir="SW" aria-pressed="false">SW</button>
-              <button type="button" class="spr-dir" data-spr-dir="S" aria-pressed="true">S</button>
-              <button type="button" class="spr-dir" data-spr-dir="SE" aria-pressed="false">SE</button>
+            <div class="spr-seg" role="group" aria-label="Playback and actions">
+              <button type="button" class="spr-btn" id="spr-auto" aria-pressed="true" title="Toggle automatic idle battle loop">Auto</button>
+              <button type="button" class="spr-btn" data-spr-act="cast" title="Trigger Aurelia Solar Cast + H3 solar burst VFX">Solar Cast</button>
+              <button type="button" class="spr-btn" data-spr-act="nova" title="Trigger Aurelia Astral Nova ultimate + awakened pylon">Astral Nova</button>
+              <button type="button" class="spr-btn" data-spr-act="enemy" title="Trigger Void Sentinel slash + H3 void slash VFX">Void Slash</button>
             </div>
             <div class="spr-toggles">
               <button type="button" class="spr-btn" id="spr-backdrop" title="Cycle dark, checker, and light cutout backdrops">Backdrop: Dark</button>
-              <button type="button" class="spr-btn" id="spr-pivot" aria-pressed="false" title="Show ground pivot crosshair and tile frame">Pivot</button>
-              <button type="button" class="spr-btn" id="spr-lantern" aria-pressed="true" title="Toggle the paired 4 MP unlit/lit prop">Lantern: Lit</button>
+              <button type="button" class="spr-btn" id="spr-pivot" aria-pressed="false" title="Show ground pivot crosshairs and tile frames">Pivot</button>
+              <button type="button" class="spr-btn" id="spr-pylon" aria-pressed="false" title="Toggle the paired 4 MP dormant/awakened pylon prop">Pylon: Dormant</button>
             </div>
           </div>
         </div>
 
         <aside class="spr-side">
           <div class="spr-block">
-            <p class="show-label">4 MP turnaround plates (H3-Image)</p>
+            <p class="show-label">4 MP turnaround plates (P-H3-Image)</p>
             <div class="spr-plates">
-              <figure><img src="media/sprites/vesper-front.webp" width="256" height="256" loading="lazy" alt="Vesper front pixel art turnaround plate"><figcaption>Front</figcaption></figure>
-              <figure><img src="media/sprites/vesper-side.webp" width="256" height="256" loading="lazy" alt="Vesper right side pixel art turnaround plate"><figcaption>Side</figcaption></figure>
-              <figure><img src="media/sprites/vesper-back.webp" width="256" height="256" loading="lazy" alt="Vesper back pixel art turnaround plate"><figcaption>Back</figcaption></figure>
-              <figure><img src="media/sprites/vesper-left.webp" width="256" height="256" loading="lazy" alt="Vesper left side pixel art turnaround plate"><figcaption>Left</figcaption></figure>
+              <figure><img src="media/sprites/aurelia-front.webp" width="288" height="288" loading="lazy" alt="Aurelia anime sorceress front turnaround plate"><figcaption>Front</figcaption></figure>
+              <figure><img src="media/sprites/aurelia-side.webp" width="288" height="288" loading="lazy" alt="Aurelia anime sorceress right profile turnaround plate"><figcaption>Right</figcaption></figure>
+              <figure><img src="media/sprites/aurelia-back.webp" width="288" height="288" loading="lazy" alt="Aurelia anime sorceress back turnaround plate"><figcaption>Back</figcaption></figure>
+              <figure><img src="media/sprites/aurelia-left.webp" width="288" height="288" loading="lazy" alt="Aurelia anime sorceress left profile turnaround plate"><figcaption>Left</figcaption></figure>
             </div>
-            <p class="spr-note">Each plate is tagged by view in Cast so directional renders automatically pull only heading-matched references.</p>
+            <p class="spr-note">Each plate is tagged by view in Cast, so a render facing one way uses only the plates that match. The enemy and the prop use the same sheet as their style reference.</p>
           </div>
 
           <div class="spr-block">
-            <p class="show-label">Paired 4 MP prop state variant</p>
+            <p class="show-label">One prop, two states (4 MP)</p>
             <div class="spr-prop-pair">
-              <button type="button" class="spr-prop-pick" data-spr-lit="false" aria-pressed="false">
-                <img src="media/sprites/lantern-unlit.webp" width="256" height="256" loading="lazy" alt="Unlit wrought-iron pixel art street lantern">
-                <span>Unlit</span>
+              <button type="button" class="spr-prop-pick" data-spr-lit="false" aria-pressed="true">
+                <img src="media/sprites/pylon-dormant.webp" width="288" height="288" loading="lazy" alt="Dormant dark-stone and brass arcane astrolabe pylon">
+                <span>Dormant</span>
               </button>
-              <button type="button" class="spr-prop-pick" data-spr-lit="true" aria-pressed="true">
-                <img src="media/sprites/lantern-lit.webp" width="256" height="256" loading="lazy" alt="Lit wrought-iron pixel art street lantern">
-                <span>Lit</span>
+              <button type="button" class="spr-prop-pick" data-spr-lit="true" aria-pressed="false">
+                <img src="media/sprites/pylon-awakened.webp" width="288" height="288" loading="lazy" alt="Awakened golden glowing arcane astrolabe pylon">
+                <span>Awakened</span>
               </button>
             </div>
           </div>
 
           <dl class="facts spr-facts">
-            <dt>Canvas</dt><dd>512 &times; 512 square &middot; 39, 56 or 73 frames</dd>
+            <dt>Plates</dt><dd>4 MP P-H3-Image &middot; turnarounds, enemies &amp; paired props</dd>
             <dt>Cutout</dt><dd>BiRefNet + H3DefringeMatte &middot; lossless frame cache</dd>
-            <dt>Export</dt><dd>64&ndash;512 px even tiles &middot; PNG, WebP &amp; Animwright JSON</dd>
-            <dt>Looping</dt><dd>One-click self-pin closure &amp; 24 fps interpolation</dd>
+            <dt>VFX</dt><dd>HyperFlow H3 Flash &middot; solar burst &amp; void slash strips, blended additively</dd>
+            <dt>Export</dt><dd>32&ndash;512 px even tiles &middot; PNG, WebP &amp; Animwright JSON</dd>
           </dl>
         </aside>
       </div>
     </div>
-    <p class="credit">Rendered straight out of H3 Editor's Sprites workspace: 4 MP MiniMax-H3-Image turnaround plates and paired lantern prop, followed by 12 HyperFlow H3 Flash loops packed into a single 128&nbsp;px WebP atlas (286&nbsp;KB).</p>
+    <p class="credit">Made in H3 Editor: 4 MP P-H3-Image turnaround plates, the Void Sentinel and the two-state Astrolabe Pylon in the same style, 6 HyperFlow H3 Flash character loops and 2 effect strips, packed as WebP atlases. Nothing was retouched by hand.</p>
+  </section>
+
+  <section class="section wrap" id="motion" aria-labelledby="motion-title">
+    <div class="head">
+      <h2 id="motion-title">Keep the motion. Swap the actor, or the whole world.</h2>
+      <p>Drive any cast member from a performance clip, right in the timeline. <strong>Replace</strong> tracks the subject with SAM&nbsp;3.1 and puts the new actor onto the untouched source picture, with no halo around the edge. <strong>Rescene</strong> carries the same movement, glance and timing into a new place. Drag across the picture to wipe between the three.</p>
+    </div>
+
+    <div class="mt-scroll" id="mt-scroll">
+      <div class="mt-sticky">
+        <div class="window">
+          <div class="mt-room" id="mt-room">
+            <div class="mt-stage">
+              <div class="mt-viewport" id="mt-viewport" tabindex="0" aria-label="Motion transfer showcase. Drag sideways, or press the left and right arrow keys, to wipe from the source performance to Replace in scene, then to New scene, same motion.">
+                <div class="mt-layer mt-layer-src">
+                  <video id="mt-v-src" src="media/motion/source.mp4" poster="media/motion/source.jpg" muted loop playsinline preload="metadata"></video>
+                  <span class="mt-tag">01 · Source</span>
+                </div>
+                <div class="mt-layer mt-layer-rep" id="mt-layer-rep">
+                  <video id="mt-v-rep" src="media/motion/replace.mp4" poster="media/motion/replace.jpg" muted loop playsinline preload="metadata"></video>
+                  <span class="mt-tag">02 · Replace in scene</span>
+                </div>
+                <div class="mt-layer mt-layer-res" id="mt-layer-res">
+                  <video id="mt-v-res" src="media/motion/rescene.mp4" poster="media/motion/rescene.jpg" muted loop playsinline preload="metadata"></video>
+                  <span class="mt-tag">03 · New scene, same motion</span>
+                </div>
+
+                <div class="mt-curtain" id="mt-curtain-1" aria-hidden="true">
+                  <span class="mt-curtain-knob">Replace</span>
+                </div>
+                <div class="mt-curtain mt-curtain-2" id="mt-curtain-2" aria-hidden="true">
+                  <span class="mt-curtain-knob">Rescene</span>
+                </div>
+
+                <div class="mt-hud">
+                  <span id="mt-badge">01 · Source performance</span>
+                  <span class="mt-hint" id="mt-hint">Scroll or drag to wipe</span>
+                </div>
+              </div>
+
+              <div class="mt-bar">
+                <button type="button" class="spr-btn" id="mt-play" aria-pressed="true" title="Play or pause all three synced videos">Pause</button>
+                <div class="mt-scrub-wrap">
+                  <input type="range" id="mt-scrub" min="0" max="1000" value="0" aria-label="Scrub synchronized playback position">
+                </div>
+                <span class="mt-clock" id="mt-clock">0.0 / 5.2 s</span>
+                <div class="spr-seg" role="group" aria-label="View mode">
+                  <button type="button" class="spr-btn" data-mt-view="wipe" aria-pressed="true">Wipe</button>
+                  <button type="button" class="spr-btn" data-mt-view="triple" aria-pressed="false">Compare 3-up</button>
+                </div>
+              </div>
+            </div>
+
+            <aside class="mt-side">
+              <div class="mt-cast-card">
+                <img src="media/motion/kira-ref.webp" width="320" height="480" loading="lazy" alt="Kira 4 MP P-H3-Image cast portrait in crimson leather moto jacket">
+                <div>
+                  <p class="show-label">Target cast reference</p>
+                  <p class="mt-cast-name">Kira</p>
+                  <p class="mt-cast-desc">One 4&nbsp;MP portrait drives both the swap in the gallery and the night alley.</p>
+                </div>
+              </div>
+
+              <div class="mt-steps" role="group" aria-label="Motion transfer stages">
+                <button type="button" class="mt-step" data-mt-step="0" aria-pressed="true">
+                  <span class="mt-step-num">01</span>
+                  <span class="mt-step-body">
+                    <strong>Source performance</strong>
+                    <span>A locked-off walk through a sunlit gallery, with a glance and a turn. 124 frames at 24&nbsp;fps.</span>
+                  </span>
+                </button>
+                <button type="button" class="mt-step" data-mt-step="1" aria-pressed="false">
+                  <span class="mt-step-num">02</span>
+                  <span class="mt-step-body">
+                    <strong>Replace in scene</strong>
+                    <span>A SAM&nbsp;3.1 mask and the source picture keep every sunlit column and floor reflection as shot.</span>
+                  </span>
+                </button>
+                <button type="button" class="mt-step" data-mt-step="2" aria-pressed="false">
+                  <span class="mt-step-num">03</span>
+                  <span class="mt-step-body">
+                    <strong>New scene, same motion</strong>
+                    <span>Rescene drops the gallery and moves the same performance into a rainy neon alley.</span>
+                  </span>
+                </button>
+              </div>
+
+              <dl class="facts mt-facts">
+                <dt>Modes</dt><dd>Replace (SAM&nbsp;3.1 + plate) &middot; Rescene &middot; Pose choreography</dd>
+                <dt>Presets</dt><dd>Realism F1 / F1-Fast / F2 &middot; latents carried between windows</dd>
+                <dt>Caching</dt><dd>SAM&nbsp;3.1 masks, SDPose poses and cutouts are saved beside the clip and reused</dd>
+              </dl>
+            </aside>
+          </div>
+        </div>
+        <p class="credit">All three clips are 124 frames and line up frame for frame. They come from one H3 source take and one 4&nbsp;MP P-H3-Image portrait, rendered with Motion transfer on Realism F1-Fast. No rotoscoping or compositing by hand.</p>
+      </div>
+    </div>
   </section>
 
   <section class="section wrap" id="features" aria-labelledby="features-title">

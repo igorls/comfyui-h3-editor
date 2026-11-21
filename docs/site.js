@@ -642,71 +642,266 @@ function whileVisible(video, allowed) {
     });
   });
 
-  /* Interactive Spritesheet Showcase (Vesper 8-way atlas + paired 4 MP lantern) */
+  /* Interactive Auto-Playing Idle Battler Showcase (Aurelia vs. Void Sentinel + MiniMax H3 VFX) */
 
   const sprCanvas = $("spr-canvas");
   if (sprCanvas) {
     const sctx = sprCanvas.getContext("2d");
     const sprReadout = $("spr-readout");
+    const sprAutoBtn = $("spr-auto");
     const sprBackdropBtn = $("spr-backdrop");
     const sprPivotBtn = $("spr-pivot");
-    const sprLanternBtn = $("spr-lantern");
-    const motionBtns = [...document.querySelectorAll("[data-spr-motion]")];
-    const dirBtns = [...document.querySelectorAll("[data-spr-dir]")];
+    const sprPylonBtn = $("spr-pylon");
+    const actBtns = [...document.querySelectorAll("[data-spr-act]")];
     const litPicks = [...document.querySelectorAll("[data-spr-lit]")];
 
     const BACKDROPS = ["dark", "checker", "light"];
-    const KEY_MAP = { w: "N", arrowup: "N", s: "S", arrowdown: "S", a: "W", arrowleft: "W", d: "E", arrowright: "E" };
-    const keys = new Set();
-    let pointer = null;
-    let manifest = null;
-    let atlasImg = null;
-    const lanternImgs = { unlit: new Image(), lit: new Image() };
-    lanternImgs.unlit.src = "media/sprites/lantern-unlit.webp";
-    lanternImgs.lit.src = "media/sprites/lantern-lit.webp";
+    const assets = {
+      aurelia: { manifest: null, img: null },
+      sentinel: { manifest: null, img: null },
+      vfx: { manifest: null, img: null },
+      pylonDormant: new Image(),
+      pylonAwakened: new Image(),
+    };
+    assets.pylonDormant.src = "media/sprites/pylon-dormant.webp";
+    assets.pylonAwakened.src = "media/sprites/pylon-awakened.webp";
 
-    let motion = "run";
-    let dir = "S";
+    const loadAtlas = (slot, jsonPath) => {
+      fetch(jsonPath)
+        .then((r) => r.json())
+        .then((data) => {
+          assets[slot].manifest = data;
+          const img = new Image();
+          img.onload = () => {
+            assets[slot].img = img;
+            drawStage();
+            ensureTicking();
+          };
+          img.src = "media/sprites/" + data.image;
+        })
+        .catch(() => {});
+    };
+    loadAtlas("aurelia", "media/sprites/aurelia-atlas.json");
+    loadAtlas("sentinel", "media/sprites/sentinel-atlas.json");
+    loadAtlas("vfx", "media/sprites/vfx-atlas.json");
+
+    let autoBattle = !reduceMotion;
     let backdropIdx = 0;
     let showPivot = false;
-    let lanternLit = true;
-    let px = 0.42;
-    let py = 0.66;
-    const lx = 0.72;
-    const ly = 0.66;
+    let pylonManual = null;
+    let pylonFlash = 0;
+
+    let wave = 1;
+    let heroHp = 1000, heroMax = 1000, heroVisHp = 1000;
+    let enemyHp = 1000, enemyMax = 1000, enemyVisHp = 1000;
+    let novaCharge = 0;
+    let turnStep = 0;
+    let aiCooldown = 0.7;
+    let respawnTimer = 0;
+    let enemyFade = 1;
+    let heroFlash = 0;
+    let shake = 0;
+    let statusBanner = "";
+    let statusTimer = 0;
+
+    const hero = { anim: "idle", t: 0, fired: false, lunge: 0 };
+    const enemy = { anim: "idle", t: 0, fired: false, lunge: 0, alive: true };
+    const vfxList = [];
+    const projectiles = [];
+    const popups = [];
+    const embers = Array.from({ length: 22 }, (_, i) => ({
+      x: (i * 0.047 + 0.02) % 1,
+      y: (i * 0.13 + 0.1) % 1,
+      r: 1.1 + (i % 3) * 0.7,
+      vy: 0.025 + (i % 4) * 0.012,
+      vx: ((i % 5) - 2) * 0.006,
+      hue: i % 3 === 0 ? "violet" : "gold",
+    }));
+
     let clock = 0;
     let lastTs = 0;
     let visible = false;
     let rafId = 0;
 
-    function resolveAnim(m, d) {
-      if (!manifest) return null;
-      const anims = manifest.animations || {};
-      if (anims[m + "_" + d]) return { key: m + "_" + d, anim: anims[m + "_" + d] };
-      // Idle has 4 cardinal directions; snap diagonals to nearest cardinal.
-      const fallback = d.length === 2 ? d[0] : "S";
-      if (anims[m + "_" + fallback]) return { key: m + "_" + fallback, anim: anims[m + "_" + fallback] };
-      const firstKey = Object.keys(anims)[0];
-      return firstKey ? { key: firstKey, anim: anims[firstKey] } : null;
-    }
+    const isPylonAwakened = () => (pylonManual !== null ? pylonManual : pylonFlash > 0);
 
     function syncControls() {
-      for (const b of motionBtns) b.setAttribute("aria-pressed", String(b.dataset.sprMotion === motion));
-      for (const b of dirBtns) {
-        const d = b.dataset.sprDir;
-        const disabled = motion === "idle" && d.length === 2;
-        b.disabled = disabled;
-        b.setAttribute("aria-pressed", String(d === dir));
-      }
+      if (sprAutoBtn) sprAutoBtn.setAttribute("aria-pressed", String(autoBattle));
       sprBackdropBtn.textContent = "Backdrop: " + BACKDROPS[backdropIdx][0].toUpperCase() + BACKDROPS[backdropIdx].slice(1);
       sprPivotBtn.setAttribute("aria-pressed", String(showPivot));
-      sprLanternBtn.setAttribute("aria-pressed", String(lanternLit));
-      sprLanternBtn.textContent = lanternLit ? "Lantern: Lit" : "Lantern: Unlit";
-      for (const b of litPicks) b.setAttribute("aria-pressed", String(String(lanternLit) === b.dataset.sprLit));
-      const cur = resolveAnim(motion, dir);
-      if (sprReadout && cur) {
-        sprReadout.textContent = (motion === "run" ? "Run" : "Idle") + " · " + dir + " · " + cur.anim.fps + " fps";
+      const lit = isPylonAwakened();
+      if (sprPylonBtn) {
+        sprPylonBtn.setAttribute("aria-pressed", String(lit));
+        sprPylonBtn.textContent = lit ? "Pylon: Awakened" : "Pylon: Dormant";
       }
+      for (const b of litPicks) b.setAttribute("aria-pressed", String(String(lit) === b.dataset.sprLit));
+      if (sprReadout) {
+        const moveLabel =
+          hero.anim === "nova" ? "Astral Nova" :
+          hero.anim === "cast" ? "Solar Cast" :
+          enemy.anim === "attack" ? "Void Slash" :
+          autoBattle ? "Auto Battle" : "Paused";
+        sprReadout.textContent = "Wave " + wave + " · " + moveLabel;
+      }
+    }
+
+    function spawnVfx(key, nx, ny, scale, delay) {
+      vfxList.push({ key, nx, ny, scale: scale || 1, t: -(delay || 0) });
+    }
+
+    function spawnPopup(text, nx, ny, color, big) {
+      popups.push({ text, nx, ny, color, big: !!big, t: 0, life: big ? 1.25 : 0.95 });
+    }
+
+    function triggerHeroCast() {
+      if (respawnTimer > 0) return;
+      hero.anim = "cast";
+      hero.t = 0;
+      hero.fired = false;
+      syncControls();
+    }
+
+    function triggerHeroNova() {
+      if (respawnTimer > 0) return;
+      hero.anim = "nova";
+      hero.t = 0;
+      hero.fired = false;
+      pylonFlash = 2.2;
+      novaCharge = 0;
+      syncControls();
+    }
+
+    function triggerEnemyAttack() {
+      if (!enemy.alive || respawnTimer > 0) return;
+      enemy.anim = "attack";
+      enemy.t = 0;
+      enemy.fired = false;
+      syncControls();
+    }
+
+    function damageEnemy(amount, crit) {
+      if (!enemy.alive) return;
+      enemyHp = Math.max(0, enemyHp - amount);
+      enemy.anim = "hit";
+      enemy.t = 0;
+      enemy.fired = false;
+      shake = crit ? 9 : 4.5;
+      spawnVfx("solar_burst", 0.74, 0.56, crit ? 1.48 : 1.08, 0);
+      if (crit) spawnVfx("solar_burst", 0.71, 0.48, 1.15, 0.14);
+      spawnPopup(crit ? "-" + amount + " CRIT!" : "-" + amount, 0.73, 0.36, crit ? "#ffd37a" : "#f4b95e", crit);
+      if (enemyHp <= 0) {
+        enemy.alive = false;
+        respawnTimer = 1.65;
+        pylonFlash = 1.9;
+        statusBanner = "WAVE " + wave + " CLEARED";
+        statusTimer = 1.5;
+        heroHp = Math.min(heroMax, heroHp + 180);
+        syncControls();
+      }
+    }
+
+    function damageHero(amount) {
+      heroHp = Math.max(120, heroHp - amount);
+      heroFlash = 0.4;
+      shake = 3.5;
+      spawnVfx("void_slash", 0.33, 0.57, 1.12, 0);
+      spawnPopup("-" + amount, 0.28, 0.39, "#d8a4ff", false);
+    }
+
+    function animDuration(slot, key) {
+      const a = assets[slot].manifest?.animations?.[key];
+      if (!a || !a.frames?.length) return 0.9;
+      return a.frames.length / (a.fps || 12);
+    }
+
+    function drawAnimSprite(slot, key, timeSec, cx, groundY, drawSize, alpha, showBox) {
+      const m = assets[slot].manifest;
+      const img = assets[slot].img;
+      if (!m || !img || !img.naturalWidth) return;
+      const a = m.animations?.[key] || m.animations?.idle;
+      if (!a || !a.frames?.length) return;
+      const rawIdx = Math.floor(Math.max(0, timeSec) * (a.fps || 12));
+      const idx = a.loop ? rawIdx % a.frames.length : Math.min(a.frames.length - 1, rawIdx);
+      const f = a.frames[idx];
+      const scale = drawSize / f.h;
+      const dw = Math.round(f.w * scale);
+      const dh = Math.round(f.h * scale);
+      const pivX = Math.round((a.pivot?.[0] ?? f.w / 2) * scale);
+      const pivY = Math.round((a.pivot?.[1] ?? f.h * 0.92) * scale);
+      const dx = Math.round(cx - pivX);
+      const dy = Math.round(groundY - pivY);
+
+      sctx.save();
+      sctx.globalAlpha = alpha;
+      sctx.drawImage(img, f.x, f.y, f.w, f.h, dx, dy, dw, dh);
+      sctx.restore();
+
+      if (showBox) {
+        sctx.save();
+        sctx.strokeStyle = "rgba(224, 162, 74, 0.55)";
+        sctx.lineWidth = 1;
+        sctx.setLineDash([4, 3]);
+        sctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
+        sctx.setLineDash([]);
+        sctx.strokeStyle = "#e0a24a";
+        sctx.beginPath();
+        sctx.moveTo(cx - 10, groundY + 0.5);
+        sctx.lineTo(cx + 10, groundY + 0.5);
+        sctx.moveTo(cx + 0.5, groundY - 10);
+        sctx.lineTo(cx + 0.5, groundY + 10);
+        sctx.stroke();
+        sctx.restore();
+      }
+    }
+
+    function drawBar(x, y, bw, bh, ratio, trailRatio, fillCss, alignRight, label, sub, pips, mode) {
+      const light = mode === "light";
+      sctx.save();
+      sctx.font = "600 11px 'Geist', system-ui, sans-serif";
+      sctx.textBaseline = "bottom";
+      sctx.fillStyle = light ? "rgba(18,18,22,0.88)" : "rgba(244,244,245,0.92)";
+      sctx.textAlign = alignRight ? "right" : "left";
+      sctx.fillText(label, alignRight ? x + bw : x, y - 5);
+      if (sub) {
+        sctx.font = "500 10.5px 'Geist Mono', ui-monospace, monospace";
+        sctx.fillStyle = light ? "rgba(18,18,22,0.55)" : "rgba(161,161,170,0.9)";
+        sctx.textAlign = alignRight ? "left" : "right";
+        sctx.fillText(sub, alignRight ? x : x + bw, y - 5);
+      }
+      sctx.fillStyle = light ? "rgba(18,18,22,0.14)" : "rgba(9,9,11,0.72)";
+      sctx.beginPath();
+      sctx.roundRect(x, y, bw, bh, 4);
+      sctx.fill();
+      sctx.strokeStyle = light ? "rgba(18,18,22,0.16)" : "rgba(255,255,255,0.12)";
+      sctx.lineWidth = 1;
+      sctx.stroke();
+
+      const tw = Math.max(0, Math.min(1, trailRatio)) * (bw - 2);
+      const fw = Math.max(0, Math.min(1, ratio)) * (bw - 2);
+      if (tw > fw) {
+        sctx.fillStyle = "rgba(255, 255, 255, 0.45)";
+        sctx.beginPath();
+        sctx.roundRect(alignRight ? x + bw - 1 - tw : x + 1, y + 1, tw, bh - 2, 3);
+        sctx.fill();
+      }
+      if (fw > 0.5) {
+        sctx.fillStyle = fillCss;
+        sctx.beginPath();
+        sctx.roundRect(alignRight ? x + bw - 1 - fw : x + 1, y + 1, fw, bh - 2, 3);
+        sctx.fill();
+      }
+      if (pips !== null) {
+        const pipW = 14, pipH = 3.5, gap = 4;
+        for (let i = 0; i < 3; i++) {
+          const px = x + i * (pipW + gap);
+          const py = y + bh + 6;
+          sctx.fillStyle = i < pips ? "#f2b85c" : (light ? "rgba(18,18,22,0.14)" : "rgba(255,255,255,0.14)");
+          sctx.beginPath();
+          sctx.roundRect(px, py, pipW, pipH, 2);
+          sctx.fill();
+        }
+      }
+      sctx.restore();
     }
 
     function drawStage() {
@@ -717,6 +912,14 @@ function whileVisible(video, allowed) {
         sprCanvas.height = h;
       }
       const mode = BACKDROPS[backdropIdx];
+      const lit = isPylonAwakened();
+
+      sctx.save();
+      if (shake > 0.2) {
+        sctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake * 0.7);
+      }
+
+      // 1. Backdrop
       if (mode === "light") {
         sctx.fillStyle = "#eceae3";
         sctx.fillRect(0, 0, w, h);
@@ -729,120 +932,340 @@ function whileVisible(video, allowed) {
           for (let xx = ((yy / sq) % 2) * sq; xx < w; xx += sq * 2) sctx.fillRect(xx, yy, sq, sq);
         }
       } else {
-        const g = sctx.createRadialGradient(w * 0.52, h * 0.56, 20, w * 0.52, h * 0.56, Math.max(w, h) * 0.65);
-        g.addColorStop(0, lanternLit ? "#211c19" : "#191c22");
-        g.addColorStop(1, "#0d0e12");
-        sctx.fillStyle = g;
+        const bg = sctx.createRadialGradient(w * 0.5, h * 0.52, 16, w * 0.5, h * 0.56, Math.max(w, h) * 0.7);
+        bg.addColorStop(0, lit ? "#241d17" : "#181722");
+        bg.addColorStop(0.55, "#111118");
+        bg.addColorStop(1, "#09090d");
+        sctx.fillStyle = bg;
         sctx.fillRect(0, 0, w, h);
-        // Subtle 42-deg isometric floor grid
-        sctx.strokeStyle = "rgba(255, 255, 255, 0.045)";
+
+        // Subtle arena horizon & floor perspective lines
+        const floorTop = h * 0.65;
+        const floorGrad = sctx.createLinearGradient(0, floorTop, 0, h);
+        floorGrad.addColorStop(0, "rgba(255,255,255,0.035)");
+        floorGrad.addColorStop(1, "rgba(0,0,0,0.35)");
+        sctx.fillStyle = floorGrad;
+        sctx.fillRect(0, floorTop, w, h - floorTop);
+        sctx.strokeStyle = "rgba(255,255,255,0.06)";
         sctx.lineWidth = 1;
         sctx.beginPath();
-        for (let gx = -h; gx < w + h; gx += 48) {
-          sctx.moveTo(gx, 0);
-          sctx.lineTo(gx + h * 1.4, h);
-          sctx.moveTo(gx + h * 1.4, 0);
-          sctx.lineTo(gx, h);
+        sctx.moveTo(0, floorTop + 0.5);
+        sctx.lineTo(w, floorTop + 0.5);
+        for (let i = -4; i <= 4; i++) {
+          sctx.moveTo(w * 0.5 + i * (w * 0.08), floorTop);
+          sctx.lineTo(w * 0.5 + i * (w * 0.22), h);
         }
         sctx.stroke();
+
+        // Ambient golden & violet arena glows
+        const gL = sctx.createRadialGradient(w * 0.27, h * 0.62, 6, w * 0.27, h * 0.62, w * 0.24);
+        gL.addColorStop(0, "rgba(224, 162, 74, 0.16)");
+        gL.addColorStop(1, "rgba(224, 162, 74, 0)");
+        sctx.fillStyle = gL;
+        sctx.fillRect(0, 0, w, h);
+
+        if (enemyFade > 0.05) {
+          const gR = sctx.createRadialGradient(w * 0.74, h * 0.6, 6, w * 0.74, h * 0.6, w * 0.24);
+          gR.addColorStop(0, "rgba(155, 89, 255, " + (0.17 * enemyFade).toFixed(3) + ")");
+          gR.addColorStop(1, "rgba(155, 89, 255, 0)");
+          sctx.fillStyle = gR;
+          sctx.fillRect(0, 0, w, h);
+        }
+
+        // Ambient floating sparks
+        for (const e of embers) {
+          sctx.fillStyle = e.hue === "violet" ? "rgba(182, 120, 255, 0.32)" : "rgba(240, 182, 86, 0.34)";
+          sctx.beginPath();
+          sctx.arc(e.x * w, e.y * h, e.r, 0, Math.PI * 2);
+          sctx.fill();
+        }
       }
 
-      const lanternX = Math.round(lx * w);
-      const lanternY = Math.round(ly * h);
-      const vesperX = Math.round(px * w);
-      const vesperY = Math.round(py * h);
+      const groundY = Math.round(h * 0.82);
+      const charSize = Math.round(Math.min(w * 0.42, h * 0.72));
+      const pylonSize = Math.round(charSize * 0.58);
+      const pylonX = Math.round(w * 0.52);
+      const pylonY = Math.round(groundY - h * 0.065);
 
-      // Warm lantern glow pool on dark ground
-      if (lanternLit && mode === "dark") {
-        const glow = sctx.createRadialGradient(lanternX, lanternY - 56, 8, lanternX, lanternY - 24, 150);
-        glow.addColorStop(0, "rgba(232, 138, 66, 0.28)");
-        glow.addColorStop(0.55, "rgba(224, 96, 54, 0.08)");
-        glow.addColorStop(1, "rgba(224, 96, 54, 0)");
-        sctx.fillStyle = glow;
+      // 2. Paired 4 MP Arcane Astrolabe Pylon (upstage center)
+      if (lit && mode === "dark") {
+        const pg = sctx.createRadialGradient(pylonX, pylonY - pylonSize * 0.66, 4, pylonX, pylonY - pylonSize * 0.56, pylonSize * 0.95);
+        pg.addColorStop(0, "rgba(255, 200, 92, 0.34)");
+        pg.addColorStop(0.55, "rgba(224, 146, 56, 0.10)");
+        pg.addColorStop(1, "rgba(224, 146, 56, 0)");
+        sctx.fillStyle = pg;
         sctx.fillRect(0, 0, w, h);
       }
-
-      const drawLantern = () => {
-        const img = lanternLit ? lanternImgs.lit : lanternImgs.unlit;
-        if (!img.naturalWidth) return;
-        const size = 148;
-        sctx.save();
-        sctx.fillStyle = mode === "light" ? "rgba(0,0,0,0.14)" : "rgba(0,0,0,0.34)";
+      const pImg = lit ? assets.pylonAwakened : assets.pylonDormant;
+      if (pImg.naturalWidth) {
+        sctx.fillStyle = mode === "light" ? "rgba(0,0,0,0.12)" : "rgba(0,0,0,0.34)";
         sctx.beginPath();
-        sctx.ellipse(lanternX, lanternY + 2, 26, 9, 0, 0, Math.PI * 2);
+        sctx.ellipse(pylonX, pylonY, pylonSize * 0.24, 6, 0, 0, Math.PI * 2);
         sctx.fill();
-        sctx.imageSmoothingEnabled = false;
-        sctx.drawImage(img, lanternX - size / 2, lanternY - size + 8, size, size);
-        sctx.restore();
-      };
+        sctx.drawImage(pImg, Math.round(pylonX - pylonSize / 2), Math.round(pylonY - pylonSize * 0.92), pylonSize, pylonSize);
+      }
 
-      const drawVesper = () => {
-        const cur = resolveAnim(motion, dir);
-        if (!cur || !atlasImg || !atlasImg.naturalWidth) return;
-        const { anim } = cur;
-        const frames = anim.frames || [];
-        if (!frames.length) return;
-        const idx = Math.floor(clock * (anim.fps || 12)) % frames.length;
-        const f = frames[idx];
-        const scale = 1.4;
-        const dw = Math.round(f.w * scale);
-        const dh = Math.round(f.h * scale);
-        const pivX = Math.round((anim.pivot?.[0] ?? f.w / 2) * scale);
-        const pivY = Math.round((anim.pivot?.[1] ?? f.h - 10) * scale);
-
+      // 3. Ground contact shadows for both fighters
+      const heroX = Math.round(w * 0.27 + hero.lunge * w);
+      const enemyX = Math.round(w * 0.74 - enemy.lunge * w);
+      const shadowFill = mode === "light" ? "rgba(0,0,0,0.14)" : "rgba(0,0,0,0.42)";
+      sctx.fillStyle = shadowFill;
+      sctx.beginPath();
+      sctx.ellipse(heroX, groundY + 2, charSize * 0.26, 8, 0, 0, Math.PI * 2);
+      sctx.fill();
+      if (enemyFade > 0.05) {
         sctx.save();
-        sctx.fillStyle = mode === "light" ? "rgba(0,0,0,0.14)" : "rgba(0,0,0,0.34)";
+        sctx.globalAlpha = enemyFade;
+        sctx.fillStyle = shadowFill;
         sctx.beginPath();
-        sctx.ellipse(vesperX, vesperY + 2, 26, 9, 0, 0, Math.PI * 2);
+        sctx.ellipse(enemyX, groundY + 2, charSize * 0.28, 9, 0, 0, Math.PI * 2);
         sctx.fill();
-        sctx.imageSmoothingEnabled = false;
-        sctx.drawImage(atlasImg, f.x, f.y, f.w, f.h, vesperX - pivX, vesperY - pivY, dw, dh);
         sctx.restore();
+      }
 
-        if (showPivot) {
+      // 4. Fighters (real H3 Editor BiRefNet-cutout WebP atlases)
+      drawAnimSprite("aurelia", hero.anim, hero.t, heroX, groundY, charSize, 1, showPivot);
+      if (heroFlash > 0) {
+        sctx.save();
+        sctx.globalCompositeOperation = "lighter";
+        const wg = sctx.createRadialGradient(heroX + charSize * 0.06, groundY - charSize * 0.46, 6, heroX, groundY - charSize * 0.46, charSize * 0.44);
+        wg.addColorStop(0, "rgba(255, 218, 128, " + (heroFlash * 0.9).toFixed(3) + ")");
+        wg.addColorStop(1, "rgba(255, 190, 90, 0)");
+        sctx.fillStyle = wg;
+        sctx.beginPath();
+        sctx.arc(heroX, groundY - charSize * 0.46, charSize * 0.44, 0, Math.PI * 2);
+        sctx.fill();
+        sctx.restore();
+      }
+      if (enemyFade > 0.02) {
+        drawAnimSprite("sentinel", enemy.anim, enemy.t, enemyX, groundY, charSize, enemyFade, showPivot);
+      }
+
+      // 5. Golden solar spell projectiles streaking from Aurelia's staff to Void Sentinel
+      for (const p of projectiles) {
+        const px = p.x * w;
+        const py = p.y * h;
+        sctx.save();
+        if (mode === "dark") sctx.globalCompositeOperation = "lighter";
+        const grad = sctx.createRadialGradient(px, py, 2, px, py, p.r * 2.8);
+        grad.addColorStop(0, "#fff8d6");
+        grad.addColorStop(0.35, "rgba(255, 192, 74, 0.92)");
+        grad.addColorStop(1, "rgba(224, 118, 32, 0)");
+        sctx.fillStyle = grad;
+        sctx.beginPath();
+        sctx.arc(px, py, p.r * 2.8, 0, Math.PI * 2);
+        sctx.fill();
+        sctx.restore();
+      }
+
+      // 6. Real MiniMax H3 additive VFX spritesheets (solar_burst & void_slash)
+      const vMan = assets.vfx.manifest;
+      const vImg = assets.vfx.img;
+      if (vMan && vImg && vImg.naturalWidth) {
+        for (const v of vfxList) {
+          if (v.t < 0) continue;
+          const a = vMan.animations?.[v.key];
+          if (!a || !a.frames?.length) continue;
+          const idx = Math.floor(v.t * (a.fps || 20));
+          if (idx >= a.frames.length) continue;
+          const f = a.frames[idx];
+          const vs = Math.round(charSize * 0.72 * v.scale);
+          const vx = Math.round(v.nx * w - vs / 2);
+          const vy = Math.round(v.ny * h - vs / 2);
           sctx.save();
-          sctx.strokeStyle = "rgba(224, 162, 74, 0.55)";
-          sctx.lineWidth = 1;
-          sctx.setLineDash([4, 3]);
-          sctx.strokeRect(vesperX - pivX + 0.5, vesperY - pivY + 0.5, dw - 1, dh - 1);
-          sctx.setLineDash([]);
-          sctx.strokeStyle = "#e0a24a";
-          sctx.beginPath();
-          sctx.moveTo(vesperX - 10, vesperY + 0.5);
-          sctx.lineTo(vesperX + 10, vesperY + 0.5);
-          sctx.moveTo(vesperX + 0.5, vesperY - 10);
-          sctx.lineTo(vesperX + 0.5, vesperY + 10);
-          sctx.stroke();
+          if (mode === "dark") sctx.globalCompositeOperation = "lighter";
+          sctx.drawImage(vImg, f.x, f.y, f.w, f.h, vx, vy, vs, vs);
           sctx.restore();
         }
-      };
+      }
 
-      // Y-sort Vesper and the paired lantern prop cleanly!
-      if (vesperY < lanternY) { drawVesper(); drawLantern(); }
-      else { drawLantern(); drawVesper(); }
+      // 7. Floating damage numbers & wave banner
+      for (const pop of popups) {
+        const p = Math.min(1, pop.t / pop.life);
+        const alpha = p < 0.7 ? 1 : Math.max(0, 1 - (p - 0.7) / 0.3);
+        const px = pop.nx * w;
+        const py = pop.ny * h - p * 34;
+        sctx.save();
+        sctx.globalAlpha = alpha;
+        sctx.font = (pop.big ? "700 20px" : "700 15px") + " 'Geist', system-ui, sans-serif";
+        sctx.textAlign = "center";
+        sctx.textBaseline = "middle";
+        sctx.lineWidth = 3.5;
+        sctx.strokeStyle = "rgba(9, 9, 11, 0.85)";
+        sctx.strokeText(pop.text, px, py);
+        sctx.fillStyle = pop.color;
+        sctx.fillText(pop.text, px, py);
+        sctx.restore();
+      }
+      if (statusTimer > 0 && statusBanner) {
+        const alpha = Math.min(1, statusTimer * 2);
+        sctx.save();
+        sctx.globalAlpha = alpha;
+        sctx.font = "600 12px 'Geist Mono', ui-monospace, monospace";
+        sctx.textAlign = "center";
+        sctx.textBaseline = "middle";
+        sctx.fillStyle = "#f2c272";
+        sctx.fillText(statusBanner, w * 0.5, h * 0.24);
+        sctx.restore();
+      }
+
+      // 8. Minimalist top HP bars
+      const barPad = Math.max(12, Math.round(w * 0.03));
+      const barW = Math.min(200, Math.round(w * 0.40));
+      const compact = w < 460;
+      drawBar(barPad, 28, barW, 8, heroHp / heroMax, heroVisHp / heroMax, "#e0a24a", false, "AURELIA", Math.round(heroHp) + (compact ? "" : " HP"), novaCharge, mode);
+      drawBar(w - barPad - barW, 28, barW, 8, enemyHp / enemyMax, enemyVisHp / enemyMax, "#a864ff", true, compact ? "SENTINEL" : "VOID SENTINEL", (compact ? "W" : "WAVE ") + wave, null, mode);
+
+      sctx.restore();
     }
 
     function step(now) {
       if (!visible) { rafId = 0; lastTs = 0; return; }
       const dt = lastTs ? Math.min(0.05, (now - lastTs) / 1000) : 0;
       lastTs = now;
-      let dx = Number(keys.has("E")) - Number(keys.has("W"));
-      let dy = Number(keys.has("S")) - Number(keys.has("N"));
-      if (!dx && !dy && pointer) {
-        const gx = (pointer.x - px) * sprCanvas.width;
-        const gy = (pointer.y - py) * sprCanvas.height;
-        dx = Math.abs(gx) > 8 ? Math.sign(gx) : 0;
-        dy = Math.abs(gy) > 8 ? Math.sign(gy) : 0;
+
+      if (!reduceMotion) {
+        clock += dt;
+        hero.t += dt;
+        enemy.t += dt;
+        shake = Math.max(0, shake - dt * 26);
+        heroFlash = Math.max(0, heroFlash - dt);
+        statusTimer = Math.max(0, statusTimer - dt);
+        if (pylonFlash > 0) {
+          const was = pylonFlash > 0;
+          pylonFlash = Math.max(0, pylonFlash - dt);
+          if (was && pylonFlash === 0 && pylonManual === null) syncControls();
+        }
+        heroVisHp += (heroHp - heroVisHp) * Math.min(1, dt * 7);
+        enemyVisHp += (enemyHp - enemyVisHp) * Math.min(1, dt * 7);
+        hero.lunge += (0 - hero.lunge) * Math.min(1, dt * 8);
+        enemy.lunge += (0 - enemy.lunge) * Math.min(1, dt * 8);
+
+        for (const e of embers) {
+          e.y -= e.vy * dt;
+          e.x += e.vx * dt;
+          if (e.y < 0.05) { e.y = 0.96; e.x = (e.x + 0.37) % 1; }
+        }
+
+        // Aurelia animation events
+        if (hero.anim === "cast") {
+          const dur = animDuration("aurelia", "cast");
+          if (!hero.fired && hero.t >= dur * 0.34) {
+            hero.fired = true;
+            hero.lunge = 0.025;
+            projectiles.push({ x: 0.36, y: 0.54, tx: 0.73, ty: 0.56, r: 10, dmg: 245 + wave * 18, crit: false });
+          }
+          if (hero.t >= dur) {
+            hero.anim = "idle";
+            hero.t = 0;
+            novaCharge = Math.min(3, novaCharge + 1);
+            syncControls();
+          }
+        } else if (hero.anim === "nova") {
+          const dur = animDuration("aurelia", "nova");
+          if (!hero.fired && hero.t >= dur * 0.42) {
+            hero.fired = true;
+            spawnVfx("solar_burst", 0.30, 0.42, 0.92, 0);
+            projectiles.push({ x: 0.34, y: 0.46, tx: 0.73, ty: 0.55, r: 15, dmg: 590 + wave * 45, crit: true });
+          }
+          if (hero.t >= dur) {
+            hero.anim = "idle";
+            hero.t = 0;
+            syncControls();
+          }
+        }
+
+        // Void Sentinel animation events
+        if (enemy.anim === "attack") {
+          const dur = animDuration("sentinel", "attack");
+          if (!enemy.fired && enemy.t >= dur * 0.38) {
+            enemy.fired = true;
+            enemy.lunge = 0.055;
+            damageHero(44 + wave * 6);
+          }
+          if (enemy.t >= dur) {
+            enemy.anim = "idle";
+            enemy.t = 0;
+            syncControls();
+          }
+        } else if (enemy.anim === "hit") {
+          const dur = animDuration("sentinel", "hit");
+          if (enemy.t >= dur) {
+            enemy.anim = "idle";
+            enemy.t = 0;
+          }
+        }
+
+        // Projectiles travel & impact
+        for (let i = projectiles.length - 1; i >= 0; i--) {
+          const p = projectiles[i];
+          const dx = p.tx - p.x;
+          const dy = p.ty - p.y;
+          const dist = Math.hypot(dx, dy);
+          const spd = p.crit ? 1.35 : 1.55;
+          if (dist <= spd * dt + 0.015) {
+            damageEnemy(p.dmg, p.crit);
+            projectiles.splice(i, 1);
+          } else {
+            p.x += (dx / dist) * spd * dt;
+            p.y += (dy / dist) * spd * dt;
+          }
+        }
+
+        // Advance VFX strips & popups
+        for (let i = vfxList.length - 1; i >= 0; i--) {
+          vfxList[i].t += dt;
+          const a = assets.vfx.manifest?.animations?.[vfxList[i].key];
+          const dur = a ? a.frames.length / (a.fps || 20) : 0.8;
+          if (vfxList[i].t > dur + 0.05) vfxList.splice(i, 1);
+        }
+        for (let i = popups.length - 1; i >= 0; i--) {
+          popups[i].t += dt;
+          if (popups[i].t >= popups[i].life) popups.splice(i, 1);
+        }
+
+        // Wave respawn & Auto-Battler AI cadence
+        if (respawnTimer > 0) {
+          respawnTimer = Math.max(0, respawnTimer - dt);
+          enemyFade = respawnTimer > 0.7 ? Math.max(0, (respawnTimer - 0.7) / 0.95) : 0;
+          if (respawnTimer === 0) {
+            wave += 1;
+            enemyMax = 1000 + (wave - 1) * 180;
+            enemyHp = enemyMax;
+            enemyVisHp = enemyMax;
+            enemy.alive = true;
+            enemy.anim = "idle";
+            enemy.t = 0;
+            aiCooldown = 0.65;
+            syncControls();
+          }
+        } else {
+          enemyFade = Math.min(1, enemyFade + dt * 2.8);
+          if (autoBattle && hero.anim === "idle" && enemy.anim === "idle" && projectiles.length === 0) {
+            aiCooldown -= dt;
+            if (aiCooldown <= 0) {
+              if (turnStep === 0) {
+                triggerHeroCast();
+                turnStep = 1;
+                aiCooldown = 0.45;
+              } else if (turnStep === 1) {
+                triggerEnemyAttack();
+                turnStep = 2;
+                aiCooldown = 0.42;
+              } else if (turnStep === 2) {
+                triggerHeroCast();
+                turnStep = 3;
+                aiCooldown = 0.48;
+              } else {
+                triggerHeroNova();
+                turnStep = 0;
+                aiCooldown = 0.65;
+              }
+            }
+          }
+        }
       }
-      if (dx || dy) {
-        if (motion !== "run") { motion = "run"; syncControls(); }
-        const h = (dy < 0 ? "N" : dy > 0 ? "S" : "") + (dx < 0 ? "W" : dx > 0 ? "E" : "");
-        if (h && h !== dir) { dir = h; syncControls(); }
-        const spd = (135 * dt) / Math.hypot(dx, dy);
-        px = Math.max(0.09, Math.min(0.91, px + (dx * spd) / sprCanvas.width));
-        py = Math.max(0.32, Math.min(0.86, py + (dy * spd) / sprCanvas.height));
-      }
-      if (!reduceMotion) clock += dt;
+
       drawStage();
       rafId = requestAnimationFrame(step);
     }
@@ -851,17 +1274,18 @@ function whileVisible(video, allowed) {
       if (visible && !rafId) rafId = requestAnimationFrame(step);
     }
 
-    motionBtns.forEach((b) => b.addEventListener("click", () => {
-      motion = b.dataset.sprMotion;
-      if (motion === "idle" && dir.length === 2) dir = dir[0];
-      syncControls();
-      drawStage();
-    }));
-    dirBtns.forEach((b) => b.addEventListener("click", () => {
-      if (b.disabled) return;
-      dir = b.dataset.sprDir;
-      syncControls();
-      drawStage();
+    if (sprAutoBtn) {
+      sprAutoBtn.addEventListener("click", () => {
+        autoBattle = !autoBattle;
+        if (autoBattle) aiCooldown = 0.2;
+        syncControls();
+      });
+    }
+    actBtns.forEach((b) => b.addEventListener("click", () => {
+      const act = b.dataset.sprAct;
+      if (act === "cast") triggerHeroCast();
+      else if (act === "nova") triggerHeroNova();
+      else if (act === "enemy") triggerEnemyAttack();
     }));
     sprBackdropBtn.addEventListener("click", () => {
       backdropIdx = (backdropIdx + 1) % BACKDROPS.length;
@@ -873,62 +1297,260 @@ function whileVisible(video, allowed) {
       syncControls();
       drawStage();
     });
-    const toggleLantern = (val) => {
-      lanternLit = val === undefined ? !lanternLit : val;
+    const setPylon = (val) => {
+      pylonManual = val === undefined ? !isPylonAwakened() : val;
       syncControls();
       drawStage();
     };
-    sprLanternBtn.addEventListener("click", () => toggleLantern());
-    litPicks.forEach((b) => b.addEventListener("click", () => toggleLantern(b.dataset.sprLit === "true")));
+    if (sprPylonBtn) sprPylonBtn.addEventListener("click", () => setPylon());
+    litPicks.forEach((b) => b.addEventListener("click", () => setPylon(b.dataset.sprLit === "true")));
 
-    const pointerCoords = (e) => {
-      const r = sprCanvas.getBoundingClientRect();
-      return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
-    };
     sprCanvas.addEventListener("pointerdown", (e) => {
       sprCanvas.focus();
-      const pt = pointerCoords(e);
-      // Clicking near the lantern toggles Unlit <-> Lit directly!
-      const distX = Math.abs(pt.x - lx) * sprCanvas.clientWidth;
-      const distY = Math.abs(pt.y - (ly - 0.14)) * sprCanvas.clientHeight;
-      if (distX < 44 && distY < 76) {
-        toggleLantern();
+      const r = sprCanvas.getBoundingClientRect();
+      const nx = (e.clientX - r.left) / r.width;
+      const ny = (e.clientY - r.top) / r.height;
+      // Clicking the center astrolabe pylon toggles Dormant <-> Awakened
+      if (Math.abs(nx - 0.52) < 0.085 && ny > 0.30 && ny < 0.76) {
+        setPylon();
         return;
       }
-      sprCanvas.setPointerCapture(e.pointerId);
-      pointer = pt;
+      if (novaCharge >= 2) triggerHeroNova();
+      else triggerHeroCast();
     });
-    sprCanvas.addEventListener("pointermove", (e) => { if (pointer) pointer = pointerCoords(e); });
-    const stopPtr = () => { pointer = null; };
-    sprCanvas.addEventListener("pointerup", stopPtr);
-    sprCanvas.addEventListener("pointercancel", stopPtr);
-    sprCanvas.addEventListener("blur", () => { keys.clear(); pointer = null; });
     sprCanvas.addEventListener("keydown", (e) => {
-      if (e.key.toLowerCase() === "l") { e.preventDefault(); toggleLantern(); return; }
-      const h = KEY_MAP[e.key.toLowerCase()];
-      if (h) { e.preventDefault(); keys.add(h); }
+      if (e.key === " " || e.key === "Enter") {
+        e.preventDefault();
+        triggerHeroNova();
+      } else if (e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        setPylon();
+      }
     });
-    sprCanvas.addEventListener("keyup", (e) => {
-      const h = KEY_MAP[e.key.toLowerCase()];
-      if (h) { e.preventDefault(); keys.delete(h); }
-    });
-
-    fetch("media/sprites/vesper-atlas.json")
-      .then((r) => r.json())
-      .then((data) => {
-        manifest = data;
-        atlasImg = new Image();
-        atlasImg.onload = () => { syncControls(); drawStage(); ensureTicking(); };
-        atlasImg.src = "media/sprites/" + data.image;
-        syncControls();
-      })
-      .catch(() => {});
 
     new IntersectionObserver((entries) => {
       visible = entries[0]?.isIntersecting;
       if (visible) ensureTicking();
     }, { threshold: 0.05 }).observe(sprCanvas);
     syncControls();
+  }
+
+  /* Scroll-Driven + Interactive 3-Act Motion Transfer Showcase */
+
+  const mtScroll = $("mt-scroll");
+  const mtRoom = $("mt-room");
+  if (mtScroll && mtRoom) {
+    const mtViewport = $("mt-viewport");
+    const vSrc = $("mt-v-src");
+    const vRep = $("mt-v-rep");
+    const vRes = $("mt-v-res");
+    const videos = [vSrc, vRep, vRes];
+    const layerRep = $("mt-layer-rep");
+    const layerRes = $("mt-layer-res");
+    const curtain1 = $("mt-curtain-1");
+    const curtain2 = $("mt-curtain-2");
+    const badge = $("mt-badge");
+    const hint = $("mt-hint");
+    const playBtn = $("mt-play");
+    const scrub = $("mt-scrub");
+    const clockEl = $("mt-clock");
+    const stepBtns = [...document.querySelectorAll("[data-mt-step]")];
+    const viewBtns = [...document.querySelectorAll("[data-mt-view]")];
+
+    let progress = 0;
+    let targetProgress = 0;
+    let manualOverride = false;
+    let dragging = false;
+    let userPaused = false;
+    let visible = false;
+    let viewMode = "wipe";
+    let rafId = 0;
+    let lastScrollY = window.scrollY;
+    let scrubbing = false;
+
+    const clamp01 = (v) => Math.max(0, Math.min(1, v));
+
+    function readScrollProgress() {
+      const rect = mtScroll.getBoundingClientRect();
+      const span = mtScroll.offsetHeight - window.innerHeight;
+      if (span <= 80) return null;
+      return clamp01(-rect.top / span);
+    }
+
+    function applyVisuals(p) {
+      const w1 = clamp01((p - 0.08) / 0.36);
+      const w2 = clamp01((p - 0.56) / 0.36);
+      const left1 = (1 - w1) * 100;
+      const left2 = (1 - w2) * 100;
+
+      layerRep.style.clipPath = `inset(0 0 0 ${left1.toFixed(2)}%)`;
+      layerRes.style.clipPath = `inset(0 0 0 ${left2.toFixed(2)}%)`;
+
+      curtain1.style.left = `${left1.toFixed(2)}%`;
+      curtain1.classList.toggle("on", w1 > 0.015 && w1 < 0.985 && w2 < 0.02);
+      curtain2.style.left = `${left2.toFixed(2)}%`;
+      curtain2.classList.toggle("on", w2 > 0.015 && w2 < 0.985);
+      // Keep each handle's label inside the picture when its line nears an edge.
+      const vw = mtViewport.clientWidth;
+      for (const [c, left] of [[curtain1, left1], [curtain2, left2]]) {
+        const knob = c.firstElementChild;
+        if (!knob || !vw) continue;
+        const x = (left / 100) * vw;
+        const half = knob.offsetWidth / 2 + 6;
+        const shift = Math.max(half, Math.min(vw - half, x)) - x;
+        knob.style.transform = `translate(calc(-50% + ${shift.toFixed(1)}px), -50%)`;
+      }
+
+      const actIdx = w2 >= 0.45 ? 2 : (w1 >= 0.45 ? 1 : 0);
+      for (const b of stepBtns) {
+        b.setAttribute("aria-pressed", String(Number(b.dataset.mtStep) === actIdx));
+      }
+      if (badge) {
+        badge.textContent =
+          w2 > 0.02 && w2 < 0.98 ? "Wiping · Replace → New scene" :
+          w1 > 0.02 && w1 < 0.98 ? "Wiping · Source → Replace in scene" :
+          actIdx === 2 ? "03 · New scene, same motion" :
+          actIdx === 1 ? "02 · Replace in scene (SAM 3.1 + plate)" :
+          "01 · Source performance";
+      }
+    }
+
+    function syncVideos() {
+      if (!vSrc.duration || Number.isNaN(vSrc.duration)) return;
+      const t = vSrc.currentTime;
+      for (const v of [vRep, vRes]) {
+        if (v.readyState >= 2 && Math.abs(v.currentTime - t) > 0.045) {
+          try { v.currentTime = t; } catch (_) {}
+        }
+      }
+      if (!scrubbing) {
+        scrub.value = String(Math.round((t / vSrc.duration) * 1000));
+      }
+      if (clockEl) {
+        clockEl.textContent = `${t.toFixed(1)} / ${vSrc.duration.toFixed(1)} s`;
+      }
+    }
+
+    function setPlaying(play) {
+      for (const v of videos) {
+        if (play) v.play().catch(() => {});
+        else v.pause();
+      }
+      if (playBtn) {
+        playBtn.textContent = play ? "Pause" : "Play";
+        playBtn.setAttribute("aria-pressed", String(play));
+      }
+    }
+
+    function tick() {
+      if (!visible) { rafId = 0; return; }
+      if (!manualOverride && !dragging && viewMode === "wipe") {
+        const sp = readScrollProgress();
+        if (sp !== null) targetProgress = sp;
+      }
+      const diff = targetProgress - progress;
+      progress = Math.abs(diff) < 0.001 ? targetProgress : progress + diff * (dragging ? 0.35 : 0.18);
+      applyVisuals(progress);
+      syncVideos();
+      rafId = requestAnimationFrame(tick);
+    }
+
+    function ensureTick() {
+      if (visible && !rafId) rafId = requestAnimationFrame(tick);
+    }
+
+    window.addEventListener("scroll", () => {
+      const dy = Math.abs(window.scrollY - lastScrollY);
+      lastScrollY = window.scrollY;
+      if (dy > 14 && !dragging && viewMode === "wipe") {
+        const sp = readScrollProgress();
+        if (sp !== null) {
+          manualOverride = false;
+          targetProgress = sp;
+        }
+      }
+    }, { passive: true });
+
+    const setFromPointer = (e) => {
+      const r = mtViewport.getBoundingClientRect();
+      const nx = clamp01((e.clientX - r.left) / Math.max(1, r.width));
+      manualOverride = true;
+      targetProgress = 1 - nx;
+      if (hint) hint.textContent = "Dragging the wipe";
+      ensureTick();
+    };
+
+    mtViewport.addEventListener("pointerdown", (e) => {
+      if (viewMode !== "wipe") return;
+      dragging = true;
+      mtViewport.setPointerCapture(e.pointerId);
+      setFromPointer(e);
+    });
+    mtViewport.addEventListener("pointermove", (e) => {
+      if (dragging) setFromPointer(e);
+    });
+    const endDrag = () => { dragging = false; };
+    mtViewport.addEventListener("pointerup", endDrag);
+    mtViewport.addEventListener("pointercancel", endDrag);
+    mtViewport.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowRight") {
+        e.preventDefault(); manualOverride = true; targetProgress = clamp01(targetProgress + 0.25); ensureTick();
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault(); manualOverride = true; targetProgress = clamp01(targetProgress - 0.25); ensureTick();
+      }
+    });
+
+    stepBtns.forEach((btn) => btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.mtStep);
+      manualOverride = true;
+      targetProgress = idx === 0 ? 0 : (idx === 1 ? 0.5 : 1);
+      if (viewMode !== "wipe") {
+        viewMode = "wipe";
+        mtRoom.classList.remove("triple");
+        for (const vb of viewBtns) vb.setAttribute("aria-pressed", String(vb.dataset.mtView === "wipe"));
+      }
+      if (hint) hint.textContent = "Scroll or drag to wipe";
+      ensureTick();
+    }));
+
+    viewBtns.forEach((btn) => btn.addEventListener("click", () => {
+      viewMode = btn.dataset.mtView;
+      mtRoom.classList.toggle("triple", viewMode === "triple");
+      for (const vb of viewBtns) vb.setAttribute("aria-pressed", String(vb.dataset.mtView === viewMode));
+      ensureTick();
+    }));
+
+    if (playBtn) {
+      playBtn.addEventListener("click", () => {
+        userPaused = !userPaused;
+        setPlaying(!userPaused);
+      });
+    }
+
+    if (scrub) {
+      scrub.addEventListener("input", () => {
+        scrubbing = true;
+        if (!vSrc.duration || Number.isNaN(vSrc.duration)) return;
+        const target = (Number(scrub.value) / 1000) * vSrc.duration;
+        for (const v of videos) {
+          try { v.currentTime = target; } catch (_) {}
+        }
+        if (clockEl) clockEl.textContent = `${target.toFixed(1)} / ${vSrc.duration.toFixed(1)} s`;
+      });
+      scrub.addEventListener("change", () => { scrubbing = false; });
+    }
+
+    new IntersectionObserver((entries) => {
+      visible = Boolean(entries[0]?.isIntersecting);
+      if (visible) {
+        if (!userPaused && !reduceMotion) setPlaying(true);
+        ensureTick();
+      } else {
+        for (const v of videos) v.pause();
+      }
+    }, { threshold: 0.05 }).observe(mtScroll);
+
+    applyVisuals(0);
   }
 
   /* Copy buttons */
