@@ -29,6 +29,7 @@
     <div class="links">
       <a href="#showcase">Showcase</a>
       <a href="#editor">Editor</a>
+      <a href="#sprites">Sprites</a>
       <a href="#features">Features</a>
       <a href="#install">Install</a>
       <a href="#agents">Agents</a>
@@ -39,6 +40,7 @@
       <div class="menu-list">
         <a href="#showcase">Showcase</a>
         <a href="#editor">Editor</a>
+        <a href="#sprites">Sprites</a>
         <a href="#features">Features</a>
         <a href="#install">Install</a>
         <a href="#agents">Agents</a>
@@ -62,7 +64,7 @@
           <code>comfy node install h3-editor</code>
           <button class="copy" type="button" data-copy="comfy node install h3-editor" aria-label="Copy the install command"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg><span>Copy</span></button>
         </div>
-        <p class="hero-alt">Or search <strong>H3 Editor</strong> in ComfyUI-Manager: while the new listing is in review, pick 0.9.1 from its version menu before installing. Or <a href="#install">clone it from GitHub</a>. Free software under the GPL-3.0.</p>
+        <p class="hero-alt">Or search <strong>H3 Editor</strong> in ComfyUI-Manager: while the new listing is in review, pick 0.14.0 from its version menu before installing. Or <a href="#install">clone it from GitHub</a>. Free software under the GPL-3.0.</p>
       </div>
     </div>
     <figure class="morph" id="morph">
@@ -75,7 +77,7 @@
         <div class="morph-nodes" id="morph-nodes"></div>
       </div>
       </div>
-      <p class="sr">A tangled ComfyUI node graph for one H3 shot folds into H3 Editor 0.9.1, which then plays the kitchen scene The pass in its viewer.</p>
+      <p class="sr">A tangled ComfyUI node graph for one H3 shot folds into H3 Editor 0.14.0, which then plays the kitchen scene The pass in its viewer.</p>
       <figcaption class="morph-foot">
         <span>The graph for one H3 shot, and the editor that builds it for you. Playing: The pass, four shots and their sound, rendered with HyperFlow H3 Flash.</span>
         <span class="morph-tools">
@@ -189,6 +191,82 @@
     <p class="credit">An agent wrote and rendered this scene through the editor's API: four shots with their own sound, and one cast member made from a single picture.</p>
   </section>
 
+  <section class="section wrap" id="sprites" aria-labelledby="sprites-title">
+    <div class="head">
+      <h2 id="sprites-title">Game sprites, from one character.</h2>
+      <p>Switch the workspace to <strong>Sprites</strong> to build directional character loops and matching props. Derive clean turnaround plates at 4&nbsp;MP with MiniMax-H3-Image, tag each view in Cast, and render 8-way runs, idles and named gestures with BiRefNet defringing. Click the stage or use WASD to walk Vesper around — nothing was retouched.</p>
+    </div>
+    <div class="window">
+      <div class="spr-room" id="spr-demo">
+        <div class="spr-stage">
+          <div class="spr-canvas-wrap">
+            <canvas id="spr-canvas" width="760" height="420" tabindex="0" aria-label="Interactive 8-way pixel art sprite showcase. Click, drag, or use WASD and arrow keys to move Vesper. Press L to toggle the lantern."></canvas>
+            <div class="spr-hud" aria-live="polite">
+              <span id="spr-readout">Run · S · 12 fps</span>
+              <span class="spr-hint">WASD or drag · Click lantern</span>
+            </div>
+          </div>
+          <div class="spr-controls">
+            <div class="spr-seg" role="group" aria-label="Animation">
+              <button type="button" class="spr-btn" data-spr-motion="run" aria-pressed="true">Run (8-way)</button>
+              <button type="button" class="spr-btn" data-spr-motion="idle" aria-pressed="false">Idle (4-way)</button>
+            </div>
+            <div class="spr-dirs" role="group" aria-label="Facing direction">
+              <button type="button" class="spr-dir" data-spr-dir="NW" aria-pressed="false">NW</button>
+              <button type="button" class="spr-dir" data-spr-dir="N" aria-pressed="false">N</button>
+              <button type="button" class="spr-dir" data-spr-dir="NE" aria-pressed="false">NE</button>
+              <button type="button" class="spr-dir" data-spr-dir="W" aria-pressed="false">W</button>
+              <button type="button" class="spr-dir" data-spr-dir="E" aria-pressed="false">E</button>
+              <button type="button" class="spr-dir" data-spr-dir="SW" aria-pressed="false">SW</button>
+              <button type="button" class="spr-dir" data-spr-dir="S" aria-pressed="true">S</button>
+              <button type="button" class="spr-dir" data-spr-dir="SE" aria-pressed="false">SE</button>
+            </div>
+            <div class="spr-toggles">
+              <button type="button" class="spr-btn" id="spr-backdrop" title="Cycle dark, checker, and light cutout backdrops">Backdrop: Dark</button>
+              <button type="button" class="spr-btn" id="spr-pivot" aria-pressed="false" title="Show ground pivot crosshair and tile frame">Pivot</button>
+              <button type="button" class="spr-btn" id="spr-lantern" aria-pressed="true" title="Toggle the paired 4 MP unlit/lit prop">Lantern: Lit</button>
+            </div>
+          </div>
+        </div>
+
+        <aside class="spr-side">
+          <div class="spr-block">
+            <p class="show-label">4 MP turnaround plates (H3-Image)</p>
+            <div class="spr-plates">
+              <figure><img src="media/sprites/vesper-front.webp" width="256" height="256" loading="lazy" alt="Vesper front pixel art turnaround plate"><figcaption>Front</figcaption></figure>
+              <figure><img src="media/sprites/vesper-side.webp" width="256" height="256" loading="lazy" alt="Vesper right side pixel art turnaround plate"><figcaption>Side</figcaption></figure>
+              <figure><img src="media/sprites/vesper-back.webp" width="256" height="256" loading="lazy" alt="Vesper back pixel art turnaround plate"><figcaption>Back</figcaption></figure>
+              <figure><img src="media/sprites/vesper-left.webp" width="256" height="256" loading="lazy" alt="Vesper left side pixel art turnaround plate"><figcaption>Left</figcaption></figure>
+            </div>
+            <p class="spr-note">Each plate is tagged by view in Cast so directional renders automatically pull only heading-matched references.</p>
+          </div>
+
+          <div class="spr-block">
+            <p class="show-label">Paired 4 MP prop state variant</p>
+            <div class="spr-prop-pair">
+              <button type="button" class="spr-prop-pick" data-spr-lit="false" aria-pressed="false">
+                <img src="media/sprites/lantern-unlit.webp" width="256" height="256" loading="lazy" alt="Unlit wrought-iron pixel art street lantern">
+                <span>Unlit</span>
+              </button>
+              <button type="button" class="spr-prop-pick" data-spr-lit="true" aria-pressed="true">
+                <img src="media/sprites/lantern-lit.webp" width="256" height="256" loading="lazy" alt="Lit wrought-iron pixel art street lantern">
+                <span>Lit</span>
+              </button>
+            </div>
+          </div>
+
+          <dl class="facts spr-facts">
+            <dt>Canvas</dt><dd>512 &times; 512 square &middot; 39, 56 or 73 frames</dd>
+            <dt>Cutout</dt><dd>BiRefNet + H3DefringeMatte &middot; lossless frame cache</dd>
+            <dt>Export</dt><dd>64&ndash;512 px even tiles &middot; PNG, WebP &amp; Animwright JSON</dd>
+            <dt>Looping</dt><dd>One-click self-pin closure &amp; 24 fps interpolation</dd>
+          </dl>
+        </aside>
+      </div>
+    </div>
+    <p class="credit">Rendered straight out of H3 Editor's Sprites workspace: 4 MP MiniMax-H3-Image turnaround plates and paired lantern prop, followed by 12 HyperFlow H3 Flash loops packed into a single 128&nbsp;px WebP atlas (286&nbsp;KB).</p>
+  </section>
+
   <section class="section wrap" id="features" aria-labelledby="features-title">
     <div class="head">
       <h2 id="features-title">Everything a cut needs, in one window.</h2>
@@ -232,6 +310,8 @@
       <li><h3>Leave notes on frames.</h3><p>Pin a spot, drag a box or draw on the picture and write what should change. An agent reads the notes with the frame they sit on.</p></li>
       <li><h3>Take a project anywhere.</h3><p>Pack it as one zip and open it on another machine or a cloud GPU. A Colab notebook renders finals on a bigger GPU and brings them home.</p></li>
       <li><h3>Edit as in any editor.</h3><p>Trim, split, slip, move, change speed, add transitions, flip between takes, file clips in bins, import footage, export one video.</p></li>
+      <li><h3>Manage the render queue in place.</h3><p>See running progress, waiting clips, sprites, 4&nbsp;MP props and recent failures without leaving the full-screen editor, and stop or remove individual jobs.</p></li>
+      <li><h3>Finish just the part you kept.</h3><p>Refine a trimmed range of a draft from its cached latents, and inspect or clear unused hold caches from Project storage.</p></li>
     </ul>
   </section>
 
@@ -257,7 +337,7 @@
     <ol class="steps">
       <li>
         <h3>Add the pack to ComfyUI</h3>
-        <p>From the Comfy Registry: search for <strong>H3 Editor</strong> in ComfyUI-Manager, or use comfy-cli. It installs into <code>custom_nodes/h3-editor</code>, with its requirements. The listing is new, and until its first version clears the registry's review, ComfyUI-Manager's plain Install fails with "not a CNR node": pick 0.9.1 from the version menu on the card first. <code>comfy node install h3-editor</code> works today and installs the latest code from GitHub.</p>
+        <p>From the Comfy Registry: search for <strong>H3 Editor</strong> in ComfyUI-Manager, or use comfy-cli. It installs into <code>custom_nodes/h3-editor</code>, with its requirements. The listing is new, and until its first version clears the registry's review, ComfyUI-Manager's plain Install fails with "not a CNR node": pick 0.14.0 from the version menu on the card first. <code>comfy node install h3-editor</code> works today and installs the latest code from GitHub.</p>
         <div class="cmd">
           <code>comfy node install h3-editor</code>
           <button class="copy" type="button" data-copy="comfy node install h3-editor" aria-label="Copy the install command"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg><span>Copy</span></button>
@@ -344,7 +424,7 @@ h3take_projects/The_pass/exports/The_pass_001.mp4</span></code></pre>
       <code>comfy node install h3-editor</code>
       <button class="copy" type="button" data-copy="comfy node install h3-editor" aria-label="Copy the install command"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg><span>Copy</span></button>
     </div>
-    <p class="close-note">While the registry reviews its first version, pick 0.9.1 in ComfyUI-Manager, or install it from GitHub:</p>
+    <p class="close-note">While the registry reviews its first version, pick 0.14.0 in ComfyUI-Manager, or install it from GitHub:</p>
     <div class="cmd">
       <code>git clone https://github.com/igorls/comfyui-h3-editor</code>
       <button class="copy" type="button" data-copy="git clone https://github.com/igorls/comfyui-h3-editor"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg><span>Copy</span></button>

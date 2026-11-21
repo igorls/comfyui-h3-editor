@@ -642,6 +642,295 @@ function whileVisible(video, allowed) {
     });
   });
 
+  /* Interactive Spritesheet Showcase (Vesper 8-way atlas + paired 4 MP lantern) */
+
+  const sprCanvas = $("spr-canvas");
+  if (sprCanvas) {
+    const sctx = sprCanvas.getContext("2d");
+    const sprReadout = $("spr-readout");
+    const sprBackdropBtn = $("spr-backdrop");
+    const sprPivotBtn = $("spr-pivot");
+    const sprLanternBtn = $("spr-lantern");
+    const motionBtns = [...document.querySelectorAll("[data-spr-motion]")];
+    const dirBtns = [...document.querySelectorAll("[data-spr-dir]")];
+    const litPicks = [...document.querySelectorAll("[data-spr-lit]")];
+
+    const BACKDROPS = ["dark", "checker", "light"];
+    const KEY_MAP = { w: "N", arrowup: "N", s: "S", arrowdown: "S", a: "W", arrowleft: "W", d: "E", arrowright: "E" };
+    const keys = new Set();
+    let pointer = null;
+    let manifest = null;
+    let atlasImg = null;
+    const lanternImgs = { unlit: new Image(), lit: new Image() };
+    lanternImgs.unlit.src = "media/sprites/lantern-unlit.webp";
+    lanternImgs.lit.src = "media/sprites/lantern-lit.webp";
+
+    let motion = "run";
+    let dir = "S";
+    let backdropIdx = 0;
+    let showPivot = false;
+    let lanternLit = true;
+    let px = 0.42;
+    let py = 0.66;
+    const lx = 0.72;
+    const ly = 0.66;
+    let clock = 0;
+    let lastTs = 0;
+    let visible = false;
+    let rafId = 0;
+
+    function resolveAnim(m, d) {
+      if (!manifest) return null;
+      const anims = manifest.animations || {};
+      if (anims[m + "_" + d]) return { key: m + "_" + d, anim: anims[m + "_" + d] };
+      // Idle has 4 cardinal directions; snap diagonals to nearest cardinal.
+      const fallback = d.length === 2 ? d[0] : "S";
+      if (anims[m + "_" + fallback]) return { key: m + "_" + fallback, anim: anims[m + "_" + fallback] };
+      const firstKey = Object.keys(anims)[0];
+      return firstKey ? { key: firstKey, anim: anims[firstKey] } : null;
+    }
+
+    function syncControls() {
+      for (const b of motionBtns) b.setAttribute("aria-pressed", String(b.dataset.sprMotion === motion));
+      for (const b of dirBtns) {
+        const d = b.dataset.sprDir;
+        const disabled = motion === "idle" && d.length === 2;
+        b.disabled = disabled;
+        b.setAttribute("aria-pressed", String(d === dir));
+      }
+      sprBackdropBtn.textContent = "Backdrop: " + BACKDROPS[backdropIdx][0].toUpperCase() + BACKDROPS[backdropIdx].slice(1);
+      sprPivotBtn.setAttribute("aria-pressed", String(showPivot));
+      sprLanternBtn.setAttribute("aria-pressed", String(lanternLit));
+      sprLanternBtn.textContent = lanternLit ? "Lantern: Lit" : "Lantern: Unlit";
+      for (const b of litPicks) b.setAttribute("aria-pressed", String(String(lanternLit) === b.dataset.sprLit));
+      const cur = resolveAnim(motion, dir);
+      if (sprReadout && cur) {
+        sprReadout.textContent = (motion === "run" ? "Run" : "Idle") + " · " + dir + " · " + cur.anim.fps + " fps";
+      }
+    }
+
+    function drawStage() {
+      const w = Math.max(1, sprCanvas.clientWidth);
+      const h = Math.max(1, sprCanvas.clientHeight);
+      if (sprCanvas.width !== w || sprCanvas.height !== h) {
+        sprCanvas.width = w;
+        sprCanvas.height = h;
+      }
+      const mode = BACKDROPS[backdropIdx];
+      if (mode === "light") {
+        sctx.fillStyle = "#eceae3";
+        sctx.fillRect(0, 0, w, h);
+      } else if (mode === "checker") {
+        const sq = 16;
+        sctx.fillStyle = "#3a4049";
+        sctx.fillRect(0, 0, w, h);
+        sctx.fillStyle = "#262a31";
+        for (let yy = 0; yy < h; yy += sq) {
+          for (let xx = ((yy / sq) % 2) * sq; xx < w; xx += sq * 2) sctx.fillRect(xx, yy, sq, sq);
+        }
+      } else {
+        const g = sctx.createRadialGradient(w * 0.52, h * 0.56, 20, w * 0.52, h * 0.56, Math.max(w, h) * 0.65);
+        g.addColorStop(0, lanternLit ? "#211c19" : "#191c22");
+        g.addColorStop(1, "#0d0e12");
+        sctx.fillStyle = g;
+        sctx.fillRect(0, 0, w, h);
+        // Subtle 42-deg isometric floor grid
+        sctx.strokeStyle = "rgba(255, 255, 255, 0.045)";
+        sctx.lineWidth = 1;
+        sctx.beginPath();
+        for (let gx = -h; gx < w + h; gx += 48) {
+          sctx.moveTo(gx, 0);
+          sctx.lineTo(gx + h * 1.4, h);
+          sctx.moveTo(gx + h * 1.4, 0);
+          sctx.lineTo(gx, h);
+        }
+        sctx.stroke();
+      }
+
+      const lanternX = Math.round(lx * w);
+      const lanternY = Math.round(ly * h);
+      const vesperX = Math.round(px * w);
+      const vesperY = Math.round(py * h);
+
+      // Warm lantern glow pool on dark ground
+      if (lanternLit && mode === "dark") {
+        const glow = sctx.createRadialGradient(lanternX, lanternY - 56, 8, lanternX, lanternY - 24, 150);
+        glow.addColorStop(0, "rgba(232, 138, 66, 0.28)");
+        glow.addColorStop(0.55, "rgba(224, 96, 54, 0.08)");
+        glow.addColorStop(1, "rgba(224, 96, 54, 0)");
+        sctx.fillStyle = glow;
+        sctx.fillRect(0, 0, w, h);
+      }
+
+      const drawLantern = () => {
+        const img = lanternLit ? lanternImgs.lit : lanternImgs.unlit;
+        if (!img.naturalWidth) return;
+        const size = 148;
+        sctx.save();
+        sctx.fillStyle = mode === "light" ? "rgba(0,0,0,0.14)" : "rgba(0,0,0,0.34)";
+        sctx.beginPath();
+        sctx.ellipse(lanternX, lanternY + 2, 26, 9, 0, 0, Math.PI * 2);
+        sctx.fill();
+        sctx.imageSmoothingEnabled = false;
+        sctx.drawImage(img, lanternX - size / 2, lanternY - size + 8, size, size);
+        sctx.restore();
+      };
+
+      const drawVesper = () => {
+        const cur = resolveAnim(motion, dir);
+        if (!cur || !atlasImg || !atlasImg.naturalWidth) return;
+        const { anim } = cur;
+        const frames = anim.frames || [];
+        if (!frames.length) return;
+        const idx = Math.floor(clock * (anim.fps || 12)) % frames.length;
+        const f = frames[idx];
+        const scale = 1.4;
+        const dw = Math.round(f.w * scale);
+        const dh = Math.round(f.h * scale);
+        const pivX = Math.round((anim.pivot?.[0] ?? f.w / 2) * scale);
+        const pivY = Math.round((anim.pivot?.[1] ?? f.h - 10) * scale);
+
+        sctx.save();
+        sctx.fillStyle = mode === "light" ? "rgba(0,0,0,0.14)" : "rgba(0,0,0,0.34)";
+        sctx.beginPath();
+        sctx.ellipse(vesperX, vesperY + 2, 26, 9, 0, 0, Math.PI * 2);
+        sctx.fill();
+        sctx.imageSmoothingEnabled = false;
+        sctx.drawImage(atlasImg, f.x, f.y, f.w, f.h, vesperX - pivX, vesperY - pivY, dw, dh);
+        sctx.restore();
+
+        if (showPivot) {
+          sctx.save();
+          sctx.strokeStyle = "rgba(224, 162, 74, 0.55)";
+          sctx.lineWidth = 1;
+          sctx.setLineDash([4, 3]);
+          sctx.strokeRect(vesperX - pivX + 0.5, vesperY - pivY + 0.5, dw - 1, dh - 1);
+          sctx.setLineDash([]);
+          sctx.strokeStyle = "#e0a24a";
+          sctx.beginPath();
+          sctx.moveTo(vesperX - 10, vesperY + 0.5);
+          sctx.lineTo(vesperX + 10, vesperY + 0.5);
+          sctx.moveTo(vesperX + 0.5, vesperY - 10);
+          sctx.lineTo(vesperX + 0.5, vesperY + 10);
+          sctx.stroke();
+          sctx.restore();
+        }
+      };
+
+      // Y-sort Vesper and the paired lantern prop cleanly!
+      if (vesperY < lanternY) { drawVesper(); drawLantern(); }
+      else { drawLantern(); drawVesper(); }
+    }
+
+    function step(now) {
+      if (!visible) { rafId = 0; lastTs = 0; return; }
+      const dt = lastTs ? Math.min(0.05, (now - lastTs) / 1000) : 0;
+      lastTs = now;
+      let dx = Number(keys.has("E")) - Number(keys.has("W"));
+      let dy = Number(keys.has("S")) - Number(keys.has("N"));
+      if (!dx && !dy && pointer) {
+        const gx = (pointer.x - px) * sprCanvas.width;
+        const gy = (pointer.y - py) * sprCanvas.height;
+        dx = Math.abs(gx) > 8 ? Math.sign(gx) : 0;
+        dy = Math.abs(gy) > 8 ? Math.sign(gy) : 0;
+      }
+      if (dx || dy) {
+        if (motion !== "run") { motion = "run"; syncControls(); }
+        const h = (dy < 0 ? "N" : dy > 0 ? "S" : "") + (dx < 0 ? "W" : dx > 0 ? "E" : "");
+        if (h && h !== dir) { dir = h; syncControls(); }
+        const spd = (135 * dt) / Math.hypot(dx, dy);
+        px = Math.max(0.09, Math.min(0.91, px + (dx * spd) / sprCanvas.width));
+        py = Math.max(0.32, Math.min(0.86, py + (dy * spd) / sprCanvas.height));
+      }
+      if (!reduceMotion) clock += dt;
+      drawStage();
+      rafId = requestAnimationFrame(step);
+    }
+
+    function ensureTicking() {
+      if (visible && !rafId) rafId = requestAnimationFrame(step);
+    }
+
+    motionBtns.forEach((b) => b.addEventListener("click", () => {
+      motion = b.dataset.sprMotion;
+      if (motion === "idle" && dir.length === 2) dir = dir[0];
+      syncControls();
+      drawStage();
+    }));
+    dirBtns.forEach((b) => b.addEventListener("click", () => {
+      if (b.disabled) return;
+      dir = b.dataset.sprDir;
+      syncControls();
+      drawStage();
+    }));
+    sprBackdropBtn.addEventListener("click", () => {
+      backdropIdx = (backdropIdx + 1) % BACKDROPS.length;
+      syncControls();
+      drawStage();
+    });
+    sprPivotBtn.addEventListener("click", () => {
+      showPivot = !showPivot;
+      syncControls();
+      drawStage();
+    });
+    const toggleLantern = (val) => {
+      lanternLit = val === undefined ? !lanternLit : val;
+      syncControls();
+      drawStage();
+    };
+    sprLanternBtn.addEventListener("click", () => toggleLantern());
+    litPicks.forEach((b) => b.addEventListener("click", () => toggleLantern(b.dataset.sprLit === "true")));
+
+    const pointerCoords = (e) => {
+      const r = sprCanvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+    };
+    sprCanvas.addEventListener("pointerdown", (e) => {
+      sprCanvas.focus();
+      const pt = pointerCoords(e);
+      // Clicking near the lantern toggles Unlit <-> Lit directly!
+      const distX = Math.abs(pt.x - lx) * sprCanvas.clientWidth;
+      const distY = Math.abs(pt.y - (ly - 0.14)) * sprCanvas.clientHeight;
+      if (distX < 44 && distY < 76) {
+        toggleLantern();
+        return;
+      }
+      sprCanvas.setPointerCapture(e.pointerId);
+      pointer = pt;
+    });
+    sprCanvas.addEventListener("pointermove", (e) => { if (pointer) pointer = pointerCoords(e); });
+    const stopPtr = () => { pointer = null; };
+    sprCanvas.addEventListener("pointerup", stopPtr);
+    sprCanvas.addEventListener("pointercancel", stopPtr);
+    sprCanvas.addEventListener("blur", () => { keys.clear(); pointer = null; });
+    sprCanvas.addEventListener("keydown", (e) => {
+      if (e.key.toLowerCase() === "l") { e.preventDefault(); toggleLantern(); return; }
+      const h = KEY_MAP[e.key.toLowerCase()];
+      if (h) { e.preventDefault(); keys.add(h); }
+    });
+    sprCanvas.addEventListener("keyup", (e) => {
+      const h = KEY_MAP[e.key.toLowerCase()];
+      if (h) { e.preventDefault(); keys.delete(h); }
+    });
+
+    fetch("media/sprites/vesper-atlas.json")
+      .then((r) => r.json())
+      .then((data) => {
+        manifest = data;
+        atlasImg = new Image();
+        atlasImg.onload = () => { syncControls(); drawStage(); ensureTicking(); };
+        atlasImg.src = "media/sprites/" + data.image;
+        syncControls();
+      })
+      .catch(() => {});
+
+    new IntersectionObserver((entries) => {
+      visible = entries[0]?.isIntersecting;
+      if (visible) ensureTicking();
+    }, { threshold: 0.05 }).observe(sprCanvas);
+    syncControls();
+  }
+
   /* Copy buttons */
 
   for (const button of document.querySelectorAll("[data-copy]")) {
