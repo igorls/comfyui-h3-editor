@@ -20,6 +20,11 @@ import struct
 
 import torch
 
+try:
+    from . import seq_connector
+except ImportError:
+    import seq_connector
+
 FOLDER = "clip_projections"
 
 PAD_TOKEN = 151643
@@ -110,10 +115,10 @@ def load_projection(path):
     for k in ("mean_in", "std_in", "mean_out", "std_out", "tap"):
         if k not in data:
             raise KeyError("%s has no '%s': it is not a ClipProj projection, or the download is incomplete" % (os.path.basename(path), k))
-    for k in ("W", "mean_in", "std_in", "mean_out", "std_out"):
+    for k in ("W", "mean_in", "std_in", "mean_out", "std_out", "clamp_lo", "clamp_hi"):
         if k in data:
             data[k] = data[k].float()
-    if "W" not in data and not any(k.startswith("mlp.") for k in data):
+    if "W" not in data and not any(k.startswith(("mlp.", "seq.")) for k in data):
         raise ValueError("%s has neither a matrix nor a residual network: download it again" % os.path.basename(path))
     _CACHE.clear()  # one projection at a time
     _CACHE[key] = data
@@ -143,8 +148,13 @@ def build_residual(proj, device):
     return net
 
 
-def project(h, proj, cache):
-    """Map a small encoder's hidden states [B, seq, d_in] into H3's conditioning [B, seq, d_out]."""
+def project(h, proj, cache, valid_mask=None):
+    """Map a small encoder's hidden states [B, seq, d_in] into H3's conditioning [B, seq, d_out].
+
+    Optional `valid_mask` ([B, seq] bool) masks out non-text / padded positions (e.g. ref2va vision
+    blocks) during bidirectional `seq.` refinement while keeping true RoPE positions and preventing
+    Conv1D from bleeding across vision gaps.
+    """
     dev = h.device
     if cache.get("device") != dev:
         cache.clear()
@@ -157,8 +167,9 @@ def project(h, proj, cache):
                              "Pick the mmh3-%s projection, or a %s encoder."
                              % (sizes.get(width, "?"), width, sizes.get(h.shape[-1], "?"), h.shape[-1],
                                 sizes.get(h.shape[-1], "?").lower(), sizes.get(width, "?")))
-        cache["p"] = {k: proj[k].to(dev) for k in ("W", "mean_in", "std_in", "mean_out", "std_out") if k in proj}
+        cache["p"] = {k: proj[k].to(dev) for k in ("W", "mean_in", "std_in", "mean_out", "std_out", "clamp_lo", "clamp_hi") if k in proj}
         cache["mlp"] = build_residual(proj, dev)
+        cache["seq"] = seq_connector.build_from_projection(proj, dev)
     p = cache["p"]
     # The ridge and the residual both work in the standardised space they were fitted in.
     xn = (h.float() - p["mean_in"]) / p["std_in"]
@@ -167,10 +178,32 @@ def project(h, proj, cache):
     if net is not None:
         out = net(xn.to(net[0].weight.dtype)).float()
         yn = out if yn is None else yn + out
+    snet = cache.get("seq")
+    sink = proj.get("sink_out")
+    if snet is not None:
+        s_dtype = snet.in_proj.weight.dtype
+        s_in = yn if proj.get("seq_input") == "base" else xn
+        vm = valid_mask.to(device=dev, dtype=torch.bool) if valid_mask is not None else None
+        if vm is not None:
+            s_in = s_in * vm.unsqueeze(-1).to(s_in.dtype)
+        if sink is not None and s_in.shape[1] > 1:
+            # Token 0 is always overwritten with sink_out and was excluded during sequence calibration.
+            vm_sub = vm[:, 1:] if vm is not None else None
+            out_sub = snet(s_in[:, 1:].to(s_dtype), valid_mask=vm_sub).float()
+            if yn is None:
+                yn = torch.zeros((s_in.shape[0], s_in.shape[1], out_sub.shape[-1]), device=s_in.device, dtype=torch.float32)
+                yn[:, 1:] = out_sub
+            else:
+                yn = yn.clone()
+                yn[:, 1:] = yn[:, 1:] + out_sub
+        else:
+            out = snet(s_in.to(s_dtype), valid_mask=vm).float()
+            yn = out if yn is None else yn + out
     cond = yn * p["std_out"] + p["mean_out"]
+    if "clamp_lo" in p and "clamp_hi" in p:
+        cond = torch.clamp(cond, min=p["clamp_lo"], max=p["clamp_hi"])
     # Token 0 is an attention sink: constant in direction, huge in norm, and never seen in
     # calibration. The file carries its measured value, which is exact since it is constant.
-    sink = proj.get("sink_out")
     if sink is not None and cond.shape[1] > 0:
         cond[:, 0] = sink.to(device=cond.device, dtype=cond.dtype)
     return cond

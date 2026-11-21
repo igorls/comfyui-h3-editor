@@ -256,9 +256,12 @@ def token_char_spans(token_texts):
 def align_text_spans(spans_src, spans_tgt, include_span_mean=True, skip_tgt_zero=True):
     """Map source token indices to target token index lists via exact character offsets.
 
+    Supports:
+    - 1:1 exact matches (same character span)
+    - 1:N forward span matches (1 source token covering N target subwords -> mean target)
+    - N:1 reverse span matches (N source tokens covering 1 target token, e.g. '<', 'd', '>' -> '<d>')
     Returns list of (src_idx, [tgt_indices], is_exact_1to1).
     """
-    # Map target char_start -> list of (tgt_idx, char_end)
     tgt_by_start = {}
     for j, (d0, d1) in enumerate(spans_tgt):
         if skip_tgt_zero and j == 0:
@@ -267,10 +270,10 @@ def align_text_spans(spans_src, spans_tgt, include_span_mean=True, skip_tgt_zero
             tgt_by_start.setdefault(d0, []).append((j, d1))
 
     pairs = []
+    matched_src = set()
     for i, (c0, c1) in enumerate(spans_src):
         if c1 <= c0:
             continue
-        # Walk target tokens starting at c0 until reaching c1
         cur = c0
         matched = []
         ok = True
@@ -279,7 +282,6 @@ def align_text_spans(spans_src, spans_tgt, include_span_mean=True, skip_tgt_zero
             if not opts:
                 ok = False
                 break
-            # Prefer exact end match, else longest span <= c1
             picked = None
             for j, d1 in opts:
                 if d1 <= c1 and (picked is None or d1 > picked[1]):
@@ -293,6 +295,19 @@ def align_text_spans(spans_src, spans_tgt, include_span_mean=True, skip_tgt_zero
             is_exact = len(matched) == 1
             if is_exact or include_span_mean:
                 pairs.append((i, matched, is_exact))
+                matched_src.add(i)
+
+    # N:1 reverse-span matching: e.g. Qwen3.8 splits MiniMax special tokens '<d>', '</d>',
+    # '<|lyrics_start|>', or accented subwords into multiple source tokens covering 1 target token.
+    if include_span_mean:
+        for j, (d0, d1) in enumerate(spans_tgt):
+            if (skip_tgt_zero and j == 0) or d1 <= d0:
+                continue
+            covered = [i for i, (c0, c1) in enumerate(spans_src) if c1 > c0 and c0 >= d0 and c1 <= d1 and i not in matched_src]
+            if covered and spans_src[covered[0]][0] == d0 and spans_src[covered[-1]][1] == d1:
+                for i in covered:
+                    pairs.append((i, [j], False))
+                    matched_src.add(i)
     return pairs
 
 
@@ -421,9 +436,11 @@ def collect_27b_aligned(url, layer, text_targets, vision_targets, include_span_m
             x_txt_list.append(u_h[src_i].to(torch.bfloat16))
             if len(tgt_js) == 1:
                 y_txt_list.append(y_h[tgt_js[0]].to(torch.bfloat16))
-                n_exact += 1
             else:
                 y_txt_list.append(y_h[tgt_js].mean(dim=0).to(torch.bfloat16))
+            if is_exact:
+                n_exact += 1
+            else:
                 n_span += 1
             exact_flags.append(is_exact)
             prompt_ids.append(p_idx)
@@ -481,7 +498,7 @@ def evaluate_predictions(y_pred, y_true):
     return cos, r2
 
 
-def fit_ridge(X_train, Y_train, X_test, Y_test, lambdas=(10.0, 50.0, 100.0, 300.0, 1000.0, 3000.0), device="cuda"):
+def fit_ridge(X_train, Y_train, X_test, Y_test, lambdas=(100.0, 500.0, 1000.0, 3000.0, 10000.0, 30000.0, 100000.0, 300000.0), device="cuda"):
     """Closed-form standardized ridge regression on GPU."""
     # Compute standardization stats on train set in float64/float32
     Xt = X_train.float()
@@ -503,18 +520,26 @@ def fit_ridge(X_train, Y_train, X_test, Y_test, lambdas=(10.0, 50.0, 100.0, 300.
 
     chunk = 8192
     for i in range(0, Xt.shape[0], chunk):
-        xb = ((Xt[i : i + chunk].to(device) - m_in) / s_in).double()
-        yb = ((Yt[i : i + chunk].to(device) - m_out) / s_out).double()
-        xtx.addmm_(xb.T, xb)
-        xty.addmm_(xb.T, yb)
+        xb = (Xt[i : i + chunk].to(device) - m_in) / s_in
+        yb = (Yt[i : i + chunk].to(device) - m_out) / s_out
+        xtx.add_((xb.T @ xb).double())
+        xty.add_((xb.T @ yb).double())
 
     X_te_n = ((X_test.float().to(device) - m_in) / s_in).float()
     Y_te = Y_test.float().to(device)
 
     best = None
-    eye = torch.eye(d_in, dtype=torch.float64, device=device)
     for lam in lambdas:
-        W = torch.linalg.solve(xtx + lam * eye, xty).float()
+        A64 = xtx.clone()
+        A64.diagonal().add_(float(lam))
+        L, info = torch.linalg.cholesky_ex(A64.float())
+        if int(info.item()) == 0:
+            W = torch.cholesky_solve(xty.float(), L)
+            if not torch.isfinite(W).all():
+                W = torch.linalg.solve(A64, xty).float()
+        else:
+            W = torch.linalg.solve(A64, xty).float()
+        del A64
         pred = (X_te_n @ W) * s_out + m_out
         cos, r2 = evaluate_predictions(pred, Y_te)
         if best is None or cos > best["cos"]:
@@ -659,8 +684,10 @@ def main():
     if args.prompts_json and os.path.isfile(args.prompts_json):
         with open(args.prompts_json, "r", encoding="utf-8") as f:
             loaded = json.load(f)
-        prompts = [x["prompt"] if isinstance(x, dict) else str(x) for x in loaded][: args.n_prompts]
-        print(f"[CORPUS] Loaded {len(prompts)} diverse prompts from {args.prompts_json}", flush=True)
+        prompts = [x["prompt"] if isinstance(x, dict) else str(x) for x in loaded]
+        random.Random(42).shuffle(prompts)
+        prompts = prompts[: args.n_prompts]
+        print(f"[CORPUS] Loaded {len(prompts)} diverse prompts (shuffled) from {args.prompts_json}", flush=True)
     else:
         prompts = build_prompt_corpus(args.n_prompts)
         print(f"[CORPUS] Generated {len(prompts)} synthetic prompts", flush=True)

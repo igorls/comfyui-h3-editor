@@ -738,6 +738,8 @@ class H3NInferTextEncoder(io.ComfyNode):
                              tooltip="-1 reads final-normalized hidden states; 0..N-1 taps that post-layer residual."),
                 io.Combo.Input("projection", options=["none"] + clipproj.list_projections(), default="none",
                                tooltip="Optional ClipProj projection from models/clip_projections, or 'none' for raw states."),
+                io.Combo.Input("profile", options=list(ninfer_clip.PROFILES), default="auto", optional=True,
+                               tooltip="Target DiT conditioning layout ('auto' reads target_profile from the projection file, defaulting to minimax_h3)."),
                 io.String.Input("api_key", default="", optional=True,
                                 tooltip="Optional bearer token if ninfer-serve was started with --api-key."),
             ],
@@ -745,8 +747,10 @@ class H3NInferTextEncoder(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, url, model="", layer=-1, projection="none", api_key="") -> io.NodeOutput:
-        return io.NodeOutput(ninfer_clip.load(url=url, model=model, layer=layer, projection=projection, api_key=api_key))
+    def execute(cls, url, model="", layer=-1, projection="none", profile="auto", api_key="") -> io.NodeOutput:
+        return io.NodeOutput(
+            ninfer_clip.load(url=url, model=model, layer=layer, projection=projection, api_key=api_key, profile=profile)
+        )
 
 
 class H3HyperFlowLoader(io.ComfyNode):
