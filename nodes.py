@@ -17,6 +17,7 @@ from . import h3lora
 from .twins import with_twins
 from . import hyperflow
 from . import clipproj
+from . import ninfer_clip
 from . import sprite
 from . import media
 from . import holds
@@ -713,6 +714,40 @@ class H3SmallTextEncoder(io.ComfyNode):
         return io.NodeOutput(clipproj.load(clip_name, projection))
 
 
+class H3NInferTextEncoder(io.ComfyNode):
+    """Experimental remote text/vision encoder backed by a resident NInfer server (0 CLIP VRAM in ComfyUI)."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="H3NInferTextEncoder",
+            display_name="H3 NInfer Text Encoder",
+            category="minimax/h3",
+            description=(
+                "Use a running NInfer server (POST /v1/hidden_states) as the CLIP wire, holding zero text-encoder "
+                "weights in ComfyUI VRAM. Leave projection as 'none' for raw hidden-state wiring tests, or pick a "
+                "calibrated ClipProj file."
+            ),
+            inputs=[
+                io.String.Input("url", default=ninfer_clip.DEFAULT_URL,
+                                tooltip="Base URL of ninfer-serve (e.g. http://host.docker.internal:8010)."),
+                io.String.Input("model", default="",
+                                tooltip="Model id to send to NInfer. Leave blank to use the server's default model."),
+                io.Int.Input("layer", default=-1, min=-1, max=128,
+                             tooltip="-1 reads final-normalized hidden states; 0..N-1 taps that post-layer residual."),
+                io.Combo.Input("projection", options=["none"] + clipproj.list_projections(), default="none",
+                               tooltip="Optional ClipProj projection from models/clip_projections, or 'none' for raw states."),
+                io.String.Input("api_key", default="", optional=True,
+                                tooltip="Optional bearer token if ninfer-serve was started with --api-key."),
+            ],
+            outputs=[io.Clip.Output(display_name="clip")],
+        )
+
+    @classmethod
+    def execute(cls, url, model="", layer=-1, projection="none", api_key="") -> io.NodeOutput:
+        return io.NodeOutput(ninfer_clip.load(url=url, model=model, layer=layer, projection=projection, api_key=api_key))
+
+
 class H3HyperFlowLoader(io.ComfyNode):
     """A HyperFlow H3 Flash checkpoint, read from its GGUF or its INT8 safetensors file."""
 
@@ -861,11 +896,14 @@ NODE_CLASS_MAPPINGS = {"H3SpriteGuide": H3SpriteGuide, "H3DefringeMatte": H3Defr
                        "H3VOSR2Video": H3VOSR2Video,
                        "H3StyleGuider": H3StyleGuider,
                        "H3Lora": H3Lora, "H3LoadTake": H3LoadTake, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
-                       "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder}
+                       "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder,
+                       "H3NInferTextEncoder": H3NInferTextEncoder}
 NODE_DISPLAY_NAME_MAPPINGS = {"H3SpriteGuide": "H3 Sprite Motion Guide", "H3DefringeMatte": "H3 Defringe Matte", "H3SpriteSheet": "H3 Sprite Sheet", "H3Take": "H3 Take", "H3LoadClip": "H3 Load Clip", "H3SaveHold": "H3 Save Hold", "H3LoadStill": "H3 Load Still",
                               "H3VOSR2Video": "H3 VOSR2 Video (experimental)",
                               "H3StyleGuider": "H3 Style Guider (experimental)",
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3LoadTake": "H3 Load Take", "H3RefineLatent": "H3 Refine Latent",
-                              "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas", "H3SmallTextEncoder": "H3 Small Text Encoder"}
+                              "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas",
+                              "H3SmallTextEncoder": "H3 Small Text Encoder",
+                              "H3NInferTextEncoder": "H3 NInfer Text Encoder"}
 # The editor's graphs name each node's twin, an id no other pack registers (see twins.py).
 NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS = with_twins(NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS)
