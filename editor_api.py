@@ -350,6 +350,9 @@ def available_models():
         names.add("motion-nodes")
     if store.H3_IMAGE_SAMPLER_NODE in comfy_nodes.NODE_CLASS_MAPPINGS:
         names.add("h3-image-sampler")
+    for node_id in ("PH3ImageConditioning", "MiniMaxH3ImageConditioning", "MiniMaxH3SigmaShift"):
+        if node_id in comfy_nodes.NODE_CLASS_MAPPINGS:
+            names.add("node:" + node_id)
     if "checkpoints" in folder_paths.folder_names_and_paths:
         names.update("motion-checkpoints:" + name for name in folder_paths.get_filename_list("checkpoints"))
     if "model_patches" in folder_paths.folder_names_and_paths:
@@ -2323,7 +2326,10 @@ async def sprite_prop(request):
         return refused(error)
     if body.get("dry_run"):
         return web.json_response({"job": job, "graph": graph})
-    prompt_id = await queue_prompt(graph, body.get("client_id"))
+    try:
+        prompt_id = await queue_prompt(graph, body.get("client_id"))
+    except Refused as error:
+        return refused(plain(error), 502)
     PROP_JOBS[prompt_id] = {
         "id": prompt_id,
         "kind": "prop",

@@ -5908,6 +5908,7 @@ def plan_prop_render(project, folder, spec, seed=None, available=None):
             description=spec.get("description", ""), style=style, camera=camera,
             proportions=spec.get("proportions", "adult"), holding=spec.get("holding", ""),
             width=width, height=height, seed=seed, filename_prefix=prefix, bg_model=bg_model,
+            available=available,
         )
     elif kind == "state_variant":
         if not base_prop:
@@ -5917,7 +5918,7 @@ def plan_prop_render(project, folder, spec, seed=None, available=None):
         )
         graph = h3image.prop_graph(
             prompt_text, width=width, height=height, seed=seed, filename_prefix=prefix,
-            style_ref=style_ref, base_prop=base_prop, bg_model=bg_model,
+            style_ref=style_ref, base_prop=base_prop, bg_model=bg_model, available=available,
         )
     else:
         prompt_text = h3image.prop_prompt(
@@ -5926,7 +5927,7 @@ def plan_prop_render(project, folder, spec, seed=None, available=None):
         )
         graph = h3image.prop_graph(
             prompt_text, width=width, height=height, seed=seed, filename_prefix=prefix,
-            style_ref=style_ref, bg_model=bg_model,
+            style_ref=style_ref, bg_model=bg_model, available=available,
         )
     output_size = list(sprite.validate_tile_size(spec["output_size"])) if spec.get("output_size") else None
     pivot = spec.get("pivot")

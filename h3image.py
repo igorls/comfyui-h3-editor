@@ -10,6 +10,12 @@ except ImportError:
 UNET = "minimax_h3_image_pruned_int8_convrot.safetensors"
 TEXT = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
 VAE = "minimax_h3_image_vae_fp16.safetensors"
+PH3_UNETS = ("p-h3-image_int8_convrot.safetensors", "p-h3-image_bf16.safetensors")
+PH3_BASE_UNETS = ("minimax_h3_ref2va_pruned_int8_convrot.safetensors",)
+PH3_LORAS = ("p-h3-image_lora_bf16.safetensors",)
+PH3_TEXTS = ("p-h3-image_text_encoder_int8_convrot.safetensors", "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors")
+PH3_VAES = ("p-h3-image_vae_bf16.safetensors", "p-h3-image_vae_int8_convrot.safetensors")
+PH3_SIGMAS = "1.0, 0.984753, 0.967905, 0.951688, 0.925372, 0.881923, 0.810083, 0.528718, 0.0"
 STEPS = 6
 MIN_MEGAPIXELS = 4.0
 MIN_PIXELS = int(MIN_MEGAPIXELS * 1_000_000)
@@ -151,20 +157,62 @@ def _still_node(asset):
     return {"class_type": "H3LoadStill", "inputs": {"file": file}}
 
 
+def conditioning_node(available=None):
+    """Return the installed H3-Image conditioning node ID (PH3ImageConditioning in current ComfyUI)."""
+    if available is not None:
+        if "node:PH3ImageConditioning" in available:
+            return "PH3ImageConditioning"
+        if "node:MiniMaxH3ImageConditioning" in available:
+            return "MiniMaxH3ImageConditioning"
+    return "PH3ImageConditioning"
+
+
+def _pick(available, candidates, fallback):
+    if available:
+        for name in candidates:
+            if name in available:
+                return name
+    return fallback
+
+
 def prop_graph(prompt, width=2048, height=2048, seed=0, filename_prefix="props/prop",
-               style_ref=None, base_prop=None, models=None, bg_model=None):
-    """Build a ComfyUI graph for Official MiniMax-H3-Image (>= 4 MP) + optional BiRefNet + H3DefringeMatte."""
+               style_ref=None, base_prop=None, models=None, bg_model=None, available=None):
+    """Build a ComfyUI graph for Official MiniMax-H3-Image / P-H3-Image (>= 4 MP) + optional BiRefNet + H3DefringeMatte."""
     validate_native_size(int(width), int(height))
     models = models or {}
-    unet = models.get("image_unet") or UNET
-    clip = models.get("clip") or TEXT
-    vae = models.get("image_vae") or VAE
+    cond_cls = conditioning_node(available)
+    ph3 = cond_cls == "PH3ImageConditioning"
+    lora = None
+    if ph3:
+        unet = models.get("image_unet") or _pick(available, PH3_UNETS, None)
+        if not unet:
+            lora = _pick(available, PH3_LORAS, PH3_LORAS[0])
+            unet = _pick(available, PH3_BASE_UNETS, PH3_BASE_UNETS[0])
+        clip = models.get("clip") or _pick(available, PH3_TEXTS, PH3_TEXTS[0])
+        vae = models.get("image_vae") or _pick(available, PH3_VAES, PH3_VAES[0])
+    else:
+        unet = models.get("image_unet") or UNET
+        clip = models.get("clip") or TEXT
+        vae = models.get("image_vae") or VAE
     cond_in = {"clip": ["2", 0], "prompt": str(prompt), "width": int(width), "height": int(height)}
     graph = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip, "type": "minimax", "device": "default"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": vae}},
     }
+    model_ref = ["1", 0]
+    if lora:
+        graph["5"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {"model": model_ref, "lora_name": lora, "strength_model": 1.0},
+        }
+        model_ref = ["5", 0]
+    if ph3:
+        graph["4"] = {
+            "class_type": "MiniMaxH3SigmaShift",
+            "inputs": {"model": model_ref, "shift_video": 1.0, "shift_audio": 1.0},
+        }
+        model_ref = ["4", 0]
     refs = [r for r in (style_ref, base_prop) if r is not None]
     if refs:
         cond_in["vae"] = ["3", 0]
@@ -172,15 +220,28 @@ def prop_graph(prompt, width=2048, height=2048, seed=0, filename_prefix="props/p
             nid = str(40 + idx)
             graph[nid] = _still_node(asset)
             cond_in["images.image_%d" % idx] = [nid, 0]
-    graph.update({
-        "10": {"class_type": "MiniMaxH3ImageConditioning", "inputs": cond_in},
-        "11": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["10", 0]}},
-        "15": {"class_type": "KSampler", "inputs": {
-            "model": ["1", 0], "positive": ["10", 0], "negative": ["11", 0], "latent_image": ["10", 1],
-            "seed": int(seed), "steps": STEPS, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0,
-        }},
-        "16": {"class_type": "VAEDecode", "inputs": {"samples": ["15", 0], "vae": ["3", 0]}},
-    })
+    graph["10"] = {"class_type": cond_cls, "inputs": cond_in}
+    if ph3:
+        graph.update({
+            "11": {"class_type": "BasicGuider", "inputs": {"model": model_ref, "conditioning": ["10", 0]}},
+            "12": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+            "13": {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)}},
+            "14": {"class_type": "ManualSigmas", "inputs": {"sigmas": PH3_SIGMAS}},
+            "15": {"class_type": "SamplerCustomAdvanced", "inputs": {
+                "noise": ["13", 0], "guider": ["11", 0], "sampler": ["12", 0],
+                "sigmas": ["14", 0], "latent_image": ["10", 1],
+            }},
+            "16": {"class_type": "VAEDecode", "inputs": {"samples": ["15", 0], "vae": ["3", 0]}},
+        })
+    else:
+        graph.update({
+            "11": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["10", 0]}},
+            "15": {"class_type": "KSampler", "inputs": {
+                "model": model_ref, "positive": ["10", 0], "negative": ["11", 0], "latent_image": ["10", 1],
+                "seed": int(seed), "steps": STEPS, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0,
+            }},
+            "16": {"class_type": "VAEDecode", "inputs": {"samples": ["15", 0], "vae": ["3", 0]}},
+        })
     out_image = ["16", 0]
     if bg_model:
         graph["20"] = {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": bg_model}}
@@ -193,7 +254,7 @@ def prop_graph(prompt, width=2048, height=2048, seed=0, filename_prefix="props/p
 
 def turnaround_graph(view, front_ref, side_ref=None, description="", style="", camera="rpg", proportions="adult",
                      holding="", width=2048, height=2048, seed=0, filename_prefix="turnaround/plate",
-                     models=None, bg_model=None):
+                     models=None, bg_model=None, available=None):
     """Build a 4 MP H3-Image turnaround plate derivation graph from a front (and optional side) plate."""
     if front_ref is None:
         raise ValueError("turnaround derivation needs a front reference image")
@@ -204,7 +265,7 @@ def turnaround_graph(view, front_ref, side_ref=None, description="", style="", c
     return prop_graph(
         text, width=width, height=height, seed=seed, filename_prefix=filename_prefix,
         style_ref=front_ref, base_prop=side_ref,
-        models=models, bg_model=bg_model,
+        models=models, bg_model=bg_model, available=available,
     )
 
 

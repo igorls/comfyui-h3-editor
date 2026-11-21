@@ -96,12 +96,14 @@ class H3ImagePropAndTurnaroundTest(unittest.TestCase):
         self.assertEqual(job["native_size"], [2048, 2048])
         self.assertEqual(job["output_size"], [256, 288])
         self.assertEqual(job["pivot"], [128, 268])
-        self.assertEqual(graph["10"]["class_type"], "MiniMaxH3ImageConditioning")
+        self.assertEqual(graph["10"]["class_type"], "PH3ImageConditioning")
+        self.assertEqual(graph["4"]["class_type"], "MiniMaxH3SigmaShift")
         self.assertEqual(graph["10"]["inputs"]["images.image_1"], ["41", 0])
         self.assertEqual(graph["41"]["inputs"]["file"], "refs/plate_S.png")
         self.assertIn("top foliage canopy", graph["10"]["inputs"]["prompt"])
         self.assertEqual(graph["22"]["class_type"], "H3DefringeMatte")
-        self.assertEqual(graph["15"]["inputs"]["steps"], 6)
+        self.assertEqual(graph["15"]["class_type"], "SamplerCustomAdvanced")
+        self.assertEqual(graph["14"]["class_type"], "ManualSigmas")
 
         # Paired state variant (lantern_unlit -> lantern_lit)
         _, vgraph = project.plan_prop_render(proj, "Glade", {
