@@ -16,6 +16,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { curveLevel, soundEnvelope, setSoundLevel, resumeSoundMixer, disconnectSound } from "../editor/sound-envelope.js";
 import { formatJobMeta, mergeQueueState, relativeTime, summarizeQueue } from "../editor/queue.js";
+import * as writer from "../editor/writer.js";
 
 const source = readFileSync(new URL("../editor/editor.js", import.meta.url), "utf8");
 
@@ -522,4 +523,50 @@ test("managed render queue merges live progress, external ComfyUI jobs, props an
   assert.equal(idleSum.busy, false);
   assert.equal(idleSum.label, "Queue · 1 failed");
   assert.equal(idleSum.summary, "Idle");
+});
+
+test("ollama requests keep_alive: 0 when sharing the GPU with ComfyUI", async () => {
+  assert.deepEqual(writer.chatOptions({ type: "ollama", freeVram: true }), { parameters: { keep_alive: 0 } });
+  assert.equal(writer.chatOptions({ type: "ollama", freeVram: false }), undefined);
+  assert.equal(writer.chatOptions({ type: "openai", freeVram: true }), undefined);
+  assert.equal(writer.chatOptions({ type: "comfyui", freeVram: true }), undefined);
+
+  const realFetch = globalThis.fetch;
+  const bodies = [];
+  let freed = false;
+  let vramChecks = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    if (target === "/queue") return new Response(JSON.stringify({ queue_running: [], queue_pending: [] }), { status: 200 });
+    if (target === "/system_stats") {
+      vramChecks += 1;
+      const free = vramChecks === 1 ? 1024 * 1024 * 1024 : 8 * 1024 * 1024 * 1024;
+      return new Response(JSON.stringify({ devices: [{ type: "cuda", vram_free: free }] }), { status: 200 });
+    }
+    if (target === "/free") {
+      freed = true;
+      return new Response("{}", { status: 200 });
+    }
+    if (target === "http://localhost:11434/api/chat") {
+      bodies.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ message: { role: "assistant", content: "Ready." }, done_reason: "stop" }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw new Error("Unexpected fetch: " + target);
+  };
+  try {
+    const base = { type: "ollama", url: "http://localhost:11434", model: "gemma4-uncensored", key: "" };
+    assert.equal(await writer.test({ ...base, freeVram: true }), "Ready.");
+    assert.equal(freed, true);
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].keep_alive, 0);
+    assert.equal("keep_alive" in (bodies[0].options || {}), false);
+
+    await writer.test({ ...base, freeVram: false });
+    assert.equal(bodies.length, 2);
+    assert.equal("keep_alive" in bodies[1], false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

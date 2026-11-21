@@ -8138,11 +8138,16 @@ function openWriterSetup(then = null) {
     freeBox.addEventListener("change", () => (draft.freeVram = freeBox.checked));
     const freeText = document.createElement("span");
     const freeTitle = document.createElement("b");
-    freeTitle.textContent = "Free ComfyUI's GPU memory before each request";
+    freeTitle.textContent = kind.id === "ollama"
+      ? "Share the GPU with ComfyUI (unload between requests)"
+      : "Free ComfyUI's GPU memory before each request";
     const freeHint = document.createElement("small");
-    freeHint.textContent = "For a model server on this machine, such as llama.cpp, llama-swap, LM Studio or Ollama, when the card is too small "
-      + "for both. ComfyUI unloads its models first, unless a render is running, and the next render loads them again. "
-      + "Have the server unload its own model when it is idle, so that render gets the card back.";
+    freeHint.textContent = kind.id === "ollama"
+      ? "When the card is too small for both, ComfyUI unloads its models before the request (unless a render is running), "
+        + "and Ollama is asked to unload its model as soon as it answers (keep_alive: 0) so the next render gets the card back."
+      : "For a model server on this machine, such as llama.cpp, llama-swap or LM Studio, when the card is too small "
+        + "for both. ComfyUI unloads its models first, unless a render is running, and the next render loads them again. "
+        + "Have the server unload its own model when it is idle, so that render gets the card back.";
     freeText.append(freeTitle, freeHint);
     free.append(freeBox, freeText);
     // A model run by this ComfyUI has no address and needs no key.

@@ -157,6 +157,10 @@ export const lastSeen = () => ({ ...seen });
 // this machine can speak, since a hosted model needs none of it.
 export const freesVram = (given) => Boolean(given.freeVram && provider(given.type).gpu);
 
+// When Ollama shares the GPU with ComfyUI, ask it to unload the model as soon as it answers.
+export const chatOptions = (given) =>
+  given.type === "ollama" && freesVram(given) ? { parameters: { keep_alive: 0 } } : undefined;
+
 const MB = 1024 * 1024;
 
 async function gpuFree() {
@@ -219,7 +223,10 @@ async function askOnce(given, system, user, pictures) {
     const message = pictures.length
       ? [{ type: "text", text: user }, ...pictures.map((picture) => ({ type: "image_url", image_url: { url: picture.url } }))]
       : user;
-    const reply = await model.chat([{ role: "system", content: system }, { role: "user", content: message }]);
+    const reply = await model.chat(
+      [{ role: "system", content: system }, { role: "user", content: message }],
+      chatOptions(given),
+    );
     const content = reply?.message?.content;
     const text = typeof content === "string" ? content
       : Array.isArray(content) ? content.map((part) => (typeof part === "string" ? part : part?.text || "")).join("") : "";
