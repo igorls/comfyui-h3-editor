@@ -196,6 +196,18 @@ voice. Choose who is in each clip, and write @Name in **What happens** to place
 them, or drag their card into the text. Write @Name in **Who speaks** to use
 their voice. A voice can be uploaded, or taken from a clip on the timeline.
 
+**RefMods.** A RefMod is a reference saved as one file by the
+ComfyUI-MiniMaxH3Mod pack. With that pack installed and the file in ComfyUI's
+`models/refmods` folder, there are two ways to use one you already have. **Add**,
+**Add RefMod** in the Cast panel makes a cast member from a RefMod alone, with
+no pictures to upload. Or open a cast member and choose the file under
+**RefMod**, with its strength. The menu lists what the pack's **Load H3
+RefMods** node lists, subfolders included; reload the editor after adding a file,
+and restart ComfyUI if it still does not appear. A member that is only a RefMod renders on the prompt-only
+model, so describe them in the member's description. A member with pictures can
+also get a RefMod made from them: **Make a RefMod from these pictures** in the
+same section.
+
 **The cast catalog.** Press **Save** beside **Catalog** on a cast member to keep
 them for every project, with their pictures and voice. In another project,
 **Add**, **From the catalog** brings in a copy. When you change someone and save
