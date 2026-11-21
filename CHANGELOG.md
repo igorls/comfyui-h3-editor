@@ -5,6 +5,10 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## Unreleased
+
+- **pi-H3 for drafts.** A new model choice, **pi-H3**, drafts in 4 steps on the original MiniMax H3 with the pi-H3 LoRA. A final on it, and **Finish draft**, render on HyperFlow H3 Flash from the draft's own latents, because pi-H3's last step draws harsh skin at the refine size. It needs the two original H3 files and one LoRA file; `docs/models.md` says where to get it.
+
 ## 0.14.0, 2026-11-21
 
 - **Sprites workspace.** Choose **Sprites** beside **Video** to build a character's animations in four or eight directions. Name a loop, describe the movement once and draft each direction with heading-matched references. Compare takes in sync, mirror a direction, and walk the character around an offline test room.

@@ -257,12 +257,14 @@ class ProjectTest(unittest.TestCase):
             self.assertEqual(refine[key], first[key])
 
     def test_each_profile_builds_its_own_graph(self):
-        for name, profile in PROFILES.items():
+        for name, family in PROFILES.items():
             project = new_project("x")
             project["profile"] = name
             for quality in ("draft", "final"):
                 with self.subTest(profile=name, quality=quality):
                     graph = render_graph(project, "x", clip(first={"file": "f.png"}), "t1", quality, 3)
+                    # A family that hands its finals to another one renders them as that one does.
+                    profile = PROFILES[family["finals"]] if quality == "final" and family.get("finals") else family
                     unet = profile["unet"][0]
                     self.assertEqual(graph["1"]["inputs"]["unet_name"], unet)
                     self.assertEqual(graph["10"]["inputs"]["checkpoint"], "ref2va")
@@ -275,9 +277,11 @@ class ProjectTest(unittest.TestCase):
                         self.assertEqual(graph["1"]["class_type"], "UNETLoader")
                         if profile.get("scheduler") == "beta57":
                             self.assertEqual(sigmas["class_type"], "BetaSamplingScheduler")
+                        elif profile.get("sigmas"):
+                            self.assertEqual(sigmas, {"class_type": "ManualSigmas", "inputs": {"sigmas": profile["sigmas"]}})
                         else:
                             self.assertEqual((sigmas["class_type"], sigmas["inputs"]["scheduler"]), ("BasicScheduler", "simple"))
-                    self.assertEqual(sigmas["inputs"]["steps"], profile["steps"][quality])
+                    self.assertEqual(project_module.sigma_steps(sigmas), profile["steps"][quality])
                     if profile.get("lora"):
                         self.assertEqual(graph["94"]["inputs"]["model"], ["1", 0])
                         self.assertEqual(graph["94"]["inputs"]["lora_name"], profile["lora"][0])
@@ -1122,6 +1126,46 @@ class ClipModelTest(unittest.TestCase):
         job, graph = plan_render(project, "x", other["id"], "draft", 3)
         self.assertEqual(graph["1"]["class_type"], "H3HyperFlowLoader")
         self.assertEqual(job["models"]["profile"], "hyperflow")
+
+    def test_pi_h3_drafts_on_its_own_sigmas_and_hands_finals_to_hyperflow(self):
+        pi = PROFILES["pi_h3"]
+        files = set(pi["unet"] + pi["unet_text"]) | {"pi-h3/" + pi["lora"][0]} | FINALS
+        project = new_project("x")
+        made, _ = add_clip(project, {"action": "A keeper walks to the window.", "profile": "pi_h3"})
+        # The LoRA is found in a folder, and loads with ComfyUI's own loader, which applies the tensors it replaces.
+        self.assertEqual({row["id"]: row for row in profile_status(files)}["pi_h3"]["missing"], [])
+        job, draft = plan_render(project, "x", made["id"], "draft", 3, files | HYPERFLOW)
+        self.assertEqual(draft["1"]["inputs"]["unet_name"], pi["unet_text"][0])
+        self.assertEqual(draft["94"], {"class_type": "LoraLoaderModelOnly", "inputs": {
+            "model": ["1", 0], "lora_name": "pi-h3/" + pi["lora"][0], "strength_model": 1.0}})
+        self.assertEqual(draft["5"]["inputs"]["model"], ["94", 0])
+        self.assertEqual(draft["12"], {"class_type": "ManualSigmas", "inputs": {"sigmas": pi["sigmas"]}})
+        self.assertEqual((job["models"]["profile"], job["models"]["steps"], job["models"]["profile_lora_strength"]), ("pi_h3", 4, 1.0))
+        # A final renders on HyperFlow, and says so on the take.
+        job, final = plan_render(project, "x", made["id"], "final", 3, files | HYPERFLOW)
+        self.assertEqual(final["1"]["class_type"], "H3HyperFlowLoader")
+        self.assertEqual(final["12"]["class_type"], "H3HyperFlowSigmas")
+        self.assertNotIn("94", final)
+        self.assertEqual((job["models"]["profile"], job["models"]["steps"]), ("hyperflow", 6))
+        # So does finishing one of its drafts, from that draft's latents.
+        clip_ = project_module.find_clip(project, made["id"])
+        clip_["takes"] = [{"id": "td", "file": "%s_td_00001_.mp4" % made["id"], "subfolder": "h3take_projects/x/clips",
+                           "frames": draft["10"]["inputs"]["length"], "quality": "draft", "seed": 77}]
+        clip_["active"] = "td"
+        job, finish = plan_render(project, "x", made["id"], "finish", None, files | HYPERFLOW)
+        self.assertEqual(finish["15"]["class_type"], "H3LoadTake")
+        self.assertEqual(finish["1"]["class_type"], "H3HyperFlowLoader")
+        self.assertEqual(job["models"]["profile"], "hyperflow")
+        # Without HyperFlow it renders its own final, refining with its last step.
+        job, own = plan_render(project, "x", made["id"], "final", 3, files)
+        self.assertEqual(own["94"]["class_type"], "LoraLoaderModelOnly")
+        self.assertEqual(own["87"], {"class_type": "ManualSigmas", "inputs": {"sigmas": pi["refine_sigmas"]}})
+        self.assertEqual(job["models"]["profile"], "pi_h3")
+        # A clip with a cast picture goes to the ref2va file.
+        add_cast(project, {"name": "Mara", "file": "mara.png"})
+        cast, _ = add_clip(project, {"action": "@Mara waves.", "profile": "pi_h3", "cast": [project["cast"][0]["id"]]})
+        _, graph = plan_render(project, "x", cast["id"], "draft", 3, files)
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], pi["unet"][0])
 
     def test_a_clips_model_brings_its_own_lora_and_refine_steps(self):
         project = new_project("x")

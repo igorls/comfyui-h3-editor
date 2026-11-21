@@ -224,7 +224,9 @@ REFINE_TAIL = "0.675, 0.385, 0.159, 0.0"
 # may have, and a name ending in * matches any file it starts. A family with no fl2va renders
 # prompt-only clips on its ref2va. A HyperFlow file (see is_hyperflow) loads with the pack's
 # loader and its own sigmas; any other file loads with ComfyUI's loader and the simple
-# scheduler. lora is a LoRA the family always samples with. A final's second pass starts at
+# scheduler. lora is a LoRA the family always samples with, loaded by the pack's node or by the
+# node lora_node names. sigmas is the schedule a family samples on in place of a scheduler's.
+# finals names the profile that renders a family's finals. A final's second pass starts at
 # refine_from in its own sigmas, or runs refine_sigmas.
 PROFILES = {
     "hyperflow": {
@@ -250,6 +252,20 @@ PROFILES = {
         "unet_text": ["minimax_h3_fl2va_pruned_int8_convrot.safetensors"],
         "lora": ["minimax_h3_turbo_v4_step600_ema.safetensors", 1.0],
         "steps": {"draft": 6, "final": 6}, "sampler": "euler", "refine_sigmas": REFINE_TAIL,
+    },
+    "pi_h3": {
+        "title": "pi-H3",
+        "hint": "The original H3 with the 4-step pi-H3 LoRA, for drafts. Its finals render on HyperFlow H3 Flash.",
+        "unet": ["minimax_h3_ref2va_pruned_int8_convrot.safetensors"],
+        "unet_text": ["minimax_h3_fl2va_pruned_int8_convrot.safetensors"],
+        # The adapter in ComfyUI's own layout. Besides its LoRA pairs it replaces whole tensors, which only
+        # ComfyUI's loader applies, and it samples on the four sigmas it was distilled for.
+        "lora": ["minimax_pi_h3_4step_fl2va_pruned_rank_64_fp16.safetensors", 1.0], "lora_node": "LoraLoaderModelOnly",
+        "sigmas": "0.99654, 0.96445, 0.89930, 0.69565, 0.0",
+        # At the refine size its own last step draws harsh skin, so a final, or a draft being finished, goes to
+        # HyperFlow, which takes the draft's latents as they are. Without HyperFlow it refines with its last step.
+        "finals": "hyperflow", "refine_sigmas": "0.69565, 0.0",
+        "steps": {"draft": 4, "final": 6}, "sampler": "euler",
     },
     "h3": {
         "title": "MiniMax H3",
@@ -305,8 +321,24 @@ BETA57 = "beta57"
 BETA57_SHAPE = (0.5, 0.7)
 
 
-def sigmas_node(scheduler, steps):
-    """The node that makes a render's sigmas for a scheduler by name."""
+def sigma_steps(node):
+    """How many steps a sigmas node runs: its own count, or one fewer than the sigmas it lists."""
+    inputs = node["inputs"]
+    if "steps" in inputs:
+        return inputs["steps"]
+    return max(1, len([part for part in str(inputs.get("sigmas", "")).split(",") if part.strip()]) - 1)
+
+
+def lora_names(profile):
+    """The names a profile's LoRA may be installed under: as written, then that file in any folder."""
+    name = profile["lora"][0]
+    return [name, name.rsplit(".", 1)[0] + "*"]
+
+
+def sigmas_node(scheduler, steps, sigmas=None):
+    """The node that makes a render's sigmas: a profile's own list, or a scheduler by name."""
+    if sigmas:
+        return {"class_type": "ManualSigmas", "inputs": {"sigmas": sigmas}}
     if scheduler == BETA57:
         return {"class_type": "BetaSamplingScheduler", "inputs": {
             "model": ["5", 0], "steps": steps, "alpha": BETA57_SHAPE[0], "beta": BETA57_SHAPE[1]}}
@@ -380,6 +412,20 @@ def project_profile(project, available=None, clip=None):
     if not isinstance(name, str) or name not in profiles:
         name = installed_profile(available)
     return name, profiles[name]
+
+
+def render_profile(project, available=None, clip=None, quality="draft"):
+    """The profile one render samples with, and its id.
+
+    A draft takes the clip's or the project's profile. So does a final, unless that profile hands its finals to
+    another one whose files are installed.
+    """
+    name, profile = project_profile(project, available, clip)
+    other = profile.get("finals")
+    if quality != "draft" and other in PROFILES:
+        if available is None or next(row for row in profile_status(available) if row["id"] == other)["available"]:
+            return other, PROFILES[other]
+    return name, profile
 
 
 def installed_profile(available=None):
@@ -670,9 +716,9 @@ def text_encoder_node(encoder, available, chosen=None):
     return {"class_type": "CLIPLoader", "inputs": {"clip_name": encoder, "type": "minimax", "device": "default"}}
 
 
-def project_models(project, available=None, clip=None):
+def project_models(project, available=None, clip=None, quality="draft"):
     """The models a render uses: the profile's, with any the project names, except retired ones."""
-    _, profile = project_profile(project, available, clip)
+    _, profile = render_profile(project, available, clip, quality)
     models = dict(MODELS)
     for key, names in MODEL_CHOICES.items():
         models[key] = pick_file(names, available) or names[0]
@@ -680,7 +726,7 @@ def project_models(project, available=None, clip=None):
     models["unet_text"] = pick_file(profile.get("unet_text"), available)
     models["lora"] = realism_lora(available) or MODELS["lora"]
     if profile.get("lora"):
-        models["profile_lora"] = pick_file([profile["lora"][0]], available) or profile["lora"][0]
+        models["profile_lora"] = pick_file(lora_names(profile), available) or profile["lora"][0]
     named = {key: name for key, name in (project.get("models") or {}).items() if name and name not in RETIRED}
     for key in MODEL_CHOICES:
         # A text encoder or VAE the project names but this machine lacks gives way to an installed one.
@@ -703,7 +749,7 @@ def profile_status(available):
         missing = []
         if pick_file(profile["unet"], available) is None:
             missing.append(profile["unet"][0])
-        if profile.get("lora") and pick_file([profile["lora"][0]], available) is None:
+        if profile.get("lora") and pick_file(lora_names(profile), available) is None:
             missing.append(profile["lora"][0])
         rows.append({"id": name, "title": profile["title"], "hint": profile["hint"],
                      "available": not missing, "missing": missing, "steps": profile["steps"],
@@ -1922,12 +1968,12 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     if multi_window and not is_realism_refine:
         # Legacy multi-window relay tiles 124f windows; skip single-pass latent refine (use Sharp RelayVSR instead).
         enlarged = False
-    _, profile = project_profile(project, available, clip)
+    _, profile = render_profile(project, available, clip, quality)
     size = dict(QUALITIES[quality], width=width, height=height, steps=profile["steps"][quality])
     if not enlarged:
         # The project asked for finals at the size they are sampled at.
         size.pop("refine", None)
-    models = project_models(project, available, clip)
+    models = project_models(project, available, clip, quality)
     references = bool(edit) or bool(active_motion) or has_references(project, clip)
     # A family's fl2va model takes a prompt alone. Anything with references goes to its ref2va model.
     unet = models["unet"] if references or not models.get("unet_text") else models["unet_text"]
@@ -1960,7 +2006,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         "9": {"class_type": "H3LivePreview", "inputs": {
             "model": ["5", 0], "audio_vae": ["4", 0], "folder": "%s/%s/preview" % (ROOT, folder)}},
         "11": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": profile["sampler"]}},
-        "12": sigmas_node(profile.get("scheduler"), size["steps"]),
+        "12": sigmas_node(profile.get("scheduler"), size["steps"], profile.get("sigmas")),
         "13": {"class_type": "BasicGuider", "inputs": {"model": ["9", 0], "conditioning": ["10", 0]}},
         "14": {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)}},
         "15": {"class_type": "SamplerCustomAdvanced", "inputs": {
@@ -1987,8 +2033,12 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     model = ["1", 0]
     if profile.get("lora") and models.get("profile_lora"):
         # A LoRA the family always samples with, such as a turbo LoRA.
-        graph["94"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": models["profile_lora"],
-                                                          "strength": profile["lora"][1]}}
+        if profile.get("lora_node"):
+            graph["94"] = {"class_type": profile["lora_node"], "inputs": {
+                "model": model, "lora_name": models["profile_lora"], "strength_model": profile["lora"][1]}}
+        else:
+            graph["94"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": models["profile_lora"],
+                                                              "strength": profile["lora"][1]}}
         model = ["94", 0]
     # A linked clip holds frames of a final that already went through the Realism Slider, and carries their look
     # on. At full strength the slider adds its texture on top of that texture, and a chain of extensions grows
@@ -4689,7 +4739,7 @@ def render_models(graph):
         used["upscaler"] = graph["81"]["inputs"]["model_name"]
     if "94" in graph:
         used["profile_lora"] = graph["94"]["inputs"]["lora_name"]
-        used["profile_lora_strength"] = graph["94"]["inputs"]["strength"]
+        used["profile_lora_strength"] = graph["94"]["inputs"].get("strength", graph["94"]["inputs"].get("strength_model"))
     if "95" in graph:
         used["lora"] = graph["95"]["inputs"]["lora_name"]
         used["lora_strength"] = graph["95"]["inputs"]["strength"]
@@ -5049,9 +5099,9 @@ def _plan_edit_finish(project, folder, clip, base_draft, composite_source, exist
     merged = merge_ranges([*outer, *existing_final_ranges, [target_in, target_out]])
     job = {"clip": clip_id, "take": take, "quality": "final", "seed": int(seed),
            "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
-           "models": dict(render_models(graph), profile=project_profile(work_project, available, work_clip)[0],
-                          profile_title=project_profile(work_project, available, work_clip)[1]["title"],
-                          steps=graph["12"]["inputs"]["steps"], sampler=graph["11"]["inputs"]["sampler_name"]),
+           "models": dict(render_models(graph), profile=render_profile(work_project, available, work_clip, "final")[0],
+                          profile_title=render_profile(work_project, available, work_clip, "final")[1]["title"],
+                          steps=sigma_steps(graph["12"]), sampler=graph["11"]["inputs"]["sampler_name"]),
            "finished": (base_draft or composite_source)["id"],
            "edit": edit_meta,
            "size": list(take_size(project, orig_source)),
@@ -5119,9 +5169,9 @@ def _plan_partial_finish(project, folder, clip, base_draft, composite_source, ex
     merged = merge_ranges([*existing_final_ranges, [req_in, req_out]])
     job = {"clip": clip_id, "take": take, "quality": "final", "seed": int(seed),
            "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
-           "models": dict(render_models(graph), profile=project_profile(project, available, profile_clip)[0],
-                          profile_title=project_profile(project, available, profile_clip)[1]["title"],
-                          steps=graph["12"]["inputs"]["steps"], sampler=graph["11"]["inputs"]["sampler_name"]),
+           "models": dict(render_models(graph), profile=render_profile(project, available, profile_clip, "final")[0],
+                          profile_title=render_profile(project, available, profile_clip, "final")[1]["title"],
+                          steps=sigma_steps(graph["12"]), sampler=graph["11"]["inputs"]["sampler_name"]),
            "finished": (base_draft or composite_source)["id"],
            "part": {"in": req_in, "out": req_out},
            "splice": {"file": composite_source["file"], "subfolder": composite_source.get("subfolder", ""),
@@ -5244,9 +5294,9 @@ def plan_render(project, folder, clip_id, quality, seed=None, available=None, de
         saved["motion"] = copy.deepcopy(original["motion"])
     job = {"clip": clip_id, "take": take, "quality": quality, "seed": int(seed),
            "saved": saved,
-           "models": dict(render_models(graph), profile=project_profile(project, available, clip)[0],
-                          profile_title=project_profile(project, available, clip)[1]["title"],
-                          steps=graph["12"]["inputs"]["steps"],
+           "models": dict(render_models(graph), profile=render_profile(project, available, clip, quality)[0],
+                          profile_title=render_profile(project, available, clip, quality)[1]["title"],
+                          steps=sigma_steps(graph["12"]),
                           sampler=(graph["11"]["inputs"].get("sampler_name")
                                    or graph["11"]["inputs"].get("sampler")
                                    or graph["11"]["class_type"]))}

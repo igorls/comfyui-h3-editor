@@ -294,9 +294,9 @@ needs a render.
 `set_project`: `fields`: `style` (applies to every clip), `format` (a positive integer
 ratio between `1:8` and `8:1`, including `3:2`, `4:3`, `7:5` and `21:9`),
 `language` (for example `English` or `Portuguese`), and `profile`, the checkpoint
-family new renders use (`hyperflow`, the default, `h3_turbo`, `h3`, `singularity`, `dasiwa`
+family new renders use (`hyperflow`, the default, `h3_turbo`, `pi_h3`, `h3`, `singularity`, `dasiwa`
 `dasiwa_turbo`, `dasiwa_v5` or `eros`). `GET /projects` lists the profiles with whether each is installed;
-pick only an `available` one. A new project starts on the first installed profile, and a
+pick only an `available` one. `pi_h3` is for drafts: its finals, and its drafts when finished, render on `hyperflow`. A new project starts on the first installed profile, and a
 project that names none renders on it. The format sets new renders and imports.
 Export fits every clip to the widest rendered take on the timeline.
 
