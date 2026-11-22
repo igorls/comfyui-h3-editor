@@ -1114,8 +1114,18 @@ def cast_pictures(project, clip):
     ]
     first_pin = bool(frame_of(clip, "first"))
     last_pin = bool(frame_of(clip, "last"))
+    pinned = frame_of(clip, "first") or frame_of(clip, "last")
+    if direction and pinned:
+        # The clip's own pinned frame shows the character in its heading. A member with view-tagged pictures and
+        # none for this heading (every diagonal, or west with no left view) would bring views of other headings,
+        # and H3 turns the body to them mid-take: a north-east idle pinned at both ends swung to the back view
+        # and returned. The pinned picture stands in as that member's picture.
+        have = [
+            [pinned] if pictures and not sprite.heading_matched(pictures, direction) else pictures
+            for pictures in have
+        ]
     if config and not first_pin and not last_pin and (config.get("motion") == "idle" or config.get("animation")):
-        if any(have):
+        if any(sprite.heading_matched(pictures, direction) for pictures in have):
             first_pin = last_pin = True
     room = H3_PICTURES - first_pin - last_pin
     taken = [0] * len(members)
@@ -1134,9 +1144,12 @@ def sprite_auto_pin(project, clip):
     if frame_of(clip, "first") or frame_of(clip, "last"):
         return None
     shown = cast_pictures(project, clip)
-    if not shown:
-        return None
-    return shown[0][1][0]
+    # A view of another heading pinned at both ends would hold the whole take on that heading: the back view
+    # for a north-east idle. Only a picture of this heading, or an untagged one, is pinned.
+    for _, pictures in shown:
+        if sprite.heading_matched(pictures, config.get("direction")):
+            return pictures[0]
+    return None
 
 
 def clip_refmods(project, clip, available=None):
@@ -1310,9 +1323,15 @@ def clip_prompt(project, clip):
     return compose_prompt(style, action, **fields)
 
 
-def still_node(asset):
+def still_node(asset, backdrop=None, fit=None):
+    """Load a picture. backdrop "white" lays a transparent one on white; fit (width, height) shows it whole at that size."""
     file = "%s/%s" % (asset["subfolder"], asset["file"]) if asset.get("subfolder") else asset["file"]
-    return {"class_type": "H3LoadStill", "inputs": {"file": file}}
+    inputs = {"file": file}
+    if backdrop:
+        inputs["backdrop"] = backdrop
+    if fit:
+        inputs["width"], inputs["height"] = int(fit[0]), int(fit[1])
+    return {"class_type": "H3LoadStill", "inputs": inputs}
 
 
 def motion_prompt(motion, user_prompt="", ref_count=1, *, refine_pass=False):
@@ -2205,18 +2224,23 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         first = last = auto_pin
     elif sp_pin and not first:
         first = sp_pin
+    # A sprite is drawn on white, and its pictures are often cutouts. Loaded as they are, their transparency turns
+    # black and the take fades from black to the white the prompt asks for. A pinned picture of another shape than
+    # the canvas (a portrait picture on a square canvas) is shown whole, where it would be cropped to fill it.
+    sprite_still = dict(backdrop="white") if config else {}
+    sprite_pin = dict(sprite_still, fit=(size["width"], size["height"])) if config else {}
     if first:
-        graph["40"] = still_node(first)
+        graph["40"] = still_node(first, **sprite_pin)
         take_inputs["start_image"] = ["40", 0]
     if last:
-        graph["41"] = still_node(last)
+        graph["41"] = still_node(last, **sprite_pin)
         take_inputs["end_image"] = ["41", 0]
     take_inputs["anchor"] = "both" if first and last else "start" if first else "end" if last else "none"
     if sp_pin and not guides:
         stride = sp_pin["stride"]
         sp_frames = [i for i in (stride, 2 * stride) if 0 < i < length]
         if sp_frames:
-            graph["209"] = still_node(sp_pin)
+            graph["209"] = still_node(sp_pin, **sprite_pin)
             take_inputs["mid_frames"] = ", ".join(str(i) for i in sp_frames)
             for idx, _ in enumerate(sp_frames):
                 take_inputs["mid_images.mid_image_%s" % idx] = ["209", 0]
@@ -2226,7 +2250,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             # A member's pictures sit together, in the order the prompt numbers them.
             for asset in pictures:
                 node = str(50 + index)
-                graph[node] = still_node(asset)
+                graph[node] = still_node(asset, **sprite_still)
                 take_inputs["ref_images.ref_image_%s" % index] = [node, 0]
                 index += 1
     voice = clip_voice(project, clip)

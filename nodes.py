@@ -385,14 +385,22 @@ class H3LoadStill(io.ComfyNode):
             display_name="H3 Load Still",
             category="minimax/h3",
             description="Read a picture from the output folder. Used by the editor for references and first and last frames.",
-            inputs=[io.String.Input("file", tooltip="Path inside the output folder.")],
+            inputs=[
+                io.String.Input("file", tooltip="Path inside the output folder."),
+                io.Combo.Input("backdrop", options=["none", "white"], default="none", optional=True,
+                               tooltip="white lays a transparent picture on white. none drops the transparency, which leaves a cutout on black."),
+                io.Int.Input("width", default=0, min=0, max=8192, optional=True,
+                             tooltip="With height, fit the whole picture inside this size and fill the rest. 0 leaves the picture as it is."),
+                io.Int.Input("height", default=0, min=0, max=8192, optional=True),
+            ],
             outputs=[io.Image.Output(display_name="image")],
         )
 
     @classmethod
-    def execute(cls, file) -> io.NodeOutput:
+    def execute(cls, file, backdrop="none", width=0, height=0) -> io.NodeOutput:
         with Image.open(output_file(file)) as image:
-            pixels = np.array(ImageOps.exif_transpose(image).convert("RGB")).astype(np.float32) / 255.0
+            image = sprite.still(ImageOps.exif_transpose(image), backdrop, width, height)
+        pixels = np.array(image).astype(np.float32) / 255.0
         return io.NodeOutput(torch.from_numpy(pixels)[None])
 
 

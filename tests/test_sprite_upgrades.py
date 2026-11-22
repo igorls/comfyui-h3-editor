@@ -310,6 +310,56 @@ class SpriteEfficiencyPinningAndViewRoutingTest(unittest.TestCase):
         self.assertNotIn("Loop the movement", cgraph["10"]["inputs"]["prompt"])
         self.assertIn("Perform the full gesture", cgraph["10"]["inputs"]["prompt"])
 
+    def test_pinned_heading_picture_replaces_views_of_other_headings(self):
+        # A north-east clip pinned to its own picture: the back and side views would turn the body mid-take.
+        pin = {"file": "plate_NE.png", "subfolder": "refs"}
+        project.update_clip(self.proj, self.clip["id"], {
+            "sprite": {"direction": "NE", "motion": "idle", "canvas": "square"}, "first": pin, "last": pin,
+        })
+        shown = project.cast_pictures(self.proj, self.clip)
+        self.assertEqual([p["file"] for p in shown[0][1]], ["plate_NE.png"])
+        _, graph = project.plan_render(self.proj, "HeroKit", self.clip["id"], "draft", seed=3)
+        take = graph["10"]["inputs"]
+        self.assertEqual(graph[take["ref_images.ref_image_0"][0]]["inputs"]["file"], "refs/plate_NE.png")
+        self.assertNotIn("ref_images.ref_image_1", take)
+        self.assertIn("<Subject 1> is", take["prompt"])
+        self.assertIn("in <Picture 3>.", take["prompt"])
+
+        # A cardinal heading with its own view keeps that view beside the pin.
+        project.update_clip(self.proj, self.clip["id"], {"sprite": {"direction": "N", "motion": "idle"}})
+        shown = project.cast_pictures(self.proj, self.clip)
+        self.assertEqual([p["file"] for p in shown[0][1]], ["plate_N.png"])
+
+    def test_diagonal_idle_is_not_auto_pinned_to_another_heading(self):
+        project.update_clip(self.proj, self.clip["id"], {"sprite": {"direction": "NE", "motion": "idle"}})
+        self.assertIsNone(project.sprite_auto_pin(self.proj, self.clip))
+        _, graph = project.plan_render(self.proj, "HeroKit", self.clip["id"], "draft", seed=4)
+        self.assertEqual(graph["10"]["inputs"]["anchor"], "none")
+        self.assertEqual(len(project.cast_pictures(self.proj, self.clip)[0][1]), 2)
+
+    def test_sprite_stills_load_on_white_and_pins_fit_the_canvas(self):
+        pin = {"file": "plate_NE.png", "subfolder": "refs"}
+        project.update_clip(self.proj, self.clip["id"], {
+            "sprite": {"direction": "NE", "motion": "idle", "canvas": "square"}, "first": pin, "last": pin,
+        })
+        _, graph = project.plan_render(self.proj, "HeroKit", self.clip["id"], "draft", seed=3)
+        want = {"file": "refs/plate_NE.png", "backdrop": "white", "width": 512, "height": 512}
+        self.assertEqual(graph["40"]["inputs"], want)
+        self.assertEqual(graph["41"]["inputs"], want)
+        self.assertEqual(graph["50"]["inputs"], {"file": "refs/plate_NE.png", "backdrop": "white"})
+        # A clip that is not a sprite loads its pictures as before.
+        self.assertEqual(project.still_node(pin), {"class_type": "H3LoadStill", "inputs": {"file": "refs/plate_NE.png"}})
+
+        cutout = Image.new("RGBA", (256, 384), (0, 0, 0, 0))
+        ImageDraw.Draw(cutout).rectangle((100, 20, 150, 370), fill=(20, 20, 80, 255))
+        out = sprite.still(cutout, "white", 512, 512)
+        self.assertEqual((out.mode, out.size), ("RGB", (512, 512)))
+        self.assertEqual(out.getpixel((2, 2)), (255, 255, 255))      # the filled side
+        self.assertEqual(out.getpixel((90, 256)), (255, 255, 255))   # transparency, laid on white
+        box = Image.eval(out.convert("L"), lambda v: 255 if v < 128 else 0).getbbox()
+        self.assertTrue(box[1] > 0 and box[3] < 512, box)            # head and feet inside the canvas
+        self.assertEqual(sprite.still(cutout).getpixel((2, 2)), (0, 0, 0))
+
     def test_sprite_skips_audio_decode_and_save_hold_when_not_refining(self):
         project.update_clip(self.proj, self.clip["id"], {"sprite": {"direction": "S", "canvas": "square"}})
         _, graph = project.plan_render(self.proj, "HeroKit", self.clip["id"], "draft", seed=5)

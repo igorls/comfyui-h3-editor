@@ -162,6 +162,56 @@ def filter_cast_pictures(pictures, direction):
     return out
 
 
+HEADING_VIEW = {"S": "front", "N": "back", "E": "side", "W": "left"}
+
+
+def heading_matched(pictures, direction):
+    """Is the first of these pictures one of the character facing this heading, as far as its view tag says.
+
+    Untagged pictures count as matched, as they did before view tags. A diagonal has no view tag of its own,
+    so a tagged picture never matches one.
+    """
+    pictures = [p for p in pictures or () if isinstance(p, dict)]
+    if not pictures:
+        return False
+    if not any(p.get("view") for p in pictures):
+        return True
+    view = pictures[0].get("view")
+    return bool(view) and normalize_view(view) == HEADING_VIEW.get(direction)
+
+
+def still(image, backdrop="none", width=0, height=0):
+    """A reference picture as RGB: a transparent one laid on white, and the whole picture fitted inside a canvas.
+
+    Dropping the transparency of a cutout leaves it on black, and a take drawn on white then fades from black
+    to white. A pinned frame of another shape than the canvas is cropped to fill it, which cuts the head and
+    feet off a portrait picture on a square canvas; fitted, the rest is filled with white or the picture's
+    own border colour.
+    """
+    import numpy as np
+    from PIL import Image
+
+    if backdrop not in ("none", "white"):
+        raise ValueError("backdrop must be none or white")
+    if backdrop == "white" and (image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info):
+        rgba = image.convert("RGBA")
+        image = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        image.alpha_composite(rgba)
+    image = image.convert("RGB")
+    if not (width and height) or image.size == (width, height):
+        return image
+    if backdrop == "white":
+        fill = (255, 255, 255)
+    else:
+        rgb = np.asarray(image)
+        fill = tuple(int(v) for v in np.median(np.concatenate((rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1])), axis=0))
+    scale = min(width / image.width, height / image.height)
+    size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    canvas = Image.new("RGB", (width, height), fill)
+    canvas.paste(image.resize(size, Image.Resampling.LANCZOS), ((width - size[0]) // 2, (height - size[1]) // 2))
+    return canvas
+
+
 def _clean_file_ref(ref, what):
     if (
         not isinstance(ref, dict)

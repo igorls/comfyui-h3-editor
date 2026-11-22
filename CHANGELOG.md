@@ -5,6 +5,10 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## Unreleased
+
+- **Sprites hold a diagonal heading.** A north-east, north-west, south-east or south-west clip that pins its own picture no longer takes the cast's back, front and side views as references, which turned the character to those views partway through a take; the pinned picture stands in for them. An idle with no picture for its heading is no longer pinned to the back or front view. Sprite pictures with a transparent background are laid on white, so a take no longer fades between black and white, and a pinned picture of another shape than the canvas is shown whole where a portrait picture on the square canvas lost its head and feet. For agents: `H3LoadStill` takes optional `backdrop`, `width` and `height`.
+
 ## 0.15.0, 2026-11-22
 
 - **Visual RefMod picker, sidecar previews and inline controls.** **Cast → Add → Add RefMod** now opens a searchable picker for every RefMod in `models/refmods`, with a live **Refresh** button and stem-based default cast naming. Same-name `.png`, `.jpg` or `.webp` sidecar images next to `.safetensors` files (such as those saved with ComfyUI-H3RefModPicker) appear automatically as thumbnails across the picker, Cast tiles, inspector, clip cast pills, catalog and Sprites workspace. The **RefMod** section (**RefMod file**, inline **Refresh** and **Strength**) now sits directly inside the **Cast member** inspector panel, the cast thumbnail opens the full edit dialog, and a layout bug that mispositioned RefMod Cast tiles and left newly added cast members on the Motion tab is fixed. For agents: `GET /refmods` refreshes the list live, `GET /refmods/preview?file=...` serves sidecar previews, and `GET /projects` includes `refmods.previews`.
