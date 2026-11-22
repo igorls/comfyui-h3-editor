@@ -5,10 +5,13 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
-## Unreleased
+## 0.15.0, 2026-11-22
 
+- **Visual RefMod picker, sidecar previews and inline controls.** **Cast → Add → Add RefMod** now opens a searchable picker for every RefMod in `models/refmods`, with a live **Refresh** button and stem-based default cast naming. Same-name `.png`, `.jpg` or `.webp` sidecar images next to `.safetensors` files (such as those saved with ComfyUI-H3RefModPicker) appear automatically as thumbnails across the picker, Cast tiles, inspector, clip cast pills, catalog and Sprites workspace. The **RefMod** section (**RefMod file**, inline **Refresh** and **Strength**) now sits directly inside the **Cast member** inspector panel, the cast thumbnail opens the full edit dialog, and a layout bug that mispositioned RefMod Cast tiles and left newly added cast members on the Motion tab is fixed. For agents: `GET /refmods` refreshes the list live, `GET /refmods/preview?file=...` serves sidecar previews, and `GET /projects` includes `refmods.previews`.
 - **LightX2V H3 Turbo.** A new model choice, **LightX2V H3 Turbo**, renders on the original MiniMax H3 with LightX2V's 8-step Turbo LoRAs: 4 steps for a draft, 8 for a final. It takes two LoRA files, one for clips with a cast picture or another reference and one for clips that are only a prompt, and the editor picks the right one for each clip. `docs/models.md` says where to get them. For agents: `profile` `lightx2v`, and `GET /projects` lists a profile's second LoRA as `lora_text`.
 - **pi-H3 for drafts.** A new model choice, **pi-H3**, drafts in 4 steps on the original MiniMax H3 with the pi-H3 LoRA. A final on it, and **Finish draft**, render on HyperFlow H3 Flash from the draft's own latents, because pi-H3's last step draws harsh skin at the refine size. It needs the two original H3 files and one LoRA file; `docs/models.md` says where to get it.
+- **NInfer remote text/vision encoder.** Expanded external NInfer encoder support for MiniMax H3 v4.1 and Qwen-Image 2.1 v3.1 with sequence connectors and calibration tooling, keeping text encoder weights off ComfyUI VRAM.
+- Fixed the Motion showcase wipe line on the project site to stay directly under the pointer while dragging.
 
 ## 0.14.0, 2026-11-21
 
