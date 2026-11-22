@@ -452,7 +452,10 @@ custom node pack: `"refmod": {"file": "hero_v1", "strength": 1.0}` in `add_cast`
 `GET /projects`, and `strength` runs from 0 to 1. It works beside pictures or in place of
 them: a member that is only a RefMod renders on the prompt-only model, with `@Name` written
 out as the name and description. `GET /projects` gives `refmods` as
-`{"installed", "files"}`; when the pack is not installed, or the file is missing, renders
+`{"installed", "files", "previews"}` (`previews` maps each RefMod name that has a same-stem
+`.png`/`.jpg`/`.jpeg`/`.webp` sidecar image in `models/refmods` to its mtime); `GET /refmods`
+refreshes that list live without reloading ComfyUI, and `GET /refmods/preview?file=<name>`
+serves the sidecar image. When the pack is not installed, or the file is missing, renders
 leave the RefMod out. A take records the ones it used in `models.refmods`.
 
 `make_refmod`: `cast`, optional `name` (the default is the member's name, in lower case with

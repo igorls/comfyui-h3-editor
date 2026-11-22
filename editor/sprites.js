@@ -426,6 +426,13 @@ export function installSprites(editor) {
         }
         refs.append(wrap);
       }
+      if (cast.refmod && editor.refmodVisual) {
+        const wrap = document.createElement("div");
+        wrap.className = "sprite-ref-item sprite-ref-mod";
+        wrap.title = "RefMod: " + cast.refmod.file;
+        wrap.append(editor.refmodVisual(cast.refmod.file, { alt: cast.name + " RefMod" }));
+        refs.append(wrap);
+      }
       const edit = button("Edit references", () => editor.editCast(cast.id));
       edit.dataset.spriteFocus = "references";
       refs.append(edit);

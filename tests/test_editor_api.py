@@ -422,5 +422,71 @@ class MotionAudioAndPromptEditTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("90", r_by_id["sampling"]["nodes"])
 
 
+class RefModApiRoutesTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.models_dir = os.path.join(self.tmp.name, "models")
+        self.output_dir = os.path.join(self.tmp.name, "output")
+        self.refmods_dir = os.path.join(self.models_dir, "refmods")
+        os.makedirs(self.refmods_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.listed = ["None", "Fenka.safetensors", "Kotya.safetensors", "sub/Sarah.safetensors", "Plain.safetensors"]
+
+        class FakeLoader:
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {"required": {"mod_1": (list(self.listed),)}}
+
+        self.node_mappings = {
+            "MiniMaxH3RefModsLoader": FakeLoader,
+            "MiniMaxH3RefModApply": object(),
+        }
+        self.api, self.folder_paths, self.comfy_nodes = _load_editor_api(
+            self.models_dir, self.output_dir, self.node_mappings, {},
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run_with_stubs(self):
+        return mock.patch.dict(sys.modules, {"folder_paths": self.folder_paths, "nodes": self.comfy_nodes})
+
+    async def test_refmods_status_finds_sidecar_previews_and_refresh_clears_cache(self):
+        web = self.api.web
+
+        os.makedirs(os.path.join(self.refmods_dir, "sub"), exist_ok=True)
+        with open(os.path.join(self.refmods_dir, "Fenka.JPG"), "wb") as f:
+            f.write(b"\xff\xd8\xff\xd9")
+        with open(os.path.join(self.refmods_dir, "Kotya.preview.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+        with open(os.path.join(self.refmods_dir, "sub", "Sarah.webp"), "wb") as f:
+            f.write(b"RIFFxxxxWEBP")
+        # Decoy image outside refmods must never be returned via traversal.
+        with open(os.path.join(self.models_dir, "secret.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+
+        self.folder_paths.filename_list_cache["refmods"] = ("stale",)
+        with self._run_with_stubs():
+            resp = await self.api.refmods_list(_FakeRequest())
+            data = json.loads(resp.text)
+            self.assertNotIn("refmods", self.folder_paths.filename_list_cache)
+            self.assertTrue(data["installed"])
+            self.assertEqual(data["files"], ["Fenka.safetensors", "Kotya.safetensors", "sub/Sarah.safetensors", "Plain.safetensors"])
+            self.assertEqual(set(data["previews"].keys()), {"Fenka.safetensors", "Kotya.safetensors", "sub/Sarah.safetensors"})
+
+            # Safe preview serving
+            file_resp = await self.api.refmod_preview(_FakeRequest(query={"file": "sub/Sarah.safetensors"}))
+            self.assertIsInstance(file_resp, web.FileResponse)
+            self.assertEqual(os.path.realpath(str(file_resp._path)), os.path.realpath(os.path.join(self.refmods_dir, "sub", "Sarah.webp")))
+
+            # Missing preview or unknown/traversal names are refused with 404 / None
+            self.assertIsNone(self.api.refmod_preview_path("../secret.safetensors"))
+            self.assertIsNone(self.api.refmod_preview_path("/secret.safetensors"))
+            self.assertIsNone(self.api.refmod_preview_path("C:\\secret.safetensors"))
+            for bad in ("Plain.safetensors", "../secret.safetensors", "Missing.safetensors", ""):
+                with self.assertRaises(web.HTTPNotFound):
+                    await self.api.refmod_preview(_FakeRequest(query={"file": bad}))
+
+
 if __name__ == "__main__":
     unittest.main()

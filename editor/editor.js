@@ -100,7 +100,7 @@ const state = {
   motion: null,
   checkpoints: [],
   presets: [],
-  refmods: { installed: false, files: [] },
+  refmods: { installed: false, files: [], previews: {} },
   encoders: { text_encoders: [], projections: {}, vaes: [], auto: {}, missing: [] },
   samplers: [],
   schedulers: [],
@@ -886,7 +886,7 @@ function voiceSection(person) {
     player.preload = "none";
     player.src = assetUrl(person.voice);
     box.append(player);
-    if (person.file) button("Remove voice", () => setVoice(person, null));
+    if (person.file || person.refmod) button("Remove voice", () => setVoice(person, null));
   }
   button(person.voice ? "Replace with a file" : "Upload a voice", async () => {
     const file = await pickFile($("voiceFile"));
@@ -1138,14 +1138,14 @@ function castPicker(clip) {
     const pick = document.createElement("button");
     pick.className = "pick" + (on ? " on" : "");
     pick.setAttribute("aria-pressed", String(on));
-    // A member that is only a RefMod has no picture to show.
-    const image = document.createElement(person.file ? "img" : "span");
+    // A member that is only a RefMod uses its sidecar preview when present, or a compact RefMod mark.
+    let image;
     if (person.file) {
+      image = document.createElement("img");
       image.alt = "";
       image.src = assetUrl(person);
     } else {
-      image.className = "mod-mark";
-      image.textContent = "RefMod";
+      image = refmodVisual(person.refmod?.file, { compact: true });
     }
     const name = document.createElement("span");
     name.textContent = person.name;
@@ -1178,20 +1178,21 @@ function renderCast() {
     button.className = "person" + (person.id === state.person ? " on" : "") + (person.voice && person.file ? " voiced" : "");
     button.dataset.person = person.id;
     if (person.voice) button.title = person.file ? person.name + " has a voice" : person.name + " is a voice";
+    else if (person.refmod && !person.file) button.title = person.name + " · RefMod: " + person.refmod.file;
     let image;
     if (person.file) {
       image = document.createElement("img");
       image.alt = "";
       image.src = assetUrl(person);
     } else if (person.refmod) {
-      image = document.createElement("span");
-      image.className = "mod-mark";
-      image.textContent = "RefMod";
+      const sameName = refmodLabel(person.refmod.file).toLowerCase() === String(person.name || "").trim().toLowerCase();
+      image = refmodVisual(person.refmod.file, { alt: "", showName: !sameName });
     } else {
       image = document.createElement("span");
       image.className = "voice-mark";
     }
     const name = document.createElement("span");
+    name.className = "person-name";
     name.textContent = person.name;
     button.append(image, name);
     button.draggable = true;
@@ -1209,6 +1210,7 @@ function renderCast() {
       state.bin = null;
       state.effect = null;
       state.sound = null;
+      state.tab = "shot";
       renderAll();
     });
     return button;
@@ -1217,31 +1219,150 @@ function renderCast() {
 
 const CAST_PICTURES = 8;
 
+function refmodLabel(file) {
+  const base = String(file || "").replaceAll("\\", "/").split("/").pop() || "";
+  return base.replace(/\.(safetensors|pt|pth|bin)$/i, "") || base;
+}
+
+function refmodFolder(file) {
+  const parts = String(file || "").replaceAll("\\", "/").split("/").filter(Boolean);
+  return parts.length > 1 ? parts.slice(0, -1).join("/") : "";
+}
+
+function refmodPreviewUrl(file) {
+  const rev = file && state.refmods?.previews?.[file];
+  if (!rev) return null;
+  return "/h3take/api/refmods/preview?file=" + encodeURIComponent(file) + "&v=" + encodeURIComponent(rev);
+}
+
+function uniqueCastName(base) {
+  const cast = state.project?.cast || [];
+  const taken = new Set(cast.map((p) => String(p.name || "").trim().toLowerCase()));
+  const clean = String(base || "").trim().slice(0, 60);
+  if (!clean) return "Person " + (cast.length + 1);
+  if (!taken.has(clean.toLowerCase())) return clean;
+  for (let n = 2; n < 1000; n++) {
+    const candidate = clean + " " + n;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  return clean;
+}
+
+function syncRefmodMenu() {
+  const button = $("addRefmod");
+  if (button) button.hidden = !state.refmods?.installed;
+}
+
+function refmodFallbackMark(file, { compact = false, showName = true } = {}) {
+  const mark = document.createElement("span");
+  mark.className = "mod-mark";
+  mark.append(icon("layers"));
+  if (!compact) {
+    const label = showName && file ? refmodLabel(file) : "";
+    if (label) {
+      const name = document.createElement("span");
+      name.className = "mod-mark-name";
+      name.textContent = label;
+      mark.append(name);
+    }
+    const tag = document.createElement("span");
+    tag.className = "mod-mark-tag";
+    tag.textContent = "RefMod";
+    mark.append(tag);
+  }
+  return mark;
+}
+
+function refmodVisual(file, { compact = false, badge = true, showName = true, alt = "" } = {}) {
+  const url = refmodPreviewUrl(file);
+  if (!url) return refmodFallbackMark(file, { compact, showName });
+  const wrap = document.createElement("span");
+  wrap.className = "thumb-refmod";
+  const image = document.createElement("img");
+  image.alt = alt;
+  image.src = url;
+  image.addEventListener("error", () => wrap.replaceWith(refmodFallbackMark(file, { compact, showName })));
+  wrap.append(image);
+  if (badge && !compact) {
+    const pill = document.createElement("span");
+    pill.className = "refmod-badge";
+    pill.textContent = "RefMod";
+    wrap.append(pill);
+  }
+  return wrap;
+}
+
+async function refreshRefmods({ quiet = false } = {}) {
+  try {
+    const next = await api("/refmods");
+    const prevKey = JSON.stringify(state.refmods);
+    state.refmods = {
+      installed: Boolean(next?.installed),
+      files: next?.files || [],
+      previews: next?.previews || {},
+    };
+    syncRefmodMenu();
+    const changed = JSON.stringify(state.refmods) !== prevKey;
+    if (changed) {
+      renderCast();
+      renderInspector();
+    }
+    if (!quiet) {
+      const count = state.refmods.files.length;
+      toast(count ? "Found " + count + (count === 1 ? " RefMod." : " RefMods.") : "No RefMods found in models/refmods.");
+    }
+    return { refmods: state.refmods, changed };
+  } catch (error) {
+    if (!quiet) toast(error.message, true);
+    return { refmods: state.refmods, changed: false };
+  }
+}
+
 // A RefMod is a reference saved with the ComfyUI-MiniMaxH3Mod pack. A cast member can carry one,
 // beside its pictures or in place of them, and shots with that member render with it.
 function refmodSection(person) {
   const current = person.refmod?.file || "";
   const known = state.refmods.files.includes(current);
-  const options = [["", "None"], ...state.refmods.files.map((name) => [name, name])];
-  if (current && !known) options.splice(1, 0, [current, current + " (not found)"]);
+  const canClear = Boolean(person.file || person.voice);
+  const options = [
+    ...(canClear ? [["", "None"]] : []),
+    ...state.refmods.files.map((name) => [name, name]),
+  ];
+  if (current && !known) options.splice(canClear ? 1 : 0, 0, [current, current + " (not found)"]);
+  if (!options.length) options.push(["", "No RefMods found"]);
   const pick = choice("RefMod file", options, current, (value) => {
     if (value) person.refmod = { file: value, strength: person.refmod?.strength ?? 1 };
     else if (person.file || person.voice) delete person.refmod;
-    else toast(person.name + " is only a RefMod. Remove the cast member instead.", true);
     renderCast();
   });
-  const parts = [pick];
+  if (!state.refmods.files.length && !current) pick.querySelector("select").disabled = true;
+
+  const row = document.createElement("div");
+  row.className = "refmod-file-row";
+  const refresh = iconButton("restore", "Refresh RefMod list from models/refmods", async () => {
+    refresh.disabled = true;
+    await refreshRefmods();
+    refresh.disabled = false;
+  });
+  row.append(pick, refresh);
+
+  const parts = [row];
   if (person.refmod) {
     const strength = typeof person.refmod.strength === "number" ? person.refmod.strength : 1;
-    parts.push(strengthSlider("RefMod strength", person.name + " RefMod strength", strength, [0, 1], 1,
+    const sRow = document.createElement("div");
+    sRow.className = "refmod-strength-row";
+    const sLabel = document.createElement("span");
+    sLabel.textContent = "Strength";
+    sRow.append(sLabel, strengthSlider("RefMod strength", person.name + " RefMod strength", strength, [0, 1], 1,
       (v) => { if (person.refmod) person.refmod.strength = v; }));
+    parts.push(sRow);
   }
   const hint = document.createElement("p");
   hint.className = "hint";
   if (!state.refmods.installed) hint.textContent = "Renders leave this RefMod out: the ComfyUI-MiniMaxH3Mod pack is not installed.";
   else if (current && !known) hint.textContent = "Renders leave it out until " + current + " is in models/refmods.";
-  else if (!state.refmods.files.length) hint.textContent = "No RefMods in models/refmods yet. Make one with the pack's Create H3 RefMod node.";
-  else if (person.refmod && !person.file) hint.textContent = "With no picture, shots render on the prompt-only model, so describe them above. A whole RefMod can make drafts several times slower.";
+  else if (!state.refmods.files.length) hint.textContent = "No RefMods in models/refmods yet. Add a .safetensors file there and press Refresh, or make one with the pack's Create H3 RefMod node.";
+  else if (person.refmod && !person.file) hint.textContent = "With no picture, shots render on the prompt-only model, so describe them in their description. A whole RefMod can make drafts several times slower.";
   else hint.textContent = "A reference saved with the ComfyUI-MiniMaxH3Mod pack, added to every shot with " + person.name + ". A whole RefMod can make drafts several times slower.";
   parts.push(hint);
   if (state.refmods.installed && person.file) {
@@ -1286,9 +1407,11 @@ async function makeRefmod(person) {
     toast("Making a RefMod from the pictures of " + person.name + ". It takes a minute or so.");
     for (let tries = 0; tries < 90; tries++) {
       await new Promise((done) => setTimeout(done, 4000));
-      const { refmods } = await api("/projects");
+      const refmods = await api("/refmods");
       if (!refmods?.files?.includes(name)) continue;
-      state.refmods = refmods;
+      state.refmods = { installed: Boolean(refmods.installed), files: refmods.files || [], previews: refmods.previews || {} };
+      syncRefmodMenu();
+      renderCast();
       renderInspector();
       toast("The RefMod of " + person.name + " is ready. New renders with " + person.name + " use it.");
       return;
@@ -1299,19 +1422,145 @@ async function makeRefmod(person) {
   }
 }
 
-function addRefmodMember() {
-  const file = state.refmods.files[0];
-  if (!file) return;
+function addRefmodMember(file = state.refmods.files[0]) {
+  if (!file) return null;
   checkpoint();
   state.project.cast = state.project.cast || [];
-  const person = { id: uid("p"), name: "Person " + (state.project.cast.length + 1), description: "", refmod: { file, strength: 1 } };
+  const person = { id: uid("p"), name: uniqueCastName(refmodLabel(file)), description: "", refmod: { file, strength: 1 } };
   state.project.cast.push(person);
   setCollectionOpen("cast", true);
   state.person = person.id;
   state.clip = null;
   state.item = null;
+  state.tab = "shot";
   save();
   renderAll();
+  showWorkspacePanel("inspector");
+  toast(person.name + " added to Cast.", false, undoAction);
+  return person;
+}
+
+function openRefmodPicker() {
+  let query = "";
+  let refreshing = false;
+  openPanelDialog("Add RefMod", () => {
+    const files = state.refmods?.files || [];
+    const cast = state.project?.cast || [];
+    const usedBy = new Map();
+    for (const member of cast) {
+      const f = member.refmod?.file;
+      if (f && !usedBy.has(f)) usedBy.set(f, member.name);
+    }
+
+    const bar = document.createElement("div");
+    bar.className = "refmod-picker-bar";
+    const filter = document.createElement("input");
+    filter.type = "search";
+    filter.className = "refmod-search";
+    filter.placeholder = "Filter RefMods…";
+    filter.setAttribute("aria-label", "Filter RefMods");
+    filter.value = query;
+    const count = document.createElement("span");
+    count.className = "refmod-picker-count";
+    const refresh = document.createElement("button");
+    refresh.type = "button";
+    refresh.className = "quiet small refmod-refresh";
+    refresh.append(icon("restore"), refreshing ? "Refreshing…" : "Refresh");
+    refresh.disabled = refreshing;
+    refresh.addEventListener("click", async () => {
+      refreshing = true;
+      refresh.disabled = true;
+      refresh.lastChild.textContent = "Refreshing…";
+      await refreshRefmods();
+      refreshing = false;
+      if ($("panelDialog").open) drawPanelDialog();
+    });
+    if (files.length) bar.append(filter);
+    bar.append(count, refresh);
+
+    if (!files.length) {
+      count.textContent = "0 RefMods";
+      const empty = document.createElement("p");
+      empty.className = "hint refmod-empty";
+      empty.textContent = "No RefMod files found in ComfyUI/models/refmods yet. Add .safetensors RefMods there (with optional same-name .png or .jpg previews) and press Refresh.";
+      return [bar, empty];
+    }
+
+    const grid = document.createElement("div");
+    grid.className = "refmod-grid";
+    const emptyFilter = document.createElement("p");
+    emptyFilter.className = "hint refmod-empty";
+    emptyFilter.hidden = true;
+
+    const cards = files.map((file) => {
+      const stem = refmodLabel(file);
+      const folder = refmodFolder(file);
+      const owner = usedBy.get(file);
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "refmod-card";
+      card.dataset.file = file;
+      card.title = file;
+
+      const media = document.createElement("span");
+      media.className = "refmod-card-media";
+      media.append(refmodVisual(file, { badge: false, showName: false, alt: stem }));
+
+      const meta = document.createElement("span");
+      meta.className = "refmod-card-meta";
+      const title = document.createElement("span");
+      title.className = "refmod-card-name";
+      title.textContent = stem;
+      const sub = document.createElement("span");
+      sub.className = "refmod-card-sub";
+      sub.textContent = folder || file;
+      meta.append(title, sub);
+      if (owner) {
+        const tag = document.createElement("span");
+        tag.className = "refmod-used";
+        tag.textContent = "In cast · " + owner;
+        meta.append(tag);
+      }
+
+      card.append(media, meta);
+      card.addEventListener("click", () => {
+        $("panelDialog").close();
+        addRefmodMember(file);
+      });
+      return { file, hay: (file + " " + stem + " " + (owner || "")).toLowerCase(), card };
+    });
+
+    const applyFilter = () => {
+      const needle = query.trim().toLowerCase();
+      let shown = 0;
+      for (const row of cards) {
+        const match = !needle || row.hay.includes(needle);
+        row.card.hidden = !match;
+        if (match) shown++;
+      }
+      count.textContent = needle
+        ? shown + " of " + files.length + (files.length === 1 ? " RefMod" : " RefMods")
+        : files.length + (files.length === 1 ? " RefMod" : " RefMods");
+      emptyFilter.hidden = shown > 0;
+      emptyFilter.textContent = shown ? "" : "No RefMods match \"" + query.trim() + "\".";
+    };
+
+    for (const row of cards) grid.append(row.card);
+    filter.addEventListener("input", () => {
+      query = filter.value;
+      applyFilter();
+    });
+    applyFilter();
+
+    const tip = document.createElement("p");
+    tip.className = "hint";
+    tip.textContent = "Pick a RefMod to add it to Cast. Same-name .png, .jpg or .webp images beside .safetensors files in models/refmods show as previews.";
+    return [bar, grid, emptyFilter, tip];
+  }, false);
+  $("panelDialog").classList.add("catalog");
+  refreshRefmods({ quiet: true }).then(({ changed }) => {
+    if (changed && $("panelDialog").open) drawPanelDialog();
+  });
 }
 
 function castViewSelect(target, label, onChange) {
@@ -1418,24 +1667,33 @@ function renderPerson(panel, person) {
   const has = [];
   if (person.file) has.push(1 + (person.pictures || []).length === 1 ? "1 picture" : 1 + (person.pictures || []).length + " pictures");
   if (person.voice) has.push("a voice");
-  if (person.refmod) has.push("a RefMod");
+  if (person.refmod) has.push("RefMod: " + refmodLabel(person.refmod.file));
   const used = state.project.clips.filter((c) => (c.cast || []).includes(person.id)).length;
   line.textContent = has.join(", ") + (used ? ". In " + used + (used === 1 ? " clip" : " clips") : ". Not in a clip yet");
   head.append(row, line);
-  // The panel keeps who they are at a glance; their pictures, voice and RefMod are edited in a dialog.
+  // The panel keeps who they are at a glance, with RefMod controls directly below and full details in the dialog.
   const card = document.createElement("div");
   card.className = "person-card";
+  const thumb = document.createElement("button");
+  thumb.type = "button";
+  thumb.className = "person-thumb";
+  thumb.title = "Edit " + person.name;
+  thumb.setAttribute("aria-label", "Edit " + person.name);
+  thumb.addEventListener("click", () => openPerson(person.id));
   if (person.file) {
     const image = document.createElement("img");
     image.alt = person.name;
     image.src = assetUrl(person);
-    card.append(image);
+    thumb.append(image);
+  } else if (person.refmod) {
+    const sameName = refmodLabel(person.refmod.file).toLowerCase() === String(person.name || "").trim().toLowerCase();
+    thumb.append(refmodVisual(person.refmod.file, { alt: person.name, showName: !sameName }));
   } else {
     const mark = document.createElement("span");
-    mark.className = person.refmod ? "mod-mark" : "voice-mark";
-    if (person.refmod) mark.textContent = "RefMod";
-    card.append(mark);
+    mark.className = "voice-mark";
+    thumb.append(mark);
   }
+  card.append(thumb);
   const words = document.createElement("p");
   words.className = "person-words";
   words.textContent = String(person.description || "").trim() || (person.file || person.refmod ? "No description yet." : "No description of the voice yet.");
@@ -1443,14 +1701,30 @@ function renderPerson(panel, person) {
   const edit = document.createElement("button");
   edit.className = "quiet wide";
   edit.dataset.key = "Edit cast member";
-  edit.append(icon("pen"), person.file ? "Pictures, voice and description" : "Voice and description");
+  const editLabel = person.file
+    ? "Pictures, voice and description"
+    : person.refmod
+      ? "Description, voice and RefMod"
+      : "Voice and description";
+  edit.append(icon("pen"), editLabel);
   edit.addEventListener("click", () => openPerson(person.id));
   const name = field("Name", person.name, (v) => {
     person.name = v.trim() || person.name;
     title.textContent = person.name;
     renderCast();
   });
-  panel.replaceChildren(head, section("About", [card, name, edit, catalogRow(person)], "person"));
+  const sections = [head, section("About", [card, name, edit, catalogRow(person)], "person")];
+  if (state.refmods.installed || person.refmod) {
+    sections.push(disclosure(
+      "RefMod",
+      Boolean(person.refmod),
+      person.refmod ? refmodLabel(person.refmod.file) : "",
+      refmodSection(person),
+      "layers",
+      person.refmod ? "Cast RefMod" : "Cast RefMod optional",
+    ));
+  }
+  panel.replaceChildren(...sections);
 }
 
 // Everything about a cast member, in a dialog wide enough for their pictures and voice side by side.
@@ -2007,10 +2281,11 @@ function openCatalog() {
         picture = document.createElement("img");
         picture.alt = "";
         picture.src = assetUrl(entry);
+      } else if (entry.refmod) {
+        picture = refmodVisual(entry.refmod.file, { alt: "" });
       } else {
         picture = document.createElement("span");
-        picture.className = entry.refmod ? "mod-mark" : "voice-mark";
-        if (entry.refmod) picture.textContent = "RefMod";
+        picture.className = "voice-mark";
       }
       const text = document.createElement("div");
       text.className = "catalog-text";
@@ -2020,7 +2295,7 @@ function openCatalog() {
       const pictures = (entry.file ? 1 : 0) + (entry.pictures || []).length;
       if (pictures) has.push(pictures === 1 ? "1 picture" : pictures + " pictures");
       if (entry.voice) has.push("a voice");
-      if (entry.refmod) has.push("a RefMod");
+      if (entry.refmod) has.push("RefMod: " + refmodLabel(entry.refmod.file));
       const facts = document.createElement("span");
       facts.className = "catalog-facts";
       facts.textContent = has.join(", ") + (entry.version > 1 ? ". Version " + entry.version : "");
@@ -4117,7 +4392,7 @@ function drawInspector() {
   tabs.push(["motion", "Motion"], ["project", "Project"]);
   const key = person ? "p" + person.id : clip ? "c" + clip.id : bin ? "b" + bin.id : sound ? "s" + sound.id : "";
   if (key !== inspected) {
-    if (key && state.tab === "project") state.tab = "shot";
+    if (key && (state.tab === "project" || (person && state.tab === "motion"))) state.tab = "shot";
     inspected = key;
     $("inspector").scrollTop = 0;
   }
@@ -10309,7 +10584,9 @@ function actionsAt(target, x) {
     const person = (state.project.cast || []).find((p) => p.id === member.dataset.person);
     if (!person) return null;
     member.click();
-    return { title: person.name, rows: [act("Use the voice of the clip under the playhead", () => grabVoice(person)), "-",
+    return { title: person.name, rows: [
+      act("Edit cast member", () => openPerson(person.id)),
+      act("Use the voice of the clip under the playhead", () => grabVoice(person)), "-",
       act("Remove from the cast", () => removePerson(person), { danger: true })] };
   }
   if (target.closest(".stage")) return { title: "Viewer", rows: [
@@ -10354,7 +10631,8 @@ function actionsAt(target, x) {
   ] };
   if (target.closest("#cast, .cast-head")) return { title: "Cast", rows: [
     byId("castToggle", $("cast").hidden ? "Expand Cast" : "Collapse Cast"), "-",
-    byId("addCast", "Add reference"), byId("addVoice", "Add voice"), byId("addFromCatalog", "From the catalog")] };
+    byId("addCast", "Add reference"), byId("addVoice", "Add voice"), byId("addFromCatalog", "From the catalog"),
+    ...(!$("addRefmod").hidden ? [byId("addRefmod", "Add RefMod")] : [])] };
   if (target.closest(".bin")) return { title: "Clips", rows: [
     byId("clipsToggle", $("clips").hidden ? "Expand Clips" : "Collapse Clips"),
     byId("clipsView", $("clipsView").title), "-",
@@ -11484,9 +11762,12 @@ async function refreshProjects(selected) {
   state.motion = motion || null;
   state.encoders = encoders || { text_encoders: [], vaes: [], auto: {}, missing: [] };
   state.presets = presets || [];
-  state.refmods = refmods || { installed: false, files: [] };
-  // Adding a cast member from a RefMod only makes sense with the pack and a file to pick.
-  $("addRefmod").hidden = !(state.refmods.installed && state.refmods.files.length);
+  state.refmods = {
+    installed: Boolean(refmods?.installed),
+    files: refmods?.files || [],
+    previews: refmods?.previews || {},
+  };
+  syncRefmodMenu();
   state.checkpoints = checkpoints || [];
   state.samplers = samplers || [];
   state.schedulers = schedulers || [];
@@ -12270,7 +12551,10 @@ $("addFromCatalog").addEventListener("click", () => {
   $("castMenu").hidePopover?.();
   openCatalog();
 });
-$("addRefmod").addEventListener("click", addRefmodMember);
+$("addRefmod").addEventListener("click", () => {
+  $("castMenu").hidePopover?.();
+  openRefmodPicker();
+});
 $("importClip").addEventListener("click", importFootage);
 $("newBin").addEventListener("click", addBin);
 
@@ -13370,7 +13654,7 @@ function bindNoteLayer() {
 bindNoteLayer();
 
 const spritesRoom = installSprites({
-  state, checkpoint, save() { save(); void flush(); }, toast, viewUrl, jobFor, uploadPicture, addCast: addCastMember, editCast: openPerson,
+  state, checkpoint, save() { save(); void flush(); }, toast, viewUrl, jobFor, uploadPicture, addCast: addCastMember, editCast: openPerson, refmodVisual, refmodLabel,
   stopVideo() { if (state.playing) setPlaying(false); },
   restoreVideo() { renderAll(); },
   activate(clip, take) { if (clip.active !== take.id) chooseTake(clip, take); },

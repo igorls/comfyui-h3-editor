@@ -292,7 +292,7 @@ button:disabled { opacity: 0.42; cursor: default; }
 .head-title { flex: 1; min-width: 0; margin: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .choice { display: grid; align-content: start; gap: 6px; margin-bottom: 12px; }
 .choice > span { color: var(--muted); font-size: 12px; }
-.person span { display: block; padding: 4px 4px 3px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.person > .person-name { display: block; padding: 4px 4px 3px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .stage { container: viewer / inline-size; display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; min-height: 0; background: var(--room); }
 /* Outside the picture the screen is hatched, so bars beside a picture of another shape never read as black in the video. */
@@ -506,8 +506,33 @@ details.section > summary:has(.filled)::after { margin-left: 4px; }
 .inspector-foot .actions { margin: 0; flex-wrap: wrap; }
 .foot-status { margin: 0 0 8px; color: var(--live); font-variant-numeric: tabular-nums; }
 
-.mod-mark { display: grid; place-items: center; width: 100%; aspect-ratio: 1; border-radius: 4px; border: 1px dashed var(--line); background: var(--room); color: var(--muted); font-size: 11px; }
-.pick .mod-mark { width: 28px; height: 28px; border-radius: 50%; font-size: 0; }
+.mod-mark {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  width: 100%; aspect-ratio: 1; padding: 6px; border-radius: 4px;
+  border: 1px dashed var(--line-hi); background: var(--room); color: var(--muted);
+  font-size: 11px; line-height: 1.2; text-align: center; overflow: hidden;
+}
+.mod-mark svg.ic { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.mod-mark-name { max-width: 100%; color: var(--text); font-size: 11px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mod-mark-tag { color: var(--muted); font-size: 11px; }
+.thumb-refmod { position: relative; display: block; width: 100%; aspect-ratio: 1; border-radius: 4px; overflow: hidden; background: var(--room); }
+.thumb-refmod img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.refmod-badge {
+  position: absolute; left: 4px; bottom: 4px; max-width: calc(100% - 8px);
+  padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(27, 30, 35, 0.86); color: var(--text);
+  font-size: 11px; font-weight: 500; line-height: 1.3; pointer-events: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pick .mod-mark, .pick .thumb-refmod { width: 28px; height: 28px; border-radius: 50%; padding: 0; }
+.pick .mod-mark svg.ic { width: 14px; height: 14px; }
+.refmod-file-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; margin-bottom: 12px; }
+.refmod-file-row > .choice { margin-bottom: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; column-gap: 10px; }
+.refmod-file-row > .choice > span { margin: 0; }
+.refmod-file-row > .choice > select { width: 100%; min-width: 0; }
+.refmod-strength-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; column-gap: 10px; margin-bottom: 10px; }
+.refmod-strength-row > span { color: var(--muted); font-size: 12px; }
+.refmod-strength-row > .strength { margin-bottom: 0; }
 .more-pictures { margin-bottom: 4px; }
 .picture-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
 .picture { position: relative; aspect-ratio: 1; border-radius: 4px; overflow: hidden; background: var(--room); }
@@ -675,7 +700,13 @@ label.lora-name { cursor: pointer; }
 
 /* A cast member in the panel: picture, what they look like, and the way into the dialog. */
 .person-card { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; align-items: start; margin-bottom: 12px; }
-.person-card img, .person-card .mod-mark, .person-card .voice-mark { width: 72px; height: 72px; aspect-ratio: 1; object-fit: cover; border-radius: var(--radius); }
+.person-thumb {
+  display: block; width: 72px; height: 72px; padding: 0; border: 1px solid transparent;
+  border-radius: var(--radius); background: transparent; overflow: hidden; cursor: pointer;
+}
+.person-thumb:hover { border-color: var(--line-hi); }
+.person-thumb:hover .mod-mark { border-color: var(--tungsten); background: var(--raised); }
+.person-card img, .person-card .mod-mark, .person-card .voice-mark, .person-card .thumb-refmod { width: 100%; height: 100%; aspect-ratio: 1; object-fit: cover; border-radius: calc(var(--radius) - 1px); }
 .person-words { margin: 0; color: var(--muted); font-size: 12px; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .section > .wide:has(.ic) { display: flex; align-items: center; justify-content: center; margin-top: 0; }
 
@@ -695,7 +726,7 @@ label.lora-name { cursor: pointer; }
 .panel-dialog.catalog { width: min(720px, calc(100vw - 32px)); }
 .catalog-grid { display: grid; gap: 8px; }
 .catalog-card { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius); }
-.catalog-card img, .catalog-card .mod-mark, .catalog-card .voice-mark { width: 64px; height: 64px; object-fit: cover; border-radius: 4px; }
+.catalog-card img, .catalog-card .mod-mark, .catalog-card .voice-mark, .catalog-card .thumb-refmod { width: 64px; height: 64px; object-fit: cover; border-radius: 4px; }
 .catalog-text { display: grid; gap: 2px; min-width: 0; }
 .catalog-text b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .catalog-facts { color: var(--muted); font-size: 12px; }
@@ -703,6 +734,45 @@ label.lora-name { cursor: pointer; }
 .catalog-tools { display: flex; align-items: center; gap: 6px; }
 .catalog-tools .small { padding: 5px 10px; font-size: 12px; white-space: nowrap; }
 @media (max-width: 640px) { .catalog-card { grid-template-columns: 48px minmax(0, 1fr); } .catalog-tools { grid-column: 1 / -1; } }
+
+/* The Add RefMod picker: visual grid with optional sidecar preview images and live refresh. */
+.refmod-picker-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.refmod-search {
+  flex: 1 1 200px; min-width: 0; padding: 5px 10px;
+  background: var(--room); border: 1px solid var(--line); border-radius: var(--radius);
+  color: var(--text); font-size: 13px;
+}
+.refmod-search:hover { border-color: var(--line-hi); }
+.refmod-search::placeholder { color: var(--muted); }
+.refmod-picker-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.refmod-refresh { display: inline-flex; align-items: center; gap: 5px; }
+.refmod-refresh svg.ic { width: 14px; height: 14px; }
+.refmod-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(156px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.refmod-card {
+  display: flex; flex-direction: column; padding: 0; text-align: left;
+  background: var(--raised); border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: hidden; transition: background 0.12s, border-color 0.12s;
+}
+.refmod-card[hidden] { display: none; }
+.refmod-card:hover { background: var(--hover); border-color: var(--line-hi); }
+.refmod-card:focus-visible { outline: 2px solid var(--tungsten); outline-offset: 2px; }
+.refmod-card-media { display: block; width: 100%; aspect-ratio: 1; background: var(--room); overflow: hidden; }
+.refmod-card-media .thumb-refmod, .refmod-card-media .mod-mark { border-radius: 0; border: 0; width: 100%; height: 100%; }
+.refmod-card-media .mod-mark svg.ic { width: 22px; height: 22px; }
+.refmod-card-meta { display: flex; flex-direction: column; gap: 2px; padding: 8px 9px 9px; min-width: 0; border-top: 1px solid var(--line); }
+.refmod-card-name { color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.refmod-card-sub { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.refmod-used {
+  align-self: flex-start; margin-top: 4px; padding: 1px 6px; border-radius: 4px;
+  background: var(--room); border: 1px solid var(--line); color: var(--muted);
+  font-size: 11px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.refmod-empty { margin: 12px 0; }
+@media (max-width: 520px) {
+  .refmod-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .refmod-search { flex: 1 0 100%; }
+  .refmod-refresh { margin-left: auto; }
+}
 .picks { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .pick { display: flex; align-items: center; gap: 8px; padding: 3px 12px 3px 3px; background: var(--raised); border: 1px solid transparent; border-radius: 20px; }
 .pick:hover { background: var(--hover); }

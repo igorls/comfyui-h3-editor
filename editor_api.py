@@ -327,9 +327,86 @@ def video_vaes(files):
     return video or [f for f in files if "audio" not in f.lower()]
 
 
+def refmod_dirs():
+    """The folders ComfyUI scans for RefMods, deduplicated in search order."""
+    import folder_paths
+
+    seen, found = set(), []
+    candidates = list(folder_paths.get_folder_paths("refmods")) if "refmods" in folder_paths.folder_names_and_paths else []
+    candidates.append(os.path.join(folder_paths.models_dir, "refmods"))
+    for folder in candidates:
+        if not folder or not os.path.isdir(folder):
+            continue
+        real = os.path.realpath(folder)
+        if real not in seen:
+            seen.add(real)
+            found.append(real)
+    return found
+
+
+def refmod_preview_path(name):
+    """A same-stem sidecar preview image next to a RefMod file (as ComfyUI-H3RefModPicker saves), or None."""
+    if not isinstance(name, str) or not name.strip() or os.path.isabs(name) or name.startswith(("/", "\\")):
+        return None
+    parts = [p for p in name.replace("\\", "/").split("/") if p]
+    if not parts or any(p in (".", "..") or ":" in p for p in parts):
+        return None
+    subdir = os.path.join(*parts[:-1]) if len(parts) > 1 else ""
+    stem, ext = os.path.splitext(parts[-1])
+    if ext.lower() not in (".safetensors", ".pt", ".pth", ".bin"):
+        stem = parts[-1]
+    if not stem:
+        return None
+    want = [stem.lower() + e for e in store.PICTURES] + [stem.lower() + ".preview" + e for e in store.PICTURES]
+    for base in refmod_dirs():
+        folder = os.path.realpath(os.path.join(base, subdir)) if subdir else base
+        if not (folder == base or folder.startswith(base + os.sep)) or not os.path.isdir(folder):
+            continue
+        try:
+            entries = {entry.lower(): entry for entry in os.listdir(folder)}
+        except OSError:
+            continue
+        for candidate in want:
+            actual = entries.get(candidate)
+            if not actual:
+                continue
+            path = os.path.realpath(os.path.join(folder, actual))
+            if path.startswith(base + os.sep) and os.path.isfile(path):
+                return path
+    return None
+
+
 def refmods_status():
     files = refmod_files()
-    return {"installed": files is not None, "files": files or []}
+    previews = {}
+    for name in files or []:
+        path = refmod_preview_path(name)
+        if path:
+            try:
+                previews[name] = int(os.path.getmtime(path))
+            except OSError:
+                previews[name] = 1
+    return {"installed": files is not None, "files": files or [], "previews": previews}
+
+
+async def refmods_list(request):
+    """Fresh RefMod list and sidecar preview map, clearing ComfyUI's folder cache first."""
+    cache = getattr(folder_paths, "filename_list_cache", None)
+    if isinstance(cache, dict):
+        cache.pop("refmods", None)
+    return web.json_response(refmods_status())
+
+
+async def refmod_preview(request):
+    """Serve a RefMod's same-stem sidecar image from models/refmods, never outside it."""
+    name = request.query.get("file", "")
+    files = refmod_files() or []
+    if name not in files:
+        raise web.HTTPNotFound(text="refmod not found")
+    path = refmod_preview_path(name)
+    if not path:
+        raise web.HTTPNotFound(text="no preview for this refmod")
+    return web.FileResponse(path, headers={"Cache-Control": "no-cache"})
 
 
 def available_models():
@@ -3830,6 +3907,8 @@ ROUTES = (
     ("GET", "/h3take/api/cast-catalog", "cast_catalog"),
     ("POST", "/h3take/api/cast-catalog/remove", "remove_from_catalog"),
     ("POST", "/h3take/api/cast-catalog/spread", "spread_catalog"),
+    ("GET", "/h3take/api/refmods", "refmods_list"),
+    ("GET", "/h3take/api/refmods/preview", "refmod_preview"),
     ("GET", "/h3take/api/project/{name}", "load"),
     ("PUT", "/h3take/api/project/{name}", "save"),
     ("DELETE", "/h3take/api/project/{name}", "remove"),

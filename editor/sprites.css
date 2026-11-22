@@ -67,6 +67,9 @@
   background: #ebeae7; border-radius: 3px;
 }
 .sprite-ref-item:only-of-type img { height: auto; max-height: 180px; }
+.sprite-ref-mod .thumb-refmod, .sprite-ref-mod .mod-mark { height: 76px; aspect-ratio: auto; }
+.sprite-ref-mod:only-of-type .thumb-refmod, .sprite-ref-mod:only-of-type .mod-mark { height: 120px; }
+.sprite-ref-mod img { height: 100%; object-fit: cover; background: var(--room); }
 .sprite-ref-tag {
   position: absolute; bottom: 3px; left: 3px; padding: 1px 4px; border-radius: 2px;
   background: rgba(18, 20, 22, 0.82); color: var(--text); font-size: 10px; font-weight: 600;

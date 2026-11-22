@@ -740,3 +740,59 @@ test("motion tab helpers map SwapGuard (248) and relay windows to live pipeline 
   assert.equal(c.formatMotionBytes(2097152), "2.00 MB");
   assert.equal(c.formatMotionBytes(4096), "4 KB");
 });
+
+test("RefMod helpers format labels, sidecar preview URLs and addRefmodMember creates stem-named cast members", () => {
+  const project = { cast: [{ id: "p0", name: "Fenka", file: "fenka.png" }] };
+  const state = {
+    project,
+    person: null,
+    clip: "c1",
+    item: "i1",
+    refmods: {
+      installed: true,
+      files: ["Fenka.safetensors", "sub/Sarah.safetensors", "Plain.safetensors"],
+      previews: { "Fenka.safetensors": 1700000100, "sub/Sarah.safetensors": 1700000200 },
+    },
+  };
+  let next = 0, checkpoints = 0, saves = 0, rendered = 0, shownPanel = null, lastToast = null;
+  const c = vm.createContext({
+    state,
+    encodeURIComponent,
+    uid: (prefix) => prefix + ++next,
+    checkpoint: () => checkpoints++,
+    save: () => saves++,
+    renderAll: () => rendered++,
+    setCollectionOpen() {},
+    showWorkspacePanel: (p) => { shownPanel = p; },
+    toast: (msg) => { lastToast = msg; },
+    undoAction: { label: "Undo" },
+  });
+  functions(c, ["refmodLabel", "refmodFolder", "refmodPreviewUrl", "uniqueCastName", "addRefmodMember"]);
+
+  assert.equal(c.refmodLabel("Fenka.safetensors"), "Fenka");
+  assert.equal(c.refmodLabel("sub\\Sarah.safetensors"), "Sarah");
+  assert.equal(c.refmodFolder("sub\\Sarah.safetensors"), "sub");
+  assert.equal(c.refmodFolder("Fenka.safetensors"), "");
+  assert.equal(
+    c.refmodPreviewUrl("sub/Sarah.safetensors"),
+    "/h3take/api/refmods/preview?file=sub%2FSarah.safetensors&v=1700000200",
+  );
+  assert.equal(c.refmodPreviewUrl("Plain.safetensors"), null);
+
+  // Adding a RefMod whose stem collides with an existing cast member deduplicates cleanly
+  const first = c.addRefmodMember("Fenka.safetensors");
+  assert.equal(first.name, "Fenka 2");
+  assert.equal(JSON.stringify(first.refmod), JSON.stringify({ file: "Fenka.safetensors", strength: 1 }));
+  assert.equal(state.person, first.id);
+  assert.equal(state.clip, null);
+  assert.equal(shownPanel, "inspector");
+  assert.equal(lastToast, "Fenka 2 added to Cast.");
+
+  // Adding a subfolder RefMod uses its file stem
+  const second = c.addRefmodMember("sub/Sarah.safetensors");
+  assert.equal(second.name, "Sarah");
+  assert.equal(second.refmod.file, "sub/Sarah.safetensors");
+  assert.equal(checkpoints, 2);
+  assert.equal(saves, 2);
+  assert.equal(rendered, 2);
+});
