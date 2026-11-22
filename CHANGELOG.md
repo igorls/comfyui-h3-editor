@@ -5,7 +5,7 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
-## Unreleased
+## 0.15.1, 2026-11-22
 
 - **Sprites hold a diagonal heading.** A north-east, north-west, south-east or south-west clip that pins its own picture no longer takes the cast's back, front and side views as references, which turned the character to those views partway through a take; the pinned picture stands in for them. An idle with no picture for its heading is no longer pinned to the back or front view. Sprite pictures with a transparent background are laid on white, so a take no longer fades between black and white, and a pinned picture of another shape than the canvas is shown whole where a portrait picture on the square canvas lost its head and feet. For agents: `H3LoadStill` takes optional `backdrop`, `width` and `height`.
 
