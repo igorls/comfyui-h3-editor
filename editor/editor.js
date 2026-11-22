@@ -2573,7 +2573,7 @@ function modelSummary(row) {
     steps("draft") + " and " + steps("final") + " steps",
     ((custom && row.sampler) || base.sampler || "") + " / " + ((custom && row.scheduler) || base.scheduler || "simple"),
   ];
-  if (lora) parts.push("adds " + fileName(lora));
+  if (lora) parts.push("adds " + fileName(lora) + (base.lora_text ? " and " + fileName(base.lora_text) : ""));
   parts.push(fileName(row.unet || ""));
   return parts.filter(Boolean).join(", ");
 }
@@ -2670,7 +2670,10 @@ function renderModels() {
         redraw();
       });
       const label = document.createElement("span");
-      label.textContent = "Add " + base.title + "'s LoRA, " + fileName(base.lora);
+      // A family with a LoRA for each of its two files names both.
+      label.textContent = base.lora_text
+        ? "Add " + base.title + "'s LoRAs, " + fileName(base.lora) + " and " + fileName(base.lora_text)
+        : "Add " + base.title + "'s LoRA, " + fileName(base.lora);
       keep.append(box, label);
       const why = document.createElement("p");
       why.className = "hint";

@@ -7,6 +7,7 @@ Each release is a tag on GitHub, `v` followed by the version.
 
 ## Unreleased
 
+- **LightX2V H3 Turbo.** A new model choice, **LightX2V H3 Turbo**, renders on the original MiniMax H3 with LightX2V's 8-step Turbo LoRAs: 4 steps for a draft, 8 for a final. It takes two LoRA files, one for clips with a cast picture or another reference and one for clips that are only a prompt, and the editor picks the right one for each clip. `docs/models.md` says where to get them. For agents: `profile` `lightx2v`, and `GET /projects` lists a profile's second LoRA as `lora_text`.
 - **pi-H3 for drafts.** A new model choice, **pi-H3**, drafts in 4 steps on the original MiniMax H3 with the pi-H3 LoRA. A final on it, and **Finish draft**, render on HyperFlow H3 Flash from the draft's own latents, because pi-H3's last step draws harsh skin at the refine size. It needs the two original H3 files and one LoRA file; `docs/models.md` says where to get it.
 
 ## 0.14.0, 2026-11-21

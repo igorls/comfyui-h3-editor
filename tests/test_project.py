@@ -1167,6 +1167,45 @@ class ClipModelTest(unittest.TestCase):
         _, graph = plan_render(project, "x", cast["id"], "draft", 3, files)
         self.assertEqual(graph["1"]["inputs"]["unet_name"], pi["unet"][0])
 
+    def test_lightx2v_gives_each_of_its_two_files_its_own_lora(self):
+        lx = PROFILES["lightx2v"]
+        base = set(lx["unet"] + lx["unet_text"])
+        # Both LoRAs are found in a folder, and the profile is not installed without both.
+        files = base | {"lightx2v/" + lx["lora"][0], "lightx2v/" + lx["lora_text"][0]} | FINALS
+        rows = {row["id"]: row for row in profile_status(files)}
+        self.assertEqual((rows["lightx2v"]["missing"], rows["lightx2v"]["lora"], rows["lightx2v"]["lora_text"]),
+                         ([], lx["lora"][0], lx["lora_text"][0]))
+        self.assertEqual({row["id"]: row for row in profile_status(base | {lx["lora"][0]})}["lightx2v"]["missing"],
+                         [lx["lora_text"][0]])
+        project = new_project("x")
+        made, _ = add_clip(project, {"action": "A keeper walks to the window.", "profile": "lightx2v"})
+        # A prompt-only clip renders on the fl2va file with the fl2v LoRA, through the pack's own node.
+        job, draft = plan_render(project, "x", made["id"], "draft", 3, files)
+        self.assertEqual(draft["1"]["inputs"]["unet_name"], lx["unet_text"][0])
+        self.assertEqual(draft["94"], {"class_type": "H3Lora", "inputs": {
+            "model": ["1", 0], "lora_name": "lightx2v/" + lx["lora_text"][0], "strength": 1.0}})
+        self.assertEqual(draft["12"]["inputs"]["steps"], lx["steps"]["draft"])
+        self.assertEqual((job["models"]["profile"], job["models"]["profile_lora"]), ("lightx2v", "lightx2v/" + lx["lora_text"][0]))
+        # Its final refines with the same LoRA, in one step: the fl2v LoRA draws a grid on the turbo tail's low sigmas.
+        _, final = plan_render(project, "x", made["id"], "final", 3, files)
+        self.assertEqual(final["94"]["inputs"]["lora_name"], "lightx2v/" + lx["lora_text"][0])
+        self.assertEqual(final["87"], {"class_type": "ManualSigmas", "inputs": {"sigmas": "0.632, 0.0"}})
+        # A clip with a cast picture goes to the ref2va file, with the ref2v LoRA.
+        add_cast(project, {"name": "Mara", "file": "mara.png"})
+        cast, _ = add_clip(project, {"action": "@Mara waves.", "profile": "lightx2v", "cast": [project["cast"][0]["id"]]})
+        job, graph = plan_render(project, "x", cast["id"], "draft", 3, files)
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], lx["unet"][0])
+        self.assertEqual(graph["94"]["inputs"]["lora_name"], "lightx2v/" + lx["lora"][0])
+        self.assertEqual(job["models"]["profile_lora"], "lightx2v/" + lx["lora"][0])
+        # Its final refines on the usual turbo tail.
+        _, final = plan_render(project, "x", cast["id"], "final", 3, files)
+        self.assertEqual(final["87"], {"class_type": "ManualSigmas", "inputs": {"sigmas": REFINE_TAIL}})
+        # A checkpoint of the project's own with the turbo built in takes neither.
+        project["checkpoints"] = [{"id": "own", "unet": "merged.safetensors", "base": "lightx2v", "lora": False}]
+        project_module.find_clip(project, made["id"])["profile"] = "own"
+        _, graph = plan_render(project, "x", made["id"], "draft", 3, files | {"merged.safetensors"})
+        self.assertNotIn("94", graph)
+
     def test_a_clips_model_brings_its_own_lora_and_refine_steps(self):
         project = new_project("x")
         graph = render_graph(project, "x", clip(profile="h3_turbo"), "t1", "final", 3)

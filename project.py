@@ -225,9 +225,11 @@ REFINE_TAIL = "0.675, 0.385, 0.159, 0.0"
 # prompt-only clips on its ref2va. A HyperFlow file (see is_hyperflow) loads with the pack's
 # loader and its own sigmas; any other file loads with ComfyUI's loader and the simple
 # scheduler. lora is a LoRA the family always samples with, loaded by the pack's node or by the
-# node lora_node names. sigmas is the schedule a family samples on in place of a scheduler's.
+# node lora_node names, and lora_text the one its fl2va file takes in its place. sigmas is the
+# schedule a family samples on in place of a scheduler's.
 # finals names the profile that renders a family's finals. A final's second pass starts at
-# refine_from in its own sigmas, or runs refine_sigmas.
+# refine_from in its own sigmas, or runs refine_sigmas, or refine_sigmas_text on the fl2va file
+# of a family that names one.
 PROFILES = {
     "hyperflow": {
         "title": "HyperFlow H3 Flash",
@@ -266,6 +268,24 @@ PROFILES = {
         # HyperFlow, which takes the draft's latents as they are. Without HyperFlow it refines with its last step.
         "finals": "hyperflow", "refine_sigmas": "0.69565, 0.0",
         "steps": {"draft": 4, "final": 6}, "sampler": "euler",
+    },
+    "lightx2v": {
+        "title": "LightX2V H3 Turbo",
+        "hint": "The original H3 with LightX2V's 8-step Turbo LoRAs, one for each of its two files. "
+                "4 steps for drafts, 8 for finals.",
+        "unet": ["minimax_h3_ref2va_pruned_int8_convrot.safetensors"],
+        "unet_text": ["minimax_h3_fl2va_pruned_int8_convrot.safetensors"],
+        # LightX2V distils each H3 file on its own: lora is for clips with references, on the ref2va file, and
+        # lora_text for prompt-only clips, on the fl2va file. Plain LoRA pairs, which the pack's node reads.
+        "lora": ["minimax_h3_ref2v_turbo_8step_v1.1_768p_comfyui_bf16.safetensors", 1.0],
+        "lora_text": ["minimax_h3_fl2v_turbo_8step_v1.2_768p_comfyui_bf16.safetensors", 1.0],
+        # The 8-step LoRAs hold a 640x352 draft at 4 steps, so a draft takes half the steps of a final.
+        "steps": {"draft": 4, "final": 8}, "sampler": "euler", "refine_sigmas": REFINE_TAIL,
+        # The fl2v v1.2 LoRA is only good for the high sigmas of its own schedule. Asked for a step from 0.385 or
+        # below, as the usual tail does, it leaves a dot on every token: a grid 16 pixels apart over the picture.
+        # So its refine is one step, from the last sigma of its 8 steps at shift 12. The ref2v LoRA takes the
+        # usual tail cleanly.
+        "refine_sigmas_text": "0.632, 0.0",
     },
     "h3": {
         "title": "MiniMax H3",
@@ -315,6 +335,8 @@ PROFILES = {
     },
 }
 DEFAULT_PROFILE = "hyperflow"
+# The keys of a profile that name a LoRA it always samples with.
+PROFILE_LORAS = ("lora", "lora_text")
 # A scheduler the editor makes itself: the beta schedule with these two numbers, which other packs add to ComfyUI
 # under this name. The editor builds it with ComfyUI's own node, so a checkpoint can ask for it on any install.
 BETA57 = "beta57"
@@ -329,9 +351,12 @@ def sigma_steps(node):
     return max(1, len([part for part in str(inputs.get("sigmas", "")).split(",") if part.strip()]) - 1)
 
 
-def lora_names(profile):
-    """The names a profile's LoRA may be installed under: as written, then that file in any folder."""
-    name = profile["lora"][0]
+def lora_names(profile, key="lora"):
+    """The names a profile's LoRA may be installed under: as written, then that file in any folder.
+
+    key is lora, or lora_text for the one a family samples its prompt-only clips with.
+    """
+    name = profile[key][0]
     return [name, name.rsplit(".", 1)[0] + "*"]
 
 
@@ -376,8 +401,9 @@ def custom_profile(row):
         if isinstance(row.get(key), str) and row[key]:
             profile[key] = row[key]
     if row.get("lora") is False:
-        # A checkpoint with its turbo built in takes the family's settings without the family's LoRA.
+        # A checkpoint with its turbo built in takes the family's settings without the family's LoRAs.
         profile.pop("lora", None)
+        profile.pop("lora_text", None)
     if "refine_from" in base:
         # A final redraws as many steps at the larger size as the family it is based on.
         profile["refine_from"] = max(1, steps["final"] - (base["steps"]["final"] - base["refine_from"]))
@@ -725,8 +751,9 @@ def project_models(project, available=None, clip=None, quality="draft"):
     models["unet"] = pick_file(profile["unet"], available) or profile["unet"][0]
     models["unet_text"] = pick_file(profile.get("unet_text"), available)
     models["lora"] = realism_lora(available) or MODELS["lora"]
-    if profile.get("lora"):
-        models["profile_lora"] = pick_file(lora_names(profile), available) or profile["lora"][0]
+    for key in PROFILE_LORAS:
+        if profile.get(key):
+            models["profile_" + key] = pick_file(lora_names(profile, key), available) or profile[key][0]
     named = {key: name for key, name in (project.get("models") or {}).items() if name and name not in RETIRED}
     for key in MODEL_CHOICES:
         # A text encoder or VAE the project names but this machine lacks gives way to an installed one.
@@ -749,14 +776,16 @@ def profile_status(available):
         missing = []
         if pick_file(profile["unet"], available) is None:
             missing.append(profile["unet"][0])
-        if profile.get("lora") and pick_file(lora_names(profile), available) is None:
-            missing.append(profile["lora"][0])
+        for key in PROFILE_LORAS:
+            if profile.get(key) and pick_file(lora_names(profile, key), available) is None:
+                missing.append(profile[key][0])
         rows.append({"id": name, "title": profile["title"], "hint": profile["hint"],
                      "available": not missing, "missing": missing, "steps": profile["steps"],
                      "sampler": profile["sampler"], "scheduler": profile.get("scheduler") or "simple",
                      "unet": pick_file(profile["unet"], available) or profile["unet"][0],
                      "unet_text": pick_file(profile.get("unet_text"), available),
-                     "lora": profile["lora"][0] if profile.get("lora") else None})
+                     "lora": profile["lora"][0] if profile.get("lora") else None,
+                     "lora_text": profile["lora_text"][0] if profile.get("lora_text") else None})
     return rows
 
 
@@ -2031,14 +2060,16 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             # H3ImageSampler (res_2s_rkmk2e stochastic exponential Heun) injects organic matte skin/hair texture.
             graph["11"] = {"class_type": H3_IMAGE_SAMPLER_NODE, "inputs": dict(MOTION_REALISM_P1_SAMPLER)}
     model = ["1", 0]
-    if profile.get("lora") and models.get("profile_lora"):
-        # A LoRA the family always samples with, such as a turbo LoRA.
+    # A LoRA the family always samples with, such as a turbo LoRA. A family with one LoRA for each of its two
+    # files gives the fl2va file its own.
+    family_lora = "lora_text" if graph["10"]["inputs"]["checkpoint"] == "fl2va" and profile.get("lora_text") else "lora"
+    if profile.get(family_lora) and models.get("profile_" + family_lora):
+        name, strength = models["profile_" + family_lora], profile[family_lora][1]
         if profile.get("lora_node"):
             graph["94"] = {"class_type": profile["lora_node"], "inputs": {
-                "model": model, "lora_name": models["profile_lora"], "strength_model": profile["lora"][1]}}
+                "model": model, "lora_name": name, "strength_model": strength}}
         else:
-            graph["94"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": models["profile_lora"],
-                                                              "strength": profile["lora"][1]}}
+            graph["94"] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": name, "strength": strength}}
         model = ["94", 0]
     # A linked clip holds frames of a final that already went through the Realism Slider, and carries their look
     # on. At full strength the slider adds its texture on top of that texture, and a chain of extensions grows
@@ -2261,7 +2292,9 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         tail = (
             MOTION_REALISM_SIGMAS[motion_preset]
             if (is_realism_refine and hyperflow)
-            else (profile.get("refine_sigmas") or profile["refine_from"])
+            # A family whose fl2va LoRA needs another tail than its ref2va one names it.
+            else ((family_lora == "lora_text" and profile.get("refine_sigmas_text"))
+                  or profile.get("refine_sigmas") or profile["refine_from"])
         )
         add_refine(graph, refine_size(project) if enlarged else (width, height), tail, models["latent_upscaler"])
         if "248" in graph:

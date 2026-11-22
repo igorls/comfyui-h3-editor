@@ -65,6 +65,7 @@ is loaded once.
 | HyperFlow H3 Flash, the default | `minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors` (16.4 GB, in `ref2va_int8_convrot_comfyui/`) and `minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors` (16.0 GB, in `fl2va_int8_convrot_comfyui/`) from [VideoRebirthAI/hyperflow-h3-flash](https://huggingface.co/VideoRebirthAI/hyperflow-h3-flash), in `models/diffusion_models/hyperflow` | 4 and 6, euler |
 | MiniMax H3 Turbo | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` and `minimax_h3_fl2va_pruned_int8_convrot.safetensors` (21 GB each) from Comfy-Org/MiniMax-H3, in `models/diffusion_models`, and the Turbo v4 LoRA `minimax_h3_turbo_v4_step600_ema.safetensors` from [larryvrh/MiniMax-H3-Turbo-Lora](https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora), in `models/loras` | 6 and 6, euler |
 | pi-H3, for drafts | the same two base files, and the 4-step pi-H3 LoRA `minimax_pi_h3_4step_fl2va_pruned_rank_64_fp16.safetensors` from [Kijai/MiniMax-H3_comfy](https://huggingface.co/Kijai/MiniMax-H3_comfy/tree/main/loras/pi-H3) (582 MB, MiniMax H3 Community License), in `models/loras` or a folder inside it. It is [pi-H3](https://huggingface.co/Lakonik/pi-H3) in ComfyUI's layout. Finals and **Finish draft** render on HyperFlow H3 Flash when it is installed | 4, euler, on its own sigmas |
+| LightX2V H3 Turbo | the same two base files, and two 8-step Turbo LoRAs from [lightx2v/Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo), in `models/loras` or a folder inside it: `minimax_h3_ref2v_turbo_8step_v1.1_768p_comfyui_bf16.safetensors` (1.96 GB), for clips with a cast picture or another reference, and `minimax_h3_fl2v_turbo_8step_v1.2_768p_comfyui_bf16.safetensors` (2.12 GB), for clips that are only a prompt. Take the files with `comfyui` in their names. MiniMax H3 Community License | 4 and 8, euler |
 | MiniMax H3 | the same two base files, without the LoRA | 10 and 20, res_multistep |
 | Singularity v2 | `Minimax-h3_Singularity_ref2va_v2_pruned_int8.safetensors` | 10 and 20, res_multistep |
 | DaSiWa Hybrid v4 | its int8 ref2va file from Civitai model 2877206 | 10 and 20, res_multistep |
@@ -110,7 +111,8 @@ drafts to try things.
 A final renders at H3's own size of about a megapixel. Its picture is then
 enlarged by a learned latent upscaler, and the model redraws its last steps at
 the larger size: HyperFlow its last 3 of 6, the 20-step families their last 3 of
-20, and the turbo families a fixed tail from sigma 0.675. A 9:16 final comes out
+20, and the turbo families a fixed tail from sigma 0.675 (LightX2V H3 Turbo one
+step from 0.632 on a clip that is only a prompt). A 9:16 final comes out
 at 1088x1920, a 16:9 one at 1920x1088 and a 1:1 one at 1440x1440. The sound is
 the first pass's, and held frames stay as they are.
 
