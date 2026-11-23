@@ -83,6 +83,13 @@ class HybridPlanTest(unittest.TestCase):
             self.assertNotIn("__metadata__", header)
             self.assertIn("model.diffusion_model.blocks.45.adaLN_modulation.1.weight", header)
 
+    def test_rejects_hyperflow_checkpoint_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "hf.safetensors")
+            _make_safetensors(path, {"__metadata__": {"hyperflow": '{"format": 1}'}, **_sample_header()})
+            with self.assertRaisesRegex(ValueError, "HyperFlow"):
+                hybrid.read_safetensors_header(path)
+
 
 class ProjectHybridAndTakeMetadataTest(unittest.TestCase):
     def _project_with_clip(self):

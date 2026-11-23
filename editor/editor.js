@@ -3935,8 +3935,8 @@ function formatBlockSet(set) {
 
 function hybridSection() {
   const safetensors = (state.checkpoints || []).filter((f) => String(f).toLowerCase().endsWith(".safetensors"));
-  const h3Models = safetensors.filter((f) => /h3|fl2v|ref2v/i.test(f));
-  const otherModels = safetensors.filter((f) => !/h3|fl2v|ref2v/i.test(f));
+  const h3Models = safetensors.filter((f) => /h3|fl2v|ref2v/i.test(f) && !/hyperflow/i.test(f));
+  const otherModels = safetensors.filter((f) => !h3Models.includes(f));
   const pool = h3Models.length >= 2 ? h3Models : safetensors;
   const current = state.project.hybrid && typeof state.project.hybrid === "object" ? state.project.hybrid : null;
   if (safetensors.length < 2 && !current) return null;

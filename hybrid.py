@@ -181,6 +181,12 @@ def read_safetensors_header(path: str) -> dict[str, dict]:
         header = json.loads(handle.read(header_len).decode("utf-8"))
     if not isinstance(header, dict):
         raise ValueError("%s has a malformed safetensors header" % os.path.basename(path))
+    meta = header.get("__metadata__")
+    if isinstance(meta, dict) and "hyperflow" in meta:
+        raise ValueError(
+            "%s is a pruned HyperFlow Flash checkpoint (different dropped blocks & factorized layers). "
+            "Hybrid block swapping requires standard 50-block MiniMax H3 safetensors checkpoints." % os.path.basename(path)
+        )
     return {k: v for k, v in header.items() if k != "__metadata__" and isinstance(v, dict)}
 
 
