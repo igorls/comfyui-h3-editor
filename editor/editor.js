@@ -2837,7 +2837,8 @@ function conditionerChoices() {
     const models = { ...(state.project.models || {}) };
     if (value) models[key] = value;
     else delete models[key];
-    if (!models.conditioner) delete models.conditioner_url;
+    // The address belongs to this machine: one an older project still carries is dropped.
+    delete models.conditioner_url;
     if (Object.keys(models).length) state.project.models = models;
     else delete state.project.models;
   };
@@ -2853,18 +2854,25 @@ function conditionerChoices() {
     input.type = "text";
     input.spellcheck = false;
     input.dataset.key = "Server address";
-    input.placeholder = state.encoders.conditioner_url || "";
-    input.value = state.project.models?.conditioner_url || "";
-    input.addEventListener("change", () => {
-      checkpoint();
-      set("conditioner_url", input.value.trim());
-      save();
+    input.placeholder = state.encoders.conditioner_url_default || "";
+    input.value = state.encoders.conditioner_url || "";
+    // Kept on this machine for every project, never in a project: prompts and pictures go to this address.
+    input.addEventListener("change", async () => {
+      try {
+        const saved = await postJson("/encoder-server", { url: input.value.trim() }, "PUT");
+        state.encoders.conditioner_url = saved.url || "";
+        input.value = state.encoders.conditioner_url;
+      } catch (error) {
+        input.value = state.encoders.conditioner_url || "";
+        toast(error.message, true);
+      }
     });
     wrap.append(title, input);
     const hint = document.createElement("p");
     hint.className = "hint";
     hint.textContent = "The prompt is read by the language model on this server, so the text encoder is not loaded and "
-      + "a draft with a new prompt starts sooner. Speech in Japanese is less exact than with the text encoder.";
+      + "a draft with a new prompt starts sooner. Speech in Japanese is less exact than with the text encoder. "
+      + "The address is kept on this machine, for every project.";
     out.push(wrap, hint);
   }
   return out;
@@ -5931,6 +5939,13 @@ function spriteSection(clip) {
           if (alpha === "hard") next.alpha = "hard";
           else delete next.alpha;
           update(next);
+        }),
+      spriteChoice("Depth", [["auto", "Auto · use a depth model when installed"], ["off", "Off"]],
+        config.depth || "auto", depth => {
+          const next = { ...config };
+          if (depth === "off") next.depth = "off";
+          else delete next.depth;
+          update(next);
         }), hint,
     );
     if (config.self_pin) {
@@ -6002,7 +6017,7 @@ function spritePlayback(clip, take) {
   const info = document.createElement("p");
   info.className = "hint";
   info.setAttribute("aria-live", "polite");
-  const describe = () => sheet.poses + " frames · " + sheet.fps + " fps" + (sheet.cutout ? " · " + sheet.cutout : "");
+  const describe = () => sheet.poses + " frames · " + sheet.fps + " fps" + (sheet.cutout ? " · " + sheet.cutout + (sheet.depth ? " + depth" : "") : "");
   info.textContent = describe();
   let request = 0;
   const size = spriteChoice("Export size", [64, 128, 160, 256].map(n => [String(n), n + " px"]), String(sheet.tile), changeExport);

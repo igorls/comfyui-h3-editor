@@ -318,7 +318,8 @@ def encoder_choices(available):
     encoders = text_encoders()
     return {"text_encoders": encoders,
             "projections": {f: store.projections_for(f, available) for f in encoders if store.projections_for(f, available)},
-            "conditioners": store.conditioners_for(available), "conditioner_url": store.CONDITIONER_URL,
+            "conditioners": store.conditioners_for(available), "conditioner_url": read_encoder_server() or "",
+            "conditioner_url_default": store.CONDITIONER_URL,
             "vaes": video_vaes(listed("vae")), "auto": status["auto"], "missing": status["missing"]}
 
 
@@ -419,6 +420,9 @@ def available_models():
     if ("LoadBackgroundRemovalModel" in comfy_nodes.NODE_CLASS_MAPPINGS
             and "background_removal" in folder_paths.folder_names_and_paths):
         names.update(store.sprite.MATTE_PREFIX + name for name in folder_paths.get_filename_list("background_removal"))
+    if (all(name in comfy_nodes.NODE_CLASS_MAPPINGS for name in store.sprite.DEPTH_NODES)
+            and "depth_pro_2" in folder_paths.folder_names_and_paths):
+        names.update(store.sprite.DEPTH_PREFIX + name for name in folder_paths.get_filename_list("depth_pro_2"))
     for kind in ("diffusion_models", "unet_gguf", "loras", "latent_upscale_models", "text_encoders", "clip", "vae"):
         if kind in folder_paths.folder_names_and_paths:
             names.update(folder_paths.get_filename_list(kind))
@@ -442,6 +446,9 @@ def available_models():
     if (store.CONDITIONER_NODE in comfy_nodes.NODE_CLASS_MAPPINGS
             and store.CONDITIONER_FOLDER in folder_paths.folder_names_and_paths):
         names.update(store.CONDITIONER_PREFIX + name for name in folder_paths.get_filename_list(store.CONDITIONER_FOLDER))
+        address = read_encoder_server()
+        if address:
+            names.add(store.CONDITIONER_ADDRESS + address)
     return names
 
 
@@ -671,6 +678,39 @@ def read_presets():
 
 async def presets(request):
     return web.json_response({"checkpoints": read_presets()})
+
+
+def encoder_server_file():
+    return os.path.join(root(), "encoder_server.json")
+
+
+def read_encoder_server():
+    """The address this machine set for its encoder server, or None. One that fails the check counts as none."""
+    try:
+        with open(encoder_server_file(), encoding="utf-8") as f:
+            return store.clean_conditioner_url(json.load(f)["url"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+async def save_encoder_server(request):
+    """Set, or with an empty address clear, where this machine's encoder server is. It is kept beside the
+    projects, not in one, so a project from elsewhere cannot point renders at another server."""
+    body = await request.json()
+    try:
+        url = store.clean_conditioner_url(body.get("url") if isinstance(body, dict) else None)
+    except ValueError as error:
+        raise web.HTTPBadRequest(text=str(error))
+    async with lock("encoder_server.json"):
+        path = encoder_server_file()
+        if url is None:
+            if os.path.exists(path):
+                os.remove(path)
+        else:
+            with open(path + ".tmp", "w", encoding="utf-8") as f:
+                json.dump({"url": url}, f, indent=1)
+            os.replace(path + ".tmp", path)
+    return web.json_response({"url": url, "default": store.CONDITIONER_URL})
 
 
 async def save_presets(request):
@@ -2157,6 +2197,7 @@ async def make_sprite_export(take, variant, folder, stem, names, export_24fps):
     }
     if sheet.get("alpha") == "hard":
         sheet_inputs["alpha"] = "hard"
+    depth = store.sprite.depth_model(available_models()) if sheet.get("depth") else None
     graph = {"1": {"class_type": "H3LoadClip", "inputs": {
         "file": "/".join(filter(None, (take.get("subfolder"), take["file"]))), "first": 0,
         "last": total_frames, "frames_only": True}},
@@ -2167,6 +2208,9 @@ async def make_sprite_export(take, variant, folder, stem, names, export_24fps):
             raise Refused("This take used BiRefNet. Install its background removal model to export this variant.")
         graph["3"] = {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": model}}
         graph["2"]["inputs"]["bg_model"] = ["3", 0]
+    if depth:
+        more, graph["2"]["inputs"]["depth"] = store.sprite.depth_nodes(depth, ["1", 0], 4)
+        graph.update(more)
     temporary = {style: output_path(folder, prefix + "." + style + ".png") for style in names}
     try:
         job = await queue_prompt(graph)
@@ -3911,6 +3955,7 @@ ROUTES = (
     ("POST", "/h3take/api/models/motion/cancel", "motion_model_cancel"),
     ("GET", "/h3take/api/presets", "presets"),
     ("PUT", "/h3take/api/presets", "save_presets"),
+    ("PUT", "/h3take/api/encoder-server", "save_encoder_server"),
     ("GET", "/h3take/api/cast-catalog", "cast_catalog"),
     ("POST", "/h3take/api/cast-catalog/remove", "remove_from_catalog"),
     ("POST", "/h3take/api/cast-catalog/spread", "spread_catalog"),

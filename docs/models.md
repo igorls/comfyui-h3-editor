@@ -392,9 +392,14 @@ license, which is in its folder beside it.
 With an adapter installed, an **Encoder server** menu shows under Model files: in the
 Project tab, press **Edit** beside Model files, or open Models and their settings. Pick
 the adapter there and type the server's address under it. Empty, the address is
-`http://127.0.0.1:8000`. The choice belongs to the project and holds for its drafts and
+`http://127.0.0.1:8000`. The adapter belongs to the project and holds for its drafts and
 its finals, so a final reads the prompt the same way its draft did. Without the pack or
 the adapter, a project that names one renders with the text encoder file.
+
+The address belongs to the machine, not to the project. Your prompts and reference
+pictures are sent to it, so a project you got from someone else cannot say where they
+go: it is kept beside your projects, used by all of them, and never saved into a project
+or its zip.
 
 What it is for: drafts while you work on a prompt. ComfyUI moves the 32B off the card
 before sampling and loads it again for the next prompt, so every draft with a new

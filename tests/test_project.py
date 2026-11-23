@@ -5,7 +5,7 @@ import unittest
 import project as project_module
 
 from policy import bridge_spans, legal_length, video_span
-from project import (conditioners_for, project_models, projection_for, projections_for, small_encoder_size, add_sound, remove_sound, update_sound, MODELS, PRESET_LIMIT, PROFILES, REALISM_LORAS, REFINE_TAIL, active_take, add_cast, add_clip, apply_op, cast_pictures, clean_checkpoints,
+from project import (clean_conditioner_url, conditioners_for, project_models, projection_for, projections_for, small_encoder_size, add_sound, remove_sound, update_sound, MODELS, PRESET_LIMIT, PROFILES, REALISM_LORAS, REFINE_TAIL, active_take, add_cast, add_clip, apply_op, cast_pictures, clean_checkpoints,
                      clip_prompt, describe, encoder_status, update_cast, export_command, export_plan, finals_status,
                      frame_of, installed_profile, is_hyperflow, item_length, linked_length, lora_status, new_project, pick_file,
                      plan_render, profile_status, project_models, refmod_graph, render_graph, render_models, set_project, slug, update_clip,
@@ -1124,11 +1124,25 @@ class EncoderTest(unittest.TestCase):
         self.assertEqual(graph["2"], {"class_type": "UniCondEncoder", "inputs": {
             "url": "http://127.0.0.1:8000", "model": "", "layer": -1, "adapter": adapter, "profile": "auto"}})
         self.assertEqual((job["models"]["text_encoder"], job["models"]["text_conditioner"]), (adapter, adapter))
-        # The server's address is the project's to set; a final reads its prompt the same way.
-        set_project(project, {"text_conditioner_url": "http://127.0.0.1:9000"})
+        # The server's address is the machine's, never the project's: one a project carries is ignored,
+        # so a project from elsewhere cannot send prompts to another server. A final reads its prompt
+        # the same way as a draft.
+        with self.assertRaises(ValueError):
+            set_project(project, {"text_conditioner_url": "http://example.com"})
+        project["models"]["conditioner_url"] = "http://example.com"
+        here = installed | {"conditioner-url:http://127.0.0.1:9000"}
         for quality in ("draft", "final"):
-            node = render_graph(project, "x", clip(), "t1", quality, 3, installed)["2"]
+            node = render_graph(project, "x", clip(), "t1", quality, 3, here)["2"]
             self.assertEqual((node["class_type"], node["inputs"]["url"]), ("UniCondEncoder", "http://127.0.0.1:9000"))
+        self.assertEqual(render_graph(project, "x", clip(), "t1", "draft", 3, installed)["2"]["inputs"]["url"], "http://127.0.0.1:8000")
+        self.assertNotIn("conditioner_url", project_models(project, here))
+        del project["models"]["conditioner_url"]
+        # An address is http or https with a host, and nothing else.
+        self.assertEqual(clean_conditioner_url(" http://host.name:9000/ "), "http://host.name:9000")
+        self.assertIsNone(clean_conditioner_url(""))
+        for bad in ("file:///etc/passwd", "ftp://host", "host:9000", "http://", "http://user:secret@host", "http://host:port", "http://a b"):
+            with self.assertRaises(ValueError):
+                clean_conditioner_url(bad)
         # Without the adapter, or the pack that lists it, the render loads the text encoder file.
         graph = render_graph(project, "x", clip(), "t1", "draft", 3, installed - adapters)
         self.assertEqual(graph["2"]["class_type"], "CLIPLoader")
@@ -1136,7 +1150,7 @@ class EncoderTest(unittest.TestCase):
         # An adapter for another model is not taken.
         set_project(project, {"text_conditioner": "unicond-qi21-v3.2-seq.safetensors"})
         self.assertEqual(render_graph(project, "x", clip(), "t1", "draft", 3, installed)["2"]["class_type"], "CLIPLoader")
-        set_project(project, {"text_conditioner": None, "text_conditioner_url": None})
+        set_project(project, {"text_conditioner": None})
         self.assertNotIn("models", project)
 
 

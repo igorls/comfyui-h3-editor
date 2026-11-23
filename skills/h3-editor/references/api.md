@@ -426,9 +426,11 @@ picks one (a file name, or `null` for the default), and a take records it as `te
 installed, and is empty without that pack. `set_project` `text_conditioner` names one (a
 file name, or `null` for off): the project's prompts are then read by a language model on
 a server, and ComfyUI loads no text encoder, which makes a draft with a new prompt start
-sooner. `text_conditioner_url` is the server's address, or `null` for
-`encoders.conditioner_url`. It holds for drafts and finals; a take records the adapter as
-`text_conditioner`. Speech in Japanese is less exact this way. Use it only when the user
+sooner. It holds for drafts and finals; a take records the adapter as `text_conditioner`.
+The server's address is the machine's, not the project's: `encoders.conditioner_url` is the
+one set here (empty when none is, and `encoders.conditioner_url_default` is then used), and
+`PUT /encoder-server` `{"url"}` sets or, with an empty string, clears it. It takes `http://`
+or `https://` and a host. Do not change it unless the user gives you the address. Speech in Japanese is less exact this way. Use it only when the user
 asks for it or has it set already.
 
 Checkpoints the user saved as presets are shared by every project. `GET /presets` returns
