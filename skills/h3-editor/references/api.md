@@ -645,7 +645,8 @@ For an independent generated shot, pass `sprite` in `add_clip` or `update_clip` 
 - `frames`: any legal H3 length `5 + 17k >= 22` (`22`, `39`, `56`, `73`, …; default `39`).
 - `tile_size`: even `[w, h]` tile dimensions in `32..512` (default `[64, 64]`).
 - `motion`: `"idle"` for a planted idle, or `"prompt"` to drive movement entirely from the shot action (with optional `animation` name). Idle and named prompt actions auto-pin the primary heading-matched plate to both start and end when no manual pin is set.
-- `cutout`: `"auto"` (default, uses `background_removal/birefnet.safetensors` with `H3DefringeMatte` edge defringing when available) or `"edge"` (background key).
+- `cutout`: `"auto"` (default, uses `background_removal/birefnet.safetensors` with `H3DefringeMatte` edge defringing when available) or `"edge"` (background key). With a matte on a flat backdrop of any colour, small patches of backdrop the matte kept are keyed out as well.
+- `alpha`: `"soft"` (default) or `"hard"`: every pixel of a cell fully in or out, for pixel art. The take's `sprite.alpha` is `"hard"` when it was used.
 - `guide`: `{"file":"movement.mp4","subfolder":"..."}` using an imported output video at 24 fps with at least `frames` frames.
 - `refine`: boolean; drafts skip `VAEDecodeAudio` and `H3SaveHold` by default unless `refine: true` is set.
 - `self_pin`: `{"file":"pin.png","subfolder":"...","stride":14}` to anchor frame `0` plus `mid_frames` at `stride` and `2*stride` (`stride` in `4..36`) for loop closure.

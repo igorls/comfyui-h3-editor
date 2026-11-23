@@ -11,6 +11,8 @@ MIN_TILE, MAX_TILE = 32, 512
 MAX_ATLAS_PIXELS = 32 * 1024 * 1024
 PIVOT = (32, 59)
 MATTE_PREFIX = "background_removal:"
+# The edge of a cell: soft keeps partly covered pixels, hard makes every pixel fully in or out (pixel art).
+ALPHAS = ("soft", "hard")
 
 CANVASES = {
     "portrait": ((256, 384), (512, 768)),
@@ -235,7 +237,7 @@ def _clean_file_ref(ref, what):
 def settings(value):
     if value is None:
         return None
-    allowed = {"direction", "camera", "poses", "guide", "motion", "cutout", "animation",
+    allowed = {"direction", "camera", "poses", "guide", "motion", "cutout", "alpha", "animation",
                "canvas", "frames", "tile_size", "mode", "refine", "self_pin", "style"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ValueError("unknown sprite setting")
@@ -265,6 +267,10 @@ def settings(value):
         if value["cutout"] not in ("auto", "edge"):
             raise ValueError("choose auto or edge sprite cutout")
         out["cutout"] = value["cutout"]
+    if "alpha" in value:
+        if value["alpha"] not in ALPHAS:
+            raise ValueError("choose soft or hard sprite alpha")
+        out["alpha"] = value["alpha"]
     if "canvas" in value:
         if value["canvas"] not in CANVASES:
             raise ValueError("choose a sprite canvas of %s" % (", ".join(CANVASES),))
@@ -431,21 +437,107 @@ def cutout(im):
     return im
 
 
-def with_matte(frame, mask, alpha_low=0.12, alpha_high=0.88):
-    """Remove the estimated backdrop colour from partially covered foreground pixels."""
+def backdrop(rgb):
+    """The colour a picture stands on, read from its border, and whether that border is one flat colour.
+
+    `rgb` is a float array in 0..1. Returns (colour, noise, flat): a subject may cross the border, so the
+    border counts as flat when most of it sits on the colour. A scene behind the subject is not flat.
+    """
+    import numpy as np
+
+    border = np.concatenate((rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]))
+    ground = np.median(border, axis=0)
+    off = np.abs(border - ground).max(axis=1)
+    near = off < .06
+    noise = float(off[near].mean()) if near.any() else 1.0
+    return ground, noise, bool(near.mean() >= .6)
+
+
+def backdrop_key(rgb, ground, noise, subject=None, pockets=False):
+    """How far each pixel is from being backdrop, 0..1, on a flat backdrop of any colour.
+
+    Backdrop is the flat region of the backdrop's own colour that reaches the border. Colour alone cannot
+    tell a white shirt from a white backdrop, so the rest takes evidence:
+
+    - `subject`, a foreground matte (0..1). Where it calls a keyed patch foreground, a small patch is the
+      matte's mistake (a lump of backdrop beside hair, a sliver between limbs) and goes; a large one is the
+      subject's own backdrop-coloured surface (a white shirt) and stays.
+    - `pockets`, for pictures known to hold no surface of the backdrop's colour: also take the regions a
+      subject encloses (between legs, under an arm) when they are as flat as the backdrop and not a speck.
+
+    The edge of what goes fades over the antialiased pixels around it.
+    """
+    import numpy as np
+    from scipy import ndimage as ndi
+
+    dist = np.abs(rgb - ground).max(axis=2)
+    inner = max(.03, 4 * noise)
+    core = dist < inner
+    seed = np.zeros_like(core)
+    seed[[0, -1]] = core[[0, -1]]
+    seed[:, [0, -1]] = core[:, [0, -1]]
+    gone = ndi.binary_propagation(seed, mask=core)
+    if pockets:
+        labels, count = ndi.label(core & ~gone)
+        if count:
+            index = np.arange(1, count + 1)
+            area = ndi.sum(np.ones_like(dist), labels, index)
+            mean = ndi.mean(dist, labels, index)
+            take = np.zeros(count + 1, dtype=bool)
+            take[1:] = (area >= max(8, core.size // 12000)) & (mean <= max(.012, 2 * noise))
+            gone |= take[labels]
+    kept = np.zeros_like(core)
+    if subject is not None:
+        solid = subject > .5
+        labels, count = ndi.label(gone & solid)
+        if count:
+            area = ndi.sum(np.ones_like(dist), labels, np.arange(1, count + 1))
+            keep = np.zeros(count + 1, dtype=bool)
+            keep[1:] = area > max(64, .02 * solid.sum())
+            kept = keep[labels]
+            gone &= ~kept
+    # Video compression rings around a subject: the backdrop beside it is a little off its colour.
+    gone = ndi.binary_dilation(gone, iterations=3, mask=(dist < inner + .07) & ~kept)
+    key = np.ones_like(dist)
+    rim = ndi.binary_dilation(gone, iterations=2) & ~gone & ~kept
+    key[rim] = ((dist[rim] - inner) / .1).clip(0, 1)
+    key[gone] = 0
+    return key
+
+
+def with_matte(frame, mask=None, alpha_low=0.12, alpha_high=0.88, key=True, pockets=False):
+    """Cut a subject out of its picture, as RGBA with the backdrop colour taken out of its edge pixels.
+
+    `mask` is a foreground matte (0..1), or None to cut by the backdrop colour alone. On a flat backdrop of
+    any colour the two are combined (see `backdrop_key`): the matte decides the subject, and the backdrop's
+    own colour removes the small patches of backdrop a matte keeps by mistake. On a scene (no flat border),
+    or with `key` off, only the matte is used.
+    """
     import numpy as np
     from PIL import Image
 
     rgb = np.asarray(frame.convert("RGB"), dtype=np.float32) / 255
-    border = np.concatenate((rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]))
-    ground = np.median(border, axis=0)
-    alpha = np.asarray(mask, dtype=np.float32)[..., None].clip(0, 1)
-    if alpha.shape[:2] != rgb.shape[:2]:
-        raise ValueError("sprite matte must match the source frame")
-    span = max(float(alpha_high) - float(alpha_low), 1e-4)
+    ground, noise, flat = backdrop(rgb)
+    if mask is None:
+        alpha = coverage = np.ones(rgb.shape[:2] + (1,), dtype=np.float32)
+    else:
+        alpha = np.asarray(mask, dtype=np.float32)[..., None].clip(0, 1)
+        if alpha.shape[:2] != rgb.shape[:2]:
+            raise ValueError("sprite matte must match the source frame")
+        span = max(float(alpha_high) - float(alpha_low), 1e-4)
+        coverage = ((alpha - float(alpha_low)) / span).clip(0, 1)
+    if mask is None or (key and flat):
+        keyed = backdrop_key(rgb, ground, noise, None if mask is None else alpha[..., 0], pockets)[..., None]
+        alpha, coverage = np.minimum(alpha, keyed), np.minimum(coverage, keyed)
     color = ((rgb - (1 - alpha) * ground) / np.maximum(alpha, .05)).clip(0, 1)
-    coverage = ((alpha - float(alpha_low)) / span).clip(0, 1)
     return Image.fromarray((np.concatenate((color, coverage), axis=2) * 255).round().astype("uint8"))
+
+
+def harden(im, threshold=128):
+    """Every pixel fully in or fully out: the edge for pixel art, which has no half-transparent pixels."""
+    im = im.convert("RGBA")
+    im.putalpha(im.getchannel("A").point(lambda v: 255 if v >= threshold else 0))
+    return im
 
 
 def seam_score(frames, start, period):
@@ -628,7 +720,7 @@ def _indexed_from_atlas(atlas):
     return indexed
 
 
-def _render_cells(selected_by_index, order, layout, tile_w, tile_h, ref_w, ref_h, global_scale=None):
+def _render_cells(selected_by_index, order, layout, tile_w, tile_h, ref_w, ref_h, global_scale=None, alpha="soft"):
     from PIL import Image
 
     if global_scale is not None:
@@ -655,6 +747,8 @@ def _render_cells(selected_by_index, order, layout, tile_w, tile_h, ref_w, ref_h
         tile = fine.resize(size, Image.Resampling.LANCZOS).convert("RGBA")
         coverage = fine.getchannel("a").resize(size, Image.Resampling.BOX)
         tile.paste((0, 0, 0, 0), mask=coverage.point(lambda v: 0 if v else 255))
+        if alpha == "hard":
+            tile = harden(tile)
         tiles[source_index] = tile
     for column, index in enumerate(order):
         atlas.paste(tiles[index], (tile_w * column, 0))
@@ -703,7 +797,7 @@ def load_frame_cache(folder, indices=None):
 
 
 def export_from_cache(folder, layout, poses, tile_size, idle=False, export_24fps=False,
-                      total_frames=FRAMES, canvas="portrait", global_scale=None):
+                      total_frames=FRAMES, canvas="portrait", global_scale=None, alpha="soft"):
     """Re-slice and resize a sprite strip directly from lossless cached RGBA frames without touching the GPU."""
     tile_w, tile_h = validate_tile_size(tile_size)
     order = playback_indices(layout, poses, idle, export_24fps, total_frames=total_frames)
@@ -712,13 +806,14 @@ def export_from_cache(folder, layout, poses, tile_size, idle=False, export_24fps
     if cached is None:
         return None
     ref_w, ref_h = canvas_size({"canvas": canvas}, "draft")
-    atlas = _render_cells(cached, order, layout, tile_w, tile_h, ref_w, ref_h, global_scale=global_scale)
+    atlas = _render_cells(cached, order, layout, tile_w, tile_h, ref_w, ref_h, global_scale=global_scale, alpha=alpha)
     indexed = _indexed_from_atlas(atlas)
     return atlas, indexed
 
 
 def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=TILE, full_action=False,
-           export_24fps=False, tile_size=None, canvas="portrait", global_scale=None, cache_dir=None):
+           export_24fps=False, tile_size=None, canvas="portrait", global_scale=None, cache_dir=None,
+           alpha="soft"):
     """Pick a loop once. Finish reuses the draft's phase, scale and ground contact in normalized source coordinates."""
     import numpy as np
     from PIL import Image
@@ -731,10 +826,9 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
             raise ValueError("choose a sprite cell size of 64, 128 or 256 px")
         tile_w = tile_h = cell_size
     ref_w, ref_h = canvas_size({"canvas": canvas}, "draft")
-    is_default_cell = (tile_w == TILE and tile_h == TILE)
     keyed = [
         cutout(frame.convert("RGB").resize((ref_w, ref_h), Image.Resampling.LANCZOS)) for frame in frames
-    ] if previous is None or (masks_for is None and is_default_cell) else []
+    ] if previous is None else []
     period = 2 * poses
     if previous is None:
         signatures = []
@@ -794,7 +888,7 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
     order = playback_indices(layout, poses, idle, export_24fps, total_frames=total_frames)
     indices = list(dict.fromkeys(order))
     if masks_for is None:
-        selected = [keyed[n] if is_default_cell else cutout(frames[n]) for n in indices]
+        selected = [with_matte(frames[n]) for n in indices]
     else:
         masks = masks_for(indices)
         if len(masks) != len(indices):
@@ -824,7 +918,7 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
     selected_by_index = dict(zip(indices, selected))
     if cache_dir is not None:
         save_frame_cache(cache_dir, selected_by_index)
-    atlas = _render_cells(selected_by_index, order, layout, tile_w, tile_h, ref_w, ref_h, global_scale=global_scale)
+    atlas = _render_cells(selected_by_index, order, layout, tile_w, tile_h, ref_w, ref_h, global_scale=global_scale, alpha=alpha)
     indexed = _indexed_from_atlas(atlas)
     return atlas, indexed, layout
 

@@ -318,8 +318,8 @@ def resize_premultiplied(im, output_size, pivot=None, pad=4):
 
 
 def process_prop(frame, mask=None, output_size=None, pivot=None, pad=4):
-    """Defringe a 4 MP prop via sprite.with_matte() (or edge cutout fallback) and downsample cleanly."""
-    rgba = sprite.with_matte(frame, mask) if mask is not None else sprite.cutout(frame)
+    """Cut a 4 MP prop out via sprite.with_matte() (by its matte, or by the backdrop colour alone) and downsample cleanly."""
+    rgba = sprite.with_matte(frame, mask)
     if output_size is None:
         return rgba
     return resize_premultiplied(rgba, output_size, pivot=pivot, pad=pad)

@@ -5,6 +5,10 @@ What changed in each release of H3 Editor, newest first. Versions follow
 version can change how projects or the API behave, and the entry says so.
 Each release is a tag on GitHub, `v` followed by the version.
 
+## Unreleased
+
+- **Cleaner sprite and prop cutouts.** The matte from BiRefNet and the backdrop's own colour now work together. On a flat backdrop of any colour, a small patch of backdrop the matte kept as part of the subject (a lump beside the hair, a sliver between limbs) is removed, while a surface of the subject in the backdrop's colour, such as a white shirt on white, stays. The backdrop colour is also taken out of the pixels around what was removed. A take on a scene, with no flat backdrop, is cut by the matte alone as before. **Background key** cutouts (no matte model) now have a soft, colour-cleaned edge where they had a hard one with a rim of backdrop. A sprite has a new **Edge** choice: **Hard** makes every pixel of a cell fully in or out, for pixel art. Sheets and frame caches of earlier takes are unchanged until they are rendered again. For agents: sprite `alpha` is `"soft"` or `"hard"`; `H3SpriteSheet` takes `alpha`, and `H3DefringeMatte` takes `key_backdrop` and `alpha`.
+
 ## 0.15.1, 2026-11-22
 
 - **Sprites hold a diagonal heading.** A north-east, north-west, south-east or south-west clip that pins its own picture no longer takes the cast's back, front and side views as references, which turned the character to those views partway through a take; the pinned picture stands in for them. An idle with no picture for its heading is no longer pinned to the back or front view. Sprite pictures with a transparent background are laid on white, so a take no longer fades between black and white, and a pinned picture of another shape than the canvas is shown whole where a portrait picture on the square canvas lost its head and feet. For agents: `H3LoadStill` takes optional `backdrop`, `width` and `height`.

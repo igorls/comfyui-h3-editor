@@ -519,7 +519,8 @@ class H3DefringeMatte(io.ComfyNode):
             category="minimax/h3",
             description=(
                 "Un-premultiply the estimated border backdrop colour from partially covered foreground pixels "
-                "(BiRefNet or similar soft mattes) and tighten alpha coverage, eliminating white halos on game sprites and props."
+                "(BiRefNet or similar soft mattes) and tighten alpha coverage, eliminating halos on game sprites and props. "
+                "On a flat backdrop of any colour it also keys out the backdrop a matte leaves inside or beside the subject."
             ),
             inputs=[
                 io.Image.Input("images"),
@@ -528,6 +529,11 @@ class H3DefringeMatte(io.ComfyNode):
                 io.Float.Input("alpha_high", default=0.88, min=0.5, max=1.0, step=0.01, optional=True),
                 io.Boolean.Input("invert_mask", default=False, optional=True,
                                  tooltip="Flip mask polarity when the upstream background remover outputs background=1."),
+                io.Boolean.Input("key_backdrop", default=True, optional=True,
+                                 tooltip="On a flat backdrop of any colour, also remove what the matte keeps by mistake: "
+                                         "pockets of backdrop the subject encloses and patches beside it. Ignored on a scene."),
+                io.Combo.Input("alpha", options=list(sprite.ALPHAS), default="soft", optional=True,
+                               tooltip="soft keeps partly covered edge pixels. hard makes every pixel fully in or out."),
             ],
             outputs=[
                 io.Image.Output(display_name="rgba"),
@@ -536,7 +542,7 @@ class H3DefringeMatte(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, mask, alpha_low=0.12, alpha_high=0.88, invert_mask=False):
+    def execute(cls, images, mask, alpha_low=0.12, alpha_high=0.88, invert_mask=False, key_backdrop=True, alpha="soft"):
         masks = mask.detach().float().cpu().numpy()
         if masks.ndim == 2:
             masks = masks[None]
@@ -547,7 +553,9 @@ class H3DefringeMatte(io.ComfyNode):
         for idx, frame_t in enumerate(images):
             frame = Image.fromarray((frame_t.detach().cpu().clamp(0, 1).numpy() * 255).round().astype(np.uint8))
             m = masks[min(idx, len(masks) - 1)]
-            out_im = sprite.with_matte(frame, m, alpha_low=alpha_low, alpha_high=alpha_high)
+            out_im = sprite.with_matte(frame, m, alpha_low=alpha_low, alpha_high=alpha_high, key=key_backdrop)
+            if alpha == "hard":
+                out_im = sprite.harden(out_im)
             arr = np.asarray(out_im, dtype=np.float32) / 255.0
             rgba_batch.append(arr)
             matte_batch.append(arr[:, :, 3])
@@ -579,13 +587,15 @@ class H3SpriteSheet(io.ComfyNode):
                     io.Boolean.Input("save_webp", default=False, optional=True),
                     io.Boolean.Input("save_cache", default=True, optional=True,
                                      tooltip="Cache lossless defringed RGBA frames beside the strip for GPU-free re-exports."),
+                    io.Combo.Input("alpha", options=list(sprite.ALPHAS), default="soft", optional=True,
+                                   tooltip="soft keeps partly covered edge pixels. hard makes every pixel fully in or out, for pixel art."),
                     *optional],
             outputs=[], is_output_node=True)
 
     @classmethod
     def execute(cls, images, poses, filename_prefix, layout="", idle=False, bg_model=None, cell_size="64", full_action=False,
                 export_24fps=False, tile_width=0, tile_height=0, canvas="portrait", global_scale=0.0, save_webp=False,
-                save_cache=True):
+                save_cache=True, alpha="soft"):
         base = os.path.realpath(folder_paths.get_output_directory())
         dest = os.path.realpath(os.path.join(base, filename_prefix))
         if os.path.commonpath((base, dest)) != base or dest == base:
@@ -605,7 +615,7 @@ class H3SpriteSheet(io.ComfyNode):
             masks_for if bg_model is not None else None, idle=idle, cell_size=cell_size,
             full_action=full_action, export_24fps=export_24fps,
             tile_size=custom_tile, canvas=canvas or "portrait", global_scale=scale_override,
-            cache_dir=cache_path,
+            cache_dir=cache_path, alpha=alpha or "soft",
         )
         fps = sprite.playback_fps(transform, poses, idle, export_24fps)
         metadata = {"poses": full.width // tile_w, "source_poses": poses, "fps": fps,
@@ -613,6 +623,8 @@ class H3SpriteSheet(io.ComfyNode):
                     "pivot": [sprite.PIVOT[0] * tile_w // sprite.TILE, sprite.PIVOT[1] * tile_h // sprite.TILE],
                     "layout": transform, "canvas": canvas or "portrait", "frames": len(frames),
                     "cutout": "foreground model" if bg_model is not None else "background key"}
+        if alpha == "hard":
+            metadata["alpha"] = "hard"
         if cache_path and os.path.isdir(cache_path):
             metadata["frame_cache"] = os.path.basename(cache_path)
         for label, sheet in (("illustrated", full), ("indexed", indexed)):

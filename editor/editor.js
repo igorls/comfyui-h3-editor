@@ -5880,7 +5880,14 @@ function spriteSection(clip) {
           update(next);
         }),
       spriteChoice("Cutout", [["auto", "Auto · prefer BiRefNet"], ["edge", "Background key"]],
-        config.cutout || "auto", cutout => update({ ...config, cutout })), hint,
+        config.cutout || "auto", cutout => update({ ...config, cutout })),
+      spriteChoice("Edge", [["soft", "Soft · smooth edge"], ["hard", "Hard · pixel art, no half-transparent pixels"]],
+        config.alpha || "soft", alpha => {
+          const next = { ...config };
+          if (alpha === "hard") next.alpha = "hard";
+          else delete next.alpha;
+          update(next);
+        }), hint,
     );
     if (config.self_pin) {
       const pinNote = document.createElement("p");

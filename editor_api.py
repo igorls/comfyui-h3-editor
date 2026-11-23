@@ -2131,6 +2131,7 @@ async def make_sprite_export(take, variant, folder, stem, names, export_24fps):
                 store.sprite.export_from_cache,
                 cache_path, sheet["layout"], poses, (tile_w, tile_h),
                 idle=idle, export_24fps=export_24fps, total_frames=total_frames, canvas=canvas,
+                alpha=sheet.get("alpha") or "soft",
             )
             if rendered is not None:
                 full, indexed = rendered
@@ -2150,6 +2151,8 @@ async def make_sprite_export(take, variant, folder, stem, names, export_24fps):
         "export_24fps": export_24fps, "save_cache": False,
         "idle": idle, "filename_prefix": folder + "/" + prefix,
     }
+    if sheet.get("alpha") == "hard":
+        sheet_inputs["alpha"] = "hard"
     graph = {"1": {"class_type": "H3LoadClip", "inputs": {
         "file": "/".join(filter(None, (take.get("subfolder"), take["file"]))), "first": 0,
         "last": total_frames, "frames_only": True}},

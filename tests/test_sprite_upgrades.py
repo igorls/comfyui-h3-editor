@@ -468,5 +468,79 @@ class NodesAndApiRegistrationTest(unittest.TestCase):
         self.assertIn("export_from_cache", api_src)
 
 
+class CutoutTest(unittest.TestCase):
+    """A matte and the backdrop's own colour together, on a flat backdrop of any colour."""
+
+    def subject(self, ground, size=(256, 384)):
+        frame = Image.new("RGB", size, ground)
+        ImageDraw.Draw(frame).rectangle((70, 100, 180, 300), fill="#5a3621")
+        mask = np.zeros((size[1], size[0]), np.float32)
+        mask[100:301, 70:181] = 1
+        return frame, mask
+
+    def test_a_patch_of_backdrop_the_matte_kept_is_removed_on_any_flat_colour(self):
+        for ground in ("white", "black", "#ff00ff", "#2f8f4f"):
+            with self.subTest(ground=ground):
+                frame, mask = self.subject(ground)
+                mask[150:162, 181:189] = 1  # a lump of backdrop beside the subject, called foreground
+                before = np.asarray(sprite.with_matte(frame, mask, key=False))[..., 3]
+                after = np.asarray(sprite.with_matte(frame, mask))[..., 3]
+                self.assertEqual(before[155, 185], 255)
+                self.assertEqual(after[155, 185], 0)
+                self.assertEqual(after[200, 120], 255)
+                self.assertEqual(after[10, 10], 0)
+
+    def test_a_backdrop_coloured_surface_of_the_subject_stays(self):
+        frame, mask = self.subject("white")
+        draw = ImageDraw.Draw(frame)
+        draw.rectangle((90, 130, 160, 170), fill="white")   # a white shirt inside the subject
+        draw.rectangle((150, 200, 180, 280), fill="white")  # a white sleeve on the subject's outline
+        out = np.asarray(sprite.with_matte(frame, mask))
+        self.assertEqual(tuple(out[150, 120]), (255, 255, 255, 255))
+        self.assertEqual(tuple(out[240, 170]), (255, 255, 255, 255))
+
+    def test_a_scene_behind_the_subject_is_left_to_the_matte(self):
+        rng = np.random.default_rng(7)
+        scene = rng.integers(0, 255, (384, 256, 3), dtype=np.uint8)
+        frame = Image.fromarray(scene, "RGB")
+        ImageDraw.Draw(frame).rectangle((70, 100, 180, 300), fill="#5a3621")
+        mask = np.zeros((384, 256), np.float32)
+        mask[100:301, 70:181] = 1
+        self.assertFalse(sprite.backdrop(np.asarray(frame, dtype=np.float32) / 255)[2])
+        out = np.asarray(sprite.with_matte(frame, mask))[..., 3]
+        np.testing.assert_array_equal(out, (mask * 255).astype(np.uint8))
+
+    def test_without_a_matte_the_backdrop_colour_cuts_with_a_soft_clean_edge(self):
+        frame, _ = self.subject("#ff00ff")
+        big = frame.resize((1024, 1536), Image.Resampling.NEAREST).resize((256, 384), Image.Resampling.LANCZOS)
+        out = np.asarray(sprite.with_matte(big))
+        self.assertEqual(out[10, 10, 3], 0)
+        self.assertEqual(tuple(out[200, 120]), (0x5a, 0x36, 0x21, 255))
+        visible = out[out[..., 3] > 40]
+        # No magenta left on the edge: blue never rises far above the subject's own.
+        self.assertLess(int(visible[:, 2].max()), 0x21 + 40)
+
+    def test_enclosed_pockets_go_only_when_asked(self):
+        frame, _ = self.subject("white")
+        ImageDraw.Draw(frame).rectangle((110, 220, 140, 280), fill="white")
+        self.assertEqual(np.asarray(sprite.with_matte(frame))[250, 125, 3], 255)
+        self.assertEqual(np.asarray(sprite.with_matte(frame, pockets=True))[250, 125, 3], 0)
+
+    def test_hard_alpha_leaves_no_half_transparent_pixel(self):
+        frame, mask = self.subject("white", (512, 512))
+        soft_mask = np.asarray(Image.fromarray((mask[:384] * 255).astype(np.uint8)).resize((512, 512)), np.float32) / 255
+        frames = [frame.resize((512, 512))] * 39
+        load = lambda idx: [soft_mask for _ in idx]
+        soft, _, _ = sprite.strips(frames, 7, masks_for=load, canvas="square")
+        hard, _, _ = sprite.strips(frames, 7, masks_for=load, canvas="square", alpha="hard")
+        self.assertTrue(((np.asarray(soft)[..., 3] > 0) & (np.asarray(soft)[..., 3] < 255)).any())
+        self.assertEqual(set(np.unique(np.asarray(hard)[..., 3])), {0, 255})
+
+    def test_alpha_reaches_the_sheet_node_and_is_validated(self):
+        self.assertEqual(sprite.settings({"direction": "S", "alpha": "hard"})["alpha"], "hard")
+        with self.assertRaisesRegex(ValueError, "soft or hard"):
+            sprite.settings({"direction": "S", "alpha": "crisp"})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2408,6 +2408,8 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             graph["211"]["inputs"]["idle"] = True
         if config.get("animation"):
             graph["211"]["inputs"]["full_action"] = True
+        if config.get("alpha") == "hard":
+            graph["211"]["inputs"]["alpha"] = "hard"
         if config.get("cutout") != "edge":
             matte = sprite.matte_model(available)
             if matte:
