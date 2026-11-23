@@ -422,6 +422,15 @@ only when the user asks, or when the 32B does not fit. `encoders.projections` ma
 encoder to the projections that fit it, the default first; `set_project` `text_projection`
 picks one (a file name, or `null` for the default), and a take records it as `text_projection`.
 
+`encoders.conditioners` lists the Universal Conditioner adapters for MiniMax H3 that are
+installed, and is empty without that pack. `set_project` `text_conditioner` names one (a
+file name, or `null` for off): the project's prompts are then read by a language model on
+a server, and ComfyUI loads no text encoder, which makes a draft with a new prompt start
+sooner. `text_conditioner_url` is the server's address, or `null` for
+`encoders.conditioner_url`. It holds for drafts and finals; a take records the adapter as
+`text_conditioner`. Speech in Japanese is less exact this way. Use it only when the user
+asks for it or has it set already.
+
 Checkpoints the user saved as presets are shared by every project. `GET /presets` returns
 `{"checkpoints": [...]}` in the same shape, and `GET /projects` carries them as `presets`.
 A project renders on its own copy, so to use a preset, send its row in `set_project`

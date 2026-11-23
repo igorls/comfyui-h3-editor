@@ -2813,6 +2813,7 @@ function encoderChoices() {
       else delete state.project.models;
     }));
   }
+  out.push(...conditionerChoices());
   if (out.length) {
     const hint = document.createElement("p");
     hint.className = "hint";
@@ -2822,6 +2823,49 @@ function encoderChoices() {
         : "")
       + "New renders use the choice.";
     out.push(hint);
+  }
+  return out;
+}
+
+// The Universal Conditioner pack reads the prompt on a language model server through an adapter, so
+// ComfyUI loads no text encoder. The menu shows when an adapter for H3 is installed, or one is named.
+function conditionerChoices() {
+  const adapters = state.encoders.conditioners || [];
+  const current = state.project.models?.conditioner || "";
+  if (!adapters.length && !current) return [];
+  const set = (key, value) => {
+    const models = { ...(state.project.models || {}) };
+    if (value) models[key] = value;
+    else delete models[key];
+    if (!models.conditioner) delete models.conditioner_url;
+    if (Object.keys(models).length) state.project.models = models;
+    else delete state.project.models;
+  };
+  const options = [["", "Off: load the text encoder here"], ...adapters.map((f) => [f, fileName(f)])];
+  if (current && !adapters.some((f) => sameFile(f, current))) options.push([current, fileName(current) + " (not installed)"]);
+  const out = [choice("Encoder server", options, current, (value) => set("conditioner", value))];
+  if (current) {
+    const wrap = document.createElement("label");
+    wrap.className = "choice";
+    const title = document.createElement("span");
+    title.textContent = "Server address";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.spellcheck = false;
+    input.dataset.key = "Server address";
+    input.placeholder = state.encoders.conditioner_url || "";
+    input.value = state.project.models?.conditioner_url || "";
+    input.addEventListener("change", () => {
+      checkpoint();
+      set("conditioner_url", input.value.trim());
+      save();
+    });
+    wrap.append(title, input);
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "The prompt is read by the language model on this server, so the text encoder is not loaded and "
+      + "a draft with a new prompt starts sooner. Speech in Japanese is less exact than with the text encoder.";
+    out.push(wrap, hint);
   }
   return out;
 }
@@ -4062,7 +4106,7 @@ async function saveCurrentLook() {
 // The model files a project renders with, in a few words: automatic, or the ones it names.
 function modelFilesSummary() {
   const chosen = state.project.models || {};
-  const named = ["clip", "vae", "projection"].filter((k) => chosen[k]).map((k) => fileName(chosen[k]));
+  const named = ["clip", "vae", "projection", "conditioner"].filter((k) => chosen[k]).map((k) => fileName(chosen[k]));
   return named.length ? named.join(", ") : "Automatic";
 }
 

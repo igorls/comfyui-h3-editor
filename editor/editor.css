@@ -583,6 +583,8 @@ details.section > summary:has(.filled)::after { margin-left: 4px; }
 .halves { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .choice select { width: 100%; min-width: 0; padding: 5px 9px; background-color: var(--room); border: 1px solid var(--line); border-radius: var(--radius); }
 .choice select:hover { border-color: var(--line-hi); }
+.choice input[type="text"] { width: 100%; min-width: 0; padding: 5px 9px; background-color: var(--room); border: 1px solid var(--line); border-radius: var(--radius); }
+.choice input[type="text"]:hover { border-color: var(--line-hi); }
 .own-size { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; align-items: center; }
 .own-size > input { width: 100%; min-width: 0; padding: 5px 9px; background-color: var(--room); border: 1px solid var(--line); border-radius: var(--radius); font-variant-numeric: tabular-nums; }
 .own-size > input:hover { border-color: var(--line-hi); }

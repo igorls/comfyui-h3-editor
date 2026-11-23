@@ -368,6 +368,47 @@ when memory outside the card is short.
 The node behind it, **H3 Small Text Encoder**, works in your own workflows too:
 connect its `clip` wherever the 32B's goes.
 
+## The text encoder on a server
+
+If you already run a large language model on your machine, it can read the prompts in
+place of H3's text encoder. ComfyUI then loads no text encoder at all. This is the
+[Universal Conditioner](https://github.com/igorls/ComfyUI-UniversalConditioner) pack: a
+node that asks the server for the model's hidden states, and an adapter that turns them
+into what H3 reads. The editor uses it when it is installed; it is not part of this pack.
+
+What you need:
+
+| What | Where it goes | Size | Where to get it |
+|---|---|---|---|
+| The ComfyUI-UniversalConditioner pack | `custom_nodes` | | [igorls/ComfyUI-UniversalConditioner](https://github.com/igorls/ComfyUI-UniversalConditioner) |
+| `unicond-h3-v4.4-6l-dual-seq.safetensors`, the adapter for MiniMax H3 | `models/universal_conditioner` | 690 MB | [igorls/universal-conditioner](https://huggingface.co/igorls/universal-conditioner), `minimax-h3/` |
+| `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`, H3's own text encoder | `models/text_encoders` | 15.7 GB | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3), `text_encoders/` |
+| A server with the language model loaded that answers `POST /v1/hidden_states` | your machine | | The pack's README names one and the model to run on it |
+
+The adapter reads the text encoder's token table from disk, so that file must be there,
+in this precision; it is not loaded onto the card. The adapter carries MiniMax H3's own
+license, which is in its folder beside it.
+
+With an adapter installed, an **Encoder server** menu shows under Model files: in the
+Project tab, press **Edit** beside Model files, or open Models and their settings. Pick
+the adapter there and type the server's address under it. Empty, the address is
+`http://127.0.0.1:8000`. The choice belongs to the project and holds for its drafts and
+its finals, so a final reads the prompt the same way its draft did. Without the pack or
+the adapter, a project that names one renders with the text encoder file.
+
+What it is for: drafts while you work on a prompt. ComfyUI moves the 32B off the card
+before sampling and loads it again for the next prompt, so every draft with a new
+prompt pays for that. In a test of one 4 second draft at 544x960 on HyperFlow, with a
+new prompt each time, a draft took about 26 seconds with the encoder on the server and
+44 to 56 seconds with the text encoder file. Other jobs shared the queue during some
+of those runs, so take the numbers as a guide.
+
+What it costs: the adapter is close to the text encoder, not equal to it. The same
+prompt and seed give the same subject and action in a different picture. Speech is
+exact in the languages tested except Japanese, where it misreads more words than the
+text encoder does. The adapter's page lists what was measured. Listen to every line, and switch the menu off for a project where
+that matters.
+
 ## A project's own models
 
 A project can still name its own files under `models` in its project file, which

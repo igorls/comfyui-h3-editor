@@ -734,8 +734,43 @@ def setup_status(available):
 
 
 
-def text_encoder_node(encoder, available, chosen=None):
-    """The graph node that loads the text encoder: ComfyUI's loader for the 32B, the pack's for a small one."""
+# The Universal Conditioner pack reads the prompt on a language model server and maps it to H3's
+# conditioning through an adapter in models/universal_conditioner, so no text encoder is loaded here.
+# A project names the adapter and the server's address; the pack lists the folder only when installed.
+CONDITIONER_FOLDER = "universal_conditioner"
+CONDITIONER_PREFIX = CONDITIONER_FOLDER + ":"
+CONDITIONER_NODE = "UniCondEncoder"
+CONDITIONER_URL = "http://127.0.0.1:8000"
+
+
+def conditioners_for(available):
+    """The installed Universal Conditioner adapters made for MiniMax H3: its files are named unicond-h3-*.
+
+    The pack also lists models/clip_projections under its folder, so the name is what tells an adapter from
+    a small text encoder's projection."""
+    if available is None:
+        return []
+    found = sorted((name[len(CONDITIONER_PREFIX):] for name in available if str(name).startswith(CONDITIONER_PREFIX)),
+                   key=str.lower)
+    return [name for name in found if name.replace("\\", "/").rsplit("/", 1)[-1].lower().startswith("unicond-h3")]
+
+
+def conditioner_for(available, chosen):
+    """The adapter a project names, as installed, or None. With no list of what is installed it is taken as named."""
+    if not chosen:
+        return None
+    if available is None:
+        return chosen
+    same = [name for name in conditioners_for(available) if name.replace("\\", "/") == str(chosen).replace("\\", "/")]
+    return same[0] if same else None
+
+
+def text_encoder_node(encoder, available, chosen=None, conditioner=None, url=None):
+    """The graph node that gives a render its text encoder: ComfyUI's loader for the 32B, the pack's for a
+    small one, or the Universal Conditioner's for an encoder on a server."""
+    if conditioner:
+        return {"class_type": CONDITIONER_NODE, "inputs": {
+            "url": url or CONDITIONER_URL, "model": "", "layer": -1, "adapter": conditioner, "profile": "auto"}}
     projection = projection_for(encoder, available, chosen)
     if projection:
         return {"class_type": "H3SmallTextEncoder", "inputs": {"clip_name": encoder, "projection": projection}}
@@ -765,6 +800,11 @@ def project_models(project, available=None, clip=None, quality="draft"):
     if "unet" in named and "unet_text" not in named:
         # A project that names its own model renders every clip on it.
         models["unet_text"] = None
+    # An adapter this machine lacks gives way to the text encoder file, and its address goes with it.
+    named["conditioner"] = conditioner_for(available, named.get("conditioner"))
+    if not named["conditioner"]:
+        del named["conditioner"]
+        named.pop("conditioner_url", None)
     models.update(named)
     return models
 
@@ -2041,7 +2081,8 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     guides = clean_mid_guides(clip, length)
     graph = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
-        "2": text_encoder_node(models["clip"], available, models.get("projection")),
+        "2": text_encoder_node(models["clip"], available, models.get("projection"),
+                               models.get("conditioner"), models.get("conditioner_url")),
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": models["vae"]}},
         "4": {"class_type": "VAELoader", "inputs": {"vae_name": models["audio_vae"]}},
         "5": {"class_type": "MiniMaxH3SigmaShift", "inputs": {"model": ["1", 0], "shift_video": project.get("shift", 12.0), "shift_audio": 3.0}},
@@ -3389,10 +3430,12 @@ MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
                "first", "last", "language", "track", "bin", "profile", "loras", "style_markers", "mid_guides", "sprite", "motion")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
-PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "patches", "realism", "checkpoints", "text_encoder", "text_projection", "vae", "audio_vae", "sizes")
+PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "patches", "realism", "checkpoints", "text_encoder", "text_projection", "text_conditioner",
+                  "text_conditioner_url", "vae", "audio_vae", "sizes")
 # The model files set_project names, and their keys in the project's models. A projection only
 # applies to a 4B or 8B text encoder; one that does not fit it gives way to one that does.
-PROJECT_MODEL_FIELDS = {**PROJECT_ENCODERS, "text_projection": "projection"}
+PROJECT_MODEL_FIELDS = {**PROJECT_ENCODERS, "text_projection": "projection",
+                        "text_conditioner": "conditioner", "text_conditioner_url": "conditioner_url"}
 # A project's own LoRAs: how many, how strong, and where their nodes start in a render graph.
 LORA_LIMIT = 8
 LORA_RANGE = (-2.0, 2.0)
@@ -4787,7 +4830,10 @@ def remove_cast(project, cast_id):
 def render_models(graph):
     """The models a render graph samples with, so a take records what made it."""
     used = {"unet": graph["1"]["inputs"]["unet_name"], "checkpoint": graph["10"]["inputs"]["checkpoint"],
-            "text_encoder": graph["2"]["inputs"]["clip_name"], "vae": graph["3"]["inputs"]["vae_name"]}
+            "text_encoder": graph["2"]["inputs"].get("clip_name") or graph["2"]["inputs"]["adapter"],
+            "vae": graph["3"]["inputs"]["vae_name"]}
+    if graph["2"]["class_type"] == CONDITIONER_NODE:
+        used["text_conditioner"] = graph["2"]["inputs"]["adapter"]
     if "projection" in graph["2"]["inputs"]:
         used["text_projection"] = graph["2"]["inputs"]["projection"]
     if "72" in graph:

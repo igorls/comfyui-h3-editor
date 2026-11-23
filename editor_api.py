@@ -318,6 +318,7 @@ def encoder_choices(available):
     encoders = text_encoders()
     return {"text_encoders": encoders,
             "projections": {f: store.projections_for(f, available) for f in encoders if store.projections_for(f, available)},
+            "conditioners": store.conditioners_for(available), "conditioner_url": store.CONDITIONER_URL,
             "vaes": video_vaes(listed("vae")), "auto": status["auto"], "missing": status["missing"]}
 
 
@@ -438,6 +439,9 @@ def available_models():
     names.update(vosr2.capabilities(comfy_nodes.NODE_CLASS_MAPPINGS, folder_paths.models_dir))
     if store.PROJECTION_FOLDER in folder_paths.folder_names_and_paths:
         names.update(store.PROJECTION_PREFIX + name for name in folder_paths.get_filename_list(store.PROJECTION_FOLDER))
+    if (store.CONDITIONER_NODE in comfy_nodes.NODE_CLASS_MAPPINGS
+            and store.CONDITIONER_FOLDER in folder_paths.folder_names_and_paths):
+        names.update(store.CONDITIONER_PREFIX + name for name in folder_paths.get_filename_list(store.CONDITIONER_FOLDER))
     return names
 
 
