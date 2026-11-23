@@ -14,11 +14,26 @@ MATTE_PREFIX = "background_removal:"
 # The edge of a cell: soft keeps partly covered pixels, hard makes every pixel fully in or out (pixel art).
 ALPHAS = ("soft", "hard")
 # Optional depth evidence for cutouts: a depth node pack and its weights, when the user has installed both.
-DEPTH_PREFIX = "depth_pro_2:"
-DEPTH_NODES = ("TPDepthPro2Loader", "TPDepthPro2Video", "TPDepthPro2RawImage")
-DEPTH_VARIANTS = (("L", "depthpro2-l.safetensors"), ("H+", "depthpro2-h.safetensors"),
-                  ("B", "depthpro2-b.safetensors"), ("S", "depthpro2-s.safetensors"))
-DEPTH_FOCAL = "depthpro2-focal.safetensors"
+# Each pack: the node classes it must offer, the ComfyUI models folder its weights sit in, the weights file of
+# each size (preferred first) with the name its loader takes, and the focal file every size needs.
+DEPTH_PACKS = {
+    "tp": {
+        "nodes": ("TPDepthPro2Loader", "TPDepthPro2Video", "TPDepthPro2RawImage"),
+        "folder": "depth_pro_2",
+        "sizes": (("L", "depthpro2-l.safetensors"), ("H+", "depthpro2-h.safetensors"),
+                  ("B", "depthpro2-b.safetensors"), ("S", "depthpro2-s.safetensors")),
+        "focal": "depthpro2-focal.safetensors",
+    },
+}
+DEPTH_PREFIX = "depth:"
+# The flat colours a sprite can be drawn on. White suits a dark character; a character with white or pale
+# parts cuts out cleanly only from a colour it does not wear.
+BACKDROPS = {"white": (255, 255, 255), "green": (0, 177, 64), "blue": (0, 71, 187)}
+# How far from its backdrop's colour a reference plate's pixels still count as backdrop when the plate is
+# moved to another colour: plates are often enlarged, and a gap between the legs is then a pale blend.
+PLATE_REACH = .09
+BACKDROP_WORDS = {"white": "pure white", "green": "a flat solid chroma key green background",
+                  "blue": "a flat solid chroma key blue background"}
 # How far towards the backdrop (or, mirrored, the subject) a patch must lie for depth to decide about it.
 DEPTH_CLEAR = .75
 
@@ -62,26 +77,41 @@ def matte_model(available):
     return None
 
 
+def depth_entry(pack, file):
+    """How an installed depth weights file is listed among the available models."""
+    return DEPTH_PREFIX + pack + ":" + file.replace("\\", "/")
+
+
 def depth_model(available):
-    """The installed depth model to read sprite frames with, or None. Never one that would be downloaded."""
-    have = {entry[len(DEPTH_PREFIX):].replace("\\", "/").split("/")[-1].lower()
-            for entry in available or () if entry.startswith(DEPTH_PREFIX)}
-    if DEPTH_FOCAL not in have:
-        return None
-    return next((variant for variant, name in DEPTH_VARIANTS if name in have), None)
+    """The installed depth model to read sprite frames with, as (pack, size), or None.
+
+    Only one whose node pack and every weights file are already there: nothing is ever downloaded for it.
+    """
+    for pack, spec in DEPTH_PACKS.items():
+        have = {entry[len(DEPTH_PREFIX) + len(pack) + 1:].lower() for entry in available or ()
+                if entry.startswith(DEPTH_PREFIX + pack + ":")}
+        if spec["focal"] in have:
+            for size, file in spec["sizes"]:
+                if file in have:
+                    return pack, size
+    return None
 
 
-def depth_nodes(variant, images, start):
-    """Graph nodes that read a depth map for each frame: their ids start at `start`, the last holds the maps."""
+def depth_nodes(model, images, start):
+    """Graph nodes that read a depth map for each frame: their ids start at `start`. Returns them and the
+    link to the maps, an IMAGE batch."""
+    pack, size = model
     a, b, c = str(start), str(start + 1), str(start + 2)
-    return {
-        a: {"class_type": "TPDepthPro2Loader",
-            "inputs": {"model": variant, "precision": "auto", "estimate_focal": True, "device": "auto"}},
-        b: {"class_type": "TPDepthPro2Video",
-            "inputs": {"model": [a, 0], "images": list(images), "mode": "buffered", "window": 16, "overlap": 4,
-                       "focal_length_px": 0.0}},
-        c: {"class_type": "TPDepthPro2RawImage", "inputs": {"depth": [b, 0], "encoding": "inverse_meters"}},
-    }, [c, 0]
+    if pack == "tp":
+        return {
+            a: {"class_type": "TPDepthPro2Loader",
+                "inputs": {"model": size, "precision": "auto", "estimate_focal": True, "device": "auto"}},
+            b: {"class_type": "TPDepthPro2Video",
+                "inputs": {"model": [a, 0], "images": list(images), "mode": "buffered", "window": 16, "overlap": 4,
+                           "focal_length_px": 0.0}},
+            c: {"class_type": "TPDepthPro2RawImage", "inputs": {"depth": [b, 0], "encoding": "inverse_meters"}},
+        }, [c, 0]
+    raise ValueError("unknown depth node pack")
 
 
 DIRECTIONS = {
@@ -213,27 +243,37 @@ def heading_matched(pictures, direction):
 
 
 def still(image, backdrop="none", width=0, height=0):
-    """A reference picture as RGB: a transparent one laid on white, and the whole picture fitted inside a canvas.
+    """A reference picture as RGB, standing on a backdrop colour, with the whole picture fitted inside a canvas.
 
     Dropping the transparency of a cutout leaves it on black, and a take drawn on white then fades from black
-    to white. A pinned frame of another shape than the canvas is cropped to fill it, which cuts the head and
-    feet off a portrait picture on a square canvas; fitted, the rest is filled with white or the picture's
-    own border colour.
+    to white: a transparent picture is laid on the backdrop. A picture already drawn on another flat colour
+    (a white plate for a take on green) is cut out of it and moved, the regions it encloses included, since
+    the model copies a sliver of the old backdrop between the legs onto every frame. A pinned frame of another
+    shape than the canvas is cropped to fill it, which cuts the head and feet off a portrait picture on a
+    square canvas; fitted, the rest is filled with the backdrop or the picture's own border colour.
     """
     import numpy as np
     from PIL import Image
 
-    if backdrop not in ("none", "white"):
-        raise ValueError("backdrop must be none or white")
-    if backdrop == "white" and (image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info):
-        rgba = image.convert("RGBA")
-        image = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
-        image.alpha_composite(rgba)
+    if backdrop != "none" and backdrop not in BACKDROPS:
+        raise ValueError("backdrop must be none, %s" % ", ".join(BACKDROPS))
+    colour = BACKDROPS.get(backdrop)
+    if colour:
+        if image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info:
+            rgba = image.convert("RGBA")
+        else:
+            rgb = np.asarray(image.convert("RGB"), dtype=np.float32) / 255
+            ground, _, flat = globals()["backdrop"](rgb)
+            moved = flat and float(np.abs(ground - np.asarray(colour, dtype=np.float32) / 255).max()) > .08
+            rgba = with_matte(image, pockets=True, reach=PLATE_REACH) if moved else None
+        if rgba is not None:
+            image = Image.new("RGBA", rgba.size, colour + (255,))
+            image.alpha_composite(rgba)
     image = image.convert("RGB")
     if not (width and height) or image.size == (width, height):
         return image
-    if backdrop == "white":
-        fill = (255, 255, 255)
+    if colour:
+        fill = colour
     else:
         rgb = np.asarray(image)
         fill = tuple(int(v) for v in np.median(np.concatenate((rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1])), axis=0))
@@ -267,7 +307,7 @@ def _clean_file_ref(ref, what):
 def settings(value):
     if value is None:
         return None
-    allowed = {"direction", "camera", "poses", "guide", "motion", "cutout", "alpha", "depth", "animation",
+    allowed = {"direction", "camera", "poses", "guide", "motion", "cutout", "alpha", "depth", "animation", "loop", "backdrop",
                "canvas", "frames", "tile_size", "mode", "refine", "self_pin", "style"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ValueError("unknown sprite setting")
@@ -293,6 +333,15 @@ def settings(value):
                 or len(name) > 64 or name != name.strip() or name.lower() in ("run", "idle", "custom", "custom motion")):
             raise ValueError("Choose a distinct name for the prompted sprite animation.")
         out["animation"] = name
+    if "loop" in value:
+        if value["loop"] is not True or "animation" not in out:
+            raise ValueError("loop marks a named sprite animation as a repeating cycle")
+        out["loop"] = True
+    if "backdrop" in value:
+        if value["backdrop"] not in BACKDROPS:
+            raise ValueError("choose a sprite backdrop: %s" % ", ".join(BACKDROPS))
+        if value["backdrop"] != "white":
+            out["backdrop"] = value["backdrop"]
     if "cutout" in value:
         if value["cutout"] not in ("auto", "edge"):
             raise ValueError("choose auto or edge sprite cutout")
@@ -354,6 +403,16 @@ def settings(value):
     return out
 
 
+def one_shot(config):
+    """Is this a named gesture played once from start to finish (a wave, an attack), not a repeating cycle.
+
+    A gesture is sampled across its whole length and pinned to the rest pose at both ends. A cycle (a walk)
+    sampled that way starts and stops in every loop at an uneven speed: marked `loop`, it is cut like the
+    built-in run, one period at a steady 12 poses a second.
+    """
+    return bool(config.get("animation")) and not config.get("loop")
+
+
 def instruction(config):
     motion = (
         "running in place"
@@ -362,7 +421,7 @@ def instruction(config):
     )
     poses = "Match the poses and foot contacts in <Video 1>, keeping the exact art style, colors, proportions and equipment. "
     if config.get("motion") == "prompt":
-        if config.get("animation"):
+        if one_shot(config):
             poses = (
                 "Perform the full gesture cleanly from start to finish and return to the initial pose, "
                 "keeping the exact art style, colors, proportions and equipment. "
@@ -383,7 +442,7 @@ def instruction(config):
         + CAMERAS[config["camera"]]
         + ". "
         + poses
-        + "Center the whole character on pure white with no floor or shadow."
+        + "Center the whole character on " + BACKDROP_WORDS[config.get("backdrop", "white")] + " with no floor or shadow."
     )
 
 
@@ -506,7 +565,7 @@ def depth_side(depth, backdrop, subject):
     return np.where(np.isfinite(depth), side, 1. if far > near else 0.).astype(np.float32)
 
 
-def backdrop_key(rgb, ground, noise, subject=None, pockets=False, depth=None):
+def backdrop_key(rgb, ground, noise, subject=None, pockets=False, depth=None, reach=None):
     """How far each pixel is from being backdrop, 0..1, on a flat backdrop of any colour.
 
     Backdrop is the flat region of the backdrop's own colour that reaches the border. Colour alone cannot
@@ -523,13 +582,17 @@ def backdrop_key(rgb, ground, noise, subject=None, pockets=False, depth=None):
     - `pockets`, for pictures known to hold no surface of the backdrop's colour and with no depth map: also
       take the enclosed regions that are as flat as the backdrop and not a speck.
 
-    The edge of what goes fades over the antialiased pixels around it.
+    The edge of what goes fades over the antialiased pixels around it. `reach` widens how far from the
+    backdrop's colour a pixel still counts as backdrop, for a soft picture (an enlarged plate) whose gaps
+    and edges are a blend of backdrop and subject rather than the backdrop's own colour.
     """
     import numpy as np
     from scipy import ndimage as ndi
 
     dist = np.abs(rgb - ground).max(axis=2)
-    inner = max(.03, 4 * noise)
+    inner = max(.03, 4 * noise, reach or 0)
+    flatness = max(.012, 2 * noise, .6 * (reach or 0))
+    fade = 4 if reach else 2
     core = dist < inner
     seed = np.zeros_like(core)
     seed[[0, -1]] = core[[0, -1]]
@@ -547,7 +610,7 @@ def backdrop_key(rgb, ground, noise, subject=None, pockets=False, depth=None):
             area = ndi.sum(np.ones_like(dist), labels, index)
             take = np.zeros(count + 1, dtype=bool)
             if pockets:
-                take[1:] = (area >= max(8, core.size // 12000)) & (ndi.mean(dist, labels, index) <= max(.012, 2 * noise))
+                take[1:] = (area >= max(8, core.size // 12000)) & (ndi.mean(dist, labels, index) <= flatness)
             if far is not None:
                 side = ndi.median(far, labels, index)
                 take[1:] = (take[1:] & (side > 1 - DEPTH_CLEAR)) | ((area >= 8) & (side >= DEPTH_CLEAR))
@@ -569,13 +632,13 @@ def backdrop_key(rgb, ground, noise, subject=None, pockets=False, depth=None):
     # Video compression rings around a subject: the backdrop beside it is a little off its colour.
     gone = ndi.binary_dilation(gone, iterations=3, mask=(dist < inner + .07) & ~kept)
     key = np.ones_like(dist)
-    rim = ndi.binary_dilation(gone, iterations=2) & ~gone & ~kept
+    rim = ndi.binary_dilation(gone, iterations=fade) & ~gone & ~kept
     key[rim] = ((dist[rim] - inner) / .1).clip(0, 1)
     key[gone] = 0
     return key
 
 
-def with_matte(frame, mask=None, alpha_low=0.12, alpha_high=0.88, key=True, pockets=False, depth=None):
+def with_matte(frame, mask=None, alpha_low=0.12, alpha_high=0.88, key=True, pockets=False, depth=None, reach=None):
     """Cut a subject out of its picture, as RGBA with the backdrop colour taken out of its edge pixels.
 
     `mask` is a foreground matte (0..1), or None to cut by the backdrop colour alone. On a flat backdrop of
@@ -604,7 +667,7 @@ def with_matte(frame, mask=None, alpha_low=0.12, alpha_high=0.88, key=True, pock
                 depth = depth[..., 0]
             if depth.shape != rgb.shape[:2]:
                 depth = np.asarray(Image.fromarray(depth, "F").resize(rgb.shape[1::-1], Image.Resampling.BILINEAR))
-        keyed = backdrop_key(rgb, ground, noise, None if mask is None else alpha[..., 0], pockets, depth)[..., None]
+        keyed = backdrop_key(rgb, ground, noise, None if mask is None else alpha[..., 0], pockets, depth, reach)[..., None]
         alpha, coverage = np.minimum(alpha, keyed), np.minimum(coverage, keyed)
     color = ((rgb - (1 - alpha) * ground) / np.maximum(alpha, .05)).clip(0, 1)
     return Image.fromarray((np.concatenate((color, coverage), axis=2) * 255).round().astype("uint8"))
@@ -655,14 +718,11 @@ def pick_self_pin_frame(frames, stride, preferred=None):
             chosen = idx
             break
     frame = frames[chosen]
-    if frame.mode == "RGBA":
-        bg = Image.new("RGBA", frame.size, (255, 255, 255, 255))
-        bg.alpha_composite(frame)
-        rgb = bg.convert("RGB")
-    else:
-        rgb = frame.convert("RGB")
+    # A cut-out pose stays a cutout: the take that pins it lays it on its own backdrop colour. Flattened on
+    # white here, a pin moved to a green take kept a white rim, and the model drew that rim on every frame.
+    picture = frame if frame.mode == "RGBA" else frame.convert("RGB")
     pin_indices = [i for i in (0, stride, 2 * stride) if i < total]
-    return chosen, rgb, pin_indices
+    return chosen, picture, pin_indices
 
 
 def compute_global_layout(animation_boxes, tile_size=(TILE, TILE), body_ratio=BODY / TILE,

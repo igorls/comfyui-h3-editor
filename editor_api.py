@@ -421,9 +421,10 @@ def available_models():
     if ("LoadBackgroundRemovalModel" in comfy_nodes.NODE_CLASS_MAPPINGS
             and "background_removal" in folder_paths.folder_names_and_paths):
         names.update(store.sprite.MATTE_PREFIX + name for name in folder_paths.get_filename_list("background_removal"))
-    if (all(name in comfy_nodes.NODE_CLASS_MAPPINGS for name in store.sprite.DEPTH_NODES)
-            and "depth_pro_2" in folder_paths.folder_names_and_paths):
-        names.update(store.sprite.DEPTH_PREFIX + name for name in folder_paths.get_filename_list("depth_pro_2"))
+    for pack, spec in store.sprite.DEPTH_PACKS.items():
+        if (all(name in comfy_nodes.NODE_CLASS_MAPPINGS for name in spec["nodes"])
+                and spec["folder"] in folder_paths.folder_names_and_paths):
+            names.update(store.sprite.depth_entry(pack, name) for name in folder_paths.get_filename_list(spec["folder"]))
     for kind in ("diffusion_models", "unet_gguf", "loras", "latent_upscale_models", "text_encoders", "clip", "vae"):
         if kind in folder_paths.folder_names_and_paths:
             names.update(folder_paths.get_filename_list(kind))
@@ -2379,7 +2380,8 @@ async def sprite_self_pin(request):
         if cache_path and os.path.isdir(cache_path):
             frames = await asyncio.to_thread(store.sprite.load_frame_cache, cache_path)
 
-    if not frames or len(frames) < stride + 1:
+    # The cached poses are cutouts, which any backdrop can take; the movie's frames stand on the take's backdrop.
+    if not frames or len(frames) < 2:
         source = output_path(take.get("subfolder"), take["file"])
         if os.path.isfile(source):
             with tempfile.TemporaryDirectory() as tmp:

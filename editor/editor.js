@@ -6784,7 +6784,7 @@ function spriteSection(clip) {
           const next = { ...config };
           delete next.guide;
           delete next.motion;
-          if (key !== "prompt") delete next.animation;
+          if (key !== "prompt") { delete next.animation; delete next.loop; }
           if (key === "prompt" || key === "idle") next.motion = key;
           else if (key) next.guide = JSON.parse(key);
           update(next);
@@ -6798,6 +6798,20 @@ function spriteSection(clip) {
           else delete next.alpha;
           update(next);
         }),
+      spriteChoice("Backdrop", [["white", "White"], ["green", "Green"], ["blue", "Blue"]],
+        config.backdrop || "white", backdrop => {
+          const next = { ...config };
+          if (backdrop !== "white") next.backdrop = backdrop;
+          else delete next.backdrop;
+          update(next);
+        }),
+      ...(config.animation ? [spriteChoice("Plays", [["once", "Once · a gesture"], ["loop", "As a cycle · steady speed"]],
+        config.loop ? "loop" : "once", plays => {
+          const next = { ...config };
+          if (plays === "loop") next.loop = true;
+          else delete next.loop;
+          update(next);
+        })] : []),
       spriteChoice("Depth", [["off", "Off"], ["on", "On · needs Depth Pro 2 installed"]],
         config.depth || "off", depth => {
           const next = { ...config };
@@ -14747,7 +14761,8 @@ const spritesRoom = installSprites({
     const clip = { id: uid("c"), name: [name, motion, direction].join(" · "), cast,
       action: motionPrompt ?? (motion === "idle" ? "Stand in place and breathe." : "Run in place with a steady stride."),
       camera: "", speaker: "", dialogue: "", sound: "", music: "", seconds: 5, takes: [], active: null,
-      sprite: buildSpriteConfig({ camera, motion, direction, motionPrompt, canvas: extra.canvas, frames: extra.frames, style: extra.style }) };
+      sprite: buildSpriteConfig({ camera, motion, direction, motionPrompt, canvas: extra.canvas, frames: extra.frames, style: extra.style,
+        loop: extra.loop, backdrop: extra.backdrop }) };
     if (!cast.length) clip.sprite_group = actor;
     state.project.clips.push(clip);
     save();

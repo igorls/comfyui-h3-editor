@@ -584,12 +584,14 @@ class CutoutTest(unittest.TestCase):
 
     def test_depth_is_used_only_when_its_nodes_and_weights_are_installed(self):
         self.assertIsNone(sprite.depth_model([]))
-        self.assertIsNone(sprite.depth_model(["depth_pro_2:depthpro2-l.safetensors"]))  # the focal file would be downloaded
-        both = ["depth_pro_2:depthpro2-s.safetensors", "depth_pro_2:depthpro2-focal.safetensors"]
-        self.assertEqual(sprite.depth_model(both), "S")
-        self.assertEqual(sprite.depth_model(both + ["depth_pro_2:depthpro2-h.safetensors", "depth_pro_2:depthpro2-l.safetensors"]), "L")
-        nodes, link = sprite.depth_nodes("L", ["18", 0], 213)
-        self.assertEqual([n["class_type"] for n in nodes.values()], list(sprite.DEPTH_NODES))
+        entry = sprite.depth_entry
+        self.assertIsNone(sprite.depth_model([entry("tp", "depthpro2-l.safetensors")]))  # the focal file would be downloaded
+        both = [entry("tp", "depthpro2-s.safetensors"), entry("tp", "depthpro2-focal.safetensors")]
+        self.assertEqual(sprite.depth_model(both), ("tp", "S"))
+        more = both + [entry("tp", "depthpro2-h.safetensors"), entry("tp", "depthpro2-l.safetensors")]
+        self.assertEqual(sprite.depth_model(more), ("tp", "L"))
+        nodes, link = sprite.depth_nodes(("tp", "L"), ["18", 0], 213)
+        self.assertEqual([n["class_type"] for n in nodes.values()], list(sprite.DEPTH_PACKS["tp"]["nodes"]))
         self.assertEqual(link, ["215", 0])
         self.assertEqual(nodes["214"]["inputs"]["images"], ["18", 0])
         self.assertEqual(sprite.settings({"direction": "S", "depth": "on"})["depth"], "on")
@@ -615,6 +617,56 @@ class CutoutTest(unittest.TestCase):
         deep, _, _ = sprite.strips([frame] * 39, 7, layout, load, canvas="square", depth_for=depth_for)
         self.assertEqual(len(asked), 1)
         self.assertLess((np.asarray(deep)[..., 3] > 128).sum(), (np.asarray(plain)[..., 3] > 128).sum() * .9)
+
+    def test_a_backdrop_colour_is_named_in_the_instruction_and_validated(self):
+        base = {"direction": "S"}
+        self.assertIn("pure white", sprite.instruction(sprite.settings(base)))
+        self.assertNotIn("backdrop", sprite.settings(dict(base, backdrop="white")))
+        green = sprite.settings(dict(base, backdrop="green"))
+        self.assertEqual(green["backdrop"], "green")
+        self.assertIn("chroma key green", sprite.instruction(green))
+        self.assertNotIn("white", sprite.instruction(green))
+        with self.assertRaisesRegex(ValueError, "backdrop"):
+            sprite.settings(dict(base, backdrop="#00b140"))
+
+    def test_a_transparent_picture_is_laid_on_the_backdrop_colour(self):
+        cut = Image.new("RGBA", (64, 96), (0, 0, 0, 0))
+        ImageDraw.Draw(cut).rectangle((20, 20, 44, 80), fill=(90, 54, 33, 255))
+        out = sprite.still(cut, "green", 128, 128)
+        self.assertEqual(out.size, (128, 128))
+        self.assertEqual(out.getpixel((2, 2)), sprite.BACKDROPS["green"])       # the fill beside the picture
+        self.assertEqual(out.getpixel((40, 20)), sprite.BACKDROPS["green"])     # the transparent part
+        self.assertEqual(out.getpixel((64, 64)), (90, 54, 33))
+
+    def test_a_picture_drawn_on_white_is_moved_onto_the_backdrop_with_its_enclosed_gaps(self):
+        plate = Image.new("RGB", (256, 384), "white")
+        draw = ImageDraw.Draw(plate)
+        draw.rectangle((70, 100, 180, 300), fill="#5a3621")
+        draw.rectangle((115, 220, 135, 300), fill="white")   # the gap between the legs, open at the feet
+        draw.rectangle((100, 140, 150, 170), fill="white")   # a hole the body encloses
+        draw.rectangle((90, 110, 160, 125), fill="#efe6d2")  # a cream collar: not the backdrop
+        out = sprite.still(plate, "green")
+        green = sprite.BACKDROPS["green"]
+        for spot in ((5, 5), (125, 260), (125, 155)):
+            self.assertEqual(out.getpixel(spot), green, spot)
+        self.assertEqual(out.getpixel((80, 200)), (0x5a, 0x36, 0x21))
+        self.assertEqual(out.getpixel((125, 118)), (0xef, 0xe6, 0xd2))
+        # Already on the backdrop asked for, or with no backdrop asked for: the picture as it is.
+        self.assertEqual(sprite.still(plate, "white").tobytes(), plate.tobytes())
+        self.assertEqual(sprite.still(plate, "none").tobytes(), plate.tobytes())
+        self.assertEqual(sprite.still(out, "green").tobytes(), out.tobytes())
+
+    def test_a_named_animation_is_a_gesture_unless_marked_as_a_loop(self):
+        named = {"direction": "E", "motion": "prompt", "animation": "Walk"}
+        gesture, loop = sprite.settings(named), sprite.settings(dict(named, loop=True))
+        self.assertTrue(sprite.one_shot(gesture))
+        self.assertFalse(sprite.one_shot(loop))
+        self.assertFalse(sprite.one_shot(sprite.settings({"direction": "E"})))
+        self.assertIn("full gesture", sprite.instruction(gesture))
+        self.assertIn("Loop the movement", sprite.instruction(loop))
+        for bad in ({"direction": "E", "loop": True}, dict(named, loop=False), {"direction": "E", "motion": "idle", "loop": True}):
+            with self.assertRaisesRegex(ValueError, "loop"):
+                sprite.settings(bad)
 
     def test_alpha_reaches_the_sheet_node_and_is_validated(self):
         self.assertEqual(sprite.settings({"direction": "S", "alpha": "hard"})["alpha"], "hard")

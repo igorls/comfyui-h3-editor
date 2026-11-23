@@ -1196,7 +1196,7 @@ def cast_pictures(project, clip):
             [pinned] if pictures and not sprite.heading_matched(pictures, direction) else pictures
             for pictures in have
         ]
-    if config and not first_pin and not last_pin and (config.get("motion") == "idle" or config.get("animation")):
+    if config and not first_pin and not last_pin and (config.get("motion") == "idle" or sprite.one_shot(config)):
         if any(sprite.heading_matched(pictures, direction) for pictures in have):
             first_pin = last_pin = True
     room = H3_PICTURES - first_pin - last_pin
@@ -1208,10 +1208,27 @@ def cast_pictures(project, clip):
     return [(member, have[index][:taken[index]]) for index, member in enumerate(members) if taken[index]]
 
 
+def sprite_backdrop(project, clip):
+    """The flat colour this sprite take is drawn on.
+
+    White holds by itself. Another colour holds only where pictures on it pin the take along its length: at
+    both ends (an idle, a gesture, a clip with first and last frames) or at the three points that close a
+    loop. Asked for in words alone, or pinned on the first frame only, green gave way to a dark floor or a
+    dirt ground within a dozen frames, which no key can cut. Such a take is drawn on white.
+    """
+    config = clip.get("sprite") if isinstance(clip.get("sprite"), dict) else None
+    colour = (config or {}).get("backdrop", "white")
+    if colour == "white":
+        return colour
+    held = (config.get("self_pin") or (frame_of(clip, "first") and frame_of(clip, "last"))
+            or sprite_auto_pin(project, clip))
+    return colour if held else "white"
+
+
 def sprite_auto_pin(project, clip):
     """Return the primary direction-matched plate to auto-pin at start & end for sprite idles and one-shot actions."""
     config = clip.get("sprite") if isinstance(clip.get("sprite"), dict) else None
-    if not config or not (config.get("motion") == "idle" or config.get("animation")):
+    if not config or not (config.get("motion") == "idle" or sprite.one_shot(config)):
         return None
     if frame_of(clip, "first") or frame_of(clip, "last"):
         return None
@@ -1371,7 +1388,7 @@ def clip_prompt(project, clip):
     is_sprite = clip.get("sprite") is not None
     sprite_cfg = sprite.settings(clip["sprite"]) if is_sprite else None
     if is_sprite:
-        action = action + " " + sprite.instruction(sprite_cfg)
+        action = action + " " + sprite.instruction(dict(sprite_cfg, backdrop=sprite_backdrop(project, clip)))
     # Sprite Drafts with character references lock their visual style to the cast plates
     # (or an explicit sprite.style), never inheriting a video project's live-action/camera look.
     if is_sprite and sprite_cfg.get("style"):
@@ -2320,7 +2337,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     # A sprite is drawn on white, and its pictures are often cutouts. Loaded as they are, their transparency turns
     # black and the take fades from black to the white the prompt asks for. A pinned picture of another shape than
     # the canvas (a portrait picture on a square canvas) is shown whole, where it would be cropped to fill it.
-    sprite_still = dict(backdrop="white") if config else {}
+    sprite_still = dict(backdrop=sprite_backdrop(project, clip)) if config else {}
     sprite_pin = dict(sprite_still, fit=(size["width"], size["height"])) if config else {}
     if first:
         graph["40"] = still_node(first, **sprite_pin)
@@ -2499,7 +2516,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         graph["211"] = {"class_type": "H3SpriteSheet", "inputs": sheet_in}
         if config.get("motion") == "idle":
             graph["211"]["inputs"]["idle"] = True
-        if config.get("animation"):
+        if sprite.one_shot(config):
             graph["211"]["inputs"]["full_action"] = True
         if config.get("alpha") == "hard":
             graph["211"]["inputs"]["alpha"] = "hard"

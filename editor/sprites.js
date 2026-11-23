@@ -30,10 +30,15 @@ export function resolveSpriteStyle(preset = "", custom = "") {
   return SPRITE_STYLE_PRESETS[preset] || String(preset).trim();
 }
 
-export function buildSpriteConfig({ camera = "rpg", motion = "run", direction = "S", motionPrompt = null, canvas, frames = 39, poses = 7, style = "" } = {}) {
+export const SPRITE_BACKDROPS = ["white", "green", "blue"];
+
+export function buildSpriteConfig({ camera = "rpg", motion = "run", direction = "S", motionPrompt = null, canvas, frames = 39, poses = 7, style = "", loop = false, backdrop = "white" } = {}) {
   const config = { camera, direction, poses };
   if (motion === "idle") config.motion = "idle";
   if (motionPrompt) Object.assign(config, { motion: "prompt", animation: motion });
+  // A named animation is a gesture played once unless it is marked as a cycle (a walk), which is cut like the run.
+  if (motionPrompt && loop) config.loop = true;
+  if (SPRITE_BACKDROPS.includes(backdrop) && backdrop !== "white") config.backdrop = backdrop;
   const chosenCanvas = canvas || defaultCanvasForCamera(camera);
   if (CANVASES.includes(chosenCanvas)) config.canvas = chosenCanvas;
   const len = Number(frames);
@@ -209,6 +214,7 @@ export function installSprites(editor) {
     actor,
     camera = "rpg",
     canvas = "square",
+    keyColor = "white",
     clipFrames = 39,
     artStylePreset = "",
     artStyleCustom = "",
@@ -303,6 +309,7 @@ export function installSprites(editor) {
     prefs = project().sprite_workspaces?.[actor] || {};
     camera = prefs.camera || "rpg";
     canvas = CANVASES.includes(prefs.canvas) ? prefs.canvas : defaultCanvasForCamera(camera);
+    keyColor = SPRITE_BACKDROPS.includes(prefs.backdrop) ? prefs.backdrop : "white";
     clipFrames = SPRITE_LENGTHS.includes(Number(prefs.frames)) ? Number(prefs.frames) : 39;
     artStylePreset = prefs.art_style_preset || "";
     artStyleCustom = prefs.art_style_custom || "";
@@ -318,6 +325,7 @@ export function installSprites(editor) {
     pickActor(actorOf(clip, t?.saved?.cast ?? clip.cast));
     camera = config.camera;
     canvas = CANVASES.includes(config.canvas) ? config.canvas : "portrait";
+    keyColor = SPRITE_BACKDROPS.includes(config.backdrop) ? config.backdrop : "white";
     clipFrames = SPRITE_LENGTHS.includes(Number(config.frames)) ? Number(config.frames) : 39;
     motion = motionOf(config);
     dir = config.direction;
@@ -452,6 +460,7 @@ export function installSprites(editor) {
     $("spriteEditMotion").hidden = presets.has(motion);
     $("spriteCamera").value = camera;
     $("spriteCanvas").value = canvas;
+    $("spriteGround").value = keyColor;
     $("spriteFrames").value = String(clipFrames);
     $("spriteArtStyle").value = artStylePreset;
     $("spriteArtStyleCustom").value = artStyleCustom;
@@ -876,6 +885,11 @@ export function installSprites(editor) {
     if (actor) remember((p) => (p.canvas = canvas));
     refresh();
   };
+  $("spriteGround").onchange = (e) => {
+    keyColor = e.target.value;
+    if (actor) remember((p) => (keyColor === "white" ? delete p.backdrop : (p.backdrop = keyColor)));
+    refresh();
+  };
   $("spriteFrames").onchange = (e) => {
     clipFrames = Number(e.target.value);
     if (actor) remember((p) => (p.frames = clipFrames));
@@ -900,11 +914,14 @@ export function installSprites(editor) {
   const motionDialog = $("spriteMotionDialog");
   const nameInput = $("spriteMotionName");
   const promptInput = $("spriteMotionPrompt");
+  const loopInput = $("spriteMotionLoop");
+  const loops = (name) => !!project().sprite_workspaces?.[actor]?.animations?.find((def) => def.id === name)?.loop;
   function editMotion(editing) {
     const owner = actor, projectFolder = folder;
     nameInput.readOnly = editing;
     nameInput.value = editing ? motion : "";
     promptInput.value = editing ? animations.get(motion) || "" : "";
+    loopInput.checked = editing ? loops(motion) : false;
     nameInput.setCustomValidity("");
     promptInput.setCustomValidity("");
     $("spriteMotionTitle").textContent = editing ? "Edit animation prompt" : "Add animation";
@@ -912,7 +929,7 @@ export function installSprites(editor) {
     $("spriteMotionForm").onsubmit = (e) => {
       e.preventDefault();
       if (folder !== projectFolder || actor !== owner) return motionDialog.close();
-      const name = nameInput.value.trim(), prompt = promptInput.value.trim();
+      const name = nameInput.value.trim(), prompt = promptInput.value.trim(), loop = loopInput.checked;
       if (!editing) {
         const taken = [...presets.keys(), ...presets.values(), ...animations.keys()];
         const duplicate = taken.some((m) => m.toLowerCase() === name.toLowerCase());
@@ -924,11 +941,17 @@ export function installSprites(editor) {
       remember((p) => {
         const definitions = (p.animations ||= []);
         const existing = definitions.find((def) => def.id === name);
-        if (existing) existing.prompt = prompt;
-        else definitions.push({ id: name, prompt });
+        const definition = existing || { id: name, prompt };
+        if (!existing) definitions.push(definition);
+        definition.prompt = prompt;
+        if (loop) definition.loop = true;
+        else delete definition.loop;
         if (editing) {
           for (const clip of project().clips) {
-            if (actorOf(clip, clip.cast) === actor && clip.sprite?.animation === name) clip.action = prompt;
+            if (actorOf(clip, clip.cast) !== actor || clip.sprite?.animation !== name) continue;
+            clip.action = prompt;
+            if (loop) clip.sprite.loop = true;
+            else delete clip.sprite.loop;
           }
         }
         p.motion = name;
@@ -1285,15 +1308,20 @@ export function installSprites(editor) {
           canvas,
           frames: clipFrames,
           style: spriteStyle,
+          backdrop: keyColor,
+          loop: loops(motion),
         });
       } else if (
         clip.sprite &&
         ((clip.sprite.canvas || "portrait") !== canvas ||
           (clip.sprite.frames || 39) !== clipFrames ||
-          (clip.sprite.style || "") !== spriteStyle)
+          (clip.sprite.style || "") !== spriteStyle ||
+          (clip.sprite.backdrop || "white") !== keyColor)
       ) {
         editor.checkpoint();
         clip.sprite.canvas = canvas;
+        if (keyColor !== "white") clip.sprite.backdrop = keyColor;
+        else delete clip.sprite.backdrop;
         if (clipFrames !== 39) clip.sprite.frames = clipFrames;
         else delete clip.sprite.frames;
         if (spriteStyle) clip.sprite.style = spriteStyle;

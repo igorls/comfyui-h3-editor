@@ -231,6 +231,7 @@
         <div class="sprite-render-controls">
           <label class="sprite-field">Camera <select id="spriteCamera"><option value="rpg">Orthographic · 45°</option><option value="overhead">Overhead · 90°</option><option value="level">Eye level</option></select></label>
           <label class="sprite-field">Canvas <select id="spriteCanvas"><option value="square">Square · 512×512</option><option value="portrait">Portrait · 256×384</option><option value="landscape">Landscape · 384×256</option></select></label>
+          <label class="sprite-field">Backdrop <select id="spriteGround" title="The flat colour the sprite is drawn on. Pick one the character does not wear: white suits a dark character, green or blue one with white or pale parts. A colour other than white holds on a take that is pinned: an idle, a gesture, or a loop after Close loop. A first draft of a run or a walk is drawn on white."><option value="white">White</option><option value="green">Green</option><option value="blue">Blue</option></select></label>
           <label class="sprite-field">Length <select id="spriteFrames"><option value="39">39 frames · 1.6 s</option><option value="56">56 frames · 2.3 s</option><option value="73">73 frames · 3.0 s</option></select></label>
           <label class="sprite-field">Art style <select id="spriteArtStyle"><option value="">Match references</option><option value="pixel">16-bit pixel art</option><option value="chibi">Chibi cel-shaded</option><option value="custom">Custom…</option></select></label>
           <label class="sprite-field" id="spriteArtStyleCustomField" hidden>Custom style <input id="spriteArtStyleCustom" type="text" maxlength="400" placeholder="16-bit SNES pixel art RPG sprite"></label>
@@ -368,6 +369,7 @@
     <div class="exporter-body">
       <label class="field"><span>Animation name</span><input id="spriteMotionName" required maxlength="64" autocomplete="off" placeholder="Wing stretch"></label>
       <label class="field"><span>Motion prompt</span><textarea id="spriteMotionPrompt" required rows="4" aria-describedby="spriteMotionHint" placeholder="Spreads both wings, holds, then folds them back to rest."></textarea></label>
+      <label class="check"><input id="spriteMotionLoop" type="checkbox"><span>Repeating cycle (a walk, a hover): cut one period at a steady speed, not a gesture played once</span></label>
       <p class="hint" id="spriteMotionHint">Describe one loop. Each direction uses this prompt and its own facing.</p>
     </div>
     <div class="exporter-foot"><button id="spriteMotionSave" class="primary" type="submit">Add animation</button></div>

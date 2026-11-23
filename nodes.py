@@ -387,8 +387,9 @@ class H3LoadStill(io.ComfyNode):
             description="Read a picture from the output folder. Used by the editor for references and first and last frames.",
             inputs=[
                 io.String.Input("file", tooltip="Path inside the output folder."),
-                io.Combo.Input("backdrop", options=["none", "white"], default="none", optional=True,
-                               tooltip="white lays a transparent picture on white. none drops the transparency, which leaves a cutout on black."),
+                io.Combo.Input("backdrop", options=["none", *sprite.BACKDROPS], default="none", optional=True,
+                               tooltip="A colour lays a transparent picture on it, and moves a picture drawn on another flat colour "
+                                       "onto it. none drops the transparency, which leaves a cutout on black."),
                 io.Int.Input("width", default=0, min=0, max=8192, optional=True,
                              tooltip="With height, fit the whole picture inside this size and fill the rest. 0 leaves the picture as it is."),
                 io.Int.Input("height", default=0, min=0, max=8192, optional=True),

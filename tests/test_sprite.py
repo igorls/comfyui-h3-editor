@@ -67,6 +67,32 @@ class SpriteProjectTest(unittest.TestCase):
         self.assertNotIn("<Video 1>", graph["10"]["inputs"]["prompt"])
         self.assertIn("90 degrees", graph["10"]["inputs"]["prompt"])
 
+    def test_a_looping_named_animation_is_cut_as_a_cycle_on_its_backdrop(self):
+        project.update_clip(self.project, self.id, {"sprite": {"motion": "prompt", "animation": "Walk"}})
+        _, graph = self.plan()
+        self.assertTrue(graph["211"]["inputs"]["full_action"])
+        self.assertIn("full gesture", graph["10"]["inputs"]["prompt"])
+        project.update_clip(self.project, self.id, {"sprite": {"motion": "prompt", "animation": "Walk", "loop": True,
+                                                                 "backdrop": "green"}})
+        _, graph = self.plan()
+        self.assertNotIn("full_action", graph["211"]["inputs"])
+        self.assertIn("Loop the movement", graph["10"]["inputs"]["prompt"])
+
+        def backdrops(graph):
+            return {n["inputs"].get("backdrop") for n in graph.values() if n["class_type"] == "H3LoadStill"}
+
+        # Nothing pins this take, and green does not hold in words alone: it is drawn on white.
+        self.assertIn("pure white", graph["10"]["inputs"]["prompt"])
+        self.assertLessEqual(backdrops(graph), {"white"})
+        # Closed as a loop, its pin stands on green at three points, and so does the take.
+        sprite_now = dict(self.project["clips"][0]["sprite"],
+                          self_pin={"file": "pin.png", "subfolder": "h3take_projects/Sprites/assets", "stride": 14})
+        project.update_clip(self.project, self.id, {"sprite": sprite_now})
+        _, graph = self.plan()
+        self.assertIn("chroma key green", graph["10"]["inputs"]["prompt"])
+        self.assertNotIn("pure white", graph["10"]["inputs"]["prompt"])
+        self.assertEqual(backdrops(graph), {"green"})
+
     def test_idle_uses_planted_motion_and_optional_installed_matte(self):
         project.update_clip(self.project, self.id, {"sprite": {"motion": "idle"}})
         files = {sprite.MATTE_PREFIX + "seg/birefnet.safetensors"}
@@ -82,7 +108,7 @@ class SpriteProjectTest(unittest.TestCase):
         self.assertNotIn("depth", graph["211"]["inputs"])
         project.update_clip(self.project, self.id, {"sprite": {"alpha": "hard"}})
         self.assertEqual(self.plan()[1]["211"]["inputs"]["alpha"], "hard")
-        deep = files | {sprite.DEPTH_PREFIX + "depthpro2-l.safetensors", sprite.DEPTH_PREFIX + "depthpro2-focal.safetensors"}
+        deep = files | {sprite.depth_entry("tp", "depthpro2-l.safetensors"), sprite.depth_entry("tp", "depthpro2-focal.safetensors")}
         _, graph = project.plan_render(self.project, "Sprites", self.id, "draft", seed=77, available=deep)
         self.assertNotIn("depth", graph["211"]["inputs"])
         self.assertNotIn("213", graph)
