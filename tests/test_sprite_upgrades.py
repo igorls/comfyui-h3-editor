@@ -536,6 +536,86 @@ class CutoutTest(unittest.TestCase):
         self.assertTrue(((np.asarray(soft)[..., 3] > 0) & (np.asarray(soft)[..., 3] < 255)).any())
         self.assertEqual(set(np.unique(np.asarray(hard)[..., 3])), {0, 255})
 
+    def depth_map(self, frame_size=(256, 384), near=((70, 100, 180, 300),), far_value=.3, near_value=.5):
+        depth = np.full((frame_size[1], frame_size[0]), far_value, np.float32)
+        for x0, y0, x1, y1 in near:
+            depth[y0:y1 + 1, x0:x1 + 1] = near_value
+        return depth
+
+    def test_depth_keeps_a_small_backdrop_coloured_part_of_the_subject(self):
+        frame, mask = self.subject("white")
+        ImageDraw.Draw(frame).rectangle((175, 150, 180, 160), fill="white")  # a white cuff on the outline
+        self.assertEqual(np.asarray(sprite.with_matte(frame, mask))[155, 178, 3], 0)
+        for depth in (self.depth_map(), 1 / self.depth_map()):  # near bright, then near dark
+            self.assertEqual(np.asarray(sprite.with_matte(frame, mask, depth=depth))[155, 178, 3], 255)
+
+    def test_depth_removes_a_large_patch_of_backdrop_the_matte_kept(self):
+        frame, mask = self.subject("white")
+        mask[100:301, 181:215] = 1  # a slab of backdrop, far too large for the size rule
+        self.assertEqual(np.asarray(sprite.with_matte(frame, mask))[200, 200, 3], 255)
+        out = np.asarray(sprite.with_matte(frame, mask, depth=self.depth_map()))[..., 3]
+        self.assertEqual(out[200, 200], 0)
+        self.assertEqual(out[200, 120], 255)
+
+    def test_depth_opens_enclosed_pockets_and_keeps_an_enclosed_white_surface(self):
+        frame, mask = self.subject("white")
+        draw = ImageDraw.Draw(frame)
+        draw.rectangle((110, 220, 140, 280), fill="white")  # a gap between the legs: backdrop shows through
+        draw.rectangle((90, 130, 160, 170), fill="white")   # a white shirt
+        depth = self.depth_map()
+        depth[220:281, 110:141] = .3
+        for m in (mask, None):
+            out = np.asarray(sprite.with_matte(frame, m, depth=depth))[..., 3]
+            self.assertEqual(out[250, 125], 0)
+            self.assertEqual(out[150, 125], 255)
+
+    def test_a_depth_map_that_cannot_tell_the_two_apart_is_ignored(self):
+        frame, mask = self.subject("white")
+        mask[150:162, 181:189] = 1
+        flat = np.full((384, 256), .4, np.float32)
+        np.testing.assert_array_equal(np.asarray(sprite.with_matte(frame, mask, depth=flat)),
+                                      np.asarray(sprite.with_matte(frame, mask)))
+
+    def test_a_depth_map_of_another_size_is_fitted_to_the_frame(self):
+        frame, mask = self.subject("white")
+        mask[100:301, 181:215] = 1
+        small = np.asarray(Image.fromarray(self.depth_map(), "F").resize((128, 192), Image.Resampling.BILINEAR))
+        self.assertEqual(np.asarray(sprite.with_matte(frame, mask, depth=small))[200, 200, 3], 0)
+
+    def test_depth_is_used_only_when_its_nodes_and_weights_are_installed(self):
+        self.assertIsNone(sprite.depth_model([]))
+        self.assertIsNone(sprite.depth_model(["depth_pro_2:depthpro2-l.safetensors"]))  # the focal file would be downloaded
+        both = ["depth_pro_2:depthpro2-s.safetensors", "depth_pro_2:depthpro2-focal.safetensors"]
+        self.assertEqual(sprite.depth_model(both), "S")
+        self.assertEqual(sprite.depth_model(both + ["depth_pro_2:depthpro2-h.safetensors", "depth_pro_2:depthpro2-l.safetensors"]), "L")
+        nodes, link = sprite.depth_nodes("L", ["18", 0], 213)
+        self.assertEqual([n["class_type"] for n in nodes.values()], list(sprite.DEPTH_NODES))
+        self.assertEqual(link, ["215", 0])
+        self.assertEqual(nodes["214"]["inputs"]["images"], ["18", 0])
+        self.assertEqual(sprite.settings({"direction": "S", "depth": "on"})["depth"], "on")
+        with self.assertRaisesRegex(ValueError, "off or on"):
+            sprite.settings({"direction": "S", "depth": "auto"})
+
+    def test_the_sheet_passes_each_pose_its_depth_map(self):
+        frame, mask = self.subject("white", (512, 512))
+        frame = frame.resize((512, 512))
+        ImageDraw.Draw(frame).rectangle((0, 0, 511, 511), fill="white")
+        ImageDraw.Draw(frame).rectangle((190, 140, 322, 400), fill="#5a3621")
+        mask = np.zeros((512, 512), np.float32)
+        mask[140:401, 190:361] = 1  # the matte also takes a slab of backdrop at the subject's right
+        depth = self.depth_map((512, 512), near=((190, 140, 322, 400),))
+        asked = []
+
+        def depth_for(indices):
+            asked.append(list(indices))
+            return [depth for _ in indices]
+
+        load = lambda idx: [mask for _ in idx]
+        plain, _, layout = sprite.strips([frame] * 39, 7, masks_for=load, canvas="square")
+        deep, _, _ = sprite.strips([frame] * 39, 7, layout, load, canvas="square", depth_for=depth_for)
+        self.assertEqual(len(asked), 1)
+        self.assertLess((np.asarray(deep)[..., 3] > 128).sum(), (np.asarray(plain)[..., 3] > 128).sum() * .9)
+
     def test_alpha_reaches_the_sheet_node_and_is_validated(self):
         self.assertEqual(sprite.settings({"direction": "S", "alpha": "hard"})["alpha"], "hard")
         with self.assertRaisesRegex(ValueError, "soft or hard"):

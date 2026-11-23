@@ -124,8 +124,9 @@ export function buildPropPayload(fields = {}) {
 }
 
 function cutoutLabel(sheet) {
-  if (sheet.cutout === "foreground model") return "BiRefNet";
-  if (sheet.cutout === "background key") return "Background key";
+  const depth = sheet.depth ? " + depth" : "";
+  if (sheet.cutout === "foreground model") return "BiRefNet" + depth;
+  if (sheet.cutout === "background key") return "Background key" + depth;
   return "Cutout unrecorded";
 }
 function button(label, action, pressed) {

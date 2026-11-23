@@ -5940,10 +5940,10 @@ function spriteSection(clip) {
           else delete next.alpha;
           update(next);
         }),
-      spriteChoice("Depth", [["auto", "Auto · use a depth model when installed"], ["off", "Off"]],
-        config.depth || "auto", depth => {
+      spriteChoice("Depth", [["off", "Off"], ["on", "On · needs Depth Pro 2 installed"]],
+        config.depth || "off", depth => {
           const next = { ...config };
-          if (depth === "off") next.depth = "off";
+          if (depth === "on") next.depth = "on";
           else delete next.depth;
           update(next);
         }), hint,

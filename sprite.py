@@ -13,6 +13,14 @@ PIVOT = (32, 59)
 MATTE_PREFIX = "background_removal:"
 # The edge of a cell: soft keeps partly covered pixels, hard makes every pixel fully in or out (pixel art).
 ALPHAS = ("soft", "hard")
+# Optional depth evidence for cutouts: a depth node pack and its weights, when the user has installed both.
+DEPTH_PREFIX = "depth_pro_2:"
+DEPTH_NODES = ("TPDepthPro2Loader", "TPDepthPro2Video", "TPDepthPro2RawImage")
+DEPTH_VARIANTS = (("L", "depthpro2-l.safetensors"), ("H+", "depthpro2-h.safetensors"),
+                  ("B", "depthpro2-b.safetensors"), ("S", "depthpro2-s.safetensors"))
+DEPTH_FOCAL = "depthpro2-focal.safetensors"
+# How far towards the backdrop (or, mirrored, the subject) a patch must lie for depth to decide about it.
+DEPTH_CLEAR = .75
 
 CANVASES = {
     "portrait": ((256, 384), (512, 768)),
@@ -52,6 +60,28 @@ def matte_model(available):
             if name.replace("\\", "/").split("/")[-1].lower() == "birefnet.safetensors":
                 return name
     return None
+
+
+def depth_model(available):
+    """The installed depth model to read sprite frames with, or None. Never one that would be downloaded."""
+    have = {entry[len(DEPTH_PREFIX):].replace("\\", "/").split("/")[-1].lower()
+            for entry in available or () if entry.startswith(DEPTH_PREFIX)}
+    if DEPTH_FOCAL not in have:
+        return None
+    return next((variant for variant, name in DEPTH_VARIANTS if name in have), None)
+
+
+def depth_nodes(variant, images, start):
+    """Graph nodes that read a depth map for each frame: their ids start at `start`, the last holds the maps."""
+    a, b, c = str(start), str(start + 1), str(start + 2)
+    return {
+        a: {"class_type": "TPDepthPro2Loader",
+            "inputs": {"model": variant, "precision": "auto", "estimate_focal": True, "device": "auto"}},
+        b: {"class_type": "TPDepthPro2Video",
+            "inputs": {"model": [a, 0], "images": list(images), "mode": "buffered", "window": 16, "overlap": 4,
+                       "focal_length_px": 0.0}},
+        c: {"class_type": "TPDepthPro2RawImage", "inputs": {"depth": [b, 0], "encoding": "inverse_meters"}},
+    }, [c, 0]
 
 
 DIRECTIONS = {
@@ -237,7 +267,7 @@ def _clean_file_ref(ref, what):
 def settings(value):
     if value is None:
         return None
-    allowed = {"direction", "camera", "poses", "guide", "motion", "cutout", "alpha", "animation",
+    allowed = {"direction", "camera", "poses", "guide", "motion", "cutout", "alpha", "depth", "animation",
                "canvas", "frames", "tile_size", "mode", "refine", "self_pin", "style"}
     if not isinstance(value, dict) or set(value) - allowed:
         raise ValueError("unknown sprite setting")
@@ -271,6 +301,10 @@ def settings(value):
         if value["alpha"] not in ALPHAS:
             raise ValueError("choose soft or hard sprite alpha")
         out["alpha"] = value["alpha"]
+    if "depth" in value:
+        if value["depth"] not in ("off", "on"):
+            raise ValueError("choose off or on for sprite depth")
+        out["depth"] = value["depth"]
     if "canvas" in value:
         if value["canvas"] not in CANVASES:
             raise ValueError("choose a sprite canvas of %s" % (", ".join(CANVASES),))
@@ -453,7 +487,26 @@ def backdrop(rgb):
     return ground, noise, bool(near.mean() >= .6)
 
 
-def backdrop_key(rgb, ground, noise, subject=None, pockets=False):
+def depth_side(depth, backdrop, subject):
+    """Where a depth map puts each pixel between the subject (0) and the backdrop (1), or None when it
+    cannot tell the two apart.
+
+    `depth` is any monotonic depth picture (metres, inverse metres, a normalised map, near bright or near
+    dark): it is read against the picture's own subject and backdrop, sampled where those are certain.
+    """
+    import numpy as np
+
+    if not backdrop.any() or not subject.any():
+        return None
+    far, near = float(np.median(depth[backdrop])), float(np.median(depth[subject]))
+    if not np.isfinite(far) or not np.isfinite(near) or abs(far - near) < .05 * max(abs(far), abs(near), 1e-6):
+        return None
+    with np.errstate(invalid="ignore"):
+        side = ((near - depth) / (near - far)).clip(0, 1)
+    return np.where(np.isfinite(depth), side, 1. if far > near else 0.).astype(np.float32)
+
+
+def backdrop_key(rgb, ground, noise, subject=None, pockets=False, depth=None):
     """How far each pixel is from being backdrop, 0..1, on a flat backdrop of any colour.
 
     Backdrop is the flat region of the backdrop's own colour that reaches the border. Colour alone cannot
@@ -462,8 +515,13 @@ def backdrop_key(rgb, ground, noise, subject=None, pockets=False):
     - `subject`, a foreground matte (0..1). Where it calls a keyed patch foreground, a small patch is the
       matte's mistake (a lump of backdrop beside hair, a sliver between limbs) and goes; a large one is the
       subject's own backdrop-coloured surface (a white shirt) and stays.
-    - `pockets`, for pictures known to hold no surface of the backdrop's colour: also take the regions a
-      subject encloses (between legs, under an arm) when they are as flat as the backdrop and not a speck.
+    - `depth`, a depth map of the picture (see `depth_side`). It settles both by distance instead of size:
+      a keyed patch at the subject's distance stays, whatever its size, and a region the subject encloses
+      (between legs, under an arm) goes when it lies at the backdrop's distance. A depth map is soft at
+      edges, so it decides only where it is clear (DEPTH_CLEAR); a patch in between is left to the rules
+      that apply without it.
+    - `pockets`, for pictures known to hold no surface of the backdrop's colour and with no depth map: also
+      take the enclosed regions that are as flat as the backdrop and not a speck.
 
     The edge of what goes fades over the antialiased pixels around it.
     """
@@ -477,23 +535,35 @@ def backdrop_key(rgb, ground, noise, subject=None, pockets=False):
     seed[[0, -1]] = core[[0, -1]]
     seed[:, [0, -1]] = core[:, [0, -1]]
     gone = ndi.binary_propagation(seed, mask=core)
-    if pockets:
+    far = None
+    if depth is not None:
+        sure = ~ndi.binary_dilation(core, iterations=2)
+        far = depth_side(depth, gone & (subject < .1) if subject is not None else gone,
+                         sure & (subject > .9) if subject is not None else sure)
+    if far is not None or pockets:
         labels, count = ndi.label(core & ~gone)
         if count:
             index = np.arange(1, count + 1)
             area = ndi.sum(np.ones_like(dist), labels, index)
-            mean = ndi.mean(dist, labels, index)
             take = np.zeros(count + 1, dtype=bool)
-            take[1:] = (area >= max(8, core.size // 12000)) & (mean <= max(.012, 2 * noise))
+            if pockets:
+                take[1:] = (area >= max(8, core.size // 12000)) & (ndi.mean(dist, labels, index) <= max(.012, 2 * noise))
+            if far is not None:
+                side = ndi.median(far, labels, index)
+                take[1:] = (take[1:] & (side > 1 - DEPTH_CLEAR)) | ((area >= 8) & (side >= DEPTH_CLEAR))
             gone |= take[labels]
     kept = np.zeros_like(core)
-    if subject is not None:
-        solid = subject > .5
+    if subject is not None or far is not None:
+        solid = subject > .5 if subject is not None else far <= 1 - DEPTH_CLEAR
         labels, count = ndi.label(gone & solid)
         if count:
-            area = ndi.sum(np.ones_like(dist), labels, np.arange(1, count + 1))
+            index = np.arange(1, count + 1)
             keep = np.zeros(count + 1, dtype=bool)
-            keep[1:] = area > max(64, .02 * solid.sum())
+            if subject is not None:
+                keep[1:] = ndi.sum(np.ones_like(dist), labels, index) > max(64, .02 * solid.sum())
+            if far is not None:
+                side = ndi.median(far, labels, index)
+                keep[1:] = (keep[1:] & (side < DEPTH_CLEAR)) | (side <= 1 - DEPTH_CLEAR)
             kept = keep[labels]
             gone &= ~kept
     # Video compression rings around a subject: the backdrop beside it is a little off its colour.
@@ -505,13 +575,14 @@ def backdrop_key(rgb, ground, noise, subject=None, pockets=False):
     return key
 
 
-def with_matte(frame, mask=None, alpha_low=0.12, alpha_high=0.88, key=True, pockets=False):
+def with_matte(frame, mask=None, alpha_low=0.12, alpha_high=0.88, key=True, pockets=False, depth=None):
     """Cut a subject out of its picture, as RGBA with the backdrop colour taken out of its edge pixels.
 
     `mask` is a foreground matte (0..1), or None to cut by the backdrop colour alone. On a flat backdrop of
     any colour the two are combined (see `backdrop_key`): the matte decides the subject, and the backdrop's
-    own colour removes the small patches of backdrop a matte keeps by mistake. On a scene (no flat border),
-    or with `key` off, only the matte is used.
+    own colour removes the patches of backdrop a matte keeps by mistake. `depth`, an optional depth map of
+    the frame, tells those patches from the subject's own backdrop-coloured surfaces. On a scene (no flat
+    border), or with `key` off, only the matte is used.
     """
     import numpy as np
     from PIL import Image
@@ -527,7 +598,13 @@ def with_matte(frame, mask=None, alpha_low=0.12, alpha_high=0.88, key=True, pock
         span = max(float(alpha_high) - float(alpha_low), 1e-4)
         coverage = ((alpha - float(alpha_low)) / span).clip(0, 1)
     if mask is None or (key and flat):
-        keyed = backdrop_key(rgb, ground, noise, None if mask is None else alpha[..., 0], pockets)[..., None]
+        if depth is not None:
+            depth = np.asarray(depth, dtype=np.float32)
+            if depth.ndim == 3:
+                depth = depth[..., 0]
+            if depth.shape != rgb.shape[:2]:
+                depth = np.asarray(Image.fromarray(depth, "F").resize(rgb.shape[1::-1], Image.Resampling.BILINEAR))
+        keyed = backdrop_key(rgb, ground, noise, None if mask is None else alpha[..., 0], pockets, depth)[..., None]
         alpha, coverage = np.minimum(alpha, keyed), np.minimum(coverage, keyed)
     color = ((rgb - (1 - alpha) * ground) / np.maximum(alpha, .05)).clip(0, 1)
     return Image.fromarray((np.concatenate((color, coverage), axis=2) * 255).round().astype("uint8"))
@@ -813,7 +890,7 @@ def export_from_cache(folder, layout, poses, tile_size, idle=False, export_24fps
 
 def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=TILE, full_action=False,
            export_24fps=False, tile_size=None, canvas="portrait", global_scale=None, cache_dir=None,
-           alpha="soft"):
+           alpha="soft", depth_for=None):
     """Pick a loop once. Finish reuses the draft's phase, scale and ground contact in normalized source coordinates."""
     import numpy as np
     from PIL import Image
@@ -888,12 +965,14 @@ def strips(frames, poses, previous=None, masks_for=None, idle=False, cell_size=T
     order = playback_indices(layout, poses, idle, export_24fps, total_frames=total_frames)
     indices = list(dict.fromkeys(order))
     if masks_for is None:
-        selected = [with_matte(frames[n]) for n in indices]
+        depths = depth_for(indices) if depth_for is not None else [None] * len(indices)
+        selected = [with_matte(frames[n], depth=d) for n, d in zip(indices, depths)]
     else:
         masks = masks_for(indices)
         if len(masks) != len(indices):
             raise ValueError("expected one foreground mask per sprite pose")
-        selected = [with_matte(frames[n], mask) for n, mask in zip(indices, masks)]
+        depths = depth_for(indices) if depth_for is not None else [None] * len(indices)
+        selected = [with_matte(frames[n], mask, depth=d) for n, mask, d in zip(indices, masks, depths)]
         if previous is None:
             # Re-measure silhouette height, horizontal center, and ground contact from the actual
             # foreground matte (BiRefNet) instead of the coarse background-key cutout, which can

@@ -534,6 +534,9 @@ class H3DefringeMatte(io.ComfyNode):
                                          "pockets of backdrop the subject encloses and patches beside it. Ignored on a scene."),
                 io.Combo.Input("alpha", options=list(sprite.ALPHAS), default="soft", optional=True,
                                tooltip="soft keeps partly covered edge pixels. hard makes every pixel fully in or out."),
+                io.Image.Input("depth", optional=True,
+                               tooltip="A depth map for each image, from any depth node, near bright or near dark. On a flat "
+                                       "backdrop it tells leftover backdrop from the subject's own surfaces of that colour."),
             ],
             outputs=[
                 io.Image.Output(display_name="rgba"),
@@ -542,7 +545,8 @@ class H3DefringeMatte(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, mask, alpha_low=0.12, alpha_high=0.88, invert_mask=False, key_backdrop=True, alpha="soft"):
+    def execute(cls, images, mask, alpha_low=0.12, alpha_high=0.88, invert_mask=False, key_backdrop=True, alpha="soft",
+                depth=None):
         masks = mask.detach().float().cpu().numpy()
         if masks.ndim == 2:
             masks = masks[None]
@@ -553,7 +557,8 @@ class H3DefringeMatte(io.ComfyNode):
         for idx, frame_t in enumerate(images):
             frame = Image.fromarray((frame_t.detach().cpu().clamp(0, 1).numpy() * 255).round().astype(np.uint8))
             m = masks[min(idx, len(masks) - 1)]
-            out_im = sprite.with_matte(frame, m, alpha_low=alpha_low, alpha_high=alpha_high, key=key_backdrop)
+            d = None if depth is None else depth[min(idx, len(depth) - 1)][..., 0].detach().float().cpu().numpy()
+            out_im = sprite.with_matte(frame, m, alpha_low=alpha_low, alpha_high=alpha_high, key=key_backdrop, depth=d)
             if alpha == "hard":
                 out_im = sprite.harden(out_im)
             arr = np.asarray(out_im, dtype=np.float32) / 255.0
@@ -589,20 +594,29 @@ class H3SpriteSheet(io.ComfyNode):
                                      tooltip="Cache lossless defringed RGBA frames beside the strip for GPU-free re-exports."),
                     io.Combo.Input("alpha", options=list(sprite.ALPHAS), default="soft", optional=True,
                                    tooltip="soft keeps partly covered edge pixels. hard makes every pixel fully in or out, for pixel art."),
+                    io.Image.Input("depth", optional=True,
+                                   tooltip="A depth map for each frame, from any depth node, near bright or near dark. On a flat "
+                                           "backdrop it tells backdrop left inside or beside the subject from the subject's own "
+                                           "surfaces of the backdrop's colour."),
                     *optional],
             outputs=[], is_output_node=True)
 
     @classmethod
     def execute(cls, images, poses, filename_prefix, layout="", idle=False, bg_model=None, cell_size="64", full_action=False,
                 export_24fps=False, tile_width=0, tile_height=0, canvas="portrait", global_scale=0.0, save_webp=False,
-                save_cache=True, alpha="soft"):
+                save_cache=True, alpha="soft", depth=None):
         base = os.path.realpath(folder_paths.get_output_directory())
+        if depth is not None and len(depth) != len(images):
+            raise ValueError("The depth maps must be one for each frame")
         dest = os.path.realpath(os.path.join(base, filename_prefix))
         if os.path.commonpath((base, dest)) != base or dest == base:
             raise ValueError("Sprite sheets must be saved inside the output folder")
         frames = [Image.fromarray((f.detach().cpu().clamp(0, 1).numpy() * 255).round().astype(np.uint8)) for f in images]
         def masks_for(indices):
             return bg_model.encode_image(images[indices]).detach().float().cpu().numpy()
+
+        def depth_for(indices):
+            return depth[indices][..., 0].detach().float().cpu().numpy()
 
         cell_size = int(cell_size)
         custom_tile = (int(tile_width), int(tile_height)) if (tile_width and tile_height) else None
@@ -615,7 +629,7 @@ class H3SpriteSheet(io.ComfyNode):
             masks_for if bg_model is not None else None, idle=idle, cell_size=cell_size,
             full_action=full_action, export_24fps=export_24fps,
             tile_size=custom_tile, canvas=canvas or "portrait", global_scale=scale_override,
-            cache_dir=cache_path, alpha=alpha or "soft",
+            cache_dir=cache_path, alpha=alpha or "soft", depth_for=depth_for if depth is not None else None,
         )
         fps = sprite.playback_fps(transform, poses, idle, export_24fps)
         metadata = {"poses": full.width // tile_w, "source_poses": poses, "fps": fps,
@@ -625,6 +639,8 @@ class H3SpriteSheet(io.ComfyNode):
                     "cutout": "foreground model" if bg_model is not None else "background key"}
         if alpha == "hard":
             metadata["alpha"] = "hard"
+        if depth is not None:
+            metadata["depth"] = True
         if cache_path and os.path.isdir(cache_path):
             metadata["frame_cache"] = os.path.basename(cache_path)
         for label, sheet in (("illustrated", full), ("indexed", indexed)):

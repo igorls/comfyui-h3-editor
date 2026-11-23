@@ -2480,7 +2480,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
             graph["211"]["inputs"]["full_action"] = True
         if config.get("alpha") == "hard":
             graph["211"]["inputs"]["alpha"] = "hard"
-        depth = sprite.depth_model(available) if config.get("depth") != "off" else None
+        depth = sprite.depth_model(available) if config.get("depth") == "on" else None
         if depth:
             more, graph["211"]["inputs"]["depth"] = sprite.depth_nodes(depth, sheet_in["images"], 213)
             graph.update(more)
