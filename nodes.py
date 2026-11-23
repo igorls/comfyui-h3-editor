@@ -18,7 +18,6 @@ from .twins import with_twins
 from . import hyperflow
 from . import hybrid
 from . import clipproj
-from . import ninfer_clip
 from . import sprite
 from . import media
 from . import holds
@@ -750,44 +749,6 @@ class H3SmallTextEncoder(io.ComfyNode):
     @classmethod
     def execute(cls, clip_name, projection) -> io.NodeOutput:
         return io.NodeOutput(clipproj.load(clip_name, projection))
-
-
-class H3NInferTextEncoder(io.ComfyNode):
-    """Experimental remote text/vision encoder backed by a resident NInfer server (0 CLIP VRAM in ComfyUI)."""
-
-    @classmethod
-    def define_schema(cls):
-        return io.Schema(
-            node_id="H3NInferTextEncoder",
-            display_name="H3 NInfer Text Encoder",
-            category="minimax/h3",
-            description=(
-                "Use a running NInfer server (POST /v1/hidden_states) as the CLIP wire, holding zero text-encoder "
-                "weights in ComfyUI VRAM. Leave projection as 'none' for raw hidden-state wiring tests, or pick a "
-                "calibrated ClipProj file."
-            ),
-            inputs=[
-                io.String.Input("url", default=ninfer_clip.DEFAULT_URL,
-                                tooltip="Base URL of ninfer-serve (e.g. http://host.docker.internal:8010)."),
-                io.String.Input("model", default="",
-                                tooltip="Model id to send to NInfer. Leave blank to use the server's default model."),
-                io.Int.Input("layer", default=-1, min=-1, max=128,
-                             tooltip="-1 reads final-normalized hidden states; 0..N-1 taps that post-layer residual."),
-                io.Combo.Input("projection", options=["none"] + clipproj.list_projections(), default="none",
-                               tooltip="Optional ClipProj projection from models/clip_projections, or 'none' for raw states."),
-                io.Combo.Input("profile", options=list(ninfer_clip.PROFILES), default="auto", optional=True,
-                               tooltip="Target DiT conditioning layout ('auto' reads target_profile from the projection file, defaulting to minimax_h3)."),
-                io.String.Input("api_key", default="", optional=True,
-                                tooltip="Optional bearer token if ninfer-serve was started with --api-key."),
-            ],
-            outputs=[io.Clip.Output(display_name="clip")],
-        )
-
-    @classmethod
-    def execute(cls, url, model="", layer=-1, projection="none", profile="auto", api_key="") -> io.NodeOutput:
-        return io.NodeOutput(
-            ninfer_clip.load(url=url, model=model, layer=layer, projection=projection, api_key=api_key, profile=profile)
-        )
 
 
 class H3HyperFlowLoader(io.ComfyNode):
@@ -1585,7 +1546,6 @@ NODE_CLASS_MAPPINGS = {"H3SpriteGuide": H3SpriteGuide, "H3DefringeMatte": H3Defr
                        "H3Lora": H3Lora, "H3LoadTake": H3LoadTake, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
                        "H3HybridLoader": H3HybridLoader,
                        "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder,
-                       "H3NInferTextEncoder": H3NInferTextEncoder,
                        "H3GatedSDPose": H3GatedSDPose, "H3IsolateCharacter": H3IsolateCharacter,
                        "H3TrackSubjectMask": H3TrackSubjectMask, "H3SliceBatch": H3SliceBatch,
                        "H3ApplyEditMask": H3ApplyEditMask, "H3JoinWindow": H3JoinWindow,
@@ -1597,7 +1557,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {"H3SpriteGuide": "H3 Sprite Motion Guide", "H3Defr
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3LoadTake": "H3 Load Take", "H3RefineLatent": "H3 Refine Latent",
                               "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HybridLoader": "H3 Hybrid Block Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas",
                               "H3SmallTextEncoder": "H3 Small Text Encoder",
-                              "H3NInferTextEncoder": "H3 NInfer Text Encoder",
                               "H3GatedSDPose": "H3 Gated SDPose Extractor", "H3IsolateCharacter": "H3 Isolate Character",
                               "H3TrackSubjectMask": "H3 Track Subject Mask", "H3SliceBatch": "H3 Slice Batch",
                               "H3ApplyEditMask": "H3 Apply Edit Mask", "H3JoinWindow": "H3 Join Window",

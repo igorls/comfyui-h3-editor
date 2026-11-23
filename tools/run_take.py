@@ -61,18 +61,7 @@ def graph(args, take):
         loader = {"class_type": "UNETLoader", "inputs": {"unet_name": args.unet, "weight_dtype": "default"}}
         sigmas = {"class_type": "BasicScheduler", "inputs": {
             "model": ["5", 0], "scheduler": "simple", "steps": args.steps, "denoise": 1.0}}
-    if args.ninfer_url:
-        clip_node = {
-            "class_type": "H3NInferTextEncoder",
-            "inputs": {
-                "url": args.ninfer_url,
-                "model": args.ninfer_model,
-                "layer": args.ninfer_layer,
-                "projection": args.ninfer_projection,
-            },
-        }
-    else:
-        clip_node = {"class_type": "CLIPLoader", "inputs": {"clip_name": MODELS["clip"], "type": "minimax", "device": "default"}}
+    clip_node = {"class_type": "CLIPLoader", "inputs": {"clip_name": MODELS["clip"], "type": "minimax", "device": "default"}}
     g = {
         "1": loader,
         "2": clip_node,
@@ -140,10 +129,6 @@ def main():
     parser.add_argument("--steps", type=int, default=0, help="6 on HyperFlow (4, 6 or 8), 8 on other checkpoints when 0")
     parser.add_argument("--shift", type=float, default=12.0)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--ninfer-url", default="", help="use H3NInferTextEncoder at this base URL instead of local CLIPLoader")
-    parser.add_argument("--ninfer-model", default="", help="model id for H3NInferTextEncoder (blank = server default)")
-    parser.add_argument("--ninfer-layer", type=int, default=-1, help="layer tap for H3NInferTextEncoder (-1 = final norm)")
-    parser.add_argument("--ninfer-projection", default="none", help="optional ClipProj file for H3NInferTextEncoder")
     parser.add_argument("--timeout", type=int, default=1500)
     parser.add_argument("--set", action="append", default=[], help="H3Take input, name=value")
     args = parser.parse_args()
