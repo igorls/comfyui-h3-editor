@@ -126,23 +126,25 @@
     <div class="splitter-v" id="splitBin" role="separator" aria-orientation="vertical" aria-label="Resize the clips panel" title="Drag to resize. Double-click to reset." tabindex="0"></div>
     <section class="stage" id="viewer" aria-label="Viewer">
       <div id="screen" class="screen">
-        <div class="picture-plane"><video id="videoA" playsinline></video></div>
-        <div class="picture-plane"><video id="videoB" playsinline></video></div>
-        <div id="compareWipe" class="compare-wipe" hidden>
-          <video id="compareVideo" muted playsinline preload="auto"></video>
-          <div class="compare-divider" aria-hidden="true"><span><svg viewBox="0 0 24 24"><path d="m9 8-4 4 4 4m6-8 4 4-4 4"/></svg></span></div>
-          <input id="comparePosition" type="range" min="0" max="100" value="50" aria-label="Take comparison divider">
+        <div id="screenStage" class="screen-stage">
+          <div class="picture-plane"><video id="videoA" playsinline></video></div>
+          <div class="picture-plane"><video id="videoB" playsinline></video></div>
+          <div id="compareWipe" class="compare-wipe" hidden>
+            <video id="compareVideo" muted playsinline preload="auto"></video>
+            <div class="compare-divider" aria-hidden="true"><span><svg viewBox="0 0 24 24"><path d="m9 8-4 4 4 4m6-8 4 4-4 4"/></svg></span></div>
+            <input id="comparePosition" type="range" min="0" max="100" value="50" aria-label="Take comparison divider">
+          </div>
+          <canvas id="vfx" hidden></canvas>
+          <img id="preview" alt="Live render preview" hidden>
+          <video id="motion" playsinline loop hidden></video>
+          <canvas id="noteLayer" class="note-layer" aria-hidden="true"></canvas>
         </div>
         <div id="compareBar" class="source-tag compare-bar" hidden>
-          <span id="compareA"></span><span id="compareB"></span><button id="compareClose" class="quiet" type="button">Done</button>
+          <span id="compareA"></span><span id="compareB"></span><button id="compareParams" class="quiet" type="button">Compare params…</button><button id="compareClose" class="quiet" type="button">Done</button>
         </div>
-        <canvas id="vfx" hidden></canvas>
-        <img id="preview" alt="Live render preview" hidden>
-        <video id="motion" playsinline loop hidden></video>
         <div id="slate" class="slate"></div>
         <div id="live" class="live" hidden></div>
         <button id="liveSound" class="tool live-sound" hidden aria-pressed="false" aria-label="Sound of the live preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path class="on" d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/><path class="off" d="M16 9.5l5 5M21 9.5l-5 5"/></svg></button>
-        <canvas id="noteLayer" class="note-layer" aria-hidden="true"></canvas>
         <div id="noteTag" class="note-tag" hidden></div>
         <div id="noteBox" class="note-box" hidden role="dialog" aria-label="Write a note on this frame">
           <p id="noteWhere" class="note-head"></p>
@@ -154,6 +156,12 @@
           <div class="note-foot"><button type="button" id="noteCancel" class="quiet">Cancel</button><button type="button" id="noteSave" class="primary">Save note</button></div>
         </div>
         <div id="sourceTag" class="source-tag" hidden><span id="sourceName"></span><button id="toTimeline" class="quiet" title="Show the cut again. Clicking the timeline does too">Back to timeline</button></div>
+        <div id="viewerZoom" class="viewer-zoom" role="group" aria-label="Viewer zoom">
+          <button id="viewerZoomOut" class="icon" type="button" aria-label="Zoom out" title="Zoom out (scroll down)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
+          <button id="viewerZoomReset" class="quiet viewer-zoom-pct" type="button" title="Click to reset to Fit · double-click video to toggle 200%">Fit</button>
+          <button id="viewerZoomIn" class="icon" type="button" aria-label="Zoom in" title="Zoom in (scroll up)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg></button>
+          <button id="viewerFullscreen" class="icon" type="button" aria-pressed="false" aria-label="Fullscreen viewer" title="Toggle fullscreen viewer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+        </div>
       </div>
       <div class="transport" role="group" aria-label="Viewer controls">
         <span class="clock" title="Minutes, seconds and frames"><span id="time" class="time">00:00:00</span><span id="total" class="total"></span></span>
@@ -461,6 +469,15 @@
     </div>
     <div class="exporter-foot"><button id="takeManagerRemove" class="quiet danger" type="submit">Remove selected</button></div>
   </form>
+</dialog>
+<dialog id="takeDetails" class="keys exporter take-details-dialog" aria-labelledby="takeDetailsTitle">
+  <div class="keys-head">
+    <h2 id="takeDetailsTitle">Take parameters</h2>
+    <label class="take-diff-toggle" id="takeDiffToggleWrap" hidden><input type="checkbox" id="takeDiffOnly"> Differences only</label>
+    <button id="takeDetailsClose" class="quiet" type="button">Close</button>
+  </div>
+  <div id="takeDetailsBody" class="exporter-body take-details-body"></div>
+  <div id="takeDetailsFoot" class="exporter-foot take-details-foot"></div>
 </dialog>
 <dialog id="asker" class="keys exporter" aria-labelledby="askerTitle">
   <form id="askerForm" method="dialog">

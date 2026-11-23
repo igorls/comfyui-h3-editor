@@ -28,6 +28,7 @@ from . import media
 from . import vosr2
 from . import looks
 from . import patches as patching
+from . import hybrid
 from . import project as store
 from .policy import editor_id, group_by_model
 
@@ -3938,6 +3939,43 @@ async def motion_cache_clear(request):
     return web.json_response({"removed": len(removed), "files": removed})
 
 
+async def check_hybrid(request):
+    """Pre-flight header check for hybrid block swapping: verifies compatibility without loading weights."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"ok": False, "error": "expected a JSON object"}, status=400)
+    base = str(body.get("base") or "").strip()
+    overlay = str(body.get("overlay") or "").strip()
+    blocks = str(body.get("blocks") or hybrid.DEFAULT_BLOCKS).strip()
+    scope = str(body.get("scope") or hybrid.DEFAULT_SCOPE).strip()
+    if not base or not overlay:
+        return web.json_response({"ok": False, "error": "Pick both a base and an overlay .safetensors model."})
+    if base == overlay:
+        return web.json_response({"ok": False, "error": "Base and overlay must be two different model files."})
+    try:
+        base_path = hybrid.resolve_model_path(base)
+        overlay_path = hybrid.resolve_model_path(overlay)
+        base_header = hybrid.read_safetensors_header(base_path)
+        overlay_header = hybrid.read_safetensors_header(overlay_path)
+        plan = hybrid.plan_swap(base_header, overlay_header, blocks, scope)
+    except (FileNotFoundError, ValueError, OSError) as error:
+        return web.json_response({"ok": False, "error": str(error)})
+    return web.json_response({
+        "ok": True,
+        "swaps": len(plan.swaps),
+        "families": plan.families_swapped,
+        "blocks": hybrid.format_blocks(plan.blocks_matched),
+        "blocks_count": len(plan.blocks_matched),
+        "base_blocks": hybrid.block_count(base_header),
+        "overlay_blocks": hybrid.block_count(overlay_header),
+        "skipped": list(plan.skipped[:5]),
+        "skipped_count": len(plan.skipped),
+    })
+
+
 ROUTES = (
     ("GET", "/h3take/api/sizes", "sizes"),
     ("GET", "/h3take/api/queue", "render_queue"),
@@ -3961,6 +3999,7 @@ ROUTES = (
     ("POST", "/h3take/api/cast-catalog/spread", "spread_catalog"),
     ("GET", "/h3take/api/refmods", "refmods_list"),
     ("GET", "/h3take/api/refmods/preview", "refmod_preview"),
+    ("POST", "/h3take/api/hybrid/check", "check_hybrid"),
     ("GET", "/h3take/api/project/{name}", "load"),
     ("PUT", "/h3take/api/project/{name}", "save"),
     ("DELETE", "/h3take/api/project/{name}", "remove"),

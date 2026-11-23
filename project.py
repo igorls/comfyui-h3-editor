@@ -13,6 +13,7 @@ import uuid
 
 try:
     from . import h3image
+    from . import hybrid
     from . import sprite
     from . import holds
     from . import style_timeline
@@ -22,6 +23,7 @@ try:
     from .prompting import compose_prompt, compose_reference_prompt
 except ImportError:
     import h3image
+    import hybrid
     import sprite
     import holds
     import style_timeline
@@ -2141,6 +2143,27 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
     }
     if unet == models.get("unet_text"):
         graph["10"]["inputs"]["checkpoint"] = "fl2va"
+    hyb = project.get("hybrid")
+    if isinstance(hyb, dict) and hyb.get("on") is True:
+        hyb_clean = clean_hybrid(hyb)
+        if not hyb_clean or not hyb_clean.get("base") or not hyb_clean.get("overlay"):
+            raise ValueError("hybrid block swap needs both a base and an overlay safetensors model")
+        if available is not None:
+            for role in ("base", "overlay"):
+                if not installed(hyb_clean[role], available):
+                    raise ValueError("hybrid %s model %s is not installed in models/diffusion_models" % (role, hyb_clean[role]))
+        hyperflow = False
+        graph["1"] = {
+            "class_type": "H3HybridLoader",
+            "inputs": {
+                "base_unet": hyb_clean["base"],
+                "overlay_unet": hyb_clean["overlay"],
+                "blocks": hyb_clean["blocks"],
+                "scope": hyb_clean["scope"],
+                "weight_dtype": hyb_clean["weight_dtype"],
+            },
+        }
+        graph["10"]["inputs"]["checkpoint"] = hyb_clean["checkpoint"]
     if hyperflow:
         # Few-step and CFG-free, on its own two-time schedule.
         graph["1"] = {"class_type": "H3HyperFlowLoader", "inputs": {"unet_name": unet, "weights_in": "auto"}}
@@ -3463,7 +3486,7 @@ MERGE_FRAMES = 63
 CLIP_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "seconds", "cast", "seed",
                "first", "last", "language", "track", "bin", "profile", "loras", "style_markers", "mid_guides", "sprite", "motion")
 TEXT_FIELDS = ("name", "action", "camera", "speaker", "dialogue", "sound", "music", "language")
-PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "patches", "realism", "checkpoints", "text_encoder", "text_projection", "text_conditioner",
+PROJECT_FIELDS = ("style", "format", "language", "profile", "loras", "patches", "hybrid", "realism", "checkpoints", "text_encoder", "text_projection", "text_conditioner",
                   "vae", "audio_vae", "sizes")
 # The model files set_project names, and their keys in the project's models. A projection only
 # applies to a 4B or 8B text encoder; one that does not fit it gives way to one that does.
@@ -4593,6 +4616,45 @@ def clean_sizes(value, shape="16:9"):
     return chosen
 
 
+def clean_hybrid(value):
+    """Project-level hybrid block-swapping configuration: {on, base, overlay, blocks, scope, checkpoint, weight_dtype}."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("hybrid must be an object or null")
+    allowed = {"on", "base", "overlay", "blocks", "scope", "checkpoint", "weight_dtype"}
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError("unknown hybrid fields: %s. Allowed: %s" % (", ".join(unknown), ", ".join(sorted(allowed))))
+    on = value.get("on") is True
+    base = str(value.get("base") or "").strip()
+    overlay = str(value.get("overlay") or "").strip()
+    if not on and not base and not overlay:
+        return None
+    for role, name in (("base", base), ("overlay", overlay)):
+        if name and not name.lower().endswith(".safetensors"):
+            raise ValueError("hybrid %s model must be a .safetensors file" % role)
+    if on:
+        if not base or not overlay:
+            raise ValueError("hybrid block swap needs both base and overlay .safetensors models")
+        if base == overlay:
+            raise ValueError("hybrid base and overlay models must be different files")
+    blocks_raw = value.get("blocks")
+    blocks = hybrid.DEFAULT_BLOCKS if blocks_raw in (None, "") else str(blocks_raw).strip()
+    hybrid.parse_blocks(blocks)
+    scope = str(value.get("scope") or hybrid.DEFAULT_SCOPE).strip()
+    if scope not in hybrid.SCOPES:
+        raise ValueError("hybrid scope must be one of %s" % ", ".join(hybrid.SCOPES))
+    checkpoint = str(value.get("checkpoint") or "ref2va").strip()
+    if checkpoint not in ("ref2va", "fl2va"):
+        raise ValueError("hybrid checkpoint mode must be ref2va or fl2va")
+    weight_dtype = str(value.get("weight_dtype") or "default").strip()
+    if weight_dtype not in hybrid.WEIGHT_DTYPES:
+        raise ValueError("hybrid weight_dtype must be one of %s" % ", ".join(hybrid.WEIGHT_DTYPES))
+    return {"on": on, "base": base, "overlay": overlay, "blocks": blocks, "scope": scope,
+            "checkpoint": checkpoint, "weight_dtype": weight_dtype}
+
+
 def set_project(project, fields):
     check_fields(fields, PROJECT_FIELDS)
     # The project's own checkpoints first, so the same call can pick one as its profile.
@@ -4605,6 +4667,13 @@ def set_project(project, fields):
             continue
         if key == "patches":
             project["patches"] = clean_patches(value)
+            continue
+        if key == "hybrid":
+            cleaned = clean_hybrid(value)
+            if cleaned:
+                project["hybrid"] = cleaned
+            else:
+                project.pop("hybrid", None)
             continue
         if key in PROJECT_MODEL_FIELDS:
             # A file as ComfyUI lists it, or None for the first one installed.
@@ -4860,10 +4929,44 @@ def remove_cast(project, cast_id):
 # Renders. The server queues the graph; these keep the project's record of it.
 
 def render_models(graph):
-    """The models a render graph samples with, so a take records what made it."""
-    used = {"unet": graph["1"]["inputs"]["unet_name"], "checkpoint": graph["10"]["inputs"]["checkpoint"],
+    """The models and sampling parameters a render graph runs with, so a take records what made it."""
+    loader = graph["1"]
+    if loader["class_type"] == "H3HybridLoader":
+        li = loader["inputs"]
+        unet = li["base_unet"]
+    else:
+        unet = loader["inputs"]["unet_name"]
+    used = {"unet": unet, "checkpoint": graph["10"]["inputs"]["checkpoint"],
             "text_encoder": graph["2"]["inputs"].get("clip_name") or graph["2"]["inputs"]["adapter"],
             "vae": graph["3"]["inputs"]["vae_name"]}
+    if loader["class_type"] == "H3HybridLoader":
+        li = loader["inputs"]
+        used["hybrid"] = {"base": li["base_unet"], "overlay": li["overlay_unet"], "blocks": li["blocks"],
+                          "scope": li.get("scope", "adaln"), "weight_dtype": li.get("weight_dtype", "default")}
+    if "4" in graph and "vae_name" in graph["4"]["inputs"]:
+        used["audio_vae"] = graph["4"]["inputs"]["vae_name"]
+    if "5" in graph:
+        if "shift_video" in graph["5"]["inputs"]:
+            used["shift"] = graph["5"]["inputs"]["shift_video"]
+        if "shift_audio" in graph["5"]["inputs"]:
+            used["shift_audio"] = graph["5"]["inputs"]["shift_audio"]
+    if "10" in graph and "width" in graph["10"]["inputs"] and "height" in graph["10"]["inputs"]:
+        used["sample_size"] = [graph["10"]["inputs"]["width"], graph["10"]["inputs"]["height"]]
+    if "11" in graph and graph["11"]["class_type"] != "KSamplerSelect":
+        sampler_inputs = {k: v for k, v in graph["11"]["inputs"].items() if not isinstance(v, list)}
+        if sampler_inputs:
+            used["sampler_inputs"] = sampler_inputs
+    if "12" in graph:
+        sig_node = graph["12"]
+        sig_cls = sig_node["class_type"]
+        if sig_cls == "ManualSigmas":
+            used["sigmas"] = sig_node["inputs"].get("sigmas")
+        elif sig_cls == "BetaSamplingScheduler":
+            used["scheduler"] = BETA57
+        elif sig_cls == "H3HyperFlowSigmas":
+            used["scheduler"] = "hyperflow"
+        elif "scheduler" in sig_node["inputs"]:
+            used["scheduler"] = sig_node["inputs"]["scheduler"]
     if graph["2"]["class_type"] == CONDITIONER_NODE:
         used["text_conditioner"] = graph["2"]["inputs"]["adapter"]
     if "projection" in graph["2"]["inputs"]:
@@ -4874,6 +4977,18 @@ def render_models(graph):
                            for n in range(1, REFMOD_SLOTS + 1) if slots.get("mod_%s" % n) not in (None, "(none)")]
     if "81" in graph:
         used["upscaler"] = graph["81"]["inputs"]["model_name"]
+    if "80" in graph and "87" in graph:
+        refine = {"size": [graph["80"]["inputs"]["width"], graph["80"]["inputs"]["height"]]}
+        if graph["87"]["class_type"] == "ManualSigmas":
+            refine["steps"] = sigma_steps(graph["87"])
+            refine["sigmas"] = graph["87"]["inputs"].get("sigmas")
+        elif "step" in graph["87"]["inputs"]:
+            refine["from_step"] = graph["87"]["inputs"]["step"]
+        if "86" in graph:
+            refine["sampler"] = (graph["86"]["inputs"].get("sampler_name")
+                                 or graph["86"]["inputs"].get("sampler")
+                                 or graph["86"]["class_type"])
+        used["refine"] = refine
     if "94" in graph:
         used["profile_lora"] = graph["94"]["inputs"]["lora_name"]
         used["profile_lora_strength"] = graph["94"]["inputs"].get("strength", graph["94"]["inputs"].get("strength_model"))
@@ -5238,7 +5353,10 @@ def _plan_edit_finish(project, folder, clip, base_draft, composite_source, exist
            "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
            "models": dict(render_models(graph), profile=render_profile(work_project, available, work_clip, "final")[0],
                           profile_title=render_profile(work_project, available, work_clip, "final")[1]["title"],
-                          steps=sigma_steps(graph["12"]), sampler=graph["11"]["inputs"]["sampler_name"]),
+                          steps=sigma_steps(graph["12"]),
+                          sampler=(graph["11"]["inputs"].get("sampler_name")
+                                   or graph["11"]["inputs"].get("sampler")
+                                   or graph["11"]["class_type"])),
            "finished": (base_draft or composite_source)["id"],
            "edit": edit_meta,
            "size": list(take_size(project, orig_source)),
@@ -5308,7 +5426,10 @@ def _plan_partial_finish(project, folder, clip, base_draft, composite_source, ex
            "saved": {k: copy.deepcopy(clip.get(k)) for k in SAVED_FIELDS},
            "models": dict(render_models(graph), profile=render_profile(project, available, profile_clip, "final")[0],
                           profile_title=render_profile(project, available, profile_clip, "final")[1]["title"],
-                          steps=sigma_steps(graph["12"]), sampler=graph["11"]["inputs"]["sampler_name"]),
+                          steps=sigma_steps(graph["12"]),
+                          sampler=(graph["11"]["inputs"].get("sampler_name")
+                                   or graph["11"]["inputs"].get("sampler")
+                                   or graph["11"]["class_type"])),
            "finished": (base_draft or composite_source)["id"],
            "part": {"in": req_in, "out": req_out},
            "splice": {"file": composite_source["file"], "subfolder": composite_source.get("subfolder", ""),
@@ -5907,6 +6028,7 @@ def describe(project):
                   for r in project.get("loras") or [] if isinstance(r, dict) and r.get("file")],
         "patches": [{"node": r["node"], "inputs": r.get("inputs") or {}, "on": r.get("on") is not False}
                     for r in project.get("patches") or [] if isinstance(r, dict) and isinstance(r.get("node"), str)],
+        **({"hybrid": project["hybrid"]} if isinstance(project.get("hybrid"), dict) else {}),
         "frames": scene_end(project), "length": timecode(scene_end(project)), "fps": FPS,
         "cast": [{"id": p["id"], "name": p["name"], "description": p.get("description", ""),
                   "picture": bool(p.get("file")), "pictures": len(member_pictures(p)), "voice": bool(p.get("voice")),

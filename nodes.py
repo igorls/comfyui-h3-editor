@@ -16,6 +16,7 @@ from .latent_writer import carry_tail, encode_audio, encode_video, fit_frames, p
 from . import h3lora
 from .twins import with_twins
 from . import hyperflow
+from . import hybrid
 from . import clipproj
 from . import ninfer_clip
 from . import sprite
@@ -832,6 +833,64 @@ class H3HyperFlowLoader(io.ComfyNode):
         return io.NodeOutput(hyperflow.load(hyperflow.model_path(unet_name), weights_in or "auto"))
 
 
+class H3HybridLoader(io.ComfyNode):
+    """Load a base MiniMax H3 safetensors model and selectively overlay transformer block tensor families from another."""
+
+    @classmethod
+    def define_schema(cls):
+        models = [name for name in folder_paths.get_filename_list("diffusion_models") if name.lower().endswith(".safetensors")]
+        return io.Schema(
+            node_id="H3HybridLoader",
+            display_name="H3 Hybrid Block Loader",
+            category="minimax/h3",
+            description=(
+                "Load a base MiniMax H3 safetensors checkpoint (typically fl2va) and selectively swap matching "
+                "transformer block tensor families from an overlay checkpoint (typically ref2va) on load, "
+                "preserving quantization siblings (.comfy_quant, weight_scale) without saving a merged file."
+            ),
+            inputs=[
+                io.Combo.Input("base_unet", options=models,
+                               tooltip="Primary diffusion model (usually fl2va) that provides the backbone."),
+                io.Combo.Input("overlay_unet", options=models,
+                               tooltip="Secondary diffusion model (usually ref2va) whose selected block tensors overlay the base."),
+                io.String.Input("blocks", default=hybrid.DEFAULT_BLOCKS,
+                                tooltip="Block indices or ranges to swap (0-49), e.g. '45-49', '25-49', '0-10, 45-49', or 'all'."),
+                io.Combo.Input("scope", options=list(hybrid.SCOPES), default=hybrid.DEFAULT_SCOPE,
+                               tooltip="Which tensor families inside each selected block to overlay: adaln, all, attn, mlp, or attn_mlp."),
+                io.Combo.Input("weight_dtype", options=list(hybrid.WEIGHT_DTYPES), default="default", optional=True,
+                               tooltip="Optional weight dtype override, matching ComfyUI's Load Diffusion Model."),
+            ],
+            outputs=[io.Model.Output(display_name="model")],
+        )
+
+    @classmethod
+    def validate_inputs(cls, base_unet, overlay_unet, blocks, scope="adaln", weight_dtype="default") -> bool | str:
+        if isinstance(blocks, str):
+            try:
+                hybrid.parse_blocks(blocks)
+            except ValueError as error:
+                return str(error)
+        if isinstance(scope, str) and scope not in hybrid.SCOPES:
+            return f"scope must be one of {', '.join(hybrid.SCOPES)}"
+        if isinstance(weight_dtype, str) and weight_dtype not in hybrid.WEIGHT_DTYPES:
+            return f"weight_dtype must be one of {', '.join(hybrid.WEIGHT_DTYPES)}"
+        for label, name in (("base_unet", base_unet), ("overlay_unet", overlay_unet)):
+            if not isinstance(name, str):
+                continue
+            try:
+                hybrid.resolve_model_path(name)
+            except FileNotFoundError:
+                base = name.replace("\\", "/").rsplit("/", 1)[-1]
+                return f"{label}: {base} is not installed in models/diffusion_models."
+        return True
+
+    @classmethod
+    def execute(cls, base_unet, overlay_unet, blocks=hybrid.DEFAULT_BLOCKS, scope=hybrid.DEFAULT_SCOPE,
+                weight_dtype="default") -> io.NodeOutput:
+        return io.NodeOutput(hybrid.load(base_unet, overlay_unet, blocks, scope or hybrid.DEFAULT_SCOPE,
+                                         weight_dtype or "default"))
+
+
 class H3HyperFlowSigmas(io.ComfyNode):
     """The step schedule a HyperFlow checkpoint samples."""
 
@@ -1524,6 +1583,7 @@ NODE_CLASS_MAPPINGS = {"H3SpriteGuide": H3SpriteGuide, "H3DefringeMatte": H3Defr
                        "H3VOSR2Video": H3VOSR2Video,
                        "H3StyleGuider": H3StyleGuider,
                        "H3Lora": H3Lora, "H3LoadTake": H3LoadTake, "H3RefineLatent": H3RefineLatent, "H3HyperFlowLoader": H3HyperFlowLoader,
+                       "H3HybridLoader": H3HybridLoader,
                        "H3HyperFlowSigmas": H3HyperFlowSigmas, "H3SmallTextEncoder": H3SmallTextEncoder,
                        "H3NInferTextEncoder": H3NInferTextEncoder,
                        "H3GatedSDPose": H3GatedSDPose, "H3IsolateCharacter": H3IsolateCharacter,
@@ -1535,7 +1595,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {"H3SpriteGuide": "H3 Sprite Motion Guide", "H3Defr
                               "H3VOSR2Video": "H3 VOSR2 Video (experimental)",
                               "H3StyleGuider": "H3 Style Guider (experimental)",
                               "H3LoadSound": "H3 Load Sound", "H3Lora": "H3 LoRA", "H3LoadTake": "H3 Load Take", "H3RefineLatent": "H3 Refine Latent",
-                              "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas",
+                              "H3HyperFlowLoader": "H3 HyperFlow Loader", "H3HybridLoader": "H3 Hybrid Block Loader", "H3HyperFlowSigmas": "H3 HyperFlow Sigmas",
                               "H3SmallTextEncoder": "H3 Small Text Encoder",
                               "H3NInferTextEncoder": "H3 NInfer Text Encoder",
                               "H3GatedSDPose": "H3 Gated SDPose Extractor", "H3IsolateCharacter": "H3 Isolate Character",

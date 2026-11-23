@@ -3891,6 +3891,335 @@ function patchSection() {
   return disclosure("Model patches", rows.length > 0, rows.length ? active + " on" : "", children, "patch");
 }
 
+const HYBRID_RECIPES = [
+  { id: "light", title: "Light identity", meta: "45–49 · AdaLN", blocks: "45-49", scope: "adaln", about: "Keeps FL2VA visual sharpness while pulling late-block reference conditioning from REF2VA." },
+  { id: "balanced", title: "Balanced", meta: "35–49 · AdaLN", blocks: "35-49", scope: "adaln", about: "Stronger reference adherence across the last 15 blocks' AdaLN layers." },
+  { id: "strong", title: "Strong identity", meta: "25–49 · AdaLN", blocks: "25-49", scope: "adaln", about: "Second-half AdaLN swap for tougher face and subject preservation." },
+  { id: "full_late", title: "Full late blocks", meta: "45–49 · All", blocks: "45-49", scope: "all", about: "Swaps attention, MLP, and AdaLN weights in the final 5 blocks." },
+];
+const hybridCheckCache = new Map();
+
+function parseBlockSpec(spec, total = 50) {
+  const set = new Set();
+  const raw = String(spec || "").trim().toLowerCase();
+  if (!raw) return set;
+  if (raw === "all") { for (let i = 0; i < total; i++) set.add(i); return set; }
+  for (const part of raw.split(",")) {
+    const token = part.trim();
+    if (!token) continue;
+    if (token.includes("-")) {
+      const [a, b] = token.split("-").map((s) => Number(s.trim()));
+      if (Number.isInteger(a) && Number.isInteger(b) && a >= 0 && b < total && a <= b) {
+        for (let i = a; i <= b; i++) set.add(i);
+      }
+    } else {
+      const n = Number(token);
+      if (Number.isInteger(n) && n >= 0 && n < total) set.add(n);
+    }
+  }
+  return set;
+}
+
+function formatBlockSet(set) {
+  const nums = [...set].sort((a, b) => a - b);
+  if (!nums.length) return "";
+  const ranges = [];
+  let start = nums[0], end = nums[0];
+  for (let i = 1; i < nums.length; i++) {
+    if (nums[i] === end + 1) end = nums[i];
+    else { ranges.push(start === end ? String(start) : `${start}-${end}`); start = end = nums[i]; }
+  }
+  ranges.push(start === end ? String(start) : `${start}-${end}`);
+  return ranges.join(", ");
+}
+
+function hybridSection() {
+  const safetensors = (state.checkpoints || []).filter((f) => String(f).toLowerCase().endsWith(".safetensors"));
+  const h3Models = safetensors.filter((f) => /h3|fl2v|ref2v/i.test(f));
+  const otherModels = safetensors.filter((f) => !/h3|fl2v|ref2v/i.test(f));
+  const pool = h3Models.length >= 2 ? h3Models : safetensors;
+  const current = state.project.hybrid && typeof state.project.hybrid === "object" ? state.project.hybrid : null;
+  if (safetensors.length < 2 && !current) return null;
+
+  const defaultBase = pool.find((f) => /fl2v/i.test(f)) || pool[0] || "";
+  const siblingOverlay = defaultBase
+    ? pool.find((f) => f !== defaultBase && sameFile(f, defaultBase.replace(/fl2va/i, "ref2va").replace(/fl2v/i, "ref2v")))
+    : null;
+  const defaultOverlay = siblingOverlay || pool.find((f) => f !== defaultBase && /ref2v/i.test(f)) || pool.find((f) => f !== defaultBase) || defaultBase;
+
+  const hyb = {
+    on: Boolean(current?.on),
+    base: current?.base || defaultBase,
+    overlay: current?.overlay || defaultOverlay,
+    blocks: current?.blocks || "45-49",
+    scope: current?.scope || "adaln",
+    checkpoint: current?.checkpoint || "ref2va",
+    weight_dtype: current?.weight_dtype || "default",
+  };
+
+  const commit = (patch) => {
+    const focus = rememberFocus();
+    checkpoint();
+    const next = { ...hyb, ...patch };
+    if (next.on && (!next.base || !next.overlay || next.base === next.overlay)) {
+      toast("Pick two different .safetensors models for base and overlay.", true);
+      return;
+    }
+    state.project.hybrid = next;
+    save();
+    renderInspector();
+    restoreFocus(focus);
+  };
+
+  const wrap = document.createElement("div");
+  wrap.className = "hybrid-grid";
+
+  const toggle = document.createElement("label");
+  toggle.className = "check";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = hyb.on;
+  box.addEventListener("change", () => commit({ on: box.checked }));
+  toggle.append(box, "Swap transformer blocks on load (fl2va + ref2va)");
+  wrap.append(toggle);
+
+  const modelPicker = (labelText, key, value) => {
+    const field = document.createElement("label");
+    field.className = "field";
+    const span = document.createElement("span");
+    span.textContent = labelText;
+    const select = document.createElement("select");
+    if (value && !safetensors.some((f) => sameFile(f, value))) {
+      select.append(new Option(value + " (not installed)", value));
+    }
+    if (h3Models.length) {
+      const grpH3 = document.createElement("optgroup");
+      grpH3.label = "MiniMax H3";
+      for (const f of h3Models) grpH3.append(new Option(f, f));
+      select.append(grpH3);
+      if (otherModels.length) {
+        const grpOther = document.createElement("optgroup");
+        grpOther.label = "Other diffusion models";
+        for (const f of otherModels) grpOther.append(new Option(f, f));
+        select.append(grpOther);
+      }
+    } else {
+      for (const f of safetensors) select.append(new Option(f, f));
+    }
+    select.value = value;
+    select.addEventListener("change", () => commit({ [key]: select.value }));
+    field.append(span, select);
+    return field;
+  };
+
+  wrap.append(
+    modelPicker("Base model (usually fl2va)", "base", hyb.base),
+    modelPicker("Overlay model (usually ref2va)", "overlay", hyb.overlay),
+  );
+
+  // One-click recipes
+  const recipeGrid = document.createElement("div");
+  recipeGrid.className = "hybrid-recipes";
+  const activeSet = parseBlockSpec(hyb.blocks);
+  const canonicalBlocks = formatBlockSet(activeSet);
+  for (const recipe of HYBRID_RECIPES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    const isMatch = canonicalBlocks === recipe.blocks && hyb.scope === recipe.scope;
+    btn.className = "hybrid-recipe" + (isMatch ? " on" : "");
+    btn.title = recipe.about;
+    const strong = document.createElement("strong");
+    strong.textContent = recipe.title;
+    const small = document.createElement("small");
+    small.textContent = recipe.meta;
+    btn.append(strong, small);
+    btn.addEventListener("click", () => commit({ blocks: recipe.blocks, scope: recipe.scope }));
+    recipeGrid.append(btn);
+  }
+  wrap.append(recipeGrid);
+
+  // Visual 50-block interactive map (click or drag to paint blocks 0-49)
+  const mapHead = document.createElement("div");
+  mapHead.className = "hybrid-map-head";
+  const legend = document.createElement("span");
+  legend.className = "hybrid-map-legend";
+  legend.innerHTML = '<span><i class="hybrid-dot base"></i>Base</span><span><i class="hybrid-dot swap"></i>Overlay</span>';
+  const countEl = document.createElement("span");
+  countEl.textContent = `${activeSet.size} / 50 blocks`;
+  mapHead.append(legend, countEl);
+
+  const mapEl = document.createElement("div");
+  mapEl.className = "hybrid-map";
+  mapEl.title = "Click or drag across blocks 0–49 to toggle which blocks come from the overlay model";
+  let dragMode = null;
+  const draftSet = new Set(activeSet);
+  const cells = [];
+  for (let i = 0; i < 50; i++) {
+    const cell = document.createElement("div");
+    cell.className = "hybrid-cell" + (draftSet.has(i) ? " on" : "");
+    cell.dataset.block = String(i);
+    cell.title = `Block ${i} (${draftSet.has(i) ? "overlay" : "base"})`;
+    const applyCell = (mode) => {
+      if (mode) draftSet.add(i);
+      else draftSet.delete(i);
+      cell.classList.toggle("on", mode);
+      cell.title = `Block ${i} (${mode ? "overlay" : "base"})`;
+      countEl.textContent = `${draftSet.size} / 50 blocks`;
+    };
+    cell.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      dragMode = !draftSet.has(i);
+      applyCell(dragMode);
+    });
+    cell.addEventListener("pointerenter", () => {
+      if (dragMode !== null) applyCell(dragMode);
+    });
+    cells.push(cell);
+    mapEl.append(cell);
+  }
+  const finishDrag = () => {
+    if (dragMode === null) return;
+    dragMode = null;
+    if (!draftSet.size) {
+      toast("Select at least one block to swap (or uncheck the toggle above to disable).", true);
+      renderInspector();
+      return;
+    }
+    const nextSpec = formatBlockSet(draftSet);
+    if (nextSpec !== hyb.blocks) commit({ blocks: nextSpec });
+  };
+  mapEl.addEventListener("pointerup", finishDrag);
+  mapEl.addEventListener("pointerleave", finishDrag);
+
+  const ticks = document.createElement("div");
+  ticks.className = "hybrid-ticks";
+  ["0", "10", "20", "30", "40", "49"].forEach((t) => {
+    const s = document.createElement("span");
+    s.textContent = t;
+    ticks.append(s);
+  });
+  wrap.append(mapHead, mapEl, ticks);
+
+  // Range + Scope row
+  const rowMain = document.createElement("div");
+  rowMain.className = "hybrid-row-2";
+
+  const blocksField = document.createElement("label");
+  blocksField.className = "field";
+  const blocksLabel = document.createElement("span");
+  blocksLabel.textContent = "Block range";
+  const blocksInput = document.createElement("input");
+  blocksInput.type = "text";
+  blocksInput.value = hyb.blocks;
+  blocksInput.placeholder = "45-49 or 0-10, 45-49";
+  blocksInput.addEventListener("change", () => {
+    const val = blocksInput.value.trim();
+    if (!val) { blocksInput.value = hyb.blocks; return; }
+    commit({ blocks: val });
+  });
+  blocksField.append(blocksLabel, blocksInput);
+
+  const scopeField = document.createElement("label");
+  scopeField.className = "field";
+  const scopeLabel = document.createElement("span");
+  scopeLabel.textContent = "Tensor scope";
+  const scopeSelect = document.createElement("select");
+  [
+    ["adaln", "AdaLN (adaln)"],
+    ["all", "All block tensors"],
+    ["attn", "Attention (attn)"],
+    ["mlp", "MLP / FFN (mlp)"],
+    ["attn_mlp", "Attention + MLP"],
+  ].forEach(([val, text]) => scopeSelect.append(new Option(text, val)));
+  scopeSelect.value = hyb.scope;
+  scopeSelect.addEventListener("change", () => commit({ scope: scopeSelect.value }));
+  scopeField.append(scopeLabel, scopeSelect);
+
+  rowMain.append(blocksField, scopeField);
+  wrap.append(rowMain);
+
+  // Live pre-flight compatibility check (reads safetensors headers only, zero weight RAM)
+  const statusEl = document.createElement("div");
+  statusEl.className = "hybrid-status";
+  const cacheKey = `${hyb.base}|${hyb.overlay}|${hyb.blocks}|${hyb.scope}`;
+  const showStatus = (res) => {
+    if (!res) {
+      statusEl.className = "hybrid-status";
+      statusEl.textContent = "Checking safetensors headers…";
+      return;
+    }
+    if (res.ok) {
+      const totalBlocks = res.base_blocks || 50;
+      cells.forEach((cell, idx) => cell.classList.toggle("out", idx >= totalBlocks));
+      const matchedCount = [...draftSet].filter((idx) => idx < totalBlocks).length;
+      countEl.textContent = `${matchedCount} / ${totalBlocks} blocks`;
+      statusEl.className = "hybrid-status ok";
+      statusEl.textContent = `Ready · ${res.swaps} tensors (${res.families} families across ${res.blocks_count} blocks: ${res.blocks})`
+        + (res.skipped_count ? ` · ${res.skipped_count} incompatible skipped` : "");
+    } else {
+      cells.forEach((cell) => cell.classList.remove("out"));
+      statusEl.className = "hybrid-status err";
+      statusEl.textContent = res.error || "Incompatible checkpoints";
+    }
+  };
+  if (hyb.base && hyb.overlay) {
+    if (hybridCheckCache.has(cacheKey)) {
+      showStatus(hybridCheckCache.get(cacheKey));
+    } else {
+      showStatus(null);
+      postJson("/hybrid/check", { base: hyb.base, overlay: hyb.overlay, blocks: hyb.blocks, scope: hyb.scope })
+        .then((res) => {
+          hybridCheckCache.set(cacheKey, res);
+          if (statusEl.isConnected) showStatus(res);
+        })
+        .catch((err) => {
+          if (statusEl.isConnected) showStatus({ ok: false, error: err.message });
+        });
+    }
+    wrap.append(statusEl);
+  }
+
+  // Secondary options row (Conditioning + Weight dtype)
+  const rowAdv = document.createElement("div");
+  rowAdv.className = "hybrid-row-2";
+
+  const modeField = document.createElement("label");
+  modeField.className = "field";
+  const modeLabel = document.createElement("span");
+  modeLabel.textContent = "Conditioning";
+  const modeSelect = document.createElement("select");
+  [["ref2va", "ref2va (references)"], ["fl2va", "fl2va (prompt only)"]].forEach(([val, text]) => modeSelect.append(new Option(text, val)));
+  modeSelect.value = hyb.checkpoint;
+  modeSelect.addEventListener("change", () => commit({ checkpoint: modeSelect.value }));
+  modeField.append(modeLabel, modeSelect);
+
+  const dtypeField = document.createElement("label");
+  dtypeField.className = "field";
+  const dtypeLabel = document.createElement("span");
+  dtypeLabel.textContent = "Weight dtype";
+  const dtypeSelect = document.createElement("select");
+  [
+    ["default", "default"],
+    ["fp8_e4m3fn", "fp8_e4m3fn"],
+    ["fp8_e4m3fn_fast", "fp8_e4m3fn_fast"],
+    ["fp8_e5m2", "fp8_e5m2"],
+  ].forEach(([val, text]) => dtypeSelect.append(new Option(text, val)));
+  dtypeSelect.value = hyb.weight_dtype;
+  dtypeSelect.addEventListener("change", () => commit({ weight_dtype: dtypeSelect.value }));
+  dtypeField.append(dtypeLabel, dtypeSelect);
+
+  rowAdv.append(modeField, dtypeField);
+  wrap.append(rowAdv);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Overlays selected block tensor families from the overlay file onto the base on load, keeping quantization scales intact. No merged file is written to disk.";
+  wrap.append(hint);
+
+  const badge = hyb.on ? "on · " + hyb.blocks + " (" + hyb.scope + ")" : "";
+  return disclosure("Hybrid block swap", hyb.on, badge, [wrap], "hybrid");
+}
+
 function formatOptions(select, current) {
   const labels = { "16:9": "Wide, 16:9", "9:16": "Vertical, 9:16", "1:1": "Square, 1:1" };
   const presets = [...(state.formatPresets || Object.keys(labels))];
@@ -4032,7 +4361,7 @@ function renderScene(panel, selected = false) {
     section("Look", lookFields(), "look"),
     section("Format", [made, formatHint, ...sizeChoices()], "format"),
     ...(state.profiles.length ? [section("Model", [model, modelHint, ...setupButton(), ...files], "model")] : []),
-    ...[loraSection(), patchSection(), writingSection(), notesSection()].filter(Boolean),
+    ...[loraSection(), patchSection(), hybridSection(), writingSection(), notesSection()].filter(Boolean),
   );
 }
 
@@ -4930,7 +5259,536 @@ function versions(clip) {
   tools.append(spacer);
   button("Manage takes…", () => openTakeManager(clip), clip.kind === "footage" && clip.takes.length < 2,
     "", "Select takes to remove from this clip");
-  return [takes, tools];
+  const summary = takeSummaryStrip(clip, current, comparison);
+  return summary ? [takes, summary, tools] : [takes, tools];
+}
+
+function formatParamValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function takeParamSections(clip, take) {
+  if (!take) return [];
+  const m = take.models || {};
+  const sections = [];
+  const push = (title, rows) => {
+    const clean = rows.filter((r) => r && r.value !== "" && r.value !== null && r.value !== undefined);
+    if (clean.length) sections.push({ title, rows: clean });
+  };
+
+  // 1. Render
+  const size = take.size || m.sample_size;
+  const qualityLabel = take.quality === "final" && take.final_ranges?.length ? "partial final" : (take.quality || "—");
+  const renderRows = [
+    { key: "quality", label: "Quality", value: qualityLabel },
+    take.seed !== undefined && take.seed !== null ? { key: "seed", label: "Seed", value: String(take.seed) } : null,
+    Array.isArray(size) && size.length >= 2 ? { key: "size", label: "Size", value: size[0] + " × " + size[1] } : null,
+    take.frames ? { key: "frames", label: "Duration", value: take.frames + " frames (" + (take.frames / FPS).toFixed(2) + "s)" } : null,
+    take.finished ? { key: "finished", label: "Finished from", value: "Take " + ((clip.takes.findIndex((t) => t.id === take.finished) + 1) || take.finished) } : null,
+    take.upscaler ? { key: "upscaler_name", label: "Video upscaler", value: take.upscaler + (take.detail !== undefined ? " (detail " + take.detail + ")" : "") } : null,
+    m.video_upscaler ? { key: "video_upscaler", label: "Upscaler model", value: m.video_upscaler } : null,
+    take.edit ? { key: "edit", label: "Edit", value: (take.edit.motion ? "Motion transfer" : "Prompt edit") + (take.edit.prompt ? " · " + take.edit.prompt : "") } : null,
+  ];
+  push("Render", renderRows);
+
+  // 2. Model
+  const profileName = m.profile_title || profileOf(m.profile)?.title || m.profile || "";
+  const modelRows = [
+    profileName ? { key: "profile", label: "Profile", value: profileName } : null,
+    m.unet ? { key: "unet", label: "Diffusion model", value: m.unet } : null,
+    m.checkpoint ? { key: "checkpoint", label: "Checkpoint mode", value: m.checkpoint } : null,
+    m.hybrid ? {
+      key: "hybrid",
+      label: "Hybrid block swap",
+      value: `${fileName(m.hybrid.base)} + ${fileName(m.hybrid.overlay)} · blocks ${m.hybrid.blocks} (${m.hybrid.scope}${m.hybrid.weight_dtype && m.hybrid.weight_dtype !== "default" ? ", " + m.hybrid.weight_dtype : ""})`,
+    } : null,
+    m.text_encoder ? { key: "text_encoder", label: "Text encoder", value: m.text_encoder } : null,
+    m.text_conditioner ? { key: "text_conditioner", label: "Conditioner", value: m.text_conditioner } : null,
+    m.text_projection ? { key: "text_projection", label: "Text projection", value: m.text_projection } : null,
+    m.vae ? { key: "vae", label: "Video VAE", value: m.vae } : null,
+    m.audio_vae ? { key: "audio_vae", label: "Audio VAE", value: m.audio_vae } : null,
+  ];
+  push("Model", modelRows);
+
+  // 3. Sampling
+  const samplingRows = [
+    m.steps !== undefined ? { key: "steps", label: "Steps", value: String(m.steps) } : null,
+    m.sampler ? { key: "sampler", label: "Sampler", value: m.sampler } : null,
+    m.sampler_inputs ? {
+      key: "sampler_inputs",
+      label: "Sampler options",
+      value: Object.entries(m.sampler_inputs).map(([k, v]) => k + "=" + formatParamValue(v)).join(", "),
+    } : null,
+    m.scheduler ? { key: "scheduler", label: "Scheduler", value: String(m.scheduler) } : null,
+    m.sigmas ? { key: "sigmas", label: "Sigmas", value: String(m.sigmas) } : null,
+    m.shift !== undefined ? {
+      key: "shift",
+      label: "Sigma shift",
+      value: "video " + m.shift + (m.shift_audio !== undefined ? ", audio " + m.shift_audio : ""),
+    } : null,
+    m.upscaler ? { key: "latent_upscaler", label: "Latent upscaler", value: m.upscaler } : null,
+    m.refine ? {
+      key: "refine",
+      label: "Pass-2 refine",
+      value: [
+        Array.isArray(m.refine.size) ? m.refine.size[0] + " × " + m.refine.size[1] : "",
+        m.refine.steps ? m.refine.steps + " steps" : "",
+        m.refine.from_step !== undefined ? "from step " + m.refine.from_step : "",
+        m.refine.sampler || "",
+        m.refine.sigmas ? "sigmas " + m.refine.sigmas : "",
+      ].filter(Boolean).join(" · "),
+    } : null,
+  ];
+  push("Sampling", samplingRows);
+
+  // 4. LoRAs
+  const loraRows = [];
+  if (m.profile_lora) {
+    loraRows.push({
+      key: "profile_lora",
+      label: "Profile LoRA",
+      value: m.profile_lora + (m.profile_lora_strength !== undefined ? " @ " + m.profile_lora_strength : ""),
+    });
+  }
+  if (m.lora) {
+    loraRows.push({
+      key: "realism_lora",
+      label: "Realism Slider",
+      value: m.lora + (m.lora_strength !== undefined ? " @ " + m.lora_strength : ""),
+    });
+  }
+  (m.loras || []).forEach((row, idx) => {
+    const parts = [row.file, "@ " + row.strength];
+    if (row.start_sigma !== undefined && row.start_sigma < 1) parts.push("start_sigma " + row.start_sigma);
+    loraRows.push({ key: "lora_" + idx, label: "LoRA " + (idx + 1), value: parts.join(" ") });
+  });
+  push("LoRAs", loraRows);
+
+  // 5. Model patches
+  const patchRows = (m.patches || []).map((row, idx) => {
+    const title = patchOf(row.node)?.title || row.node;
+    const entries = Object.entries(row.inputs || {});
+    const formatted = entries.length
+      ? entries.map(([k, v]) => k + "=" + formatParamValue(v)).join(", ")
+      : "(defaults)";
+    return {
+      key: "patch_" + idx + "_" + row.node,
+      label: title,
+      node: row.node,
+      inputs: row.inputs || {},
+      value: formatted,
+    };
+  });
+  push("Model patches", patchRows);
+
+  // 6. RefMods
+  const refmodRows = (m.refmods || []).map((row, idx) => ({
+    key: "refmod_" + idx,
+    label: "RefMod " + (idx + 1),
+    value: row.file + " @ " + row.strength,
+  }));
+  push("RefMods", refmodRows);
+
+  return sections;
+}
+
+function compareTakeParams(clip, takeA, takeB) {
+  const secA = takeParamSections(clip, takeA);
+  const secB = takeParamSections(clip, takeB);
+  const order = [];
+  const byTitle = new Map();
+  const addFrom = (sections, side) => {
+    for (const sec of sections) {
+      if (!byTitle.has(sec.title)) {
+        const bucket = { title: sec.title, rows: new Map() };
+        byTitle.set(sec.title, bucket);
+        order.push(bucket);
+      }
+      const bucket = byTitle.get(sec.title);
+      for (const row of sec.rows) {
+        if (!bucket.rows.has(row.key)) {
+          bucket.rows.set(row.key, { key: row.key, label: row.label, a: "", b: "" });
+        }
+        bucket.rows.get(row.key)[side] = row.value;
+      }
+    }
+  };
+  addFrom(secA, "a");
+  addFrom(secB, "b");
+  const diffs = [];
+  const merged = order.map((bucket) => {
+    const rows = [...bucket.rows.values()].map((r) => {
+      const diff = r.a !== r.b;
+      if (diff) diffs.push({ section: bucket.title, ...r });
+      return { ...r, diff };
+    });
+    return { title: bucket.title, rows };
+  });
+  return { sections: merged, diffs };
+}
+
+function takeSummaryStrip(clip, current, comparison) {
+  if (!current) return null;
+  const box = document.createElement("div");
+  box.className = "take-summary" + (comparison ? " is-compare" : "");
+  const body = document.createElement("div");
+  body.className = "take-summary-body";
+  const chips = document.createElement("div");
+  chips.className = "take-summary-chips";
+  const addChip = (text, cls = "") => {
+    if (!text) return;
+    const span = document.createElement("span");
+    span.className = "take-chip" + (cls ? " " + cls : "");
+    span.textContent = text;
+    span.title = text;
+    chips.append(span);
+  };
+
+  const action = document.createElement("button");
+  action.type = "button";
+  action.className = "quiet take-summary-action";
+
+  if (comparison) {
+    const idxA = clip.takes.indexOf(comparison.a) + 1;
+    const idxB = clip.takes.indexOf(comparison.b) + 1;
+    const { diffs } = compareTakeParams(clip, comparison.a, comparison.b);
+    const title = document.createElement("div");
+    title.className = "take-summary-title";
+    title.textContent = `Comparing Take ${idxA} vs Take ${idxB} · `
+      + (diffs.length ? `${diffs.length} ${diffs.length === 1 ? "difference" : "differences"}` : "identical parameters");
+    body.append(title);
+    if (diffs.length) {
+      diffs.slice(0, 6).forEach((d) => addChip(d.label, "diff"));
+      if (diffs.length > 6) addChip("+" + (diffs.length - 6) + " more", "diff");
+      body.append(chips);
+    }
+    action.textContent = "Compare details…";
+    action.addEventListener("click", () => openTakeDetails(clip, comparison.a, comparison.b));
+  } else {
+    const m = current.models || {};
+    const title = document.createElement("div");
+    title.className = "take-summary-title";
+    const idx = clip.takes.indexOf(current) + 1;
+    title.textContent = `Take ${idx} parameters`;
+    body.append(title);
+    const profileName = m.profile_title || profileOf(m.profile)?.title || (m.unet ? fileName(m.unet) : "");
+    if (profileName) addChip(profileName);
+    if (m.hybrid) addChip("Hybrid " + m.hybrid.blocks + " (" + m.hybrid.scope + ")", "accent");
+    else if (m.checkpoint) addChip(m.checkpoint);
+    if (m.steps || m.sampler) addChip([m.steps ? m.steps + " steps" : "", m.sampler || ""].filter(Boolean).join(" · "));
+    const sz = current.size || m.sample_size;
+    if (Array.isArray(sz) && sz.length >= 2) addChip(sz[0] + "×" + sz[1]);
+    const loraCount = (m.loras || []).length;
+    if (loraCount) addChip(loraCount + (loraCount === 1 ? " LoRA" : " LoRAs"));
+    const patchCount = (m.patches || []).length;
+    if (patchCount) addChip(patchCount + (patchCount === 1 ? " patch" : " patches"));
+    const refmodCount = (m.refmods || []).length;
+    if (refmodCount) addChip(refmodCount + (refmodCount === 1 ? " RefMod" : " RefMods"));
+    if (!chips.childElementCount) addChip(current.quality ? current.quality + " · Seed " + current.seed : "No recorded parameters");
+    body.append(chips);
+    action.textContent = "Details…";
+    action.addEventListener("click", () => openTakeDetails(clip, current));
+  }
+  box.append(body, action);
+  return box;
+}
+
+function formatTakeParamsText(clip, take) {
+  const idx = clip.takes.indexOf(take) + 1;
+  const lines = [`${clip.name} — Take ${idx}`];
+  for (const sec of takeParamSections(clip, take)) {
+    lines.push("", `[${sec.title}]`);
+    for (const row of sec.rows) {
+      lines.push(`${row.label}: ${row.value}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function formatTakeDiffText(clip, takeA, takeB) {
+  const idxA = clip.takes.indexOf(takeA) + 1;
+  const idxB = clip.takes.indexOf(takeB) + 1;
+  const { diffs } = compareTakeParams(clip, takeA, takeB);
+  const lines = [`${clip.name} — Take ${idxA} vs Take ${idxB} (${diffs.length} differences)`];
+  if (!diffs.length) {
+    lines.push("No parameter differences.");
+    return lines.join("\n");
+  }
+  for (const d of diffs) {
+    lines.push(`${d.section} / ${d.label}:`);
+    lines.push(`  A (Take ${idxA}): ${d.a || "—"}`);
+    lines.push(`  B (Take ${idxB}): ${d.b || "—"}`);
+  }
+  return lines.join("\n");
+}
+
+function restoreTakeSettings(clip, take) {
+  if (!take) return;
+  const m = take.models || {};
+  const restored = [];
+  const warnings = [];
+  checkpoint();
+
+  if (take.seed !== undefined && take.seed !== null) {
+    clip.seed = take.seed;
+    restored.push("seed " + take.seed);
+  }
+  if (m.profile && profileOf(m.profile)) {
+    if (clip.profile) clip.profile = m.profile;
+    else state.project.profile = m.profile;
+    restored.push("profile " + (m.profile_title || profileOf(m.profile).title));
+  } else if (m.profile) {
+    warnings.push("profile '" + m.profile + "' not found");
+  }
+  if (m.lora && m.lora_strength !== undefined) {
+    state.project.realism = m.lora_strength;
+    restored.push("realism " + m.lora_strength);
+  }
+  if (Array.isArray(m.loras)) {
+    const nextLoras = m.loras.map((row) => {
+      if (state.loras?.length && !state.loras.some((f) => sameFile(f, row.file))) {
+        warnings.push("LoRA " + fileName(row.file) + " not installed");
+      }
+      const entry = { id: "l" + crypto.randomUUID().replaceAll("-", "").slice(0, 8), file: row.file, strength: row.strength, on: true };
+      if (row.start_sigma !== undefined && row.start_sigma < 1) entry.start_sigma = row.start_sigma;
+      return entry;
+    });
+    if (nextLoras.length) {
+      state.project.loras = nextLoras;
+      restored.push(nextLoras.length + (nextLoras.length === 1 ? " LoRA" : " LoRAs"));
+    }
+  } else if (state.project.loras?.some((r) => r.on !== false)) {
+    state.project.loras = state.project.loras.map((r) => ({ ...r, on: false }));
+    restored.push("LoRAs off");
+  }
+  if (Array.isArray(m.patches)) {
+    const nextPatches = m.patches.map((row) => {
+      if (!patchOf(row.node)) warnings.push("patch " + row.node + " not installed");
+      return {
+        id: "p" + crypto.randomUUID().replaceAll("-", "").slice(0, 8),
+        node: row.node,
+        inputs: structuredClone(row.inputs || {}),
+        on: true,
+      };
+    });
+    if (nextPatches.length) {
+      state.project.patches = nextPatches;
+      restored.push(nextPatches.length + (nextPatches.length === 1 ? " patch" : " patches"));
+    }
+  } else if (state.project.patches?.some((r) => r.on !== false)) {
+    state.project.patches = state.project.patches.map((r) => ({ ...r, on: false }));
+    restored.push("patches off");
+  }
+  if (m.hybrid) {
+    state.project.hybrid = {
+      on: true,
+      base: m.hybrid.base,
+      overlay: m.hybrid.overlay,
+      blocks: m.hybrid.blocks,
+      scope: m.hybrid.scope || "adaln",
+      checkpoint: m.checkpoint || "ref2va",
+      weight_dtype: m.hybrid.weight_dtype || "default",
+    };
+    restored.push("hybrid swap (" + m.hybrid.blocks + ")");
+  } else if (state.project.hybrid?.on) {
+    state.project.hybrid = { ...state.project.hybrid, on: false };
+    restored.push("hybrid off");
+  }
+
+  save();
+  renderAll();
+  const msg = "Restored " + (restored.length ? restored.join(", ") : "settings")
+    + (warnings.length ? " — warning: " + warnings.join("; ") : ".");
+  toast(msg, warnings.length > 0);
+}
+
+function openTakeDetails(clip, takeA, takeB = null) {
+  const dialog = $("takeDetails");
+  const title = $("takeDetailsTitle");
+  const body = $("takeDetailsBody");
+  const foot = $("takeDetailsFoot");
+  const diffWrap = $("takeDiffToggleWrap");
+  const diffOnly = $("takeDiffOnly");
+  const isCompare = Boolean(takeB && takeA && takeA !== takeB);
+  const idxA = clip.takes.indexOf(takeA) + 1;
+  const idxB = isCompare ? clip.takes.indexOf(takeB) + 1 : 0;
+
+  dialog.classList.toggle("is-compare", isCompare);
+  diffWrap.hidden = !isCompare;
+  if (isCompare) diffOnly.checked = false;
+  title.textContent = isCompare
+    ? `Compare parameters · Take ${idxA} vs Take ${idxB} · ${clip.name}`
+    : `Take ${idxA} parameters · ${clip.name}`;
+
+  const renderBody = () => {
+    body.replaceChildren();
+    if (isCompare) {
+      const { sections, diffs } = compareTakeParams(clip, takeA, takeB);
+      const onlyDiffs = diffOnly.checked;
+      if (onlyDiffs && !diffs.length) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = "Take " + idxA + " and Take " + idxB + " have identical recorded parameters.";
+        body.append(p);
+        return;
+      }
+      const table = document.createElement("table");
+      table.className = "take-diff-table";
+      const thead = document.createElement("thead");
+      const hrow = document.createElement("tr");
+      ["Parameter", `A · Take ${idxA}`, `B · Take ${idxB}`].forEach((text) => {
+        const th = document.createElement("th");
+        th.textContent = text;
+        hrow.append(th);
+      });
+      thead.append(hrow);
+      const tbody = document.createElement("tbody");
+      for (const sec of sections) {
+        const visible = onlyDiffs ? sec.rows.filter((r) => r.diff) : sec.rows;
+        if (!visible.length) continue;
+        const srow = document.createElement("tr");
+        srow.className = "is-section";
+        const std = document.createElement("td");
+        std.colSpan = 3;
+        std.textContent = sec.title;
+        srow.append(std);
+        tbody.append(srow);
+        for (const r of visible) {
+          const tr = document.createElement("tr");
+          if (r.diff) tr.className = "is-diff";
+          const tdLabel = document.createElement("td");
+          tdLabel.textContent = r.label;
+          const tdA = document.createElement("td");
+          tdA.textContent = r.a || "—";
+          if (!r.a) tdA.className = "is-empty";
+          const tdB = document.createElement("td");
+          tdB.textContent = r.b || "—";
+          if (!r.b) tdB.className = "is-empty";
+          tr.append(tdLabel, tdA, tdB);
+          tbody.append(tr);
+        }
+      }
+      table.append(thead, tbody);
+      body.append(table);
+      return;
+    }
+
+    const sections = takeParamSections(clip, takeA);
+    if (!sections.length) {
+      const p = document.createElement("p");
+      p.className = "hint";
+      p.textContent = "No generation parameters were recorded for this take.";
+      body.append(p);
+      return;
+    }
+    for (const sec of sections) {
+      const wrap = document.createElement("div");
+      wrap.className = "take-details-section";
+      const h3 = document.createElement("h3");
+      h3.textContent = sec.title;
+      wrap.append(h3);
+      if (sec.title === "Model patches") {
+        const cards = document.createElement("div");
+        cards.className = "take-details-sub";
+        for (const row of sec.rows) {
+          const card = document.createElement("div");
+          card.className = "take-details-card";
+          const head = document.createElement("div");
+          head.className = "take-details-card-head";
+          const strong = document.createElement("strong");
+          strong.textContent = row.label;
+          const small = document.createElement("small");
+          small.textContent = row.node || "";
+          head.append(strong, small);
+          card.append(head);
+          const entries = Object.entries(row.inputs || {});
+          if (entries.length) {
+            const dl = document.createElement("dl");
+            dl.className = "take-details-kv";
+            for (const [k, v] of entries) {
+              const dt = document.createElement("dt");
+              dt.textContent = k;
+              const dd = document.createElement("dd");
+              dd.textContent = formatParamValue(v);
+              dl.append(dt, dd);
+            }
+            card.append(dl);
+          } else {
+            const p = document.createElement("p");
+            p.className = "hint";
+            p.textContent = "Default inputs";
+            card.append(p);
+          }
+          cards.append(card);
+        }
+        wrap.append(cards);
+      } else {
+        const dl = document.createElement("dl");
+        dl.className = "take-details-grid";
+        for (const row of sec.rows) {
+          const dt = document.createElement("dt");
+          dt.textContent = row.label;
+          const dd = document.createElement("dd");
+          dd.textContent = row.value;
+          dl.append(dt, dd);
+        }
+        wrap.append(dl);
+      }
+      body.append(wrap);
+    }
+  };
+
+  renderBody();
+  diffOnly.onchange = renderBody;
+
+  foot.replaceChildren();
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "quiet";
+  copyBtn.textContent = isCompare ? "Copy diff" : "Copy parameters";
+  copyBtn.addEventListener("click", async () => {
+    try {
+      const text = isCompare ? formatTakeDiffText(clip, takeA, takeB) : formatTakeParamsText(clip, takeA);
+      await navigator.clipboard.writeText(text);
+      toast(isCompare ? "Copied parameter diff to clipboard." : "Copied take parameters to clipboard.");
+    } catch {
+      toast("Could not copy to clipboard.", true);
+    }
+  });
+  foot.append(copyBtn);
+
+  if (clip.kind !== "footage") {
+    const spacer = document.createElement("span");
+    spacer.className = "spacer";
+    foot.append(spacer);
+    if (isCompare) {
+      const restoreA = document.createElement("button");
+      restoreA.type = "button";
+      restoreA.className = "quiet";
+      restoreA.textContent = "Restore Take " + idxA;
+      restoreA.addEventListener("click", () => { restoreTakeSettings(clip, takeA); dialog.close(); });
+      const restoreB = document.createElement("button");
+      restoreB.type = "button";
+      restoreB.className = "primary";
+      restoreB.textContent = "Restore Take " + idxB;
+      restoreB.addEventListener("click", () => { restoreTakeSettings(clip, takeB); dialog.close(); });
+      foot.append(restoreA, restoreB);
+    } else {
+      const restoreBtn = document.createElement("button");
+      restoreBtn.type = "button";
+      restoreBtn.className = "primary";
+      restoreBtn.textContent = "Restore settings";
+      restoreBtn.title = "Apply this take's model, LoRAs, patches, hybrid swap and seed to the project and clip";
+      restoreBtn.addEventListener("click", () => { restoreTakeSettings(clip, takeA); dialog.close(); });
+      foot.append(restoreBtn);
+    }
+  }
+
+  $("takeDetailsClose").onclick = () => dialog.close();
+  dialog.showModal();
 }
 
 function openTakeManager(clip) {
@@ -13038,7 +13896,159 @@ $("comparePosition").addEventListener("keydown", event => {
     closeComparison();
   }
 });
+$("compareParams").addEventListener("click", () => {
+  const clip = clipOf(state.comparison?.clip);
+  const pair = comparisonTakes(clip);
+  if (clip && pair) openTakeDetails(clip, pair.a, pair.b);
+});
 $("compareClose").addEventListener("click", closeComparison);
+
+// Viewer zoom, pan, and fullscreen (expressed in true native pixel % when video size is known)
+const viewerZoom = { scale: 1, x: 0, y: 0, nativeSteps: [0.5, 1, 1.25, 1.5, 2, 3, 4] };
+function viewerFitRatio() {
+  const screen = $("screen");
+  if (!screen) return 1;
+  const rect = screen.getBoundingClientRect();
+  if (!rect.width || !rect.height) return 1;
+  const media = screen.querySelector("video.show") || (!($("preview")?.hidden) ? $("preview") : null);
+  const nw = media?.videoWidth || media?.naturalWidth || 0;
+  const nh = media?.videoHeight || media?.naturalHeight || 0;
+  if (!nw || !nh) return 1;
+  return Math.min(rect.width / nw, rect.height / nh);
+}
+function viewerMaxScale() {
+  const fit = viewerFitRatio();
+  return Math.max(6, 4 / Math.max(0.05, fit));
+}
+function applyViewerZoom() {
+  const screen = $("screen"), stage = $("screenStage");
+  if (!screen || !stage) return;
+  const rect = screen.getBoundingClientRect();
+  const s = viewerZoom.scale;
+  const maxScale = viewerMaxScale();
+  if (s <= 1.001) {
+    viewerZoom.scale = 1;
+    viewerZoom.x = 0;
+    viewerZoom.y = 0;
+  } else {
+    viewerZoom.scale = Math.min(maxScale, s);
+    const maxX = Math.max(0, (rect.width * (viewerZoom.scale - 1)) / 2);
+    const maxY = Math.max(0, (rect.height * (viewerZoom.scale - 1)) / 2);
+    viewerZoom.x = Math.max(-maxX, Math.min(maxX, viewerZoom.x));
+    viewerZoom.y = Math.max(-maxY, Math.min(maxY, viewerZoom.y));
+  }
+  stage.style.transform = viewerZoom.scale > 1
+    ? `translate(${viewerZoom.x.toFixed(1)}px, ${viewerZoom.y.toFixed(1)}px) scale(${viewerZoom.scale.toFixed(4)})`
+    : "";
+  screen.classList.toggle("is-zoomed", viewerZoom.scale > 1);
+  const fit = viewerFitRatio();
+  const nativePct = Math.round(viewerZoom.scale * fit * 100);
+  const reset = $("viewerZoomReset");
+  if (reset) {
+    reset.textContent = viewerZoom.scale > 1 ? nativePct + "%" : "Fit";
+    reset.title = viewerZoom.scale > 1
+      ? `${nativePct}% native · click to reset to Fit`
+      : `Fit (${Math.round(fit * 100)}% native) · click for 100% (1:1)`;
+  }
+  if ($("viewerZoomOut")) $("viewerZoomOut").disabled = viewerZoom.scale <= 1;
+  if ($("viewerZoomIn")) $("viewerZoomIn").disabled = viewerZoom.scale >= maxScale - 0.01;
+}
+function setViewerZoom(nextScale, clientX = null, clientY = null) {
+  const screen = $("screen");
+  const clamped = Math.max(1, Math.min(viewerMaxScale(), nextScale));
+  const prev = viewerZoom.scale;
+  if (clamped <= 1.001) {
+    viewerZoom.scale = 1;
+    viewerZoom.x = 0;
+    viewerZoom.y = 0;
+  } else if (screen && clientX !== null && clientY !== null && prev > 0) {
+    const rect = screen.getBoundingClientRect();
+    const ox = clientX - (rect.left + rect.width / 2);
+    const oy = clientY - (rect.top + rect.height / 2);
+    const ratio = clamped / prev;
+    viewerZoom.x = ox - (ox - viewerZoom.x) * ratio;
+    viewerZoom.y = oy - (oy - viewerZoom.y) * ratio;
+    viewerZoom.scale = clamped;
+  } else {
+    const ratio = clamped / (prev || 1);
+    viewerZoom.x *= ratio;
+    viewerZoom.y *= ratio;
+    viewerZoom.scale = clamped;
+  }
+  applyViewerZoom();
+}
+function stepViewerZoom(dir) {
+  const fit = viewerFitRatio();
+  const curNative = viewerZoom.scale * fit;
+  const maxScale = viewerMaxScale();
+  if (dir > 0) {
+    const nextNative = viewerZoom.nativeSteps.find((v) => v > curNative + 0.04);
+    setViewerZoom(nextNative ? nextNative / fit : maxScale);
+  } else {
+    const prevNative = [...viewerZoom.nativeSteps].reverse().find((v) => v < curNative - 0.04 && v > fit + 0.02);
+    setViewerZoom(prevNative ? prevNative / fit : 1);
+  }
+}
+function toggleViewerOneToOne(clientX = null, clientY = null) {
+  if (viewerZoom.scale > 1.05) {
+    setViewerZoom(1);
+    return;
+  }
+  const fit = viewerFitRatio();
+  // Jump to true 100% (1:1 pixels) when Fit is smaller than native; otherwise 200%.
+  setViewerZoom(fit < 0.95 ? 1 / fit : 2, clientX, clientY);
+}
+$("viewerZoomIn").addEventListener("click", () => stepViewerZoom(1));
+$("viewerZoomOut").addEventListener("click", () => stepViewerZoom(-1));
+$("viewerZoomReset").addEventListener("click", () => toggleViewerOneToOne());
+$("viewerFullscreen").addEventListener("click", () => {
+  const viewer = $("viewer");
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else viewer?.requestFullscreen?.().catch(() => {});
+});
+document.addEventListener("fullscreenchange", () => {
+  const on = document.fullscreenElement === $("viewer");
+  $("viewerFullscreen")?.setAttribute("aria-pressed", String(on));
+  applyViewerZoom();
+});
+window.addEventListener("resize", applyViewerZoom);
+$("videoA").addEventListener("loadedmetadata", applyViewerZoom);
+$("videoB").addEventListener("loadedmetadata", applyViewerZoom);
+$("screen").addEventListener("wheel", (event) => {
+  if (event.target.closest("#noteBox")) return;
+  event.preventDefault();
+  const factor = event.ctrlKey ? Math.exp(-event.deltaY * 0.01) : (event.deltaY < 0 ? 1.18 : 1 / 1.18);
+  setViewerZoom(viewerZoom.scale * factor, event.clientX, event.clientY);
+}, { passive: false });
+$("screen").addEventListener("dblclick", (event) => {
+  if (noting.active || event.target.closest("button, input, textarea, #viewerZoom, #compareBar, #sourceTag, #noteBox, #noteTag")) return;
+  toggleViewerOneToOne(event.clientX, event.clientY);
+});
+{
+  let pan = null;
+  const screen = $("screen");
+  screen.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || viewerZoom.scale <= 1 || noting.active) return;
+    if (event.target.closest("button, input, textarea, #viewerZoom, #compareBar, #sourceTag, #noteBox, #noteTag")) return;
+    pan = { id: event.pointerId, sx: event.clientX, sy: event.clientY, ox: viewerZoom.x, oy: viewerZoom.y };
+    screen.classList.add("is-panning");
+    screen.setPointerCapture?.(event.pointerId);
+  });
+  screen.addEventListener("pointermove", (event) => {
+    if (!pan || event.pointerId !== pan.id) return;
+    viewerZoom.x = pan.ox + (event.clientX - pan.sx);
+    viewerZoom.y = pan.oy + (event.clientY - pan.sy);
+    applyViewerZoom();
+  });
+  const endPan = (event) => {
+    if (!pan || event.pointerId !== pan.id) return;
+    pan = null;
+    screen.classList.remove("is-panning");
+  };
+  screen.addEventListener("pointerup", endPan);
+  screen.addEventListener("pointercancel", endPan);
+}
+applyViewerZoom();
 $("compareVideo").addEventListener("seeked", () => {
   if (state.comparison && !state.playing) syncComparison(state.sourceFrame / FPS + STILL);
 });
