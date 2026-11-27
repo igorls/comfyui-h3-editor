@@ -294,8 +294,8 @@ needs a render.
 `set_project`: `fields`: `style` (applies to every clip), `format` (a positive integer
 ratio between `1:8` and `8:1`, including `3:2`, `4:3`, `7:5` and `21:9`),
 `language` (for example `English` or `Portuguese`), and `profile`, the checkpoint
-family new renders use (`hyperflow`, the default, `h3_turbo`, `pi_h3`, `lightx2v`, `h3`, `singularity`, `dasiwa`
-`dasiwa_turbo`, `dasiwa_v5` or `eros`). `GET /projects` lists the profiles with whether each is installed;
+family new renders use (`hyperflow`, the default, `h3_turbo`, `pi_h3`, `lightx2v`, `h3`, `singularity`, `dasiwa`,
+`dasiwa_turbo`, `dasiwa_v5`, `eros`, `prism`, `sulphur3` or `triprism`). `GET /projects` lists the profiles with whether each is installed;
 pick only an `available` one. `pi_h3` is for drafts: its finals, and its drafts when finished, render on `hyperflow`. A new project starts on the first installed profile, and a
 project that names none renders on it. The format sets new renders and imports.
 Export fits every clip to the widest rendered take on the timeline.
@@ -574,8 +574,8 @@ rather than one call each.
 | `medium`, when the project asks for it | 960x544 | 544x960 | 768x768 |
 
 Steps depend on the project's profile: HyperFlow takes 4 for a draft and 6 for a final,
-MiniMax H3 Turbo 6 and 6, LightX2V H3 Turbo 4 and 8, the 20-step families (`h3`, `singularity`, `dasiwa`) 10 and 20,
-and DaSiWa Turbo 8 and 8. A final's picture is then enlarged and its last steps redrawn at
+MiniMax H3 Turbo 6 and 6, LightX2V H3 Turbo 4 and 8, the 20-step families (`h3`, `singularity`, `dasiwa`, `sulphur3`) 10 and 20,
+DaSiWa Turbo 8 and 8, and the 8-step turbo merges (`dasiwa_v5`, `eros`, `prism`, `triprism`) 6 and 8. A final's picture is then enlarged and its last steps redrawn at
 the larger size, so its take is 1920x1088 for 16:9, 1088x1920 for 9:16 and 1440x1440 for 1:1.
 The sound is the first pass's. A take records its picture size in `size` and what made it in
 `models`: `profile`, `unet` and `checkpoint`, a turbo family's `profile_lora` and

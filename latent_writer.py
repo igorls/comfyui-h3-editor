@@ -8,6 +8,11 @@ Sampling stays on the graph. This module only prepares the latent.
 import torch
 import torch.nn.functional as F
 
+try:
+    from .policy import frame_to_step
+except ImportError:
+    from policy import frame_to_step
+
 
 def fit_frames(frames, width, height):
     """Cover-crop a frame batch onto the take's canvas."""
@@ -110,7 +115,8 @@ def carry_tail(latent, steps, ticks):
 
 
 def write_holds(latent, video_latent=None, video_first=0, audio_latent=None, audio_first=0,
-                video_curve=None, audio_curve=None, region=None, pooled_region=False):
+                video_curve=None, audio_curve=None, region=None, pooled_region=False,
+                region_frame=-1):
     """Return a new latent dict with the held streams written and a nested noise mask set."""
     import comfy.nested_tensor
 
@@ -133,7 +139,14 @@ def write_holds(latent, video_latent=None, video_first=0, audio_latent=None, aud
     video_mask = video_mask.view(1, 1, steps, 1, 1).expand(1, 1, steps, height, width).contiguous()
     if region is not None:
         mapper = pooled_region_steps if pooled_region else region_steps
-        video_mask = torch.maximum(video_mask, mapper(region, steps, height, width).to(video_mask))
+        region_vol = mapper(region, steps, height, width).to(video_mask)
+        if region_frame is not None and int(region_frame) >= 0:
+            step = max(0, min(steps - 1, frame_to_step(int(region_frame))))
+            video_mask[:, :, step:step + 1] = torch.maximum(
+                video_mask[:, :, step:step + 1], region_vol[:, :, step:step + 1]
+            )
+        else:
+            video_mask = torch.maximum(video_mask, region_vol)
     audio_mask = torch.tensor(audio_curve, dtype=torch.float32, device=audio.device)
     audio_mask = audio_mask.view(1, 1, 1, ticks).expand(1, 1, audio.shape[2], ticks).contiguous()
 

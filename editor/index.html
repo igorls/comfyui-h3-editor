@@ -226,49 +226,129 @@
       <div class="sprite-settings">
         <div class="sprite-animation-controls">
           <label class="sprite-field">Animation <select id="spriteMotion" aria-label="Animation"></select></label>
-          <div class="sprite-actions"><button class="sprite-action" id="spriteAddMotion">Add animation…</button><button class="sprite-action" id="spriteEditMotion" hidden>Edit prompt…</button></div>
+          <div class="sprite-actions"><button class="sprite-action" id="spriteAddMotion" type="button">Add animation…</button><button class="sprite-action" id="spriteEditMotion" type="button" hidden>Edit prompt…</button></div>
         </div>
         <div class="sprite-render-controls">
           <label class="sprite-field">Camera <select id="spriteCamera"><option value="rpg">Orthographic · 45°</option><option value="overhead">Overhead · 90°</option><option value="level">Eye level</option></select></label>
-          <label class="sprite-field">Canvas <select id="spriteCanvas"><option value="square">Square · 512×512</option><option value="portrait">Portrait · 256×384</option><option value="landscape">Landscape · 384×256</option></select></label>
-          <label class="sprite-field">Backdrop <select id="spriteGround" title="The flat colour the sprite is drawn on. Pick one the character does not wear: white suits a dark character, green or blue one with white or pale parts. A colour other than white holds on a take that is pinned: an idle, a gesture, or a loop after Close loop. A first draft of a run or a walk is drawn on white."><option value="white">White</option><option value="green">Green</option><option value="blue">Blue</option></select></label>
-          <label class="sprite-field">Length <select id="spriteFrames"><option value="39">39 frames · 1.6 s</option><option value="56">56 frames · 2.3 s</option><option value="73">73 frames · 3.0 s</option></select></label>
-          <label class="sprite-field">Art style <select id="spriteArtStyle"><option value="">Match references</option><option value="pixel">16-bit pixel art</option><option value="chibi">Chibi cel-shaded</option><option value="custom">Custom…</option></select></label>
-          <label class="sprite-field" id="spriteArtStyleCustomField" hidden>Custom style <input id="spriteArtStyleCustom" type="text" maxlength="400" placeholder="16-bit SNES pixel art RPG sprite"></label>
+          <div class="sprite-field sprite-draft-settings-wrap">
+            <span>Next draft</span>
+            <button id="spriteDraftSettingsBtn" class="quiet sprite-draft-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" popovertarget="spriteDraftPopover">
+              <span id="spriteDraftSummary">512² · 39f · White key · Match refs</span>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg>
+            </button>
+            <div id="spriteDraftPopover" class="menu sprite-draft-popover" popover role="dialog" aria-label="Next draft settings">
+              <div class="sprite-draft-popover-grid">
+                <label class="sprite-field">Canvas <select id="spriteCanvas"><option value="square">Square · 512×512</option><option value="portrait">Portrait · 256×384</option><option value="landscape">Landscape · 384×256</option></select></label>
+                <label class="sprite-field">Length <select id="spriteFrames"><option value="39">39 frames · 1.6 s</option><option value="56">56 frames · 2.3 s</option><option value="73">73 frames · 3.0 s</option></select></label>
+                <label class="sprite-field">Key color <select id="spriteKeyColor"><option value="white">White</option><option value="green">Green</option><option value="blue">Blue</option></select></label>
+                <label class="sprite-field">Art style <select id="spriteArtStyle"><option value="">Match references</option><option value="pixel">16-bit pixel art</option><option value="chibi">Chibi cel-shaded</option><option value="custom">Custom…</option></select></label>
+                <label class="sprite-field sprite-draft-span" id="spriteArtStyleCustomField" hidden>Custom style <input id="spriteArtStyleCustom" type="text" maxlength="400" placeholder="16-bit SNES pixel art RPG sprite"></label>
+              </div>
+              <p class="hint sprite-draft-hint">Applied when you render a new draft. Pick a key color the character does not wear (white for dark outfits, green/blue for pale outfits; non-white holds on pinned takes).</p>
+            </div>
+          </div>
         </div>
       </div>
       <div class="sprite-stage">
         <section class="sprite-directions" aria-labelledby="spriteDirectionsTitle">
           <div class="sprite-section-head"><h3 id="spriteDirectionsTitle">Directions</h3><select id="spriteCount" aria-label="Directions"><option value="4">4-way</option><option value="8" selected>8-way</option></select></div>
-          <div id="spriteCompass"></div><p id="spriteCoverage" class="sprite-caption"></p>
+          <div id="spriteCompass"></div>
+          <p id="spriteCoverage" class="sprite-caption"></p>
+          <div class="sprite-compass-legend" aria-hidden="true">
+            <span><i class="c-dot draft"></i>Draft</span>
+            <span><i class="c-dot loop"></i>Loop</span>
+            <span><i class="c-dot final"></i>Final</span>
+          </div>
         </section>
         <section class="sprite-preview" aria-labelledby="spritePreviewTitle">
-          <div class="sprite-section-head">
-            <h3 id="spritePreviewTitle">Game preview</h3>
+          <div class="sprite-section-head sprite-preview-head">
+            <h3 id="spritePreviewTitle" class="sr">Sprite inspector</h3>
+            <div class="sprite-mode-switch" role="group" aria-label="Stage mode">
+              <button id="spriteModeInspect" type="button" aria-pressed="true" title="Inspect mode: scroll zooms into cursor, drag pans freely (M)">Inspect</button>
+              <button id="spriteModeWalk" type="button" aria-pressed="false" title="Walk mode: move character with WASD, arrows, or click-drag (M)">Walk</button>
+            </div>
             <div class="sprite-actions sprite-inspect-controls">
-              <select id="spriteZoom" aria-label="Preview zoom" title="Preview zoom (or scroll on canvas)">
-                <option value="1">1×</option>
-                <option value="2">2×</option>
-                <option value="3" selected>3×</option>
-                <option value="4">4×</option>
-                <option value="6">6×</option>
-              </select>
-              <select id="spriteBackdrop" aria-label="Preview backdrop" title="Preview background for cutout inspection">
-                <option value="matte">Matte</option>
-                <option value="checker">Checker</option>
-                <option value="dark">Dark</option>
-                <option value="light">Light</option>
-              </select>
-              <button id="spritePivot" class="sprite-action" type="button" aria-pressed="false" title="Show ground pivot crosshair and tile bounds">Pivot</button>
-              <button id="spriteHd" class="sprite-action" type="button" aria-pressed="false" title="Inspect crisp 256 px lossless frames at zoom">HD 256</button>
-              <button id="spriteGround" class="sprite-action" type="button">Ground…</button>
-              <button id="spritePlain" class="sprite-action" type="button">Clear ground</button>
+              <div class="sprite-zoom-group" role="group" aria-label="Zoom">
+                <button id="spriteZoomOut" class="sprite-zoom-btn" type="button" aria-label="Zoom out" title="Zoom out (-)">−</button>
+                <button id="spriteZoomReset" class="sprite-zoom-readout" type="button" title="Toggle Fit / 4× / 8× (0)">Fit</button>
+                <button id="spriteZoomIn" class="sprite-zoom-btn" type="button" aria-label="Zoom in" title="Zoom in (+)">+</button>
+              </div>
+              <div id="spriteSurfaceSwatches" class="sprite-surface-group" role="group" aria-label="Preview surface">
+                <button type="button" class="sprite-swatch swatch-matte" data-backdrop="matte" aria-pressed="true" title="Neutral matte surface"><span class="sr">Matte</span></button>
+                <button type="button" class="sprite-swatch swatch-checker" data-backdrop="checker" aria-pressed="false" title="Transparency checkerboard for alpha fringe checks"><span class="sr">Checker</span></button>
+                <button type="button" class="sprite-swatch swatch-dark" data-backdrop="dark" aria-pressed="false" title="Dark surface to catch light halos"><span class="sr">Dark</span></button>
+                <button type="button" class="sprite-swatch swatch-light" data-backdrop="light" aria-pressed="false" title="Light surface to catch dark fringes"><span class="sr">Light</span></button>
+              </div>
+              <button id="spriteHd" class="sprite-action" type="button" aria-pressed="false" title="Auto HD 256 when zoomed ≥ 2× · Click to toggle Base 64 / HD 256 (H)">HD 256</button>
+              <button id="spriteOnion" class="sprite-action" type="button" aria-pressed="false" title="Show previous/next pose ghost to check motion & loop seam (O)">Onion</button>
+              <button id="spritePivot" class="sprite-action" type="button" aria-pressed="false" title="Show ground pivot crosshair and tile bounds (P)">Pivot</button>
+              <button id="spriteRefToggle" class="sprite-action" type="button" aria-pressed="false" title="Pin heading-matched character reference on stage (R)">Ref</button>
+              <button id="spriteFixToggle" class="sprite-action" type="button" aria-pressed="false" title="Fix a bad pose with AI inpaint, alpha brush, or ±1 frame nudge (F)">Fix pose</button>
+              <button id="spriteGround" class="sprite-action" type="button" hidden title="Load a custom floor image for Walk mode">Floor…</button>
+              <button id="spritePlain" class="sprite-action" type="button" hidden title="Remove custom floor image">Clear floor</button>
             </div>
           </div>
-          <canvas id="spriteArena" width="600" height="320" tabindex="0" aria-label="Game preview. Use WASD or arrow keys to move, scroll to zoom, Space to pause."></canvas>
+          <div id="spriteFixBar" class="sprite-fix-bar" hidden role="region" aria-label="Fix pose tools">
+            <div class="sprite-fix-group">
+              <div class="sprite-mode-switch sprite-fix-tabs" role="tablist" aria-label="Fix pose mode">
+                <button id="spriteFixTabAi" type="button" role="tab" aria-selected="true" data-fix-mode="ai" title="Paint defect mask and repair single pose with H3Take">AI Fix</button>
+                <button id="spriteFixTabAlpha" type="button" role="tab" aria-selected="false" data-fix-mode="alpha" title="Instant 0-GPU erase or restore pixels from raw video">Alpha</button>
+                <button id="spriteFixTabNudge" type="button" role="tab" aria-selected="false" data-fix-mode="nudge" title="Instant 0-GPU swap with adjacent 24 fps video frame">Nudge</button>
+              </div>
+              <div id="spriteFixAiTools" class="sprite-fix-tools">
+                <div class="sprite-mode-switch sprite-fix-subswitch" role="group" aria-label="Mask brush">
+                  <button id="spriteFixAiPaint" type="button" aria-pressed="true" title="Paint defect area to repair">Paint</button>
+                  <button id="spriteFixAiUnpaint" type="button" aria-pressed="false" title="Remove painted mask">Unpaint</button>
+                </div>
+                <label class="sprite-fix-brush" title="Brush diameter in tile pixels">
+                  <span>Brush</span>
+                  <input id="spriteFixBrushAi" type="range" min="4" max="32" step="1" value="10" aria-label="AI mask brush size">
+                  <output id="spriteFixBrushAiVal" for="spriteFixBrushAi">10 px</output>
+                </label>
+                <button id="spriteFixAiClear" class="quiet sprite-fix-btn" type="button" title="Clear painted mask">Clear</button>
+                <input id="spriteFixPrompt" class="sprite-fix-prompt" type="text" maxlength="400" autocomplete="off" placeholder="Describe the fix (e.g. remove extra leg between knees)" aria-label="Defect repair prompt">
+                <select id="spriteFixStrength" class="sprite-fix-select" aria-label="Repair strength" title="Repair strength">
+                  <option value="full" selected>Full</option>
+                  <option value="heavy">Heavy</option>
+                  <option value="medium">Medium</option>
+                </select>
+                <button id="spriteFixApplyAi" class="primary sprite-fix-btn" type="button">Fix pose</button>
+              </div>
+              <div id="spriteFixAlphaTools" class="sprite-fix-tools" hidden>
+                <div class="sprite-mode-switch sprite-fix-subswitch" role="group" aria-label="Alpha brush mode">
+                  <button id="spriteFixAlphaErase" type="button" aria-pressed="true" title="Erase unwanted background or stray pixels">Erase</button>
+                  <button id="spriteFixAlphaRestore" type="button" aria-pressed="false" title="Restore clipped pixels from raw video">Restore</button>
+                </div>
+                <label class="sprite-fix-brush" title="Brush diameter in tile pixels">
+                  <span>Brush</span>
+                  <input id="spriteFixBrushAlpha" type="range" min="4" max="32" step="1" value="10" aria-label="Alpha brush size">
+                  <output id="spriteFixBrushAlphaVal" for="spriteFixBrushAlpha">10 px</output>
+                </label>
+                <button id="spriteFixAlphaClear" class="quiet sprite-fix-btn" type="button" title="Clear alpha strokes">Clear</button>
+                <button id="spriteFixApplyAlpha" class="primary sprite-fix-btn" type="button">Apply alpha</button>
+              </div>
+              <div id="spriteFixNudgeTools" class="sprite-fix-tools" hidden>
+                <button id="spriteFixNudgeBack" class="quiet sprite-fix-btn" type="button" title="Swap with previous 24 fps frame">−1f</button>
+                <span id="spriteFixFrameReadout" class="sprite-fix-readout">Frame —</span>
+                <button id="spriteFixNudgeFwd" class="quiet sprite-fix-btn" type="button" title="Swap with next 24 fps frame">+1f</button>
+              </div>
+            </div>
+            <div class="sprite-fix-end">
+              <button id="spriteFixRevert" class="quiet sprite-fix-btn" type="button" hidden title="Restore this pose to its original unpatched frame">Revert pose</button>
+              <button id="spriteFixDone" class="quiet sprite-fix-btn" type="button" title="Exit Fix pose mode (Esc)">Done</button>
+            </div>
+          </div>
+          <div class="sprite-arena-wrap" id="spriteArenaWrap">
+            <canvas id="spriteArena" width="600" height="320" tabindex="0" aria-label="Sprite stage. In Inspect mode: scroll zooms into cursor, drag pans, double-click toggles zoom, Space pauses."></canvas>
+            <div id="spriteArenaBadge" class="sprite-arena-badge" hidden aria-live="polite"></div>
+            <button id="spriteStageRef" class="sprite-stage-ref" type="button" hidden title="Click to inspect full-size reference in lightbox">
+              <img id="spriteStageRefImg" alt="">
+              <span id="spriteStageRefTag"></span>
+            </button>
+          </div>
           <div class="sprite-transport">
             <div class="sprite-actions">
-              <button class="quiet" id="spritePlay" type="button">Pause</button>
+              <button class="quiet" id="spritePlay" type="button" title="Play or pause (Space)">Pause</button>
               <button class="quiet" id="spritePrev" type="button" title="Previous pose ([)">Prev</button>
               <button class="quiet" id="spriteStep" type="button" title="Next pose (])">Next</button>
               <select id="spriteSpeed" aria-label="Playback speed" title="Playback speed">
@@ -276,19 +356,27 @@
                 <option value="0.5">0.5×</option>
                 <option value="1" selected>1×</option>
               </select>
-              <button class="quiet" id="spriteCenter" type="button" title="Re-center sprite on stage">Center</button>
+              <button class="quiet" id="spriteCenter" type="button" title="Reset view to Fit (0)">Fit</button>
             </div>
-            <span id="spritePoseReadout" class="sprite-caption">WASD or arrow keys · Scroll to zoom</span>
+            <div class="sprite-readout-group">
+              <span id="spritePoseReadout" class="sprite-caption">Drag to pan · Scroll to zoom</span>
+              <button id="spriteKeysBtn" class="sprite-keys-btn" type="button" title="Sprite keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+            </div>
           </div>
           <div id="spritePoseStrip" class="sprite-pose-strip" role="group" aria-label="Pose inspector. Click a pose to inspect it up close."></div>
           <input id="spriteGroundFile" type="file" accept="image/*" hidden>
         </section>
       </div>
       <div class="sprite-toolbar sprite-take-tools">
-        <h3 id="spriteTakesTitle">Takes</h3>
-        <button class="quiet" id="spriteDraft">New draft</button><button class="quiet" id="spriteMirror">Mirror</button>
-        <button class="quiet" id="spriteSelfPin" title="Pin a clean mid-stride frame at 0, stride and 2×stride to close a walk or run loop">Close loop</button>
-        <button class="quiet" id="spriteEdit">Edit take</button><button class="primary" id="spriteFinish">Finish this take</button>
+        <div class="sprite-take-heading">
+          <h3 id="spriteTakesTitle">Takes</h3>
+          <span id="spriteStatus" role="status" aria-live="polite"></span>
+        </div>
+        <button class="quiet" id="spriteDraft" type="button">New draft</button>
+        <button class="quiet" id="spriteMirror" type="button">Mirror</button>
+        <button class="quiet" id="spriteSelfPin" type="button" title="Pin a clean mid-stride frame at 0, stride and 2×stride to close a walk or run loop">Close loop</button>
+        <button class="quiet" id="spriteEdit" type="button" title="Open this clip in the Video timeline editor">Open in Video ↗</button>
+        <button class="primary" id="spriteFinish" type="button">Finish this take</button>
       </div>
       <div id="spriteTakes"></div>
       <div class="sprite-toolbar sprite-delivery">
@@ -297,7 +385,8 @@
         <label class="sprite-field">Frame rate <select id="spriteFps"><option value="">Original per loop</option><option value="24">24 fps</option></select></label>
         <label class="sprite-field">Output style <select id="spriteStyle"><option value="illustrated">Illustrated</option><option value="indexed">Indexed</option></select></label>
         <label class="sprite-check"><input id="spriteWebp" type="checkbox" checked><span>Include WebP</span></label>
-        <button id="spriteAtlas" class="quiet">Export atlas</button><span id="spriteStatus" role="status"></span>
+        <button id="spriteAtlas" class="quiet" type="button">Export atlas</button>
+        <span id="spriteExportStatus" role="status" aria-live="polite"></span>
       </div>
     </section>
   </main>
@@ -352,6 +441,43 @@
   <div class="keys-head"><h2 id="inputReviewTitle"></h2><form method="dialog"><button class="quiet" autofocus>Close</button></form></div>
   <img id="inputReviewImage" alt="">
   <div class="input-review-nav" id="inputReviewNav"></div>
+</dialog>
+
+<dialog id="castLightbox" class="keys cast-lightbox" aria-labelledby="castLightboxTitle">
+  <div class="keys-head cast-lightbox-head">
+    <div class="cast-lightbox-title-wrap">
+      <h2 id="castLightboxTitle"></h2>
+      <span id="castLightboxMeta" class="cast-lightbox-meta"></span>
+    </div>
+    <div class="cast-lightbox-tools">
+      <div class="cast-lightbox-zoom" role="group" aria-label="Zoom">
+        <button id="castLightboxZoomOut" class="icon-btn quiet" type="button" aria-label="Zoom out" title="Zoom out (-)">
+          <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg>
+        </button>
+        <button id="castLightboxZoomReset" class="quiet small cast-lightbox-zoom-pct" type="button" title="Toggle Fit / 100% / 200% (0)">Fit</button>
+        <button id="castLightboxZoomIn" class="icon-btn quiet" type="button" aria-label="Zoom in" title="Zoom in (+)">
+          <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>
+        </button>
+      </div>
+      <span class="cast-lightbox-sep" aria-hidden="true"></span>
+      <button id="castLightboxMakeMain" class="quiet small" type="button" title="Promote this picture to Main (#1)">Make main</button>
+      <button id="castLightboxReplace" class="quiet small" type="button" title="Replace this picture with another file">Replace</button>
+      <button id="castLightboxRemove" class="quiet small danger-text" type="button" title="Remove this picture">Remove</button>
+      <button id="castLightboxClose" class="quiet" type="button" autofocus>Close</button>
+    </div>
+  </div>
+  <div id="castLightboxStage" class="cast-lightbox-stage">
+    <button id="castLightboxPrev" class="cast-lightbox-nav prev" type="button" aria-label="Previous picture" title="Previous picture (Left)">
+      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5L9 12l5.5 5.5"/></svg>
+    </button>
+    <div id="castLightboxCanvas" class="cast-lightbox-canvas">
+      <img id="castLightboxImage" alt="" draggable="false">
+    </div>
+    <button id="castLightboxNext" class="cast-lightbox-nav next" type="button" aria-label="Next picture" title="Next picture (Right)">
+      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 6.5L15 12l-5.5 5.5"/></svg>
+    </button>
+  </div>
+  <div id="castLightboxStrip" class="cast-lightbox-strip" hidden></div>
 </dialog>
 
 <dialog id="models" class="keys models" aria-labelledby="modelsTitle">
@@ -528,7 +654,7 @@
     <div class="keys-head"><h2 id="promptEditTitle">Edit with prompt</h2><button id="promptEditCancel" class="quiet" type="button">Cancel</button></div>
     <div class="exporter-body">
       <p id="promptEditRange" class="exporter-summary"></p>
-      <label class="field"><span id="promptEditTextLabel">What should change?</span><textarea id="promptEditText" rows="4" maxlength="12000" required autofocus placeholder="Turn the scene into black and white. Keep the same framing and movement."></textarea></label>
+      <label class="field"><span id="promptEditTextLabel">What should change?</span><textarea id="promptEditText" rows="4" maxlength="12000" required autofocus data-cast-mention="visual" placeholder="Turn the scene into black and white. Keep the same framing and movement."></textarea></label>
       <label class="field"><span id="promptEditImageLabel">Replacement first frame (optional)</span><input id="promptEditFirst" type="file" accept="image/png,image/jpeg,image/webp"></label>
       <label class="choice"><span>Render quality</span><select id="promptEditQuality"><option value="draft">Draft</option><option value="final">Final</option></select></label>
       <p id="promptEditStatus" class="hint" aria-live="polite">The edit appears in Takes and keeps the source audio.</p>
@@ -584,14 +710,14 @@
         </div>
       </div>
       <div class="halves">
-        <label class="choice"><span>Transfer mode</span><select id="motionMode"><option value="replace">Replace character in scene</option><option value="rescene">New scene &amp; outfit (pure motion · M5/M7)</option><option value="choreography">New scene from pose (skeleton only)</option></select></label>
+        <label class="choice"><span>Transfer mode</span><select id="motionMode"><option value="replace">Replace character in scene</option><option value="rescene">New scene &amp; outfit (re-scene)</option><option value="choreography">New scene from pose (skeleton only)</option></select></label>
         <label class="choice" id="motionStyleField"><span>Character style</span><select id="motionStyle"><option value="auto">Auto (detect from image)</option><option value="photoreal">Match scene lighting (photoreal)</option><option value="preserve">Keep reference style (anime / 2D)</option></select></label>
       </div>
       <div class="halves">
-        <label class="choice"><span>Render quality</span><select id="motionQuality"><option value="realism_fast">Natural Skin · Fast (F1-Fast / M5 · 1088p)</option><option value="realism">Natural Skin · Max (F1 · 1088p)</option><option value="fast_sharp">Fast Sharp (F2 · 768p + RelayVSR 2×)</option><option value="draft">Draft (quick preview)</option><option value="final">Classic Final</option><option value="sharp">Classic Sharp (544p + RelayVSR 2×)</option></select></label>
+        <label class="choice"><span>Render quality</span><select id="motionQuality"><option value="realism_fast">Natural Skin · Fast (1088p)</option><option value="realism">Natural Skin · Max (1088p)</option><option value="fast_sharp">Fast Sharp (768p + RelayVSR 2×)</option><option value="draft">Draft (quick preview)</option><option value="final">Classic Final</option><option value="sharp">Classic Sharp (544p + RelayVSR 2×)</option></select></label>
         <label class="choice" id="motionPlacementField"><span>Timeline</span><select id="motionPlacement"><option value="clips">Keep in Clips (don't change cut)</option><option value="replace">Replace selected clip in place</option></select></label>
       </div>
-      <label class="field"><span id="motionNotesLabel">Character / scene notes (optional)</span><textarea id="motionNotes" rows="2" maxlength="12000" placeholder="Brief hair, outfit, or lighting note for close-ups…"></textarea></label>
+      <label class="field"><span id="motionNotesLabel">Character / scene notes (optional)</span><textarea id="motionNotes" rows="2" maxlength="12000" data-cast-mention="visual" placeholder="Brief hair, outfit, or lighting note for close-ups…"></textarea></label>
       <details class="motion-advanced" id="motionAdvanced">
         <summary>Advanced</summary>
         <div class="motion-advanced-body">
@@ -722,6 +848,19 @@
     <dt>\</dt><dd>Fit the whole scene</dd>
     <dt>Ctrl+Z, Ctrl+Shift+Z</dt><dd>Undo, redo</dd>
     <dt>?</dt><dd>Show this list</dd>
+  </dl>
+  <h3 class="keys-subhead">Sprites workspace</h3>
+  <dl>
+    <dt>Space</dt><dd>Play or pause the sprite preview</dd>
+    <dt>[ and ] · , and .</dt><dd>Step to the previous or next pose</dd>
+    <dt>1–9</dt><dd>Jump directly to a pose frame</dd>
+    <dt>Scroll · + / −</dt><dd>Zoom smoothly into the pointer</dd>
+    <dt>Drag · Double-click</dt><dd>Pan in Inspect mode · toggle Fit and close-up zoom at the pointer</dd>
+    <dt>0</dt><dd>Reset view to Fit</dd>
+    <dt>H · O · P · R</dt><dd>Toggle HD 256, Onion skin, Pivot &amp; bounds, or Pinned reference</dd>
+    <dt>F</dt><dd>Toggle Fix pose mode (AI inpaint, alpha brush, ±1 frame nudge). Hold Space or middle-drag to pan while painting; Esc exits</dd>
+    <dt>M</dt><dd>Switch between Inspect mode and Walk mode</dd>
+    <dt>W A S D · Arrows</dt><dd>Walk the character around the floor in Walk mode</dd>
   </dl>
 </dialog>
 <div id="toast" class="toasts"></div>

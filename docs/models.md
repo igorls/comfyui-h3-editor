@@ -73,6 +73,8 @@ is loaded once.
 | DaSiWa GXS v5 Turbo | `dasiwa_minimax_h3_ref2va_v5xs_pruned_graviton_turbo_int8_row-wise_convrot_runtime_mixed.safetensors`, or another file of the same release | 6 and 8, euler |
 | 10Eros Max beta 7 | `10Eros_Max_h3_8stepTURBO_beta7_fix1-native_int8_protected_edges_HQ.safetensors` from [TenStrip/10Eros-Max](https://huggingface.co/TenStrip/10Eros-Max), or another beta 7 file | 6 and 8, euler |
 | PRISM (Singularity x 10Eros Max), for short single shots; speech and extensions hold better on HyperFlow | `PRISM_DMAD_PDMD_int8.safetensors` (18.9 GiB) from [OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM](https://huggingface.co/OliviaRossi/Minimax-h3_Singularity-x-10Eros-Max_PRISM), or another `PRISM_DMAD_PDMD` file | 6 and 8, euler on the Beta57 schedule |
+| Sulphur 3 | `s3.safetensors` or `s3_w4a8.safetensors` (in `models/diffusion_models` or `quantized/`) from [SulphurAI/Sulphur-3](https://huggingface.co/SulphurAI/Sulphur-3) | 10 and 20, res_multistep |
+| TriPRISM TurboFusion (Sulphur 3 x 10Eros Max x Singularity v2) | `s3_10ErosMax_SingularityV2_TriPRISM_turbofusion8s_realism15_int8_convrot.safetensors` from [OliviaRossi/Minimax-H3-Sulphur3-10Erosmax-SingularityV2-TriPrism-TurboFusion](https://huggingface.co/OliviaRossi/Minimax-H3-Sulphur3-10Erosmax-SingularityV2-TriPrism-TurboFusion) (or its BF16 / W6A8 / W4A8 variants); finals default to Realism Slider `0.5` (since 1.5 is baked in) and a single-step `0.632` refine tail (avoids LightX2V's low-sigma token grid) | 6 and 8, euler |
 
 H3 comes in two kinds. A family with an fl2va model renders prompt-only clips
 on it and everything else on its ref2va model. A family with only ref2va renders

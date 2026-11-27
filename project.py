@@ -334,6 +334,33 @@ PROFILES = {
                 "6 steps for drafts, 8 for finals.",
         "unet": ["PRISM_DMAD_PDMD_int8.safetensors", "PRISM_DMAD_PDMD*"],
         "steps": {"draft": 6, "final": 8}, "sampler": "euler", "scheduler": "beta57", "refine_sigmas": REFINE_TAIL,
+        "realism": 0.5,
+    },
+    "sulphur3": {
+        "title": "Sulphur 3",
+        "hint": "An uncensored community H3 fine-tune, 20 steps. Holds cast references, speech and 2D anime cleanly.",
+        "unet": ["s3.safetensors", "s3_w4a8.safetensors", "quantized/s3_w4a8.safetensors",
+                 "s3_raw_int8.safetensors", "quantized/s3_raw_int8.safetensors",
+                 "s3_raw_w4a8.safetensors", "quantized/s3_raw_w4a8.safetensors",
+                 "s3_raw.safetensors", "s3_w4a8*"],
+        "steps": {"draft": 10, "final": 20}, "sampler": "res_multistep", "refine_from": 17,
+    },
+    "triprism": {
+        "title": "TriPRISM TurboFusion (Sulphur 3 x 10Eros Max x Singularity v2)",
+        "hint": "A 3-way merge of Sulphur 3, 10Eros Max and Singularity v2 with 8-step LightX2V Turbo-Fusion and "
+                "Realism Slider 1.5 built in. Strong realism, cast lock, speech and 2D anime. 6 steps for drafts, 8 for finals.",
+        "unet": [
+            "s3_10ErosMax_SingularityV2_TriPRISM_turbofusion8s_realism15_int8_convrot.safetensors",
+            "Sulphur3_10ErosMax_SingularityV2_TriPRISM_TurboFusion_realism_int8_convrot.safetensors",
+            "Sulphur3_10ErosMax_SingularityV2_TriPRISM_TurboFusion_realism_pruned_w6a8_g32.safetensors",
+            "Sulphur3_10ErosMax_SingularityV2_TriPRISM_TurboFusion_realism_pruned_w4a8_mixed.safetensors",
+            "Sulphur3_10ErosMax_SingularityV2_TriPRISM_TurboFusion_realism_bf16.safetensors",
+            "s3_10ErosMax_SingularityV2_TriPRISM_turbofusion*",
+            "Sulphur3_10ErosMax_SingularityV2_TriPRISM_TurboFusion*",
+        ],
+        # TriPRISM bakes LightX2V Turbo-Fusion 8-step: stepping below 0.385 at refine size leaves a 16-px token
+        # dot grid (same as LightX2V fl2v v1.2), so refine uses the single-step tail from 0.632 instead of REFINE_TAIL.
+        "steps": {"draft": 6, "final": 8}, "sampler": "euler", "refine_sigmas": "0.632, 0.0", "realism": 0.5,
     },
 }
 DEFAULT_PROFILE = "hyperflow"
@@ -487,10 +514,15 @@ def finals_status(available):
     return notes
 
 
-def realism_strength(project, size):
-    """How strong the Realism Slider is on a render of this size: the project's own setting, or the size's."""
+def realism_strength(project, size, profile=None):
+    """How strong the Realism Slider is on a render of this size: the project's own setting, the profile's default, or the size's."""
+    if not size.get("lora"):
+        return 0
     value = project.get("realism")
-    if not size.get("lora") or isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        default = profile.get("realism") if isinstance(profile, dict) else None
+        if isinstance(default, (int, float)) and not isinstance(default, bool):
+            return max(REALISM_RANGE[0], min(REALISM_RANGE[1], float(default)))
         return size.get("lora") or 0
     return max(REALISM_RANGE[0], min(REALISM_RANGE[1], float(value)))
 
@@ -2210,7 +2242,7 @@ def render_graph(project, folder, clip, take, quality, seed, available=None, pat
         active_motion and motion_mode in ("replace", "rescene")
         and active_motion.get("style", "preserve") != "photoreal"
     )
-    realism = 0.0 if stylized_motion else realism_strength(project, size) * (LINKED_REALISM if clip.get("link") else 1.0)
+    realism = 0.0 if stylized_motion else realism_strength(project, size, profile) * (LINKED_REALISM if clip.get("link") else 1.0)
     if is_realism_preset and not stylized_motion and realism > 0.0:
         # Cap Realism Slider at 0.55 (start_sigma=0.85) on motion realism presets to avoid glossy cheek highlights.
         realism = min(realism, MOTION_REALISM_P2_LORA)
@@ -6267,3 +6299,256 @@ def plan_prop_render(project, folder, spec, seed=None, available=None):
         "cutout": "foreground model" if bg_model else "background key",
     }
     return job, graph
+
+
+def plan_sprite_pose_fix(project, folder, clip, take, pose_index, prompt, mask_asset=None,
+                         strength="full", seed=None, available=None, patches=None):
+    """Plan a 1-pass H3Take single-frame spatial+temporal inpaint to fix one bad sprite pose.
+
+    Slices the smallest on-grid 22-frame (or take-length) window around the pose's source video
+    frame via `holds.slice_window`, holds all other latent steps frozen (`keep=0.0`), and opens
+    ONLY the painted spatial mask (or full frame if unmasked) at `region_frame` with binary 32px
+    DiT cell pooling (`pooled_region=True`) for HyperFlow Flash and Standard H3 compatibility.
+    """
+    if not isinstance(take, dict) or not isinstance(take.get("sprite"), dict):
+        raise ValueError("choose an existing sprite take to fix")
+    if not isinstance(take.get("file"), str) or not take["file"]:
+        raise ValueError("the sprite take has no source video file")
+    if strength not in ("medium", "heavy", "full"):
+        raise ValueError("strength must be medium, heavy, or full")
+
+    sheet = take["sprite"]
+    total_frames = int(take.get("frames") or sheet.get("frames") or sprite.FRAMES)
+    _, source_index, _ = sprite.pose_source_index(sheet, int(pose_index), total_frames=total_frames)
+    win_start, win_len = holds.slice_window(source_index, source_index + 1, total_frames, min_frames=22)
+    local_frame = source_index - win_start
+    seed = random.randrange(2 ** 31) if seed in (None, "") else int(seed)
+
+    saved = take.get("saved") if isinstance(take.get("saved"), dict) else {}
+    eff_clip = dict(clip, **saved) if saved else dict(clip)
+    if (take.get("models") or {}).get("profile") and not eff_clip.get("profile"):
+        eff_clip["profile"] = take["models"]["profile"]
+    quality = take.get("quality") if take.get("quality") in QUALITIES else "draft"
+    raw_cfg = eff_clip.get("sprite") or clip.get("sprite")
+    if isinstance(raw_cfg, dict):
+        config = sprite.settings(raw_cfg)
+    else:
+        config = sprite.settings({
+            "direction": "S",
+            "camera": "rpg",
+            "poses": int(sheet.get("source_poses") or sheet.get("poses") or 7),
+            "canvas": sheet.get("canvas") or "portrait",
+        })
+    if take.get("size") and len(take["size"]) == 2:
+        width, height = int(take["size"][0]), int(take["size"][1])
+    else:
+        width, height = sprite.canvas_size(config, quality)
+
+    _, profile = render_profile(project, available, eff_clip, quality)
+    models = project_models(project, available, eff_clip, quality)
+    unet = models["unet"]
+    hyperflow = is_hyperflow(unet)
+    steps = profile["steps"].get("final", profile["steps"][quality]) if hyperflow else profile["steps"][quality]
+
+    # Build sprite prompt without first/last/self_pin or <Video 1> references, matching wired cast refs.
+    prompt_cfg = dict(config)
+    prompt_cfg.pop("self_pin", None)
+    prompt_cfg.pop("guide", None)
+    if "motion" not in prompt_cfg:
+        prompt_cfg["motion"] = "prompt"
+    prompt_clip = dict(eff_clip, first=None, last=None, link=None, sprite=prompt_cfg)
+    shown = cast_pictures(project, prompt_clip)
+    cast = [dict(member, picture_count=len(pictures)) for member, pictures in shown]
+    chosen = prompt_clip.get("cast") or []
+    base_action = name_unpictured(
+        prompt_clip.get("action", ""),
+        [m for m in project.get("cast", []) if m["id"] in chosen and m.get("refmod") and not m.get("file")],
+    )
+    backdrop_name = sprite_backdrop(project, eff_clip)
+    instr = sprite.instruction(dict(prompt_cfg, backdrop=backdrop_name))
+    fix_note = str(prompt or "").strip() or "clean up anatomy, limbs and details to match adjacent frames."
+    action = ((base_action + " ") if base_action.strip() else "") + instr + "\nFix frame: " + fix_note
+    if config.get("style"):
+        style = config["style"]
+    elif cast:
+        style = ""
+    else:
+        style = project.get("style", "")
+    if cast:
+        full_prompt = compose_reference_prompt(style, action, subjects=cast, first_frame=False, last_frame=False)
+    else:
+        full_prompt = compose_prompt(style, action)
+
+    src_file = "/".join(filter(None, (take.get("subfolder"), take["file"])))
+    checkpoint = "ref2va"
+    graph = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
+        "2": text_encoder_node(models["clip"], available, models.get("projection"), models.get("conditioner")),
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": models["vae"]}},
+        "4": {"class_type": "VAELoader", "inputs": {"vae_name": models["audio_vae"]}},
+        "5": {"class_type": "MiniMaxH3SigmaShift", "inputs": {
+            "model": ["1", 0], "shift_video": project.get("shift", 12.0), "shift_audio": 3.0}},
+        "6": {"class_type": "H3LoadClip", "inputs": {
+            "file": src_file, "first": win_start, "last": win_start + win_len, "frames_only": True}},
+    }
+
+    hyb = project.get("hybrid")
+    if isinstance(hyb, dict) and hyb.get("on") is True:
+        hyb_clean = clean_hybrid(hyb)
+        if not hyb_clean or not hyb_clean.get("base") or not hyb_clean.get("overlay"):
+            raise ValueError("hybrid block swap needs both a base and an overlay safetensors model")
+        if available is not None:
+            for role in ("base", "overlay"):
+                if not installed(hyb_clean[role], available):
+                    raise ValueError("hybrid %s model %s is not installed in models/diffusion_models" % (role, hyb_clean[role]))
+        hyperflow = False
+        graph["1"] = {
+            "class_type": "H3HybridLoader",
+            "inputs": {
+                "base_unet": hyb_clean["base"],
+                "overlay_unet": hyb_clean["overlay"],
+                "blocks": hyb_clean["blocks"],
+                "scope": hyb_clean["scope"],
+                "weight_dtype": hyb_clean["weight_dtype"],
+            },
+        }
+        checkpoint = hyb_clean["checkpoint"]
+    if hyperflow:
+        graph["1"] = {"class_type": "H3HyperFlowLoader", "inputs": {"unet_name": unet, "weights_in": "auto"}}
+
+    model = ["1", 0]
+    family_lora = "lora_text" if checkpoint == "fl2va" and profile.get("lora_text") else "lora"
+    if profile.get(family_lora) and models.get("profile_" + family_lora):
+        lname, lstrength = models["profile_" + family_lora], profile[family_lora][1]
+        if profile.get("lora_node"):
+            graph["94"] = {"class_type": profile["lora_node"], "inputs": {
+                "model": model, "lora_name": lname, "strength_model": lstrength}}
+        else:
+            graph["94"] = {"class_type": "H3Lora", "inputs": {
+                "model": model, "lora_name": lname, "strength": lstrength}}
+        model = ["94", 0]
+    for n, (file, lstrength, start) in enumerate(project_loras(project, available, eff_clip)):
+        node = str(LORA_NODE + n)
+        graph[node] = {"class_type": "H3Lora", "inputs": {"model": model, "lora_name": file, "strength": lstrength}}
+        if start < 1.0:
+            graph[node]["inputs"]["start_sigma"] = start
+        model = [node, 0]
+    for n, (row, known) in enumerate(project_patches(project, patches)):
+        node = str(PATCH_NODE + n)
+        graph[node] = {"class_type": known["node"], "inputs": dict(patching.values(row, known), **{known["model"]: model})}
+        model = [node, 0]
+    graph["5"]["inputs"]["model"] = model
+
+    if mask_asset is not None:
+        if isinstance(mask_asset, str):
+            mask_file = mask_asset.strip()
+        elif isinstance(mask_asset, dict) and isinstance(mask_asset.get("file"), str) and mask_asset["file"].strip():
+            mask_file = "/".join(filter(None, (mask_asset.get("subfolder"), mask_asset["file"])))
+        else:
+            raise ValueError("mask_asset must be a file path or {file, subfolder} asset")
+        if not mask_file:
+            raise ValueError("mask_asset path cannot be empty")
+        graph["7"] = {"class_type": "H3LoadStill", "inputs": {"file": mask_file}}
+        graph["8"] = {"class_type": "ImageToMask", "inputs": {"image": ["7", 0], "channel": "red"}}
+    else:
+        graph["8"] = {"class_type": "SolidMask", "inputs": {"value": 1.0, "width": width, "height": height}}
+
+    take_inputs = {
+        "clip": ["2", 0],
+        "vae": ["3", 0],
+        "audio_vae": ["4", 0],
+        "prompt": full_prompt,
+        "width": width,
+        "height": height,
+        "length": win_len,
+        "checkpoint": checkpoint,
+        "anchor": "none",
+        "mid_frames": "",
+        "video_mode": "v2v",
+        "source_video": ["6", 0],
+        "source_hold": ["6", 2],
+        "hold_frames": win_len,
+        "strength": "hold",
+        "keep": 0.0,
+        "align": "video",
+        "region": ["8", 0],
+        "region_frame": local_frame,
+        "pooled_region": True,
+        "video_feather": 0,
+        "audio_hold": "off",
+        "audio_feather": 0,
+        "ref_image_size": "match",
+    }
+    sprite_still = dict(backdrop=backdrop_name)
+    ref_idx = 0
+    for _, pictures in shown:
+        for asset in pictures:
+            node = str(50 + ref_idx)
+            graph[node] = still_node(asset, **sprite_still)
+            take_inputs["ref_images.ref_image_%s" % ref_idx] = [node, 0]
+            ref_idx += 1
+    graph["10"] = {"class_type": "H3Take", "inputs": take_inputs}
+
+    graph["11"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": profile["sampler"]}}
+    if hyperflow:
+        graph["12"] = {"class_type": "H3HyperFlowSigmas", "inputs": {"model": ["5", 0], "steps": steps}}
+    else:
+        graph["12"] = sigmas_node(profile.get("scheduler"), steps, profile.get("sigmas"))
+
+    sigmas_ref = ["12", 0]
+    if strength != "full":
+        step_heavy = max(1, round(steps * 0.17))
+        step_medium = max(step_heavy + 1, round(steps * 0.35))
+        if steps >= 4:
+            step_medium = min(step_medium, steps - 2)
+        split_step = step_medium if strength == "medium" else step_heavy
+        graph["21"] = {"class_type": "SplitSigmas", "inputs": {"sigmas": ["12", 0], "step": split_step}}
+        sigmas_ref = ["21", 1]
+
+    cond_ref = ["10", 0]
+    mods = clip_refmods(project, eff_clip, available)
+    if mods:
+        loader = {"show_info": False}
+        for slot in range(1, REFMOD_SLOTS + 1):
+            _, file, mstrength = mods[slot - 1] if slot <= len(mods) else (None, "(none)", 1.0)
+            loader.update({"mod_%s" % slot: file, "strength_%s" % slot: mstrength, "copies_%s" % slot: 1})
+        graph["72"] = {"class_type": "MiniMaxH3RefModsLoader", "inputs": loader}
+        graph["73"] = {"class_type": "MiniMaxH3RefModApply", "inputs": {
+            "conditioning": cond_ref, "mods": ["72", 0], "override": False, "retention": 1.0,
+            "curve_direction": "constant", "scramble_seed": -1, "curve_shape": "linear", "curve_value": 1.0}}
+        cond_ref = ["73", 0]
+
+    graph["13"] = {"class_type": "BasicGuider", "inputs": {"model": ["5", 0], "conditioning": cond_ref}}
+    graph["14"] = {"class_type": "RandomNoise", "inputs": {"noise_seed": int(seed)}}
+    graph["15"] = {"class_type": "SamplerCustomAdvanced", "inputs": {
+        "noise": ["14", 0], "guider": ["13", 0], "sampler": ["11", 0],
+        "sigmas": sigmas_ref, "latent_image": ["10", 1]}}
+    graph["16"] = {"class_type": "VAEDecode", "inputs": {"samples": ["15", 0], "vae": ["3", 0]}}
+    graph["17"] = {"class_type": "ImageFromBatch", "inputs": {
+        "image": ["16", 0], "batch_index": local_frame, "length": 1}}
+
+    out_image = ["17", 0]
+    matte = sprite.matte_model(available) if sheet.get("cutout") == "foreground model" else None
+    if matte:
+        graph["22"] = {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": matte}}
+        graph["23"] = {"class_type": "RemoveBackground", "inputs": {"bg_removal_model": ["22", 0], "image": ["17", 0]}}
+        defringe_in = {"images": ["17", 0], "mask": ["23", 0]}
+        if sheet.get("alpha") == "hard":
+            defringe_in["alpha"] = "hard"
+        graph["24"] = {"class_type": "H3DefringeMatte", "inputs": defringe_in}
+        out_image = ["24", 0]
+
+    save_prefix = "%s/%s/clips/%s_%s_fix_p%d" % (ROOT, folder, clip["id"], take["id"], int(pose_index))
+    graph["25"] = {"class_type": "SaveImage", "inputs": {"images": out_image, "filename_prefix": save_prefix}}
+    return {
+        "graph": graph,
+        "window": {
+            "start": win_start,
+            "length": win_len,
+            "local_frame": local_frame,
+            "source_index": source_index,
+        },
+        "seed": int(seed),
+        "save_node": "25",
+        "has_matte": bool(matte),
+    }

@@ -713,10 +713,12 @@ function isAudioFile(file) {
   return Boolean(file && (/^audio\//i.test(file.type || "") || AUDIO_EXT.test(file.name || "")));
 }
 
+const CAST_PICTURE_DRAG = "application/x-h3-cast-picture";
+
 function isFileDrag(event) {
   const types = [...(event.dataTransfer?.types || [])];
   if (!types.includes("Files")) return false;
-  if (draggedClip || types.includes("text/h3clip") || types.includes(TAKE_DRAG) || types.includes("application/x-h3-cast")) return false;
+  if (draggedClip || types.includes("text/h3clip") || types.includes(TAKE_DRAG) || types.includes("application/x-h3-cast") || types.includes(CAST_PICTURE_DRAG)) return false;
   return true;
 }
 
@@ -907,13 +909,22 @@ function voiceSection(person) {
   return box;
 }
 
-function pickFile(input) {
+function pickFiles(input, { multiple = false } = {}) {
   return new Promise((resolve) => {
+    input.multiple = Boolean(multiple);
     input.value = "";
-    input.onchange = () => resolve(input.files[0] || null);
-    input.oncancel = () => resolve(null);
+    const finish = (files) => {
+      input.multiple = false;
+      resolve(files);
+    };
+    input.onchange = () => finish([...(input.files || [])]);
+    input.oncancel = () => finish([]);
     input.click();
   });
+}
+
+function pickFile(input) {
+  return pickFiles(input, { multiple: false }).then((files) => files[0] || null);
 }
 
 async function addCastFiles(files) {
@@ -1177,8 +1188,9 @@ function renderCast() {
     const button = document.createElement("button");
     button.className = "person" + (person.id === state.person ? " on" : "") + (person.voice && person.file ? " voiced" : "");
     button.dataset.person = person.id;
-    if (person.voice) button.title = person.file ? person.name + " has a voice" : person.name + " is a voice";
-    else if (person.refmod && !person.file) button.title = person.name + " · RefMod: " + person.refmod.file;
+    if (person.voice) button.title = (person.file ? person.name + " has a voice" : person.name + " is a voice") + " · Double-click to edit";
+    else if (person.refmod && !person.file) button.title = person.name + " · RefMod: " + person.refmod.file + " · Double-click to edit";
+    else button.title = person.name + " · Double-click to edit";
     let image;
     if (person.file) {
       image = document.createElement("img");
@@ -1202,16 +1214,20 @@ function renderCast() {
       event.dataTransfer.setData("application/x-h3-cast", person.id);
       event.dataTransfer.effectAllowed = "copy";
     });
-    button.addEventListener("click", () => {
-      setSource(null);
-      state.person = person.id;
-      state.clip = null;
-      state.item = null;
-      state.bin = null;
-      state.effect = null;
-      state.sound = null;
-      state.tab = "shot";
-      renderAll();
+    button.addEventListener("click", (event) => {
+      const already = state.person === person.id && !state.clip && !state.item && !state.bin && !state.effect && !state.sound;
+      if (!already) {
+        setSource(null);
+        state.person = person.id;
+        state.clip = null;
+        state.item = null;
+        state.bin = null;
+        state.effect = null;
+        state.sound = null;
+        state.tab = "shot";
+        renderAll();
+      }
+      if (event.detail >= 2) openPerson(person.id);
     });
     return button;
   }));
@@ -1396,6 +1412,332 @@ $("inspector").addEventListener("drop", (event) => {
   }, 0);
 });
 
+// @ cast mention autocomplete for prompt fields (What happens, Who speaks, Rewrite, Edit with prompt, Motion notes).
+const MENTION_BOUNDARY = /[\s([{"',:;/\-—]/;
+
+function castMentionContext(text, caret) {
+  const value = String(text ?? "");
+  const pos = Math.max(0, Math.min(value.length, Number(caret) || 0));
+  const before = value.slice(0, pos);
+  const at = before.lastIndexOf("@");
+  if (at < 0) return null;
+  if (at > 0 && !MENTION_BOUNDARY.test(before[at - 1])) return null;
+  const query = before.slice(at + 1);
+  if (/[\r\n@]/.test(query)) return null;
+  if (query.length > 64) return null;
+  return { start: at, end: pos, query };
+}
+
+function matchCastMentions(cast, query, { mode = "all" } = {}) {
+  const needle = String(query ?? "").trim().toLowerCase();
+  const eligible = (cast || []).filter((person) => {
+    if (!person || !String(person.name || "").trim()) return false;
+    if (mode === "visual") return Boolean(person.file || person.refmod);
+    return true;
+  });
+  // If the user typed a space after "@Name", only stay open when a cast name still matches the full query.
+  const raw = String(query ?? "").toLowerCase();
+  const scored = [];
+  for (let i = 0; i < eligible.length; i++) {
+    const person = eligible[i];
+    const name = String(person.name).trim();
+    const lower = name.toLowerCase();
+    let rank = 0;
+    if (!raw) {
+      rank = 1;
+    } else if (lower.startsWith(raw)) {
+      rank = 1;
+    } else if (needle && lower.includes(raw)) {
+      rank = 2;
+    } else {
+      continue;
+    }
+    const modeBoost = mode === "voice" ? (person.voice ? 0 : 1) : 0;
+    scored.push({ person, rank, modeBoost, index: i });
+  }
+  scored.sort((a, b) => a.modeBoost - b.modeBoost || a.rank - b.rank || a.index - b.index);
+  return scored.map((row) => row.person);
+}
+
+function applyCastMention(text, start, end, name) {
+  const value = String(text ?? "");
+  const before = value.slice(0, start);
+  const after = value.slice(end);
+  const needsSpace = !after || !/^[\s,.;:!?)\]}]/.test(after);
+  const inserted = "@" + String(name || "").trim() + (needsSpace ? " " : "");
+  return { text: before + inserted + after, caret: before.length + inserted.length };
+}
+
+const castMention = (() => {
+  let menu = null;
+  let mirror = null;
+  let target = null;
+  let ctx = null;
+  let items = [];
+  let active = 0;
+  let suppressInput = false;
+
+  const ensureMenu = () => {
+    if (menu) return menu;
+    menu = document.createElement("div");
+    menu.id = "castMentionMenu";
+    menu.className = "menu cast-mention-menu";
+    menu.setAttribute("popover", "manual");
+    menu.setAttribute("role", "listbox");
+    menu.setAttribute("aria-label", "Cast members");
+    menu.addEventListener("mousedown", (event) => event.preventDefault());
+    document.body.append(menu);
+    return menu;
+  };
+
+  const isOpen = () => Boolean(menu && menu.matches(":popover-open"));
+
+  const close = () => {
+    if (menu && menu.matches(":popover-open")) {
+      try { menu.hidePopover(); } catch (_) {}
+    }
+    if (target) {
+      target.removeAttribute("aria-expanded");
+      target.removeAttribute("aria-controls");
+      target.removeAttribute("aria-activedescendant");
+    }
+    target = null;
+    ctx = null;
+    items = [];
+    active = 0;
+  };
+
+  const caretCoords = (el, pos) => {
+    if (!mirror) {
+      mirror = document.createElement("div");
+      mirror.setAttribute("aria-hidden", "true");
+      mirror.style.cssText = "position:fixed;top:-9999px;left:-9999px;visibility:hidden;pointer-events:none;overflow:hidden;";
+      document.body.append(mirror);
+    }
+    const cs = getComputedStyle(el);
+    const isArea = el.tagName === "TEXTAREA";
+    const props = [
+      "boxSizing", "width", "fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing",
+      "lineHeight", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+      "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "tabSize",
+    ];
+    for (const prop of props) mirror.style[prop] = cs[prop];
+    mirror.style.whiteSpace = isArea ? "pre-wrap" : "pre";
+    mirror.style.wordWrap = isArea ? "break-word" : "normal";
+    mirror.style.overflowWrap = isArea ? "break-word" : "normal";
+    mirror.textContent = el.value.slice(0, pos);
+    const mark = document.createElement("span");
+    mark.textContent = "\u200b";
+    mirror.append(mark);
+    const rect = el.getBoundingClientRect();
+    const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4 || 18;
+    const x = rect.left + mark.offsetLeft - el.scrollLeft;
+    const y = rect.top + mark.offsetTop - el.scrollTop;
+    return { x, y, lineHeight: Math.max(lh, mark.offsetHeight || 0), rect };
+  };
+
+  const place = (el, pos) => {
+    if (!menu || !el) return;
+    const { x, y, lineHeight, rect } = caretCoords(el, pos);
+    const menuW = Math.max(240, Math.min(340, menu.offsetWidth || 280));
+    const menuH = menu.offsetHeight || 180;
+    const clampedX = Math.max(8, Math.min(window.innerWidth - menuW - 8, x));
+    const belowY = Math.min(rect.bottom + 4, y + lineHeight + 4);
+    const fitsBelow = belowY + menuH <= window.innerHeight - 10;
+    const top = fitsBelow ? belowY : Math.max(8, Math.max(rect.top, y) - menuH - 4);
+    menu.style.left = clampedX + "px";
+    menu.style.top = top + "px";
+  };
+
+  const setActive = (next) => {
+    if (!items.length || !menu) return;
+    active = (next + items.length) % items.length;
+    const rows = menu.querySelectorAll(".cast-mention-item");
+    rows.forEach((row, i) => {
+      const on = i === active;
+      row.setAttribute("aria-selected", String(on));
+      row.classList.toggle("active", on);
+      if (on) {
+        row.scrollIntoView({ block: "nearest" });
+        if (target) target.setAttribute("aria-activedescendant", row.id);
+      }
+    });
+  };
+
+  const choose = (index) => {
+    const person = items[index];
+    const el = target;
+    const range = ctx;
+    if (!person || !el || !range) return close();
+    const { text, caret } = applyCastMention(el.value, range.start, range.end, person.name);
+    const clip = el.closest("#inspector") && el.dataset.key === "What happens" ? clipOf(state.clip) : null;
+    close();
+    el.value = text;
+    el.focus();
+    try { el.setSelectionRange(caret, caret); } catch (_) {}
+    suppressInput = true;
+    try { el.dispatchEvent(new Event("input", { bubbles: true })); } finally { suppressInput = false; }
+    if (clip && (person.file || person.refmod) && !(clip.cast || []).includes(person.id)) {
+      const focus = rememberFocus();
+      clip.cast = [...(clip.cast || []), person.id];
+      save();
+      renderInspector();
+      restoreFocus(focus);
+      toast(person.name + " is now in the cast of " + clip.name + ".");
+    }
+  };
+
+  const render = () => {
+    const el = ensureMenu();
+    const clip = target?.closest("#inspector") ? clipOf(state.clip) : null;
+    const inClip = new Set(clip?.cast || []);
+    const mode = target?.dataset.castMention || "all";
+
+    el.replaceChildren(...items.map((person, i) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.id = "castMentionOpt_" + i;
+      btn.className = "cast-mention-item" + (i === active ? " active" : "");
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-selected", String(i === active));
+
+      const avatar = document.createElement("span");
+      avatar.className = "cast-mention-avatar";
+      if (person.file) {
+        const img = document.createElement("img");
+        img.src = assetUrl(person);
+        img.alt = "";
+        avatar.append(img);
+      } else if (person.refmod) {
+        avatar.append(refmodVisual(person.refmod.file, { compact: true, badge: false, showName: false }));
+      } else {
+        const vm = document.createElement("span");
+        vm.className = "voice-mark";
+        avatar.append(vm);
+      }
+
+      const info = document.createElement("span");
+      info.className = "cast-mention-info";
+      const name = document.createElement("b");
+      name.textContent = "@" + person.name;
+      const meta = document.createElement("span");
+      meta.className = "cast-mention-desc";
+      const desc = String(person.description || "").trim();
+      if (desc) {
+        meta.textContent = desc;
+      } else {
+        const facts = [];
+        const picCount = castPicturesOf(person).length;
+        if (picCount) facts.push(picCount === 1 ? "1 picture" : picCount + " pictures");
+        if (person.voice) facts.push("Voice");
+        if (person.refmod) facts.push("RefMod");
+        meta.textContent = facts.join(" · ") || "Cast member";
+      }
+      info.append(name, meta);
+
+      btn.append(avatar, info);
+
+      if (mode === "voice" && person.voice) {
+        const pill = document.createElement("span");
+        pill.className = "cast-mention-tag voice";
+        pill.textContent = "Voice";
+        btn.append(pill);
+      } else if (inClip.has(person.id)) {
+        const pill = document.createElement("span");
+        pill.className = "cast-mention-tag in-shot";
+        pill.textContent = "In shot";
+        btn.append(pill);
+      }
+
+      btn.addEventListener("pointerenter", () => setActive(i));
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        choose(i);
+      });
+      return btn;
+    }));
+  };
+
+  const update = (el) => {
+    if (!el || !el.matches?.("[data-cast-mention]") || el.readOnly || el.disabled) return close();
+    if (el.selectionStart !== el.selectionEnd) return close();
+    const found = castMentionContext(el.value, el.selectionStart);
+    if (!found) return close();
+    const mode = el.dataset.castMention || "all";
+    const matches = matchCastMentions(state.project?.cast || [], found.query, { mode });
+    if (!matches.length) return close();
+
+    const prevId = items[active]?.id;
+    target = el;
+    ctx = found;
+    items = matches;
+    const kept = prevId ? items.findIndex((p) => p.id === prevId) : -1;
+    active = kept >= 0 ? kept : 0;
+
+    const host = el.closest("dialog[open]") || document.body;
+    const m = ensureMenu();
+    if (m.parentElement !== host) {
+      if (m.matches(":popover-open")) {
+        try { m.hidePopover(); } catch (_) {}
+      }
+      host.append(m);
+    }
+    render();
+    if (!m.matches(":popover-open")) {
+      try { m.showPopover(); } catch (_) {}
+    }
+    el.setAttribute("aria-controls", m.id);
+    el.setAttribute("aria-expanded", "true");
+    setActive(active);
+    place(el, found.start);
+  };
+
+  document.addEventListener("input", (event) => {
+    if (!suppressInput && event.target?.matches?.("[data-cast-mention]")) update(event.target);
+  });
+  document.addEventListener("click", (event) => {
+    if (event.target?.matches?.("[data-cast-mention]")) update(event.target);
+    else if (isOpen() && !event.target?.closest?.("#castMentionMenu")) close();
+  });
+  document.addEventListener("keyup", (event) => {
+    if (!event.target?.matches?.("[data-cast-mention]")) return;
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) update(event.target);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (!isOpen() || event.target !== target) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActive(active + 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActive(active - 1);
+    } else if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      event.stopPropagation();
+      choose(active);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    }
+  }, true);
+  document.addEventListener("focusout", (event) => {
+    if (event.target === target && isOpen()) {
+      setTimeout(() => {
+        if (document.activeElement !== target && !document.activeElement?.closest?.("#castMentionMenu")) close();
+      }, 0);
+    }
+  });
+  window.addEventListener("resize", () => {
+    if (isOpen() && target && ctx) place(target, ctx.start);
+  });
+  document.addEventListener("scroll", () => {
+    if (isOpen() && target && ctx) place(target, ctx.start);
+  }, true);
+
+  return { update, close, isOpen };
+})();
+
 // Makes a RefMod from a cast member's pictures with the RefMod pack, then waits for its file to appear.
 async function makeRefmod(person) {
   try {
@@ -1563,17 +1905,155 @@ function openRefmodPicker() {
   });
 }
 
-function castViewSelect(target, label, onChange) {
+function castViewLabel(view) {
+  const found = CAST_VIEWS.find(([val]) => val === (view || ""));
+  return found ? found[1] : "";
+}
+
+// Unified ordered list of a cast member's pictures: index 0 is the Main picture (stored directly on
+// person.file/subfolder/view), and indices 1..7 are stored in person.pictures.
+function castPicturesOf(person) {
+  if (!person || !person.file) return [];
+  const main = { file: person.file, subfolder: person.subfolder || "" };
+  if (person.view) main.view = person.view;
+  const others = (person.pictures || [])
+    .filter((p) => p && typeof p.file === "string" && p.file)
+    .map((p) => {
+      const entry = { file: p.file, subfolder: p.subfolder || "" };
+      if (p.view) entry.view = p.view;
+      return entry;
+    });
+  return [main, ...others].slice(0, CAST_PICTURES);
+}
+
+function applyCastPictures(person, list) {
+  const clean = (list || [])
+    .filter((p) => p && typeof p.file === "string" && p.file)
+    .slice(0, CAST_PICTURES)
+    .map((p) => {
+      const entry = { file: p.file, subfolder: p.subfolder || "" };
+      if (p.view) entry.view = p.view;
+      return entry;
+    });
+  if (!clean.length) {
+    delete person.file;
+    delete person.subfolder;
+    delete person.view;
+    delete person.pictures;
+    return;
+  }
+  const [first, ...rest] = clean;
+  person.file = first.file;
+  person.subfolder = first.subfolder || "";
+  if (first.view) person.view = first.view;
+  else delete person.view;
+  if (rest.length) person.pictures = rest;
+  else delete person.pictures;
+}
+
+function moveCastPicture(person, fromIndex, toIndex) {
+  const pics = castPicturesOf(person);
+  if (fromIndex < 0 || fromIndex >= pics.length) return false;
+  const clamped = Math.max(0, Math.min(pics.length - 1, toIndex));
+  if (fromIndex === clamped) return false;
+  const [item] = pics.splice(fromIndex, 1);
+  pics.splice(clamped, 0, item);
+  applyCastPictures(person, pics);
+  return true;
+}
+
+function promoteCastPicture(person, index) {
+  return moveCastPicture(person, index, 0);
+}
+
+function replaceCastPicture(person, index, asset, { preserveView = true } = {}) {
+  const pics = castPicturesOf(person);
+  if (index < 0 || index >= pics.length || !asset?.file) return false;
+  const prev = pics[index];
+  const next = { file: asset.file, subfolder: asset.subfolder || "" };
+  if (preserveView && prev.view) next.view = prev.view;
+  else if (asset.view) next.view = asset.view;
+  pics[index] = next;
+  applyCastPictures(person, pics);
+  return true;
+}
+
+function canRemoveCastPicture(person, count = castPicturesOf(person).length) {
+  return count > 1 || Boolean(person?.voice || person?.refmod);
+}
+
+function removeCastPicture(person, index) {
+  const pics = castPicturesOf(person);
+  if (index < 0 || index >= pics.length) return false;
+  if (!canRemoveCastPicture(person, pics.length)) return false;
+  pics.splice(index, 1);
+  applyCastPictures(person, pics);
+  return true;
+}
+
+function appendCastPictures(person, assets) {
+  const pics = castPicturesOf(person);
+  const valid = (assets || []).filter((a) => a && typeof a.file === "string" && a.file);
+  const room = Math.max(0, CAST_PICTURES - pics.length);
+  const take = valid.slice(0, room).map((a) => {
+    const entry = { file: a.file, subfolder: a.subfolder || "" };
+    if (a.view) entry.view = a.view;
+    return entry;
+  });
+  if (take.length) applyCastPictures(person, [...pics, ...take]);
+  return { added: take.length, skipped: valid.length - take.length, total: pics.length + take.length };
+}
+
+function setCastPictureView(person, index, view) {
+  const pics = castPicturesOf(person);
+  if (index < 0 || index >= pics.length) return false;
+  if (view) pics[index].view = view;
+  else delete pics[index].view;
+  applyCastPictures(person, pics);
+  return true;
+}
+
+function dropPictureFiles(element, takeFiles) {
+  let depth = 0;
+  element.addEventListener("dragenter", (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    depth += 1;
+    element.classList.add("drop-hot");
+  });
+  element.addEventListener("dragover", (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+  element.addEventListener("dragleave", () => {
+    if (!depth) return;
+    depth = Math.max(0, depth - 1);
+    if (!depth) element.classList.remove("drop-hot");
+  });
+  element.addEventListener("drop", (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    depth = 0;
+    element.classList.remove("drop-hot");
+    takeFiles([...(event.dataTransfer?.files || [])]);
+  });
+}
+
+function castViewSelect(person, index, label, onChange) {
+  const pics = castPicturesOf(person);
+  const current = pics[index]?.view || "";
   const select = document.createElement("select");
   select.className = "picture-view";
   select.setAttribute("aria-label", label);
   select.title = "Direction tag for Sprite Draft view routing";
   for (const [val, text] of CAST_VIEWS) select.append(new Option(text, val));
-  select.value = target.view || "";
+  select.value = current;
+  select.addEventListener("click", (event) => event.stopPropagation());
   select.addEventListener("change", () => {
     checkpoint();
-    if (select.value) target.view = select.value;
-    else delete target.view;
+    setCastPictureView(person, index, select.value);
     save();
     spritesRoom.refresh();
     if (onChange) onChange();
@@ -1581,65 +2061,376 @@ function castViewSelect(target, label, onChange) {
   return select;
 }
 
-// More pictures of the same cast member: other angles, other light, the whole figure.
-function morePictures(person) {
-  const box = document.createElement("div");
-  box.className = "more-pictures";
-  const others = (person.pictures || []).filter((p) => p && p.file);
-  const row = document.createElement("div");
-  row.className = "picture-row";
-  for (const asset of others) {
-    const card = document.createElement("div");
-    card.className = "picture-card";
-    const cell = document.createElement("div");
-    cell.className = "picture";
-    const image = document.createElement("img");
-    image.src = assetUrl(asset);
-    image.alt = "Another picture of " + person.name;
-    const remove = document.createElement("button");
-    remove.className = "picture-remove";
-    remove.textContent = "\u00d7";
-    remove.title = "Remove this picture";
-    remove.setAttribute("aria-label", "Remove this picture of " + person.name);
-    remove.addEventListener("click", () => {
-      checkpoint();
-      person.pictures = person.pictures.filter((p) => p !== asset);
-      if (!person.pictures.length) delete person.pictures;
+async function addPicturesToPerson(person, rawFiles, { onStart = null, onEnd = null, onAdded = null } = {}) {
+  const files = [...(rawFiles || [])].filter(isPictureFile);
+  if (!files.length) {
+    toast("Drop or choose PNG, JPEG or WebP pictures.", true);
+    return;
+  }
+  const existing = castPicturesOf(person);
+  const room = Math.max(0, CAST_PICTURES - existing.length);
+  if (!room) {
+    toast(person.name + " already has " + CAST_PICTURES + " pictures. Replace or remove one first.", true);
+    return;
+  }
+  const toUpload = files.slice(0, room);
+  const skipped = files.length - toUpload.length;
+  onStart?.(toUpload.length);
+  try {
+    const uploaded = [];
+    for (const file of toUpload) uploaded.push(await uploadPicture(file));
+    if (!uploaded.length) return;
+    checkpoint();
+    const firstNewIndex = existing.length;
+    const { added } = appendCastPictures(person, uploaded);
+    save();
+    onAdded?.(firstNewIndex);
+    renderAll();
+    const msg = added === 1 ? "Added 1 picture to " + person.name + "." : "Added " + added + " pictures to " + person.name + ".";
+    toast(skipped ? msg + " " + skipped + " skipped (limit is " + CAST_PICTURES + ")." : msg, false, undoAction);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    onEnd?.();
+  }
+}
+
+async function replacePersonPicture(person, index, { onReplaced = null } = {}) {
+  const file = await pickFile($("castFile"));
+  if (!file) return false;
+  if (!isPictureFile(file)) {
+    toast("Choose a PNG, JPEG or WebP picture.", true);
+    return false;
+  }
+  try {
+    const asset = await uploadPicture(file);
+    checkpoint();
+    if (!replaceCastPicture(person, index, asset, { preserveView: true })) return false;
+    save();
+    onReplaced?.(index);
+    renderAll();
+    toast("Replaced " + (index === 0 ? "main picture" : "picture #" + (index + 1)) + " of " + person.name + ".", false, undoAction);
+    return true;
+  } catch (error) {
+    toast(error.message, true);
+    return false;
+  }
+}
+
+// Zoomable top-layer lightbox for inspecting cast reference pictures up close, with Fit / 100% / 200% zoom,
+// drag-to-pan, keyboard navigation, resolution readout, and quick Replace / Make main / Remove actions.
+let castLightboxCleanup = null;
+
+function openCastLightbox(personId, startIndex = 0, { onSelect = null } = {}) {
+  const dialog = $("castLightbox");
+  const stage = $("castLightboxStage");
+  const canvas = $("castLightboxCanvas");
+  const img = $("castLightboxImage");
+  const titleEl = $("castLightboxTitle");
+  const metaEl = $("castLightboxMeta");
+  const strip = $("castLightboxStrip");
+  const prevBtn = $("castLightboxPrev");
+  const nextBtn = $("castLightboxNext");
+  const zoomOutBtn = $("castLightboxZoomOut");
+  const zoomResetBtn = $("castLightboxZoomReset");
+  const zoomInBtn = $("castLightboxZoomIn");
+  const makeMainBtn = $("castLightboxMakeMain");
+  const replaceBtn = $("castLightboxReplace");
+  const removeBtn = $("castLightboxRemove");
+  const closeBtn = $("castLightboxClose");
+
+  castLightboxCleanup?.();
+
+  const live = () => (state.project?.cast || []).find((c) => c.id === personId);
+  let index = Math.max(0, startIndex);
+  let scale = 1;
+  let panX = 0;
+  let panY = 0;
+  let fitRatio = 1; // rendered fit width / naturalWidth
+  let dragging = null;
+
+  const updateMeta = () => {
+    const person = live();
+    const pics = castPicturesOf(person);
+    const pic = pics[index];
+    if (!person || !pic) return;
+    const slotText = index === 0 ? "#1 Main" : "#" + (index + 1) + " of " + pics.length;
+    titleEl.textContent = person.name + " · " + slotText;
+    const parts = [];
+    if (pic.view) parts.push(castViewLabel(pic.view));
+    if (img.naturalWidth && img.naturalHeight) parts.push(img.naturalWidth + " × " + img.naturalHeight);
+    metaEl.textContent = parts.join(" · ");
+  };
+
+  const computeFitRatio = () => {
+    if (!img.naturalWidth || !img.naturalHeight) return 1;
+    const rect = stage.getBoundingClientRect();
+    if (!rect.width || !rect.height) return 1;
+    return Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight, 1);
+  };
+
+  const clampPan = () => {
+    if (scale <= 1.001) {
+      panX = 0;
+      panY = 0;
+      return;
+    }
+    const stageRect = stage.getBoundingClientRect();
+    const baseW = img.offsetWidth || stageRect.width;
+    const baseH = img.offsetHeight || stageRect.height;
+    const maxX = Math.max(0, (baseW * scale - stageRect.width) / 2 + 24);
+    const maxY = Math.max(0, (baseH * scale - stageRect.height) / 2 + 24);
+    panX = Math.max(-maxX, Math.min(maxX, panX));
+    panY = Math.max(-maxY, Math.min(maxY, panY));
+  };
+
+  const applyTransform = () => {
+    clampPan();
+    canvas.style.transform = `translate3d(${panX.toFixed(1)}px, ${panY.toFixed(1)}px, 0) scale(${scale.toFixed(4)})`;
+    stage.classList.toggle("zoomed", scale > 1.01);
+    zoomResetBtn.textContent = scale <= 1.01 ? "Fit" : Math.round(scale * 100) + "%";
+    zoomOutBtn.disabled = scale <= 1.01;
+    zoomInBtn.disabled = scale >= 6;
+  };
+
+  const resetZoom = () => {
+    scale = 1;
+    panX = 0;
+    panY = 0;
+    applyTransform();
+  };
+
+  const setZoom = (nextScale, clientX = null, clientY = null) => {
+    const clamped = Math.max(1, Math.min(6, nextScale));
+    if (clamped <= 1.01) {
+      resetZoom();
+      return;
+    }
+    if (clientX !== null && clientY !== null) {
+      const rect = stage.getBoundingClientRect();
+      const ox = clientX - (rect.left + rect.width / 2);
+      const oy = clientY - (rect.top + rect.height / 2);
+      const ratio = clamped / scale;
+      panX = ox - (ox - panX) * ratio;
+      panY = oy - (oy - panY) * ratio;
+    }
+    scale = clamped;
+    applyTransform();
+  };
+
+  const cycleZoom = (clientX = null, clientY = null) => {
+    fitRatio = computeFitRatio();
+    const nativeScale = fitRatio > 0 && fitRatio < 0.92 ? Math.min(6, 1 / fitRatio) : 2;
+    const doubleScale = Math.min(6, Math.max(2, nativeScale * 1.5));
+    if (scale <= 1.05) setZoom(nativeScale, clientX, clientY);
+    else if (scale < doubleScale - 0.15) setZoom(doubleScale, clientX, clientY);
+    else resetZoom();
+  };
+
+  const draw = () => {
+    const person = live();
+    const pics = castPicturesOf(person);
+    if (!person || !pics.length) {
+      dialog.close();
+      return;
+    }
+    index = Math.max(0, Math.min(pics.length - 1, index));
+    onSelect?.(index);
+    const pic = pics[index];
+    const url = assetUrl(pic);
+    if (img.dataset.src !== url) {
+      img.dataset.src = url;
+      img.src = url;
+    }
+    img.alt = person.name + " reference " + (index + 1);
+    resetZoom();
+    updateMeta();
+
+    const multi = pics.length > 1;
+    prevBtn.hidden = !multi;
+    nextBtn.hidden = !multi;
+    makeMainBtn.hidden = index === 0;
+    const removable = canRemoveCastPicture(person, pics.length);
+    removeBtn.disabled = !removable;
+    removeBtn.title = removable ? "Remove this picture" : "A picture-only cast member needs at least one picture. Use Replace instead.";
+
+    strip.hidden = !multi;
+    if (multi) {
+      strip.replaceChildren(...pics.map((entry, i) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "cast-lightbox-thumb" + (i === index ? " active" : "");
+        btn.setAttribute("aria-pressed", String(i === index));
+        btn.setAttribute("aria-label", i === 0 ? "Main picture" : "Picture " + (i + 1));
+        const thumb = document.createElement("img");
+        thumb.src = assetUrl(entry);
+        thumb.alt = "";
+        const num = document.createElement("span");
+        num.className = "cast-lightbox-num" + (i === 0 ? " main" : "");
+        num.textContent = i === 0 ? "Main" : "#" + (i + 1);
+        btn.append(thumb, num);
+        btn.addEventListener("click", () => {
+          index = i;
+          draw();
+        });
+        return btn;
+      }));
+      strip.querySelector(".active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  };
+
+  const onImgLoad = () => {
+    updateMeta();
+    applyTransform();
+  };
+  const onPrev = () => {
+    const pics = castPicturesOf(live());
+    if (pics.length < 2) return;
+    index = (index - 1 + pics.length) % pics.length;
+    draw();
+  };
+  const onNext = () => {
+    const pics = castPicturesOf(live());
+    if (pics.length < 2) return;
+    index = (index + 1) % pics.length;
+    draw();
+  };
+  const onWheel = (event) => {
+    event.preventDefault();
+    const factor = event.deltaY < 0 ? 1.22 : 1 / 1.22;
+    setZoom(scale * factor, event.clientX, event.clientY);
+  };
+  const onDblClick = (event) => {
+    if (event.target.closest("button")) return;
+    if (scale > 1.05) resetZoom();
+    else setZoom(2, event.clientX, event.clientY);
+  };
+  const onPointerDown = (event) => {
+    if (event.button !== 0 || scale <= 1.01 || event.target.closest("button")) return;
+    event.preventDefault();
+    dragging = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: panX, startY: panY };
+    stage.classList.add("panning");
+    stage.setPointerCapture?.(event.pointerId);
+  };
+  const onPointerMove = (event) => {
+    if (!dragging || event.pointerId !== dragging.id) return;
+    panX = dragging.startX + (event.clientX - dragging.x);
+    panY = dragging.startY + (event.clientY - dragging.y);
+    applyTransform();
+  };
+  const onPointerUp = (event) => {
+    if (!dragging || event.pointerId !== dragging.id) return;
+    dragging = null;
+    stage.classList.remove("panning");
+    stage.releasePointerCapture?.(event.pointerId);
+  };
+  const onKeyDown = (event) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      onPrev();
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      onNext();
+    } else if (event.key === "+" || event.key === "=") {
+      event.preventDefault();
+      setZoom(scale * 1.25);
+    } else if (event.key === "-" || event.key === "_") {
+      event.preventDefault();
+      setZoom(scale / 1.25);
+    } else if (event.key === "0") {
+      event.preventDefault();
+      resetZoom();
+    }
+  };
+  const onBackdropClick = (event) => {
+    if (event.target === dialog) dialog.close();
+  };
+  const onMakeMain = () => {
+    const person = live();
+    if (!person || index === 0) return;
+    checkpoint();
+    if (promoteCastPicture(person, index)) {
+      index = 0;
       save();
-      renderInspector();
-    });
-    cell.append(image, remove);
-    const view = castViewSelect(asset, "View tag for picture of " + person.name);
-    card.append(cell, view);
-    row.append(card);
-  }
-  if (others.length < CAST_PICTURES - 1) {
-    const add = document.createElement("button");
-    add.className = "quiet picture-add";
-    add.textContent = others.length ? "Add" : "Add more pictures";
-    add.title = "Add another picture of " + person.name;
-    add.addEventListener("click", async () => {
-      const file = await pickFile($("castFile"));
-      if (!file) return;
-      try {
-        const asset = await uploadPicture(file);
-        checkpoint();
-        person.pictures = [...(person.pictures || []), asset];
-        save();
-        renderInspector();
-      } catch (error) {
-        toast(error.message, true);
-      }
-    });
-    row.append(add);
-  }
-  const hint = document.createElement("p");
-  hint.className = "hint";
-  hint.textContent = others.length
-    ? (others.length + 1) + " of " + CAST_PICTURES + " pictures. A shot takes 9 pictures in all, shared between its cast."
-    : "Other angles and the whole figure help a shot keep them the same.";
-  box.append(row, hint);
-  return box;
+      renderAll();
+      draw();
+      toast("Promoted to main picture for " + person.name + ".", false, undoAction);
+    }
+  };
+  const onReplace = async () => {
+    const person = live();
+    if (!person) return;
+    const ok = await replacePersonPicture(person, index, { onReplaced: (i) => { index = i; } });
+    if (ok && dialog.open) draw();
+  };
+  const onRemove = () => {
+    const person = live();
+    if (!person) return;
+    if (!canRemoveCastPicture(person)) {
+      toast("A picture-only cast member needs at least one picture. Use Replace instead.", true);
+      return;
+    }
+    checkpoint();
+    if (removeCastPicture(person, index)) {
+      const remaining = castPicturesOf(person).length;
+      index = Math.min(index, Math.max(0, remaining - 1));
+      save();
+      renderAll();
+      if (!remaining) dialog.close();
+      else draw();
+      toast("Removed picture from " + person.name + ".", false, undoAction);
+    }
+  };
+  const onClose = () => dialog.close();
+  const onZoomOut = () => setZoom(scale / 1.25);
+  const onZoomIn = () => setZoom(scale * 1.25);
+  const onZoomReset = () => cycleZoom();
+
+  img.addEventListener("load", onImgLoad);
+  prevBtn.addEventListener("click", onPrev);
+  nextBtn.addEventListener("click", onNext);
+  zoomOutBtn.addEventListener("click", onZoomOut);
+  zoomInBtn.addEventListener("click", onZoomIn);
+  zoomResetBtn.addEventListener("click", onZoomReset);
+  makeMainBtn.addEventListener("click", onMakeMain);
+  replaceBtn.addEventListener("click", onReplace);
+  removeBtn.addEventListener("click", onRemove);
+  closeBtn.addEventListener("click", onClose);
+  stage.addEventListener("wheel", onWheel, { passive: false });
+  stage.addEventListener("dblclick", onDblClick);
+  stage.addEventListener("pointerdown", onPointerDown);
+  stage.addEventListener("pointermove", onPointerMove);
+  stage.addEventListener("pointerup", onPointerUp);
+  stage.addEventListener("pointercancel", onPointerUp);
+  dialog.addEventListener("keydown", onKeyDown);
+  dialog.addEventListener("click", onBackdropClick);
+
+  const cleanup = () => {
+    img.removeEventListener("load", onImgLoad);
+    prevBtn.removeEventListener("click", onPrev);
+    nextBtn.removeEventListener("click", onNext);
+    zoomOutBtn.removeEventListener("click", onZoomOut);
+    zoomInBtn.removeEventListener("click", onZoomIn);
+    zoomResetBtn.removeEventListener("click", onZoomReset);
+    makeMainBtn.removeEventListener("click", onMakeMain);
+    replaceBtn.removeEventListener("click", onReplace);
+    removeBtn.removeEventListener("click", onRemove);
+    closeBtn.removeEventListener("click", onClose);
+    stage.removeEventListener("wheel", onWheel);
+    stage.removeEventListener("dblclick", onDblClick);
+    stage.removeEventListener("pointerdown", onPointerDown);
+    stage.removeEventListener("pointermove", onPointerMove);
+    stage.removeEventListener("pointerup", onPointerUp);
+    stage.removeEventListener("pointercancel", onPointerUp);
+    dialog.removeEventListener("keydown", onKeyDown);
+    dialog.removeEventListener("click", onBackdropClick);
+    castLightboxCleanup = null;
+  };
+  castLightboxCleanup = cleanup;
+  dialog.addEventListener("close", cleanup, { once: true });
+
+  draw();
+  if (!dialog.open) dialog.showModal();
 }
 
 function removePerson(person) {
@@ -1727,47 +2518,627 @@ function renderPerson(panel, person) {
   panel.replaceChildren(...sections);
 }
 
-// Everything about a cast member, in a dialog wide enough for their pictures and voice side by side.
+// Modernized two-column studio dialog for a cast member:
+// Left column: visual reference gallery (hero preview, lightbox inspection, replace, drag-to-reorder,
+// view tags, and multi-file drag-and-drop). Right column: About (with inline LLM vision description),
+// Voice, and RefMod.
 function openPerson(id) {
-  const live = () => (state.project.cast || []).find((c) => c.id === id);
+  const live = () => (state.project?.cast || []).find((c) => c.id === id);
+  let selectedIndex = 0;
+  let uploading = 0;
+  let dragFrom = null;
+  const aiState = { busy: false, suggestion: "", status: "", error: "" };
+
+  const redraw = () => {
+    if ($("panelDialog").open) drawPanelDialog();
+  };
+
+  const runDescribe = async () => {
+    const person = live();
+    if (!person || aiState.busy) return;
+    if (!writer.ready()) {
+      openWriterSetup(() => runDescribe());
+      return;
+    }
+    const pics = castPicturesOf(person);
+    if (!pics.length) {
+      toast("Add at least one reference picture first.", true);
+      return;
+    }
+    const given = writer.settings();
+    const folder = state.folder;
+    aiState.busy = true;
+    aiState.error = "";
+    aiState.status = "Reading " + pics.length + (pics.length === 1 ? " picture" : " pictures") + " with " + given.model + "…";
+    redraw();
+    try {
+      const shrunkPics = [];
+      for (const [i, pic] of pics.entries()) {
+        const tag = pic.view ? ", " + castViewLabel(pic.view) : "";
+        const label = "Picture " + (i + 1) + (i === 0 ? " (Main)" : "") + tag;
+        shrunkPics.push({ label, ...(await shrinkPicture(assetUrl(pic))) });
+      }
+      const made = await writer.describeCast({ person, project: state.project, pictures: shrunkPics }, given);
+      const current = live();
+      if (folder !== state.folder || !$("panelDialog").open || !current) return;
+      const freed = freedNote(writer.lastSeen().freed);
+      const existing = String(current.description || "").trim();
+      if (!existing) {
+        checkpoint();
+        current.description = made;
+        aiState.suggestion = "";
+        aiState.status = "Described from " + pics.length + (pics.length === 1 ? " picture." : " pictures.") + freed;
+        save();
+        renderAll();
+        toast("Description filled from reference pictures.", false, undoAction);
+      } else {
+        aiState.suggestion = made;
+        aiState.status = "Generated from " + pics.length + (pics.length === 1 ? " picture." : " pictures.") + " Review before replacing." + freed;
+      }
+    } catch (error) {
+      aiState.error = String(error?.message || error || "Could not describe the pictures.");
+      aiState.status = "";
+    } finally {
+      aiState.busy = false;
+      redraw();
+    }
+  };
+
+  const triggerAddFiles = async () => {
+    const person = live();
+    if (!person || uploading) return;
+    const files = await pickFiles($("castFile"), { multiple: true });
+    if (!files.length) return;
+    await addPicturesToPerson(person, files, {
+      onStart: (n) => { uploading = n; redraw(); },
+      onEnd: () => { uploading = 0; redraw(); },
+      onAdded: (firstIdx) => { selectedIndex = firstIdx; },
+    });
+  };
+
   openPanelDialog(() => live()?.name || "Cast member", () => {
     const person = live();
     if (!person) return null;
-    const left = [];
-    if (person.file) {
-      const image = document.createElement("img");
-      image.className = "portrait";
-      image.alt = person.name;
-      image.src = assetUrl(person);
-      const mainView = spriteChoice("Main picture view", CAST_VIEWS, person.view || "", (val) => {
-        checkpoint();
-        if (val) person.view = val;
-        else delete person.view;
-        save();
-        spritesRoom.refresh();
+    const pics = castPicturesOf(person);
+    if (pics.length) selectedIndex = Math.max(0, Math.min(pics.length - 1, selectedIndex));
+    else selectedIndex = 0;
+
+    // --- LEFT COLUMN: References studio ---
+    const mediaCol = document.createElement("div");
+    mediaCol.className = "panel-column cast-media-col";
+
+    const refSection = document.createElement("section");
+    refSection.className = "section cast-refs-section";
+
+    const refHead = document.createElement("div");
+    refHead.className = "cast-section-head";
+    const refTitle = document.createElement("h3");
+    refTitle.append(icon("picture"), "References");
+    const countPill = document.createElement("span");
+    countPill.className = "cast-count-pill";
+    countPill.textContent = pics.length + " / " + CAST_PICTURES;
+    const addHeaderBtn = document.createElement("button");
+    addHeaderBtn.type = "button";
+    addHeaderBtn.className = "quiet small cast-add-head";
+    addHeaderBtn.dataset.key = "Add cast pictures";
+    addHeaderBtn.append(icon("plus"), uploading ? "Uploading…" : "Add pictures");
+    addHeaderBtn.disabled = Boolean(uploading) || pics.length >= CAST_PICTURES;
+    addHeaderBtn.title = pics.length >= CAST_PICTURES ? "Maximum of " + CAST_PICTURES + " pictures reached" : "Choose one or more pictures to add";
+    addHeaderBtn.addEventListener("click", triggerAddFiles);
+    refHead.append(refTitle, countPill, addHeaderBtn);
+    refSection.append(refHead);
+
+    if (pics.length) {
+      const active = pics[selectedIndex];
+      const stage = document.createElement("div");
+      stage.className = "cast-stage";
+
+      const previewBtn = document.createElement("button");
+      previewBtn.type = "button";
+      previewBtn.className = "cast-stage-preview";
+      previewBtn.dataset.key = "Inspect active picture";
+      previewBtn.setAttribute("aria-label", "Enlarge and inspect " + (selectedIndex === 0 ? "main picture" : "picture " + (selectedIndex + 1)));
+      previewBtn.title = "Click to inspect full size";
+      const heroImg = document.createElement("img");
+      heroImg.src = assetUrl(active);
+      heroImg.alt = person.name + (selectedIndex === 0 ? " (main picture)" : " (picture " + (selectedIndex + 1) + ")");
+      const badge = document.createElement("span");
+      badge.className = "cast-slot-pill" + (selectedIndex === 0 ? " main" : "");
+      badge.textContent = (selectedIndex === 0 ? "#1 Main" : "#" + (selectedIndex + 1)) + (active.view ? " · " + castViewLabel(active.view) : "");
+      const zoomCue = document.createElement("span");
+      zoomCue.className = "cast-zoom-cue";
+      zoomCue.append(icon("expand"), "Inspect");
+      previewBtn.append(heroImg, badge, zoomCue);
+      previewBtn.addEventListener("click", () => {
+        openCastLightbox(id, selectedIndex, {
+          onSelect: (nextIdx) => {
+            selectedIndex = nextIdx;
+            redraw();
+          },
+        });
       });
-      left.push(dialogSection("Pictures", [image, mainView, morePictures(person)], "picture"));
+
+      const stageBar = document.createElement("div");
+      stageBar.className = "cast-stage-bar";
+
+      const barLeft = document.createElement("div");
+      barLeft.className = "cast-stage-actions";
+
+      const inspectBtn = document.createElement("button");
+      inspectBtn.type = "button";
+      inspectBtn.className = "quiet small";
+      inspectBtn.append(icon("expand"), "Inspect");
+      inspectBtn.title = "Open zoomable full-size inspector";
+      inspectBtn.addEventListener("click", () => previewBtn.click());
+
+      const replaceBtn = document.createElement("button");
+      replaceBtn.type = "button";
+      replaceBtn.className = "quiet small";
+      replaceBtn.dataset.key = "Replace active picture";
+      replaceBtn.append(icon("swap"), "Replace");
+      replaceBtn.title = "Replace this picture while keeping its order and view tag";
+      replaceBtn.addEventListener("click", () => replacePersonPicture(person, selectedIndex));
+
+      barLeft.append(inspectBtn, replaceBtn);
+
+      if (selectedIndex > 0) {
+        const mainBtn = document.createElement("button");
+        mainBtn.type = "button";
+        mainBtn.className = "quiet small";
+        mainBtn.append(icon("star"), "Make main");
+        mainBtn.title = "Move this picture to #1 Main";
+        mainBtn.addEventListener("click", () => {
+          checkpoint();
+          if (promoteCastPicture(person, selectedIndex)) {
+            selectedIndex = 0;
+            save();
+            renderAll();
+            toast("Promoted to main picture for " + person.name + ".", false, undoAction);
+          }
+        });
+        barLeft.append(mainBtn);
+      }
+
+      const removable = canRemoveCastPicture(person, pics.length);
+      const removeBtn = iconButton("trash", removable ? "Remove this picture" : "Picture-only cast members need at least one picture — use Replace instead", () => {
+        if (!removable) return;
+        checkpoint();
+        if (removeCastPicture(person, selectedIndex)) {
+          selectedIndex = Math.max(0, Math.min(selectedIndex, castPicturesOf(person).length - 1));
+          save();
+          renderAll();
+          toast("Removed picture from " + person.name + ".", false, undoAction);
+        }
+      });
+      removeBtn.classList.add("cast-stage-remove");
+      removeBtn.disabled = !removable;
+      barLeft.append(removeBtn);
+
+      stageBar.append(barLeft);
+
+      if (pics.length > 1) {
+        const orderGroup = document.createElement("div");
+        orderGroup.className = "cast-order-tools";
+        const moveLeft = iconButton("left", "Move picture earlier in order", () => {
+          checkpoint();
+          if (moveCastPicture(person, selectedIndex, selectedIndex - 1)) {
+            selectedIndex -= 1;
+            save();
+            renderAll();
+          }
+        });
+        moveLeft.disabled = selectedIndex === 0;
+        const moveRight = iconButton("right", "Move picture later in order", () => {
+          checkpoint();
+          if (moveCastPicture(person, selectedIndex, selectedIndex + 1)) {
+            selectedIndex += 1;
+            save();
+            renderAll();
+          }
+        });
+        moveRight.disabled = selectedIndex === pics.length - 1;
+        orderGroup.append(moveLeft, moveRight);
+        stageBar.append(orderGroup);
+      }
+
+      stage.append(previewBtn, stageBar);
+
+      // Unified thumbnail strip (slot 0 Main + secondary slots + Add tile)
+      const strip = document.createElement("div");
+      strip.className = "cast-strip";
+      strip.setAttribute("role", "list");
+      strip.setAttribute("aria-label", "Reference pictures in priority order");
+
+      const clearDropMarks = () => {
+        for (const el of strip.querySelectorAll(".cast-tile")) el.classList.remove("drop-before", "drop-after");
+      };
+
+      pics.forEach((entry, idx) => {
+        const tile = document.createElement("div");
+        tile.className = "cast-tile" + (idx === selectedIndex ? " active" : "");
+        tile.dataset.index = String(idx);
+        tile.setAttribute("role", "listitem");
+        tile.draggable = pics.length > 1;
+
+        const thumbWrap = document.createElement("div");
+        thumbWrap.className = "cast-tile-thumb";
+        thumbWrap.title = pics.length > 1 ? "Click to select · Double-click to inspect · Drag to reorder" : "Click to select · Double-click to inspect";
+
+        const imgBtn = document.createElement("button");
+        imgBtn.type = "button";
+        imgBtn.className = "cast-tile-hit";
+        imgBtn.setAttribute("aria-label", (idx === 0 ? "Main picture" : "Picture " + (idx + 1)) + (entry.view ? ", " + castViewLabel(entry.view) : ""));
+        imgBtn.setAttribute("aria-pressed", String(idx === selectedIndex));
+        const thumbImg = document.createElement("img");
+        thumbImg.src = assetUrl(entry);
+        thumbImg.alt = "";
+        thumbImg.draggable = false;
+        imgBtn.append(thumbImg);
+        imgBtn.addEventListener("click", () => {
+          if (selectedIndex !== idx) {
+            selectedIndex = idx;
+            redraw();
+          }
+        });
+        imgBtn.addEventListener("dblclick", () => {
+          selectedIndex = idx;
+          openCastLightbox(id, idx, {
+            onSelect: (nextIdx) => {
+              selectedIndex = nextIdx;
+              redraw();
+            },
+          });
+        });
+
+        const orderBadge = document.createElement("span");
+        orderBadge.className = "cast-tile-badge" + (idx === 0 ? " main" : "");
+        orderBadge.textContent = idx === 0 ? "Main" : "#" + (idx + 1);
+
+        const quickActions = document.createElement("div");
+        quickActions.className = "cast-tile-actions";
+
+        const qZoom = document.createElement("button");
+        qZoom.type = "button";
+        qZoom.className = "cast-tile-act";
+        qZoom.title = "Inspect full size";
+        qZoom.setAttribute("aria-label", "Inspect picture " + (idx + 1));
+        qZoom.append(icon("expand"));
+        qZoom.addEventListener("click", (event) => {
+          event.stopPropagation();
+          selectedIndex = idx;
+          openCastLightbox(id, idx, {
+            onSelect: (nextIdx) => {
+              selectedIndex = nextIdx;
+              redraw();
+            },
+          });
+        });
+
+        const qReplace = document.createElement("button");
+        qReplace.type = "button";
+        qReplace.className = "cast-tile-act";
+        qReplace.title = "Replace this picture";
+        qReplace.setAttribute("aria-label", "Replace picture " + (idx + 1));
+        qReplace.append(icon("swap"));
+        qReplace.addEventListener("click", (event) => {
+          event.stopPropagation();
+          selectedIndex = idx;
+          replacePersonPicture(person, idx);
+        });
+
+        quickActions.append(qZoom, qReplace);
+
+        if (canRemoveCastPicture(person, pics.length)) {
+          const qRemove = document.createElement("button");
+          qRemove.type = "button";
+          qRemove.className = "cast-tile-act danger";
+          qRemove.title = "Remove this picture";
+          qRemove.setAttribute("aria-label", "Remove picture " + (idx + 1));
+          qRemove.append(icon("close"));
+          qRemove.addEventListener("click", (event) => {
+            event.stopPropagation();
+            checkpoint();
+            if (removeCastPicture(person, idx)) {
+              const afterLen = castPicturesOf(person).length;
+              if (selectedIndex >= afterLen) selectedIndex = Math.max(0, afterLen - 1);
+              save();
+              renderAll();
+              toast("Removed picture from " + person.name + ".", false, undoAction);
+            }
+          });
+          quickActions.append(qRemove);
+        }
+
+        thumbWrap.append(imgBtn, orderBadge, quickActions);
+
+        const viewSelect = castViewSelect(person, idx, "View tag for " + (idx === 0 ? "main picture" : "picture " + (idx + 1)) + " of " + person.name, () => redraw());
+
+        // Drag-to-reorder listeners
+        tile.addEventListener("dragstart", (event) => {
+          if (event.target.closest("select")) {
+            event.preventDefault();
+            return;
+          }
+          dragFrom = idx;
+          tile.classList.add("dragging");
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData(CAST_PICTURE_DRAG, String(idx));
+        });
+        tile.addEventListener("dragover", (event) => {
+          if (dragFrom === null || dragFrom === idx) return;
+          if (!event.dataTransfer?.types?.includes(CAST_PICTURE_DRAG)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = "move";
+          clearDropMarks();
+          const rect = tile.getBoundingClientRect();
+          const before = event.clientX < rect.left + rect.width / 2;
+          tile.classList.add(before ? "drop-before" : "drop-after");
+        });
+        tile.addEventListener("dragleave", () => {
+          tile.classList.remove("drop-before", "drop-after");
+        });
+        tile.addEventListener("drop", (event) => {
+          if (dragFrom === null) return;
+          if (!event.dataTransfer?.types?.includes(CAST_PICTURE_DRAG)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const from = dragFrom;
+          const rect = tile.getBoundingClientRect();
+          const before = event.clientX < rect.left + rect.width / 2;
+          let target = before ? idx : idx + 1;
+          if (from < target) target -= 1;
+          dragFrom = null;
+          clearDropMarks();
+          if (from !== target) {
+            checkpoint();
+            if (moveCastPicture(person, from, target)) {
+              selectedIndex = target;
+              save();
+              renderAll();
+            }
+          }
+        });
+        tile.addEventListener("dragend", () => {
+          dragFrom = null;
+          tile.classList.remove("dragging");
+          clearDropMarks();
+        });
+
+        tile.append(thumbWrap, viewSelect);
+        strip.append(tile);
+      });
+
+      if (pics.length < CAST_PICTURES) {
+        const addTile = document.createElement("button");
+        addTile.type = "button";
+        addTile.className = "cast-tile-add";
+        addTile.disabled = Boolean(uploading);
+        addTile.title = "Add more pictures, or drop PNG/JPEG/WebP files here";
+        addTile.append(icon("plus"), Object.assign(document.createElement("span"), { textContent: uploading ? "Adding…" : "Add or drop" }));
+        addTile.addEventListener("click", triggerAddFiles);
+        strip.append(addTile);
+      }
+
+      const budgetHint = document.createElement("p");
+      budgetHint.className = "hint cast-budget-hint";
+      budgetHint.textContent = "Main picture leads every shot; up to 9 pictures are shared per shot. Drag tiles to reorder or drop image files anywhere here.";
+
+      refSection.append(stage, strip, budgetHint);
+    } else {
+      const emptyDrop = document.createElement("div");
+      emptyDrop.className = "cast-empty-drop";
+      emptyDrop.append(
+        icon("picture"),
+        Object.assign(document.createElement("b"), { textContent: "No reference pictures yet" }),
+        Object.assign(document.createElement("span"), { textContent: "Drop PNG, JPEG or WebP files here, or add up to " + CAST_PICTURES + " pictures." }),
+      );
+      const emptyAddBtn = document.createElement("button");
+      emptyAddBtn.type = "button";
+      emptyAddBtn.className = "quiet";
+      emptyAddBtn.textContent = uploading ? "Uploading…" : "Add pictures";
+      emptyAddBtn.disabled = Boolean(uploading);
+      emptyAddBtn.addEventListener("click", triggerAddFiles);
+      emptyDrop.append(emptyAddBtn);
+      refSection.append(emptyDrop);
     }
-    left.push(dialogSection("About", [
-      field("Name", person.name, (v) => {
-        person.name = v.trim() || person.name;
-        $("panelDialogTitle").textContent = person.name;
-        renderCast();
+
+    const dropOverlay = document.createElement("div");
+    dropOverlay.className = "cast-drop-overlay";
+    dropOverlay.setAttribute("aria-hidden", "true");
+    const remainingSlots = Math.max(0, CAST_PICTURES - pics.length);
+    dropOverlay.append(
+      icon("upload"),
+      Object.assign(document.createElement("span"), {
+        textContent: remainingSlots
+          ? "Drop pictures to add (" + remainingSlots + (remainingSlots === 1 ? " slot left)" : " slots left)")
+          : "All " + CAST_PICTURES + " picture slots are full",
       }),
-      person.file || person.refmod
-        ? field("What they look like", person.description, (v) => (person.description = v), { big: true })
-        : field("How they sound", person.description, (v) => (person.description = v), { area: true, placeholder: "A warm, calm female narrator" }),
-    ], "person"));
-    const right = [dialogSection("Voice", [voiceSection(person)], "speech")];
-    if (state.refmods.installed || person.refmod) right.push(dialogSection("RefMod", refmodSection(person), "layers"));
-    const columns = [left, right].map((parts) => {
-      const column = document.createElement("div");
-      column.className = "panel-column";
-      column.append(...parts);
-      return column;
+    );
+
+    dropPictureFiles(mediaCol, (files) => {
+      const livePerson = live();
+      if (!livePerson) return;
+      addPicturesToPerson(livePerson, files, {
+        onStart: (n) => { uploading = n; redraw(); },
+        onEnd: () => { uploading = 0; redraw(); },
+        onAdded: (firstIdx) => { selectedIndex = firstIdx; },
+      });
     });
-    return columns;
+
+    mediaCol.append(refSection, dropOverlay);
+
+    // --- RIGHT COLUMN: Identity, LLM-assisted Description, Catalog, Voice, RefMod ---
+    const detailsCol = document.createElement("div");
+    detailsCol.className = "panel-column cast-details-col";
+
+    const nameField = field("Name", person.name, (v) => {
+      person.name = v.trim() || person.name;
+      $("panelDialogTitle").textContent = person.name;
+      renderCast();
+    });
+
+    const isVisual = Boolean(person.file || person.refmod);
+    let descField;
+    if (isVisual && pics.length) {
+      descField = document.createElement("div");
+      descField.className = "field";
+      const labelRow = document.createElement("div");
+      labelRow.className = "label-row";
+      const descId = "castDesc_" + id;
+      const descLabel = document.createElement("label");
+      descLabel.htmlFor = descId;
+      descLabel.textContent = "What they look like";
+
+      const aiTools = document.createElement("span");
+      aiTools.className = "cast-ai-tools";
+
+      const describeBtn = document.createElement("button");
+      describeBtn.type = "button";
+      describeBtn.className = "label-tool cast-describe-btn";
+      describeBtn.dataset.key = "Describe from pictures";
+      describeBtn.disabled = aiState.busy;
+      describeBtn.title = writer.ready()
+        ? "Ask " + writer.settings().model + " to describe " + person.name + " from the reference pictures"
+        : "Set up a language model to describe " + person.name + " from the reference pictures";
+      describeBtn.append(icon("sparkle"), Object.assign(document.createElement("span"), { textContent: aiState.busy ? "Describing…" : "Describe from pictures" }));
+      describeBtn.addEventListener("click", () => runDescribe());
+
+      const modelBtn = document.createElement("button");
+      modelBtn.type = "button";
+      modelBtn.className = "icon-btn quiet cast-model-btn";
+      modelBtn.setAttribute("aria-label", "Choose language model");
+      modelBtn.title = writer.ready() ? "Language model: " + writer.settings().model + " (click to change)" : "Set up language model";
+      modelBtn.append(icon("settings"));
+      modelBtn.addEventListener("click", () => openWriterSetup(() => redraw()));
+
+      aiTools.append(describeBtn, modelBtn);
+      labelRow.append(descLabel, aiTools);
+
+      const descInput = document.createElement("textarea");
+      descInput.id = descId;
+      descInput.className = "big";
+      descInput.dataset.key = "What they look like";
+      descInput.placeholder = "Describe enduring visual traits (age, face, hair, clothing, key details) — or generate from pictures.";
+      descInput.value = person.description ?? "";
+      descInput.addEventListener("focus", () => checkpoint(), { once: true });
+      descInput.addEventListener("input", () => {
+        person.description = descInput.value;
+        save();
+      });
+      descField.append(labelRow, descInput);
+    } else {
+      descField = isVisual
+        ? field("What they look like", person.description, (v) => (person.description = v), {
+            big: true,
+            placeholder: "Describe enduring visual traits (age, face, hair, clothing, key details).",
+          })
+        : field("How they sound", person.description, (v) => (person.description = v), {
+            area: true,
+            placeholder: "A warm, calm female narrator",
+          });
+    }
+
+    const aboutChildren = [nameField, descField];
+
+    if (aiState.busy || aiState.error || aiState.status) {
+      const statusRow = document.createElement("div");
+      statusRow.className = "cast-ai-status" + (aiState.error ? " bad" : aiState.busy ? " busy" : "");
+      statusRow.setAttribute("role", "status");
+      statusRow.setAttribute("aria-live", "polite");
+      const msg = document.createElement("span");
+      msg.textContent = aiState.error || aiState.status;
+      statusRow.append(msg);
+      if (aiState.error) {
+        const setupBtn = document.createElement("button");
+        setupBtn.type = "button";
+        setupBtn.className = "quiet small";
+        setupBtn.textContent = "Model setup";
+        setupBtn.addEventListener("click", () => openWriterSetup(() => redraw()));
+        statusRow.append(setupBtn);
+      }
+      aboutChildren.push(statusRow);
+    }
+
+    if (aiState.suggestion) {
+      const preview = document.createElement("div");
+      preview.className = "cast-ai-preview";
+      const head = document.createElement("div");
+      head.className = "cast-ai-preview-head";
+      head.append(icon("sparkle"), Object.assign(document.createElement("span"), { textContent: "Suggested description" }));
+      const body = document.createElement("p");
+      body.className = "cast-ai-preview-text";
+      body.textContent = aiState.suggestion;
+      const actions = document.createElement("div");
+      actions.className = "cast-ai-preview-actions";
+
+      const useBtn = document.createElement("button");
+      useBtn.type = "button";
+      useBtn.className = "primary small";
+      useBtn.textContent = "Replace description";
+      useBtn.addEventListener("click", () => {
+        const livePerson = live();
+        if (!livePerson) return;
+        checkpoint();
+        livePerson.description = aiState.suggestion;
+        aiState.suggestion = "";
+        aiState.status = "Replaced description.";
+        save();
+        renderAll();
+        toast("Updated description for " + livePerson.name + ".", false, undoAction);
+      });
+
+      const appendBtn = document.createElement("button");
+      appendBtn.type = "button";
+      appendBtn.className = "quiet small";
+      appendBtn.textContent = "Append";
+      appendBtn.addEventListener("click", () => {
+        const livePerson = live();
+        if (!livePerson) return;
+        checkpoint();
+        const existing = String(livePerson.description || "").trim();
+        livePerson.description = existing ? existing + " " + aiState.suggestion : aiState.suggestion;
+        aiState.suggestion = "";
+        aiState.status = "Appended to description.";
+        save();
+        renderAll();
+        toast("Appended description for " + livePerson.name + ".", false, undoAction);
+      });
+
+      const retryBtn = document.createElement("button");
+      retryBtn.type = "button";
+      retryBtn.className = "quiet small";
+      retryBtn.textContent = "Try again";
+      retryBtn.disabled = aiState.busy;
+      retryBtn.addEventListener("click", () => runDescribe());
+
+      const discardBtn = document.createElement("button");
+      discardBtn.type = "button";
+      discardBtn.className = "quiet small";
+      discardBtn.textContent = "Discard";
+      discardBtn.addEventListener("click", () => {
+        aiState.suggestion = "";
+        aiState.status = "";
+        redraw();
+      });
+
+      actions.append(useBtn, appendBtn, retryBtn, discardBtn);
+      preview.append(head, body, actions);
+      aboutChildren.push(preview);
+    }
+
+    aboutChildren.push(catalogRow(person));
+
+    const rightSections = [
+      dialogSection("About", aboutChildren, "person"),
+      dialogSection("Voice", [voiceSection(person)], "speech"),
+    ];
+    if (state.refmods.installed || person.refmod) rightSections.push(dialogSection("RefMod", refmodSection(person), "layers"));
+    detailsCol.append(...rightSections);
+
+    return [mediaCol, detailsCol];
   }, true);
+  $("panelDialog").classList.add("cast-editor");
 }
 
 const MERGE_FRAMES = 63;
@@ -2133,6 +3504,13 @@ const ICONS = {
   restore: '<path d="M5 12a7 7 0 1 0 2.1-5"/><path d="M5 4.5v3.7h3.7"/>',
   settings: '<path d="M4.5 7.5H13M17 7.5h2.5M4.5 16.5H7M11 16.5h8.5"/><circle cx="15" cy="7.5" r="2"/><circle cx="9" cy="16.5" r="2"/>',
   motion: '<circle cx="13.5" cy="5.5" r="2"/><path d="M8.5 11.5l3-2.5 3.5 1 2.5-2.5M11.5 9l-1 5.5 4.5 2 1.5 3.5M10.5 14.5l-3.5 4.5"/>',
+  expand: '<path d="M4.5 9.5v-5h5M19.5 9.5v-5h-5M4.5 14.5v5h5M19.5 14.5v5h-5"/>',
+  star: '<path d="M12 4l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 16.3l-4.8 2.6.9-5.4-3.9-3.8 5.4-.8z"/>',
+  swap: '<path d="M15.5 4.5L19.5 8.5l-4 4M19.5 8.5H6.5M8.5 19.5l-4-4 4-4M4.5 15.5h13"/>',
+  left: '<path d="M14.5 6.5L9 12l5.5 5.5"/>',
+  right: '<path d="M9.5 6.5L15 12l-5.5 5.5"/>',
+  trash: '<path d="M4.5 7h15"/><path d="M9.5 7V4.8h5V7"/><path d="M6.5 7l.8 11.6a1.6 1.6 0 0 0 1.6 1.4h6.2a1.6 1.6 0 0 0 1.6-1.4L17.5 7"/><path d="M10.2 10.8v5.6M13.8 10.8v5.6"/>',
+  hybrid: '<rect x="3.5" y="4.5" width="7.5" height="7.5" rx="1.5"/><rect x="13" y="12" width="7.5" height="7.5" rx="1.5"/><path d="M14.5 6.5h4.5v4.5M19 6.5l-5 5M9.5 17.5H5V13M5 17.5l5-5"/>',
 };
 
 function icon(name) {
@@ -2380,7 +3758,7 @@ function openPanelDialog(title, draw, wide = false) {
   panelDialog = { title, draw };
   const dialog = $("panelDialog");
   dialog.classList.toggle("two-col", wide);
-  dialog.classList.remove("catalog");
+  dialog.classList.remove("catalog", "cast-editor");
   drawPanelDialog();
   if (!dialog.open) dialog.showModal();
 }
@@ -2778,78 +4156,90 @@ function choice(label, options, value, onChange) {
   return wrap;
 }
 
-// H3's text encoder and video VAE come in several precisions. A project renders with the first
-// one installed unless it names another here.
-function encoderChoices() {
-  const rows = [["Text encoder", "clip", state.encoders.text_encoders, state.encoders.auto.text_encoder],
-    ["Video VAE", "vae", state.encoders.vaes, state.encoders.auto.vae]];
-  const out = [];
-  for (const [label, key, files, auto] of rows) {
-    const current = state.project.models?.[key] || "";
-    // Nothing to choose between, and nothing chosen: no menu.
-    if (files.length < 2 && !current) continue;
-    const options = [["", "Automatic" + (auto ? ": " + fileName(auto) : "")], ...files.map((f) => [f, fileName(f) + smallEncoderNote(key, f)])];
-    if (current && !files.some((f) => sameFile(f, current))) options.push([current, fileName(current) + " (not installed)"]);
-    out.push(choice(label, options, current, (value) => {
-      const models = { ...(state.project.models || {}) };
-      if (value) models[key] = value;
-      else delete models[key];
-      if (Object.keys(models).length) state.project.models = models;
-      else delete state.project.models;
-    }));
-  }
-  // A 4B or 8B encoder renders through a projection: which one, when more than one fits it.
-  const encoder = state.project.models?.clip || state.encoders.auto.text_encoder;
-  const fits = Object.entries(state.encoders.projections || {}).find(([f]) => sameFile(f, encoder || ""))?.[1] || [];
-  const chosen = state.project.models?.projection || "";
-  if (fits.length > 1 || (chosen && fits.length)) {
-    const options = [["", "Automatic: " + fileName(fits[0])], ...fits.map((f) => [f, fileName(f)])];
-    if (chosen && !fits.some((f) => sameFile(f, chosen))) options.push([chosen, fileName(chosen) + " (does not fit this encoder)"]);
-    out.push(choice("Projection", options, chosen, (value) => {
-      const models = { ...(state.project.models || {}) };
-      if (value) models.projection = value;
-      else delete models.projection;
-      if (Object.keys(models).length) state.project.models = models;
-      else delete state.project.models;
-    }));
-  }
-  out.push(...conditionerChoices());
-  if (out.length) {
-    const hint = document.createElement("p");
-    hint.className = "hint";
-    hint.textContent = "The int8 and nvfp4 files are smaller and load faster; bf16 and fp16 are the full precision. "
-      + (state.encoders.text_encoders.some((f) => smallEncoderNote("clip", f))
-        ? "A 4B or 8B text encoder takes about a third of the 32B's memory, through a projection, and knows less: named people and speech in languages other than English suffer most. "
-        : "")
-      + "New renders use the choice.";
-    out.push(hint);
-  }
-  return out;
+function textEncoderValue(models) {
+  if (models?.conditioner) return "conditioner:" + models.conditioner;
+  if (models?.clip) return "clip:" + models.clip;
+  return "";
 }
 
-// The Universal Conditioner pack reads the prompt on a language model server through an adapter, so
-// ComfyUI loads no text encoder. The menu shows when an adapter for H3 is installed, or one is named.
-function conditionerChoices() {
+function applyTextEncoderChoice(project, value) {
+  const models = { ...(project.models || {}) };
+  // The encoder server address belongs to this machine, never to a project.
+  delete models.conditioner_url;
+  if (String(value || "").startsWith("conditioner:")) {
+    models.conditioner = value.slice("conditioner:".length);
+    delete models.clip;
+    delete models.projection;
+  } else if (String(value || "").startsWith("clip:")) {
+    models.clip = value.slice("clip:".length);
+    delete models.conditioner;
+  } else {
+    delete models.clip;
+    delete models.projection;
+    delete models.conditioner;
+  }
+  if (Object.keys(models).length) project.models = models;
+  else delete project.models;
+}
+
+// Unified Text encoder picker: chooses between Automatic local 32B, Universal Conditioner (encoder server),
+// or a specific local text encoder (with Projection selector when a 4B/8B encoder has multiple projections).
+function textEncoderControl({ showHint = false } = {}) {
+  const localFiles = state.encoders.text_encoders || [];
   const adapters = state.encoders.conditioners || [];
-  const current = state.project.models?.conditioner || "";
-  if (!adapters.length && !current) return [];
-  const set = (key, value) => {
-    const models = { ...(state.project.models || {}) };
-    if (value) models[key] = value;
-    else delete models[key];
-    // The address belongs to this machine: one an older project still carries is dropped.
-    delete models.conditioner_url;
-    if (Object.keys(models).length) state.project.models = models;
-    else delete state.project.models;
-  };
-  const options = [["", "Off: load the text encoder here"], ...adapters.map((f) => [f, fileName(f)])];
-  if (current && !adapters.some((f) => sameFile(f, current))) options.push([current, fileName(current) + " (not installed)"]);
-  const out = [choice("Encoder server", options, current, (value) => set("conditioner", value))];
-  if (current) {
-    const wrap = document.createElement("label");
-    wrap.className = "choice";
-    const title = document.createElement("span");
-    title.textContent = "Server address";
+  const currentCond = state.project.models?.conditioner || "";
+  const currentClip = state.project.models?.clip || "";
+  const current = textEncoderValue(state.project.models);
+  // Nothing to choose between, and nothing chosen: no menu.
+  if (localFiles.length < 2 && !adapters.length && !current) return [];
+
+  const wrap = document.createElement("label");
+  wrap.className = "choice";
+  const title = document.createElement("span");
+  title.textContent = "Text encoder";
+  const select = document.createElement("select");
+  select.dataset.key = "Text encoder";
+
+  const auto = state.encoders.auto.text_encoder;
+  select.append(new Option("Automatic" + (auto ? ": " + fileName(auto) : ""), ""));
+
+  if (adapters.length || currentCond) {
+    const grpServer = document.createElement("optgroup");
+    grpServer.label = "Universal Conditioner (encoder server)";
+    for (const f of adapters) grpServer.append(new Option(fileName(f) + " (server · no local encoder)", "conditioner:" + f));
+    if (currentCond && !adapters.some((f) => sameFile(f, currentCond))) {
+      grpServer.append(new Option(fileName(currentCond) + " (server · not installed)", "conditioner:" + currentCond));
+    }
+    select.append(grpServer);
+  }
+
+  if (localFiles.length || currentClip) {
+    const grpLocal = document.createElement("optgroup");
+    grpLocal.label = "Local text encoders";
+    for (const f of localFiles) grpLocal.append(new Option(fileName(f) + smallEncoderNote("clip", f), "clip:" + f));
+    if (currentClip && !localFiles.some((f) => sameFile(f, currentClip))) {
+      grpLocal.append(new Option(fileName(currentClip) + " (not installed)", "clip:" + currentClip));
+    }
+    select.append(grpLocal);
+  }
+
+  select.value = current;
+  select.addEventListener("change", () => {
+    checkpoint();
+    applyTextEncoderChoice(state.project, select.value);
+    save();
+    renderInspector();
+    if ($("models").open) renderModels();
+  });
+  wrap.append(title, select);
+
+  const out = [wrap];
+
+  if (currentCond) {
+    const addrWrap = document.createElement("label");
+    addrWrap.className = "choice";
+    const addrTitle = document.createElement("span");
+    addrTitle.textContent = "Server address";
     const input = document.createElement("input");
     input.type = "text";
     input.spellcheck = false;
@@ -2867,13 +4257,65 @@ function conditionerChoices() {
         toast(error.message, true);
       }
     });
-    wrap.append(title, input);
+    addrWrap.append(addrTitle, input);
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "The prompt is read by the language model on this server, so the text encoder is not loaded and "
-      + "a draft with a new prompt starts sooner. Speech in Japanese is less exact than with the text encoder. "
-      + "The address is kept on this machine, for every project.";
-    out.push(wrap, hint);
+    hint.textContent = "Prompts are encoded on this server (no local text encoder is loaded, so drafts start sooner). "
+      + "Speech in Japanese is less exact than with the local 32B encoder. The address is kept on this machine for every project.";
+    out.push(addrWrap, hint);
+  } else {
+    // A 4B or 8B local encoder renders through a projection: which one, when more than one fits it.
+    const encoder = currentClip || auto;
+    const fits = Object.entries(state.encoders.projections || {}).find(([f]) => sameFile(f, encoder || ""))?.[1] || [];
+    const chosen = state.project.models?.projection || "";
+    if (fits.length > 1 || (chosen && fits.length)) {
+      const options = [["", "Automatic: " + fileName(fits[0])], ...fits.map((f) => [f, fileName(f)])];
+      if (chosen && !fits.some((f) => sameFile(f, chosen))) options.push([chosen, fileName(chosen) + " (does not fit this encoder)"]);
+      out.push(choice("Projection", options, chosen, (value) => {
+        const models = { ...(state.project.models || {}) };
+        if (value) models.projection = value;
+        else delete models.projection;
+        if (Object.keys(models).length) state.project.models = models;
+        else delete state.project.models;
+      }));
+    }
+    if (showHint && adapters.length) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "Pick a local encoder or a Universal Conditioner adapter to offload prompt encoding to a server.";
+      out.push(hint);
+    }
+  }
+  return out;
+}
+
+// H3's text encoder and video VAE come in several precisions. A project renders with the first
+// one installed unless it names another here.
+function encoderChoices() {
+  const out = [...textEncoderControl()];
+  const vaes = state.encoders.vaes || [];
+  const currentVae = state.project.models?.vae || "";
+  if (vaes.length >= 2 || currentVae) {
+    const autoVae = state.encoders.auto.vae;
+    const options = [["", "Automatic" + (autoVae ? ": " + fileName(autoVae) : "")], ...vaes.map((f) => [f, fileName(f)])];
+    if (currentVae && !vaes.some((f) => sameFile(f, currentVae))) options.push([currentVae, fileName(currentVae) + " (not installed)"]);
+    out.push(choice("Video VAE", options, currentVae, (value) => {
+      const models = { ...(state.project.models || {}) };
+      if (value) models.vae = value;
+      else delete models.vae;
+      if (Object.keys(models).length) state.project.models = models;
+      else delete state.project.models;
+    }));
+  }
+  if (out.length) {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "The int8 and nvfp4 files are smaller and load faster; bf16 and fp16 are the full precision. "
+      + (state.encoders.text_encoders.some((f) => smallEncoderNote("clip", f))
+        ? "A 4B or 8B text encoder takes about a third of the 32B's memory, through a projection, and knows less: named people and speech in languages other than English suffer most. "
+        : "")
+      + "New renders use the choice.";
+    out.push(hint);
   }
   return out;
 }
@@ -3975,7 +5417,7 @@ function hybridSection() {
   wrap.className = "hybrid-grid";
 
   const toggle = document.createElement("label");
-  toggle.className = "check";
+  toggle.className = "check hybrid-toggle";
   const box = document.createElement("input");
   box.type = "checkbox";
   box.checked = hyb.on;
@@ -3983,9 +5425,12 @@ function hybridSection() {
   toggle.append(box, "Swap transformer blocks on load (fl2va + ref2va)");
   wrap.append(toggle);
 
+  const body = document.createElement("div");
+  body.className = "hybrid-body" + (hyb.on ? "" : " off");
+
   const modelPicker = (labelText, key, value) => {
-    const field = document.createElement("label");
-    field.className = "field";
+    const pick = document.createElement("label");
+    pick.className = "choice";
     const span = document.createElement("span");
     span.textContent = labelText;
     const select = document.createElement("select");
@@ -4008,16 +5453,21 @@ function hybridSection() {
     }
     select.value = value;
     select.addEventListener("change", () => commit({ [key]: select.value }));
-    field.append(span, select);
-    return field;
+    pick.append(span, select);
+    return pick;
   };
 
-  wrap.append(
+  body.append(
     modelPicker("Base model (usually fl2va)", "base", hyb.base),
     modelPicker("Overlay model (usually ref2va)", "overlay", hyb.overlay),
   );
 
   // One-click recipes
+  const recipeWrap = document.createElement("div");
+  recipeWrap.className = "hybrid-group";
+  const recipeLabel = document.createElement("span");
+  recipeLabel.className = "hybrid-label";
+  recipeLabel.textContent = "Preset";
   const recipeGrid = document.createElement("div");
   recipeGrid.className = "hybrid-recipes";
   const activeSet = parseBlockSpec(hyb.blocks);
@@ -4027,6 +5477,7 @@ function hybridSection() {
     btn.type = "button";
     const isMatch = canonicalBlocks === recipe.blocks && hyb.scope === recipe.scope;
     btn.className = "hybrid-recipe" + (isMatch ? " on" : "");
+    btn.setAttribute("aria-pressed", String(isMatch));
     btn.title = recipe.about;
     const strong = document.createElement("strong");
     strong.textContent = recipe.title;
@@ -4036,15 +5487,20 @@ function hybridSection() {
     btn.addEventListener("click", () => commit({ blocks: recipe.blocks, scope: recipe.scope }));
     recipeGrid.append(btn);
   }
-  wrap.append(recipeGrid);
+  recipeWrap.append(recipeLabel, recipeGrid);
+  body.append(recipeWrap);
 
   // Visual 50-block interactive map (click or drag to paint blocks 0-49)
+  const mapWrap = document.createElement("div");
+  mapWrap.className = "hybrid-map-wrap";
+
   const mapHead = document.createElement("div");
   mapHead.className = "hybrid-map-head";
   const legend = document.createElement("span");
   legend.className = "hybrid-map-legend";
   legend.innerHTML = '<span><i class="hybrid-dot base"></i>Base</span><span><i class="hybrid-dot swap"></i>Overlay</span>';
   const countEl = document.createElement("span");
+  countEl.className = "hybrid-map-count";
   countEl.textContent = `${activeSet.size} / 50 blocks`;
   mapHead.append(legend, countEl);
 
@@ -4098,7 +5554,8 @@ function hybridSection() {
     s.textContent = t;
     ticks.append(s);
   });
-  wrap.append(mapHead, mapEl, ticks);
+  mapWrap.append(mapHead, mapEl, ticks);
+  body.append(mapWrap);
 
   // Range + Scope row
   const rowMain = document.createElement("div");
@@ -4120,7 +5577,7 @@ function hybridSection() {
   blocksField.append(blocksLabel, blocksInput);
 
   const scopeField = document.createElement("label");
-  scopeField.className = "field";
+  scopeField.className = "choice";
   const scopeLabel = document.createElement("span");
   scopeLabel.textContent = "Tensor scope";
   const scopeSelect = document.createElement("select");
@@ -4136,11 +5593,12 @@ function hybridSection() {
   scopeField.append(scopeLabel, scopeSelect);
 
   rowMain.append(blocksField, scopeField);
-  wrap.append(rowMain);
+  body.append(rowMain);
 
   // Live pre-flight compatibility check (reads safetensors headers only, zero weight RAM)
   const statusEl = document.createElement("div");
   statusEl.className = "hybrid-status";
+  statusEl.setAttribute("role", "status");
   const cacheKey = `${hyb.base}|${hyb.overlay}|${hyb.blocks}|${hyb.scope}`;
   const showStatus = (res) => {
     if (!res) {
@@ -4176,7 +5634,7 @@ function hybridSection() {
           if (statusEl.isConnected) showStatus({ ok: false, error: err.message });
         });
     }
-    wrap.append(statusEl);
+    body.append(statusEl);
   }
 
   // Secondary options row (Conditioning + Weight dtype)
@@ -4184,7 +5642,7 @@ function hybridSection() {
   rowAdv.className = "hybrid-row-2";
 
   const modeField = document.createElement("label");
-  modeField.className = "field";
+  modeField.className = "choice";
   const modeLabel = document.createElement("span");
   modeLabel.textContent = "Conditioning";
   const modeSelect = document.createElement("select");
@@ -4194,7 +5652,7 @@ function hybridSection() {
   modeField.append(modeLabel, modeSelect);
 
   const dtypeField = document.createElement("label");
-  dtypeField.className = "field";
+  dtypeField.className = "choice";
   const dtypeLabel = document.createElement("span");
   dtypeLabel.textContent = "Weight dtype";
   const dtypeSelect = document.createElement("select");
@@ -4209,10 +5667,12 @@ function hybridSection() {
   dtypeField.append(dtypeLabel, dtypeSelect);
 
   rowAdv.append(modeField, dtypeField);
-  wrap.append(rowAdv);
+  body.append(rowAdv);
+
+  wrap.append(body);
 
   const hint = document.createElement("p");
-  hint.className = "hint";
+  hint.className = "hint hybrid-hint";
   hint.textContent = "Overlays selected block tensor families from the overlay file onto the base on load, keeping quantization scales intact. No merged file is written to disk.";
   wrap.append(hint);
 
@@ -4350,8 +5810,9 @@ function renderScene(panel, selected = false) {
     if (v.trim()) state.project.language = v.trim();
     else delete state.project.language;
   }, { placeholder: "English" }));
-  // The text encoder, video VAE and projection are set once, if ever: they live in the Models dialog,
-  // and the panel says what renders.
+  // Text encoder (including Universal Conditioner when installed) sits right in the Model section;
+  // Video VAE and full model file overrides stay reachable in the Models dialog.
+  const textEncoders = state.profiles.length ? textEncoderControl({ showHint: true }) : [];
   const files = state.profiles.length && encoderChoices().length ? [settingRow("settings", "Model files", modelFilesSummary(), () => {
     openModels(null);
     $("modelsBody").querySelector(".model-files")?.scrollIntoView({ block: "start" });
@@ -4360,7 +5821,7 @@ function renderScene(panel, selected = false) {
     head,
     section("Look", lookFields(), "look"),
     section("Format", [made, formatHint, ...sizeChoices()], "format"),
-    ...(state.profiles.length ? [section("Model", [model, modelHint, ...setupButton(), ...files], "model")] : []),
+    ...(state.profiles.length ? [section("Model", [model, modelHint, ...textEncoders, ...setupButton(), ...files], "model")] : []),
     ...[loraSection(), patchSection(), hybridSection(), writingSection(), notesSection()].filter(Boolean),
   );
 }
@@ -4443,7 +5904,12 @@ async function saveCurrentLook() {
 // The model files a project renders with, in a few words: automatic, or the ones it names.
 function modelFilesSummary() {
   const chosen = state.project.models || {};
-  const named = ["clip", "vae", "projection", "conditioner"].filter((k) => chosen[k]).map((k) => fileName(chosen[k]));
+  const named = [
+    chosen.conditioner ? "Server: " + fileName(chosen.conditioner) : "",
+    !chosen.conditioner && chosen.clip ? fileName(chosen.clip) : "",
+    !chosen.conditioner && chosen.projection ? fileName(chosen.projection) : "",
+    chosen.vae ? fileName(chosen.vae) : "",
+  ].filter(Boolean);
   return named.length ? named.join(", ") : "Automatic";
 }
 
@@ -4704,7 +6170,7 @@ function tidyHints(panel) {
     hint.classList.add("help");
     // The tip goes on what the explanation follows: a field, a choice, a button or a row of them.
     const before = hint.previousElementSibling;
-    const target = before && (before.matches(".field, .choice, .pair, button, .ways, .row, .speeds, .voice, .picture-row, h3") ? before : null);
+    const target = before && (before.matches(".field, .choice, .pair, button, .ways, .row, .speeds, .voice, .picture-row, .cast-strip, h3") ? before : null);
     if (target && !target.title) target.title = text;
   }
 }
@@ -4944,8 +6410,9 @@ function drawInspector() {
     big: true,
     placeholder: clip.motion
       ? "Optional: brief hair, outfit or style note."
-      : "Describe what we see and hear, in the order it happens.",
+      : "Describe what we see and hear, in the order it happens. Type @ to mention cast.",
   });
+  happens.querySelector("textarea").dataset.castMention = "visual";
   const happensLabel = happens.querySelector("span");
   happensLabel.classList.add("label-row");
   if (!clip.motion) happensLabel.append(rewriteButton(clip));
@@ -4965,10 +6432,12 @@ function drawInspector() {
   }
 
   const voiced = ["speaker", "dialogue", "sound", "music"].filter((k) => String(clip[k] || "").trim()).length;
+  const speakerField = field("Who speaks", clip.speaker, (v) => (clip.speaker = v), {
+    placeholder: (state.project.cast || []).some((p) => p.voice) ? "@" + state.project.cast.find((p) => p.voice).name + " uses their voice" : "The old keeper, low and gravelly",
+  });
+  speakerField.querySelector("input").dataset.castMention = "voice";
   if (state.tab === "shot") parts.push(disclosure("Dialogue and sound", voiced > 0, voiced ? voiced + " set" : "", [
-    field("Who speaks", clip.speaker, (v) => (clip.speaker = v), {
-      placeholder: (state.project.cast || []).some((p) => p.voice) ? "@" + state.project.cast.find((p) => p.voice).name + " uses their voice" : "The old keeper, low and gravelly",
-    }),
+    speakerField,
     field("What they say", clip.dialogue, (v) => (clip.dialogue = v), { area: true }),
     field("Language", clip.language || "", (v) => {
       if (v.trim()) clip.language = v.trim();
@@ -6141,12 +7610,12 @@ function motionSection(clip) {
   badges.className = "motion-badges";
   const tags = [
     m.mode === "rescene"
-      ? (Number(m.strength) > 0 ? "New scene · M7" : "New scene · M5")
+      ? (Number(m.strength) > 0 ? "New scene + Pose lock" : "New scene")
       : m.mode === "choreography" ? "Pose choreography" : "Replace character",
   ];
-  if (m.preset === "realism_fast") tags.push("F1-Fast · 1088p");
-  else if (m.preset === "realism") tags.push("F1 Max · 1088p");
-  else if (m.preset === "fast_sharp") tags.push("F2 Sharp · 2x");
+  if (m.preset === "realism_fast") tags.push("Natural Skin · Fast (1088p)");
+  else if (m.preset === "realism") tags.push("Natural Skin · Max (1088p)");
+  else if (m.preset === "fast_sharp") tags.push("Fast Sharp · 2×");
   if (m.mode !== "choreography") tags.push(m.style === "photoreal" ? "Photoreal" : m.style === "preserve" ? "Keep style" : "Auto style");
   const winForPreset = motionWindowSummary(frames, m.preset);
   if (winForPreset.windows > 1) tags.push(winForPreset.label);
@@ -9744,7 +11213,7 @@ function syncMotionModeControls(resetStrength = false) {
     label.firstChild.textContent = replace
       ? "Pose reinforcement (0 = fast video-ref) "
       : rescene
-        ? "Pose lock for conflicting reference pose (0 = M5, 0.75 = M7) "
+        ? "Pose lock for conflicting reference pose (0 = off, 0.75 = strong) "
         : "Pose strength ";
   }
   setMotionStrengthDisplay(strength.value);
@@ -10982,6 +12451,7 @@ function openWriter(job) {
   for (const added of writing.added) URL.revokeObjectURL(added.thumb);
   writing.added = [];
   $("writerAsk").replaceChildren(...job.fields, picturesStrip(), using);
+  for (const area of $("writerAsk").querySelectorAll("textarea")) area.dataset.castMention = "all";
   $("writerPreview").replaceChildren();
   $("writerGo").textContent = job.go;
   $("writerUse").textContent = job.use(null);
@@ -11161,7 +12631,9 @@ function writingSection() {
 $("panelDialogClose").addEventListener("click", () => $("panelDialog").close());
 $("panelDialog").addEventListener("close", () => {
   panelDialog = null;
+  $("panelDialog").classList.remove("cast-editor", "catalog");
   $("panelDialogBody").replaceChildren();
+  if ($("castLightbox")?.open) $("castLightbox").close();
 });
 $("writerClose").addEventListener("click", () => $("writer").close());
 $("writerSetupClose").addEventListener("click", () => $("writerSetup").close());
@@ -14743,8 +16215,41 @@ function bindNoteLayer() {
 }
 bindNoteLayer();
 
+function clearSpriteExportsFor(folder, clipId, takeId) {
+  const token = [folder, clipId, takeId].join(".");
+  for (const key of spriteExports.keys()) {
+    if (key.includes(token)) spriteExports.delete(key);
+  }
+}
+
+function applySpritePoseUpdate(folder, clip, take, result) {
+  if (folder !== state.folder || !result?.sprite) return;
+  clearSpriteExportsFor(folder, clip.id, take.id);
+  take.sprite = result.sprite;
+  const liveClip = clipOf(clip.id);
+  const liveTake = liveClip?.takes?.find((t) => t.id === take.id);
+  if (liveTake) liveTake.sprite = result.sprite;
+  if (Number.isFinite(result.revision) && state.project) {
+    state.project.revision = Math.max(state.project.revision || 0, result.revision);
+  } else if (!unsaved()) {
+    void refreshProject(false).catch(() => {});
+  }
+}
+
 const spritesRoom = installSprites({
-  state, checkpoint, save() { save(); void flush(); }, toast, viewUrl, jobFor, uploadPicture, addCast: addCastMember, editCast: openPerson, refmodVisual, refmodLabel,
+  state, checkpoint, save() { save(); void flush(); }, toast, viewUrl, jobFor, uploadPicture, addCast: addCastMember, editCast: openPerson, inspectCast: (personId, idx = 0) => openCastLightbox(personId, idx),
+  inspectImage(title, url) {
+    const dialog = $("inputReview"), nav = $("inputReviewNav"), preview = $("inputReviewImage");
+    $("inputReviewTitle").textContent = title || "Preview";
+    preview.alt = title || "";
+    preview.src = url;
+    nav.hidden = true;
+    nav.replaceChildren();
+    dialog.onkeydown = null;
+    if (!dialog.open) dialog.showModal();
+  },
+  openShortcuts() { if (!$("keys").open) $("keys").showModal(); },
+  refmodVisual, refmodLabel,
   stopVideo() { if (state.playing) setPlaying(false); },
   restoreVideo() { renderAll(); },
   activate(clip, take) { if (clip.active !== take.id) chooseTake(clip, take); },
@@ -14779,7 +16284,8 @@ const spritesRoom = installSprites({
   },
   async inspectSprite(clip, take, tile = 256) {
     const folder = state.folder;
-    const key = [folder, clip.id, take.id, tile].join(".");
+    const rev = take?.sprite?.rev || 0;
+    const key = [folder, clip.id, take.id, tile, rev].join(".");
     if (!spriteExports.has(key)) {
       const pending = postJson("/project/" + encodeURIComponent(folder) + "/sprite-export", {
         clip: clip.id, take: take.id, tile, fps: null,
@@ -14787,6 +16293,60 @@ const spritesRoom = installSprites({
       spriteExports.set(key, pending.catch((error) => { spriteExports.delete(key); throw error; }));
     }
     return spriteExports.get(key);
+  },
+  poseInfo(clip, take, pose) {
+    const folder = state.folder;
+    const qs = new URLSearchParams({ clip: clip.id, take: take.id, pose: String(pose) });
+    return api("/project/" + encodeURIComponent(folder) + "/sprite-pose-info?" + qs.toString());
+  },
+  async fixPoseAlpha(clip, take, pose, body = {}) {
+    const folder = state.folder;
+    await flush();
+    if (folder !== state.folder) throw new Error("Project changed while applying alpha fix.");
+    const result = await postJson("/project/" + encodeURIComponent(folder) + "/sprite-fix-alpha", {
+      clip: clip.id,
+      take: take.id,
+      pose,
+      ...body,
+    });
+    applySpritePoseUpdate(folder, clip, take, result);
+    return result;
+  },
+  async nudgePose(clip, take, pose, delta) {
+    const folder = state.folder;
+    await flush();
+    if (folder !== state.folder) throw new Error("Project changed while nudging pose.");
+    const payload = typeof delta === "object" && delta !== null
+      ? { clip: clip.id, take: take.id, pose, ...delta }
+      : { clip: clip.id, take: take.id, pose, delta };
+    const result = await postJson("/project/" + encodeURIComponent(folder) + "/sprite-nudge-pose", payload);
+    applySpritePoseUpdate(folder, clip, take, result);
+    return result;
+  },
+  async fixPoseAi(clip, take, pose, body = {}) {
+    const folder = state.folder;
+    await flush();
+    if (folder !== state.folder) throw new Error("Project changed while fixing pose.");
+    const result = await postJson("/project/" + encodeURIComponent(folder) + "/sprite-fix-ai", {
+      clip: clip.id,
+      take: take.id,
+      pose,
+      ...body,
+    });
+    applySpritePoseUpdate(folder, clip, take, result);
+    return result;
+  },
+  async revertPose(clip, take, pose) {
+    const folder = state.folder;
+    await flush();
+    if (folder !== state.folder) throw new Error("Project changed while reverting pose.");
+    const result = await postJson("/project/" + encodeURIComponent(folder) + "/sprite-revert-pose", {
+      clip: clip.id,
+      take: take.id,
+      pose,
+    });
+    applySpritePoseUpdate(folder, clip, take, result);
+    return result;
   },
   listProps() {
     return api("/project/" + encodeURIComponent(state.folder) + "/props");

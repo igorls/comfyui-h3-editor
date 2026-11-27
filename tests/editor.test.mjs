@@ -7,10 +7,17 @@ import {
   buildPropPayload,
   buildSpriteConfig,
   CAST_VIEWS,
+  compassStatusFor,
   defaultCanvasForCamera,
+  draftSettingsSummary,
+  fitZoomFor,
   parseTileSize,
   pickedSprite,
+  referenceForDirection,
+  screenToTilePoint,
+  shouldUseHd,
   spriteSlots,
+  zoomAtPoint,
 } from "../editor/sprites.js";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -795,4 +802,365 @@ test("RefMod helpers format labels, sidecar preview URLs and addRefmodMember cre
   assert.equal(checkpoints, 2);
   assert.equal(saves, 2);
   assert.equal(rendered, 2);
+});
+
+test("cast picture helpers reorder, promote, replace preserving view, remove safely, and cap appends at 8", () => {
+  const c = vm.createContext({ CAST_PICTURES: 8, CAST_VIEWS });
+  functions(c, [
+    "castViewLabel",
+    "castPicturesOf",
+    "applyCastPictures",
+    "moveCastPicture",
+    "promoteCastPicture",
+    "replaceCastPicture",
+    "canRemoveCastPicture",
+    "removeCastPicture",
+    "appendCastPictures",
+    "setCastPictureView",
+  ]);
+
+  assert.equal(c.castViewLabel("front"), "Front (S)");
+  assert.equal(c.castViewLabel(""), "Any view");
+
+  const person = {
+    id: "p1",
+    name: "Solaris",
+    file: "main.png",
+    subfolder: "cast",
+    view: "front",
+    pictures: [
+      { file: "side.png", subfolder: "cast", view: "side" },
+      { file: "full.png", subfolder: "cast" },
+    ],
+  };
+
+  const plain = (v) => JSON.parse(JSON.stringify(v));
+
+  assert.deepEqual(plain(c.castPicturesOf(person)), [
+    { file: "main.png", subfolder: "cast", view: "front" },
+    { file: "side.png", subfolder: "cast", view: "side" },
+    { file: "full.png", subfolder: "cast" },
+  ]);
+
+  // Promote index 2 to Main (#1): shifts old Main to index 1 and keeps all views intact
+  assert.equal(c.promoteCastPicture(person, 2), true);
+  assert.equal(person.file, "full.png");
+  assert.equal(person.view, undefined);
+  assert.deepEqual(plain(person.pictures), [
+    { file: "main.png", subfolder: "cast", view: "front" },
+    { file: "side.png", subfolder: "cast", view: "side" },
+  ]);
+
+  // Move index 1 back to index 0
+  assert.equal(c.moveCastPicture(person, 1, 0), true);
+  assert.equal(person.file, "main.png");
+  assert.equal(person.view, "front");
+
+  // Replace Main picture preserves view tag by default
+  assert.equal(c.replaceCastPicture(person, 0, { file: "main_v2.png", subfolder: "cast2" }), true);
+  assert.equal(person.file, "main_v2.png");
+  assert.equal(person.subfolder, "cast2");
+  assert.equal(person.view, "front");
+
+  // Replace secondary slot preserves its view tag
+  assert.equal(c.replaceCastPicture(person, 2, { file: "side_v2.png", subfolder: "cast2" }), true);
+  assert.equal(person.pictures[1].file, "side_v2.png");
+  assert.equal(person.pictures[1].view, "side");
+
+  // Set and clear view tag
+  assert.equal(c.setCastPictureView(person, 1, "back"), true);
+  assert.equal(person.pictures[0].view, "back");
+  assert.equal(c.setCastPictureView(person, 0, ""), true);
+  assert.equal(person.view, undefined);
+
+  // Removing Main promotes index 1 to Main
+  assert.equal(c.removeCastPicture(person, 0), true);
+  assert.equal(person.file, "full.png");
+  assert.equal(person.view, "back");
+  assert.equal(person.pictures.length, 1);
+
+  // Removing down to 1 picture succeeds, then removing the last picture on picture-only member is blocked
+  assert.equal(c.removeCastPicture(person, 1), true);
+  assert.equal(person.pictures, undefined);
+  assert.equal(c.canRemoveCastPicture(person), false);
+  assert.equal(c.removeCastPicture(person, 0), false);
+  assert.equal(person.file, "full.png");
+
+  // Voice-backed member CAN remove its last picture and later append fresh ones
+  const voiced = { id: "p2", name: "Narrator", voice: { file: "v.wav", subfolder: "" }, file: "only.png", subfolder: "" };
+  assert.equal(c.canRemoveCastPicture(voiced), true);
+  assert.equal(c.removeCastPicture(voiced, 0), true);
+  assert.equal(voiced.file, undefined);
+  const firstAdd = c.appendCastPictures(voiced, [{ file: "a.png", subfolder: "" }, { file: "b.png", subfolder: "" }]);
+  assert.deepEqual(plain(firstAdd), { added: 2, skipped: 0, total: 2 });
+  assert.equal(voiced.file, "a.png");
+  assert.equal(voiced.pictures.length, 1);
+
+  // Appending past CAST_PICTURES (8) caps cleanly and reports skipped count
+  const batch = Array.from({ length: 10 }, (_, i) => ({ file: `p${i}.png`, subfolder: "" }));
+  const capped = c.appendCastPictures(voiced, batch);
+  assert.deepEqual(plain(capped), { added: 6, skipped: 4, total: 8 });
+  assert.equal(c.castPicturesOf(voiced).length, 8);
+});
+
+test("writer.cleanCastDescription sanitizes model prose and describeCast requires vision pictures", async () => {
+  assert.equal(
+    writer.cleanCastDescription('<think>internal</think>\n"Description: a weathered sailor with a salt-streaked beard\nand navy wool peacoat"'),
+    "a weathered sailor with a salt-streaked beard and navy wool peacoat",
+  );
+  assert.equal(
+    writer.cleanCastDescription("```text\na silver espresso machine with brass gauges\n```"),
+    "a silver espresso machine with brass gauges",
+  );
+
+  await assert.rejects(
+    () => writer.describeCast({ person: { name: "Solaris" }, pictures: [] }, { type: "comfyui", url: "", model: "qwen.safetensors", key: "", freeVram: false }),
+    /at least one reference picture/i,
+  );
+
+  // Mock ComfyUI vision call: uploads image, submits graph with LoadImage wired into TextGenerateV2, returns cleaned description
+  const originalFetch = globalThis.fetch;
+  let uploadedCount = 0;
+  let promptGraph = null;
+  globalThis.fetch = async (url, options = {}) => {
+    const u = String(url);
+    if (u.endsWith("/upload/image")) {
+      uploadedCount += 1;
+      return { ok: true, json: async () => ({ name: `ref_${uploadedCount}.jpg`, subfolder: "h3take_writer" }) };
+    }
+    if (u.endsWith("/prompt")) {
+      promptGraph = JSON.parse(options.body).prompt;
+      return { ok: true, json: async () => ({ prompt_id: "pid_cast_1" }) };
+    }
+    if (u.endsWith("/history/pid_cast_1")) {
+      return {
+        ok: true,
+        json: async () => ({
+          pid_cast_1: {
+            status: { status_str: "success" },
+            outputs: { "4": { text: ['"a sun-kissed woman with amber-hazel eyes and a gold satin halter top"'] } },
+          },
+        }),
+      };
+    }
+    throw new Error("unexpected fetch " + u);
+  };
+  try {
+    const fakePic = { label: "Picture 1 (Main), Front (S)", blob: new Blob(["img"], { type: "image/jpeg" }), url: "data:image/jpeg;base64,AA==" };
+    const result = await writer.describeCast(
+      { person: { name: "Solaris" }, project: { style: "cinematic" }, pictures: [fakePic] },
+      { type: "comfyui", url: "", model: "qwen3.5_9b_w4a8_gptq.safetensors", key: "", freeVram: false },
+    );
+    assert.equal(result, "a sun-kissed woman with amber-hazel eyes and a gold satin halter top");
+    assert.equal(uploadedCount, 1);
+    assert.deepEqual(promptGraph["3"].inputs["images.image1"], ["10", 0]);
+    assert.equal(writer.lastSeen().pictures, 1);
+    assert.equal(writer.lastSeen().blind, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // When a vision model rejects images, describeCast MUST fail instead of silently falling back to blind text
+  let promptCalls = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith("/upload/image")) return { ok: true, json: async () => ({ name: "ref.jpg", subfolder: "h3take_writer" }) };
+    if (u.endsWith("/prompt")) {
+      promptCalls += 1;
+      return { ok: false, json: async () => ({ error: "This model does not support image inputs" }) };
+    }
+    throw new Error("unexpected fetch " + u);
+  };
+  try {
+    const fakePic = { label: "Picture 1 (Main)", blob: new Blob(["img"], { type: "image/jpeg" }), url: "data:image/jpeg;base64,AA==" };
+    await assert.rejects(
+      () => writer.describeCast(
+        { person: { name: "Solaris" }, pictures: [fakePic] },
+        { type: "comfyui", url: "", model: "text_only.safetensors", key: "", freeVram: false },
+      ),
+      /vision-capable model/i,
+    );
+    assert.equal(promptCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("cast @ mention autocomplete detects trigger boundaries, ranks matches, and applies mentions cleanly", () => {
+  const c = vm.createContext({});
+  vm.runInContext(source.match(/const MENTION_BOUNDARY = [^\n]+/)[0], c);
+  functions(c, ["castMentionContext", "matchCastMentions", "applyCastMention"]);
+
+  const plain = (v) => JSON.parse(JSON.stringify(v));
+
+  // Trigger boundaries: start of text, after space/punctuation; ignores emails & newlines
+  assert.deepEqual(plain(c.castMentionContext("@", 1)), { start: 0, end: 1, query: "" });
+  assert.deepEqual(plain(c.castMentionContext("Close-up on @sol", 16)), { start: 12, end: 16, query: "sol" });
+  assert.deepEqual(plain(c.castMentionContext("(@Sor", 5)), { start: 1, end: 5, query: "Sor" });
+  assert.equal(c.castMentionContext("mail@solaris.com", 12), null);
+  assert.equal(c.castMentionContext("@sol\nnext line", 14), null);
+
+  const cast = [
+    { id: "p1", name: "Narrator", voice: { file: "v.wav" } },
+    { id: "p2", name: "Solaris", file: "s.png", voice: { file: "sv.wav" } },
+    { id: "p3", name: "Sorceress", file: "m.png" },
+    { id: "p4", name: "Old Keeper", refmod: { file: "keeper.safetensors" } },
+  ];
+
+  // Visual mode excludes voice-only narrator
+  assert.deepEqual(
+    plain(c.matchCastMentions(cast, "", { mode: "visual" }).map((p) => p.name)),
+    ["Solaris", "Sorceress", "Old Keeper"],
+  );
+  // Prefix ranks ahead of substring
+  assert.deepEqual(
+    plain(c.matchCastMentions(cast, "so", { mode: "visual" }).map((p) => p.name)),
+    ["Solaris", "Sorceress"],
+  );
+  // Multi-word cast name matches cleanly, while trailing words beyond match close menu
+  assert.deepEqual(
+    plain(c.matchCastMentions(cast, "old k", { mode: "visual" }).map((p) => p.name)),
+    ["Old Keeper"],
+  );
+  assert.deepEqual(plain(c.matchCastMentions(cast, "Solaris walks", { mode: "visual" })), []);
+
+  // Voice mode prioritizes voiced cast first
+  assert.deepEqual(
+    plain(c.matchCastMentions(cast, "", { mode: "voice" }).map((p) => p.name)),
+    ["Narrator", "Solaris", "Sorceress", "Old Keeper"],
+  );
+
+  // Applying a mention inserts trailing space unless followed by whitespace or punctuation
+  assert.deepEqual(
+    plain(c.applyCastMention("Close-up on @sol", 12, 16, "Solaris")),
+    { text: "Close-up on @Solaris ", caret: 21 },
+  );
+  assert.deepEqual(
+    plain(c.applyCastMention("Close-up on @sol, smiling", 12, 16, "Solaris")),
+    { text: "Close-up on @Solaris, smiling", caret: 20 },
+  );
+});
+
+test("unified text encoder choice switches cleanly between Automatic, Universal Conditioner, and local encoders", () => {
+  const c = vm.createContext({});
+  functions(c, ["textEncoderValue", "applyTextEncoderChoice"]);
+  const plain = (v) => JSON.parse(JSON.stringify(v));
+
+  const project = {};
+  assert.equal(c.textEncoderValue(project.models), "");
+
+  // Selecting a Universal Conditioner adapter clears local clip/projection and keeps VAE intact
+  project.models = { clip: "qwen3vl_4b.safetensors", projection: "mmh3-4b.safetensors", vae: "vae_int8.safetensors" };
+  c.applyTextEncoderChoice(project, "conditioner:unicond-h3-v4.4-6l-dual-seq.safetensors");
+  assert.deepEqual(plain(project.models), {
+    vae: "vae_int8.safetensors",
+    conditioner: "unicond-h3-v4.4-6l-dual-seq.safetensors",
+  });
+  assert.equal(c.textEncoderValue(project.models), "conditioner:unicond-h3-v4.4-6l-dual-seq.safetensors");
+
+  // Switching to a local text encoder clears conditioner while keeping VAE
+  c.applyTextEncoderChoice(project, "clip:qwen3vl_4b_int8_convrot.safetensors");
+  assert.deepEqual(plain(project.models), {
+    vae: "vae_int8.safetensors",
+    clip: "qwen3vl_4b_int8_convrot.safetensors",
+  });
+  assert.equal(c.textEncoderValue(project.models), "clip:qwen3vl_4b_int8_convrot.safetensors");
+
+  // Switching back to Automatic deletes models entirely when nothing else is set
+  delete project.models.vae;
+  c.applyTextEncoderChoice(project, "");
+  assert.equal(project.models, undefined);
+  assert.equal(c.textEncoderValue(project.models), "");
+});
+
+test("sprite inspector helpers anchor cursor zoom, fit cleanly, auto-enable HD 256, and match directional references", () => {
+  // Fit zoom frames a 64x64 sprite cleanly inside a 600x360 stage with padding and never overflows
+  const fitZ = fitZoomFor(600, 360, 64, 64);
+  assert.ok(fitZ >= 4.5 && fitZ <= 5, `expected ~4.75 fit zoom, got ${fitZ}`);
+  assert.ok(64 * fitZ <= 360 - 56, "fitted sprite must leave vertical padding with zero head clipping");
+
+  // Cursor-anchored zoom keeps the exact sprite pixel under (cursorX, cursorY) stationary
+  const stageW = 800, stageH = 400;
+  const startCam = { zoom: 4, panX: 20, panY: -10, fit: false };
+  const cursorX = 540, cursorY = 130;
+  const worldBeforeX = (cursorX - (stageW / 2 + startCam.panX)) / startCam.zoom;
+  const worldBeforeY = (cursorY - (stageH / 2 + startCam.panY)) / startCam.zoom;
+  const nextCam = zoomAtPoint(startCam, 8, cursorX, cursorY, stageW, stageH, { baseW: 64, baseH: 64 });
+  const worldAfterX = (cursorX - (stageW / 2 + nextCam.panX)) / nextCam.zoom;
+  const worldAfterY = (cursorY - (stageH / 2 + nextCam.panY)) / nextCam.zoom;
+  assert.ok(Math.abs(worldAfterX - worldBeforeX) < 1e-6, "cursor X drifted during zoom");
+  assert.ok(Math.abs(worldAfterY - worldBeforeY) < 1e-6, "cursor Y drifted during zoom");
+  assert.equal(nextCam.fit, false);
+
+  // Zoom respects min/max clamping
+  assert.equal(zoomAtPoint(startCam, 99, 400, 200, stageW, stageH).zoom, 12);
+  assert.equal(zoomAtPoint(startCam, 0.05, 400, 200, stageW, stageH).zoom, 0.5);
+
+  // Auto HD 256 engages at >= 2x zoom while manual overrides take precedence
+  assert.equal(shouldUseHd("auto", 1.5), false);
+  assert.equal(shouldUseHd("auto", 2), true);
+  assert.equal(shouldUseHd("auto", 5.5), true);
+  assert.equal(shouldUseHd("on", 1), true);
+  assert.equal(shouldUseHd("off", 8), false);
+
+  // Draft settings compact summary
+  assert.equal(
+    draftSettingsSummary({ canvas: "square", keyColor: "white", frames: 39, artStylePreset: "" }),
+    "512² · 39f · White key · Match refs",
+  );
+  assert.equal(
+    draftSettingsSummary({ canvas: "portrait", keyColor: "green", frames: 56, artStylePreset: "pixel" }),
+    "256×384 · 56f · Green key · Pixel art",
+  );
+
+  // Compass maturity badges
+  assert.equal(compassStatusFor(null, true).kind, "rendering");
+  assert.equal(compassStatusFor(null, false).kind, "empty");
+  assert.equal(compassStatusFor({ mirror: true, take: { quality: "draft" } }, false).kind, "mirror");
+  assert.equal(compassStatusFor({ take: { quality: "final" } }, false).kind, "final");
+  assert.equal(compassStatusFor({ clip: { sprite: { self_pin: { file: "p.png" } } }, take: { quality: "draft" } }, false).kind, "loop");
+  assert.equal(compassStatusFor({ clip: { sprite: {} }, take: { quality: "draft" } }, false).kind, "draft");
+
+  // Heading-matched reference selection
+  const cast = {
+    id: "p1",
+    name: "Nova",
+    file: "front.png",
+    view: "front",
+    pictures: [
+      { file: "side.png", view: "side" },
+      { file: "back.png", view: "back" },
+    ],
+  };
+  assert.equal(referenceForDirection(cast, "S").asset.file, "front.png");
+  assert.equal(referenceForDirection(cast, "N").asset.file, "back.png");
+  assert.equal(referenceForDirection(cast, "NE").asset.file, "back.png");
+  assert.equal(referenceForDirection(cast, "E").asset.file, "side.png");
+  assert.equal(referenceForDirection(cast, "W").asset.file, "side.png");
+  assert.equal(referenceForDirection(cast, "SE").index, 0);
+});
+
+test("screenToTilePoint maps zoomed and panned canvas coordinates accurately into tile mask space", () => {
+  // Exact origin, center, and bottom-right on a zoomed/panned 64x64 sprite drawn at 6x (384x384) into a 128x128 mask
+  const origin = screenToTilePoint(120, 40, 120, 40, 384, 384, 128, 128);
+  assert.deepEqual(origin, { x: 0, y: 0, u: 0, v: 0, inside: true });
+
+  const center = screenToTilePoint(312, 232, 120, 40, 384, 384, 128, 128);
+  assert.deepEqual(center, { x: 64, y: 64, u: 0.5, v: 0.5, inside: true });
+
+  const corner = screenToTilePoint(504, 424, 120, 40, 384, 384, 128, 128);
+  assert.deepEqual(corner, { x: 128, y: 128, u: 1, v: 1, inside: true });
+
+  // Non-square portrait tile (96x128 mask) at 4x zoom with negative pan offset
+  const quarter = screenToTilePoint(-10 + 64, 20 + 192, -10, 20, 256, 384, 96, 128);
+  assert.equal(quarter.inside, true);
+  assert.equal(quarter.x, 24);
+  assert.equal(quarter.y, 64);
+
+  // Out-of-bounds coordinates clamp cleanly to [0, maskW] x [0, maskH] and mark inside=false
+  const outside = screenToTilePoint(80, 500, 120, 40, 384, 384, 128, 128);
+  assert.equal(outside.inside, false);
+  assert.equal(outside.x, 0);
+  assert.equal(outside.y, 128);
+  assert.ok(outside.u < 0 && outside.v > 1);
 });

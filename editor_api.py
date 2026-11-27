@@ -2273,6 +2273,9 @@ async def sized_sprite(name, take, tile, fps=None):
     stem = os.path.splitext(os.path.basename(take["file"]))[0] + "." + size_tag
     if fps is not None:
         stem += ".24fps"
+    rev = int(sheet.get("rev") or 0)
+    if rev > 0:
+        stem += ".r%d" % rev
     names = {style: stem + "." + style + ".png" for style in ("illustrated", "indexed")}
     variant = dict(sheet, **names, tile=tile_w, tile_size=[tile_w, tile_h], subfolder=folder,
                    pivot=[sheet["pivot"][0] * tile_w // base_size[0], sheet["pivot"][1] * tile_h // base_size[1]])
@@ -2413,6 +2416,585 @@ async def sprite_self_pin(request):
         "stride": stride,
         "frame": chosen,
         "pins": pins,
+    })
+
+
+def _find_sprite_take(data, clip_id, take_id):
+    """Locate (clip, take) for an existing sprite take, or return (None, None)."""
+    for clip in data.get("clips") or []:
+        if clip.get("id") != clip_id:
+            continue
+        for take in clip.get("takes") or []:
+            if take.get("id") == take_id and isinstance(take.get("sprite"), dict):
+                return clip, take
+    return None, None
+
+
+def _sprite_total_frames(take):
+    sheet = take.get("sprite") or {}
+    return int(take.get("frames") or sheet.get("frames") or store.sprite.FRAMES)
+
+
+def _sprite_take_subfolder(folder, take):
+    return take.get("subfolder") or ("%s/%s/clips" % (store.ROOT, folder))
+
+
+def _sprite_sheet_stem(take):
+    sheet = take.get("sprite") or {}
+    illustrated = sheet.get("illustrated")
+    if isinstance(illustrated, str) and illustrated.endswith(".illustrated.png"):
+        return illustrated[:-len(".illustrated.png")]
+    return os.path.splitext(os.path.basename(take["file"]))[0]
+
+
+def _sprite_raw_video_path(folder, take):
+    if not take or not take.get("file"):
+        return None
+    try:
+        path = output_path(_sprite_take_subfolder(folder, take), take["file"])
+    except web.HTTPException:
+        return None
+    return path if os.path.isfile(path) else None
+
+
+def _parse_pose_int(value, allow_str=False):
+    if type(value) is int:
+        return value
+    if allow_str and isinstance(value, str) and value.strip():
+        try:
+            return int(value.strip())
+        except ValueError as error:
+            raise ValueError("pose must be an integer") from error
+    raise ValueError("pose must be an integer")
+
+
+def _decode_mask_png(data):
+    """Decode a base64 PNG string or data URL into a PIL Image, or None when empty."""
+    import base64
+    import io
+    from PIL import Image
+
+    if data is None or data == "":
+        return None
+    if not isinstance(data, str):
+        raise ValueError("mask must be a base64-encoded PNG string")
+    raw_b64 = data.strip()
+    if raw_b64.startswith("data:"):
+        _, sep, payload = raw_b64.partition(",")
+        if not sep:
+            raise ValueError("mask data URL is malformed")
+        raw_b64 = payload.strip()
+    if len(raw_b64) > 24 * 1024 * 1024:
+        raise ValueError("mask payload is too large")
+    try:
+        raw_bytes = base64.b64decode(raw_b64, validate=True)
+    except Exception as error:
+        raise ValueError("mask is not valid base64") from error
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as im:
+            im.load()
+            return im.copy()
+    except Exception as error:
+        raise ValueError("mask is not a valid PNG image") from error
+
+
+async def _extract_single_frame(video_path, frame_index):
+    """Extract one exact 0-based RGB frame from a video file via ffmpeg."""
+    import tempfile
+    from PIL import Image
+
+    idx = int(frame_index)
+    if idx < 0:
+        raise ValueError("frame_index must be non-negative")
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "frame.png")
+        await run(["ffmpeg", "-y", "-v", "error", "-i", video_path, "-vf", "select=eq(n\\,%d)" % idx,
+                   "-frames:v", "1", target])
+        if not os.path.isfile(target):
+            raise ValueError("The source movie has no frame %d." % idx)
+        with Image.open(target) as im:
+            return im.convert("RGB")
+
+
+async def _ensure_frame_cache(folder, take):
+    """Ensure a take's lossless RGBA frame_cache exists on disk, lazily populating it from the MP4 if missing."""
+    import tempfile
+    from PIL import Image
+
+    sheet = take["sprite"]
+    sub = _sprite_take_subfolder(folder, take)
+    total_frames = _sprite_total_frames(take)
+    poses = int(sheet.get("source_poses") or sheet.get("poses") or 7)
+    idle = int(sheet.get("poses") or poses) == 2 * poses - 2
+    order = store.sprite.playback_indices(sheet["layout"], poses, idle, False, total_frames=total_frames)
+    needed = list(dict.fromkeys(order))
+
+    cache_name = sheet.get("frame_cache") or (_sprite_sheet_stem(take) + ".frames")
+    cache_dir = output_path(sub, cache_name)
+    missing = [idx for idx in needed if not os.path.isfile(os.path.join(cache_dir, "f%04d.png" % int(idx)))]
+    if not missing and os.path.isdir(cache_dir):
+        if sheet.get("frame_cache") != cache_name:
+            sheet["frame_cache"] = cache_name
+        return cache_dir, cache_name
+
+    video_path = _sprite_raw_video_path(folder, take)
+    if not video_path:
+        raise FileNotFoundError("The source movie for this take is missing.")
+    with tempfile.TemporaryDirectory() as tmp:
+        pattern = os.path.join(tmp, "f_%04d.png")
+        await run(["ffmpeg", "-y", "-v", "error", "-i", video_path, pattern])
+        files = sorted(f for f in os.listdir(tmp) if f.endswith(".png"))
+        frames_by_idx = {}
+        for idx in missing:
+            if not 0 <= idx < len(files):
+                raise ValueError("The source movie has %d frames; pose needs frame %d." % (len(files), idx))
+            with Image.open(os.path.join(tmp, files[idx])) as im:
+                rgb = im.convert("RGB")
+            frames_by_idx[idx] = await asyncio.to_thread(store.sprite.with_matte, rgb)
+    await asyncio.to_thread(store.sprite.save_frame_cache, cache_dir, frames_by_idx)
+    sheet["frame_cache"] = cache_name
+    return cache_dir, cache_name
+
+
+async def _wait_prompt_history(job_id):
+    """Wait until a queued ComfyUI prompt finishes and return its history record."""
+    from server import PromptServer
+
+    queue = PromptServer.instance.prompt_queue
+    while True:
+        running, waiting = comfy_queue()
+        record = queue.get_history(prompt_id=job_id).get(job_id)
+        if record:
+            return record
+        if job_id not in running and job_id not in waiting:
+            raise Refused("The ComfyUI job left the queue before finishing. Retry the fix.")
+        await asyncio.sleep(0.25)
+
+
+async def _cutout_single_frame(rgb_image, sheet, folder, clip_id, take_id):
+    """Cut out one RGB frame using BiRefNet (when foreground model is active & available), falling back to with_matte."""
+    from PIL import Image
+
+    if sheet.get("cutout") == "foreground model":
+        matte = store.sprite.matte_model(available_models())
+        if matte:
+            in_path, in_asset = asset_target(folder, ".png")
+            out_path = None
+            try:
+                await asyncio.to_thread(rgb_image.convert("RGB").save, in_path, format="PNG")
+                in_rel = "/".join(filter(None, (in_asset.get("subfolder"), in_asset["file"])))
+                out_prefix = "%s/%s/clips/.nudge_%s_%s_%s" % (store.ROOT, folder, clip_id, take_id, uuid.uuid4().hex[:8])
+                defringe_in = {"images": ["1", 0], "mask": ["3", 0]}
+                if sheet.get("alpha") == "hard":
+                    defringe_in["alpha"] = "hard"
+                graph = {
+                    "1": {"class_type": "H3LoadStill", "inputs": {"file": in_rel}},
+                    "2": {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": matte}},
+                    "3": {"class_type": "RemoveBackground", "inputs": {"bg_removal_model": ["2", 0], "image": ["1", 0]}},
+                    "4": {"class_type": "H3DefringeMatte", "inputs": defringe_in},
+                    "5": {"class_type": "SaveImage", "inputs": {"images": ["4", 0], "filename_prefix": out_prefix}},
+                }
+                job_id = await queue_prompt(graph)
+                record = await _wait_prompt_history(job_id)
+                images = (record.get("outputs") or {}).get("5", {}).get("images") or []
+                if images:
+                    info = images[0]
+                    out_path = output_path(info.get("subfolder"), info["filename"])
+                    if os.path.isfile(out_path):
+                        with Image.open(out_path) as im:
+                            return im.convert("RGBA")
+            except Exception as error:
+                logging.debug("H3 Editor: 1-frame BiRefNet nudge cutout fell back to with_matte: %s", error)
+            finally:
+                for p in (in_path, out_path):
+                    if p and os.path.isfile(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+    return await asyncio.to_thread(store.sprite.with_matte, rgb_image)
+
+
+async def _repack_sprite_take(folder, cache_dir, take, total_frames):
+    """Repack base sprite strips from frame_cache, remove stale resized variants, and bump sheet['rev']."""
+    import fnmatch
+
+    sheet = take["sprite"]
+    sub = _sprite_take_subfolder(folder, take)
+    dest_dir = output_path(sub, "")
+    sheet_stem = _sprite_sheet_stem(take)
+    repacked = await asyncio.to_thread(
+        store.sprite.repack_take_from_cache,
+        cache_dir, sheet, dest_dir, sheet_stem, total_frames=total_frames,
+    )
+    sheet["illustrated"] = repacked["illustrated"]
+    sheet["indexed"] = repacked["indexed"]
+
+    # Also purge any resized variants named after take['file'] (e.g. SaveVideo's _00001_ suffix).
+    take_stem = os.path.splitext(os.path.basename(take["file"]))[0] if take.get("file") else ""
+    clips_dir = output_path("%s/%s/clips" % (store.ROOT, folder), "")
+    for directory in dict.fromkeys((dest_dir, clips_dir)):
+        if not take_stem or not os.path.isdir(directory):
+            continue
+        pattern = take_stem + ".*px.*.png"
+        for fname in os.listdir(directory):
+            if fnmatch.fnmatch(fname, pattern):
+                full_path = os.path.join(directory, fname)
+                if os.path.isfile(full_path):
+                    try:
+                        os.remove(full_path)
+                    except OSError:
+                        pass
+
+    sheet["rev"] = int(sheet.get("rev", 0)) + 1
+    return repacked
+
+
+async def sprite_pose_info(request):
+    """Inspect a single sprite pose's source video frame, patch state, and available repair capabilities."""
+    folder = store.slug(request.match_info["name"])
+    data = read_project(folder)
+    clip_id = request.query.get("clip")
+    take_id = request.query.get("take")
+    _, take = _find_sprite_take(data, clip_id, take_id)
+    if not take:
+        return refused("Choose an existing Sprite Draft take.", 404)
+    sheet = take["sprite"]
+    total_frames = _sprite_total_frames(take)
+    try:
+        pose = _parse_pose_int(request.query.get("pose"), allow_str=True)
+        _, source_index, orig_index = store.sprite.pose_source_index(sheet, pose, total_frames=total_frames)
+        tile_w, tile_h = store.sprite.validate_tile_size(sheet.get("tile_size") or sheet.get("tile") or store.sprite.TILE)
+    except ValueError as error:
+        return refused(plain(error))
+    patched_poses = dict(sheet.get("patched_poses")) if isinstance(sheet.get("patched_poses"), dict) else {}
+    patched = patched_poses.get(str(pose))
+    if not isinstance(patched, dict):
+        patched = None
+    return web.json_response({
+        "pose": pose,
+        "source_index": source_index,
+        "orig_index": orig_index,
+        "total_frames": total_frames,
+        "patched": patched,
+        "patched_poses": patched_poses,
+        "has_raw_video": _sprite_raw_video_path(folder, take) is not None,
+        "has_hold_latents": bool(take_has_latents(take)),
+        "tile_size": [tile_w, tile_h],
+    })
+
+
+async def sprite_fix_alpha(request):
+    """Apply instant 0-GPU alpha erase and/or raw-video restore strokes to a single sprite pose."""
+    folder = store.slug(request.match_info["name"])
+    try:
+        body = await request.json()
+    except ValueError:
+        return refused("Send a JSON body for alpha pose repair.")
+    if not isinstance(body, dict):
+        return refused("Send a JSON body for alpha pose repair.")
+    data = read_project(folder)
+    _, take = _find_sprite_take(data, body.get("clip"), body.get("take"))
+    if not take:
+        return refused("Choose an existing Sprite Draft take.", 404)
+    sheet = take["sprite"]
+    total_frames = _sprite_total_frames(take)
+    try:
+        pose = _parse_pose_int(body.get("pose"))
+        _, source_index, _ = store.sprite.pose_source_index(sheet, pose, total_frames=total_frames)
+        erase_img = _decode_mask_png(body.get("erase_mask"))
+        restore_img = _decode_mask_png(body.get("restore_mask"))
+        if erase_img is None and restore_img is None:
+            raise ValueError("Provide erase_mask or restore_mask.")
+    except ValueError as error:
+        return refused(plain(error))
+
+    try:
+        cache_dir, cache_name = await _ensure_frame_cache(folder, take)
+        raw_frame = None
+        if restore_img is not None:
+            video_path = _sprite_raw_video_path(folder, take)
+            if video_path:
+                raw_frame = await _extract_single_frame(video_path, source_index)
+    except FileNotFoundError as error:
+        return refused(plain(error), 404)
+    except (ValueError, Refused) as error:
+        return refused(plain(error))
+
+    async with lock(folder):
+        data = read_project(folder)
+        _, live_take = _find_sprite_take(data, body.get("clip"), body.get("take"))
+        if not live_take:
+            return refused("Choose an existing Sprite Draft take.", 404)
+        live_sheet = live_take["sprite"]
+        live_sheet["frame_cache"] = cache_name
+        live_total = _sprite_total_frames(live_take)
+        try:
+            result = await asyncio.to_thread(
+                store.sprite.apply_pose_alpha,
+                cache_dir, live_sheet, pose,
+                erase_mask=erase_img, restore_mask=restore_img, raw_frame=raw_frame, total_frames=live_total,
+            )
+            await _repack_sprite_take(folder, cache_dir, live_take, live_total)
+        except FileNotFoundError as error:
+            return refused(plain(error), 404)
+        except ValueError as error:
+            return refused(plain(error))
+        commit(folder, data, "sprite_fix")
+    return web.json_response({
+        "sprite": live_take["sprite"],
+        "pose": pose,
+        "source_index": result["source_index"],
+        "revision": data["revision"],
+    })
+
+
+async def sprite_nudge_pose(request):
+    """Swap a sprite pose to an adjacent 24 fps frame from the take's raw video (0-GPU or 1-frame BiRefNet)."""
+    folder = store.slug(request.match_info["name"])
+    try:
+        body = await request.json()
+    except ValueError:
+        return refused("Send a JSON body to nudge a pose.")
+    if not isinstance(body, dict):
+        return refused("Send a JSON body to nudge a pose.")
+    data = read_project(folder)
+    clip, take = _find_sprite_take(data, body.get("clip"), body.get("take"))
+    if not take:
+        return refused("Choose an existing Sprite Draft take.", 404)
+    sheet = take["sprite"]
+    total_frames = _sprite_total_frames(take)
+    try:
+        pose = _parse_pose_int(body.get("pose"))
+        _, source_index, _ = store.sprite.pose_source_index(sheet, pose, total_frames=total_frames)
+        if body.get("source_index") is not None:
+            if type(body["source_index"]) is not int:
+                raise ValueError("source_index must be an integer")
+            target_index = body["source_index"]
+        elif body.get("delta") is not None:
+            if type(body["delta"]) is not int:
+                raise ValueError("delta must be an integer")
+            target_index = source_index + body["delta"]
+        else:
+            raise ValueError("Provide delta or source_index.")
+        new_source_index = max(0, min(total_frames - 1, target_index))
+    except ValueError as error:
+        return refused(plain(error))
+
+    video_path = _sprite_raw_video_path(folder, take)
+    if not video_path:
+        return refused("The source movie for this take is missing.", 404)
+    try:
+        cache_dir, cache_name = await _ensure_frame_cache(folder, take)
+        raw_rgb = await _extract_single_frame(video_path, new_source_index)
+        new_rgba = await _cutout_single_frame(raw_rgb, sheet, folder, clip["id"], take["id"])
+    except FileNotFoundError as error:
+        return refused(plain(error), 404)
+    except (ValueError, Refused) as error:
+        return refused(plain(error))
+
+    async with lock(folder):
+        data = read_project(folder)
+        _, live_take = _find_sprite_take(data, body.get("clip"), body.get("take"))
+        if not live_take:
+            return refused("Choose an existing Sprite Draft take.", 404)
+        live_sheet = live_take["sprite"]
+        live_sheet["frame_cache"] = cache_name
+        live_total = _sprite_total_frames(live_take)
+        try:
+            result = await asyncio.to_thread(
+                store.sprite.nudge_pose_frame,
+                cache_dir, live_sheet, pose, new_source_index, new_rgba, total_frames=live_total,
+            )
+            await _repack_sprite_take(folder, cache_dir, live_take, live_total)
+        except FileNotFoundError as error:
+            return refused(plain(error), 404)
+        except ValueError as error:
+            return refused(plain(error))
+        commit(folder, data, "sprite_fix")
+    return web.json_response({
+        "sprite": live_take["sprite"],
+        "pose": pose,
+        "source_index": result["source_index"],
+        "revision": data["revision"],
+    })
+
+
+async def sprite_fix_ai(request):
+    """Repair a single sprite pose with 1-pass H3Take spatial+temporal video inpainting."""
+    import numpy as np
+    from PIL import Image
+
+    folder = store.slug(request.match_info["name"])
+    try:
+        body = await request.json()
+    except ValueError:
+        return refused("Send a JSON body for AI pose repair.")
+    if not isinstance(body, dict):
+        return refused("Send a JSON body for AI pose repair.")
+    data = read_project(folder)
+    clip, take = _find_sprite_take(data, body.get("clip"), body.get("take"))
+    if not take:
+        return refused("Choose an existing Sprite Draft take.", 404)
+    sheet = take["sprite"]
+    total_frames = _sprite_total_frames(take)
+    try:
+        pose = _parse_pose_int(body.get("pose"))
+        _, source_index, _ = store.sprite.pose_source_index(sheet, pose, total_frames=total_frames)
+        strength = body.get("strength") or "full"
+        if strength not in ("medium", "heavy", "full"):
+            raise ValueError("strength must be medium, heavy, or full")
+        prompt = str(body.get("prompt") or "")
+        seed = body.get("seed")
+        if seed not in (None, "") and type(seed) is not int:
+            raise ValueError("seed must be an integer")
+        mask_tile = _decode_mask_png(body.get("mask"))
+    except ValueError as error:
+        return refused(plain(error))
+
+    if not _sprite_raw_video_path(folder, take):
+        return refused("The source movie for this take is missing.", 404)
+
+    mask_path = None
+    saved_path = None
+    try:
+        cache_dir, cache_name = await _ensure_frame_cache(folder, take)
+        frame_path = os.path.join(cache_dir, "f%04d.png" % int(source_index))
+        if os.path.isfile(frame_path):
+            with Image.open(frame_path) as im:
+                frame_size = im.size
+        elif take.get("size") and len(take["size"]) == 2:
+            frame_size = (int(take["size"][0]), int(take["size"][1]))
+        else:
+            frame_size = store.sprite.canvas_size({"canvas": sheet.get("canvas") or "portrait"},
+                                                  take.get("quality") or "draft")
+
+        mask_asset = None
+        if mask_tile is not None:
+            tile_size = sheet.get("tile_size") or sheet.get("tile") or store.sprite.TILE
+            canvas = sheet.get("canvas") or "portrait"
+            frame_mask = await asyncio.to_thread(
+                store.sprite.tile_mask_to_frame_mask,
+                mask_tile, frame_size, sheet["layout"], tile_size, canvas=canvas,
+            )
+            u8 = (frame_mask.clip(0.0, 1.0) * 255.0).round().astype(np.uint8)
+            mask_rgb = Image.fromarray(u8, mode="L").convert("RGB")
+            mask_path, mask_asset = asset_target(folder, ".png")
+            await asyncio.to_thread(mask_rgb.save, mask_path, format="PNG")
+
+        plan = store.plan_sprite_pose_fix(
+            data, folder, clip, take, pose, prompt,
+            mask_asset=mask_asset, strength=strength, seed=seed,
+            available=available_models(), patches=installed_patches(),
+        )
+        job_id = await queue_prompt(plan["graph"], body.get("client_id"))
+        record = await _wait_prompt_history(job_id)
+        images = (record.get("outputs") or {}).get(plan["save_node"], {}).get("images") or []
+        if not images:
+            raise Refused(failure(record))
+        saved_info = images[0]
+        saved_path = output_path(saved_info.get("subfolder"), saved_info["filename"])
+        if not os.path.isfile(saved_path):
+            raise Refused("The pose repair finished without saving a frame.")
+        with Image.open(saved_path) as im:
+            repaired_im = im.convert("RGBA") if plan.get("has_matte") else im.convert("RGB")
+        if plan.get("has_matte"):
+            repaired_rgba = repaired_im
+        else:
+            repaired_rgba = await asyncio.to_thread(store.sprite.with_matte, repaired_im)
+    except FileNotFoundError as error:
+        return refused(plain(error), 404)
+    except ValueError as error:
+        return refused(plain(error))
+    except Refused as error:
+        return refused(plain(error), 502)
+    finally:
+        for p in (mask_path, saved_path):
+            if p and os.path.isfile(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+    async with lock(folder):
+        data = read_project(folder)
+        _, live_take = _find_sprite_take(data, body.get("clip"), body.get("take"))
+        if not live_take:
+            return refused("Choose an existing Sprite Draft take.", 404)
+        live_sheet = live_take["sprite"]
+        live_sheet["frame_cache"] = cache_name
+        live_total = _sprite_total_frames(live_take)
+        try:
+            await asyncio.to_thread(
+                store.sprite.composite_pose_repair,
+                cache_dir, live_sheet, pose, repaired_rgba,
+                mask_tile=mask_tile, total_frames=live_total,
+            )
+            await _repack_sprite_take(folder, cache_dir, live_take, live_total)
+        except FileNotFoundError as error:
+            return refused(plain(error), 404)
+        except ValueError as error:
+            return refused(plain(error))
+        commit(folder, data, "sprite_fix")
+    return web.json_response({
+        "sprite": live_take["sprite"],
+        "pose": pose,
+        "seed": plan["seed"],
+        "revision": data["revision"],
+    })
+
+
+async def sprite_revert_pose(request):
+    """Revert a patched sprite pose back to its original cached frame and source index."""
+    folder = store.slug(request.match_info["name"])
+    try:
+        body = await request.json()
+    except ValueError:
+        return refused("Send a JSON body to revert a pose.")
+    if not isinstance(body, dict):
+        return refused("Send a JSON body to revert a pose.")
+    data = read_project(folder)
+    _, take = _find_sprite_take(data, body.get("clip"), body.get("take"))
+    if not take:
+        return refused("Choose an existing Sprite Draft take.", 404)
+    sheet = take["sprite"]
+    total_frames = _sprite_total_frames(take)
+    try:
+        pose = _parse_pose_int(body.get("pose"))
+        store.sprite.pose_source_index(sheet, pose, total_frames=total_frames)
+    except ValueError as error:
+        return refused(plain(error))
+
+    try:
+        cache_dir, cache_name = await _ensure_frame_cache(folder, take)
+    except FileNotFoundError as error:
+        return refused(plain(error), 404)
+    except ValueError as error:
+        return refused(plain(error))
+
+    async with lock(folder):
+        data = read_project(folder)
+        _, live_take = _find_sprite_take(data, body.get("clip"), body.get("take"))
+        if not live_take:
+            return refused("Choose an existing Sprite Draft take.", 404)
+        live_sheet = live_take["sprite"]
+        live_sheet["frame_cache"] = cache_name
+        live_total = _sprite_total_frames(live_take)
+        try:
+            await asyncio.to_thread(
+                store.sprite.revert_pose_frame,
+                cache_dir, live_sheet, pose, total_frames=live_total,
+            )
+            await _repack_sprite_take(folder, cache_dir, live_take, live_total)
+        except FileNotFoundError as error:
+            return refused(plain(error), 404)
+        except ValueError as error:
+            return refused(plain(error))
+        commit(folder, data, "sprite_fix")
+    return web.json_response({
+        "sprite": live_take["sprite"],
+        "pose": pose,
+        "revision": data["revision"],
     })
 
 
@@ -3660,9 +4242,9 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
             active_t = store.active_take(target)
 
             preset_label = {
-                "realism_fast": "F1-Fast (1088p 2-step H3Sampler)",
-                "realism": "F1 Max (1088p 3-step H3Sampler)",
-                "fast_sharp": "F2 Fast Sharp (768p + RelayVSR 2x 0.85)",
+                "realism_fast": "Natural Skin · Fast (1088p)",
+                "realism": "Natural Skin · Max (1088p)",
+                "fast_sharp": "Fast Sharp (768p + RelayVSR 2x)",
                 "standard": "Classic",
             }.get(preset, preset)
 
@@ -3711,9 +4293,9 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
                     "badge": ("Off (0.0)" if pose_strength <= 0 else "Cached · loaders skipped" if p_hit else f"Partial ({p_sum['cached_frames']}/{p_sum['frames']}f)" if p_sum else "Not cached"),
                     "detail": (f"ControlNet strength {pose_strength:.2f}"
                                + (f" · {p_sum['detected_frames']}/{p_sum['cached_frames']}f with pose ({p_sum['size_bytes'] // 1024} KB)" if p_sum else
-                                  " · Pure M5 video-motion (no extra pose models)" if (mode == "rescene" and pose_strength <= 0) else
+                                  " · Pure video-motion (no extra pose models)" if (mode == "rescene" and pose_strength <= 0) else
                                   " · No pose reinforcement (SAM3 mask + video ref only)" if pose_strength <= 0 else
-                                  " · M7 pose lock + face landmarks (Pass-1 only)" if mode == "rescene" else " · Will run RT-DETR + SDPose once and cache")),
+                                  " · Pose lock + face landmarks (Pass-1 only)" if mode == "rescene" else " · Will run RT-DETR + SDPose once and cache")),
                     "coverage": {"cached": p_sum["cached_frames"], "total": p_sum["frames"], "spans": p_sum["spans"]} if p_sum else None,
                     "preview_url": (_preview_url(folder, "pose", src_rel, in_f, load_last, 0, int(os.path.getmtime(p_sum["path"])))
                                     if p_sum else None),
@@ -3726,7 +4308,7 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
                     "badge": f"{len(windows)} window{'s' if len(windows) != 1 else ''} · {preset_label}",
                     "detail": (f"Preset: {preset_label} · Draft floor {draft_w}×{draft_h}, {draft_steps} steps · "
                                + ("Swap Guard auto-retry on Window 0" if mode == "replace"
-                                  else ("Unmasked RGB + Fun ControlNet 2.0 (M7)" if pose_strength > 0 else "Unmasked RGB pure motion (M5)") if mode == "rescene"
+                                  else ("Unmasked RGB + Fun ControlNet 2.0" if pose_strength > 0 else "Unmasked RGB pure motion") if mode == "rescene"
                                   else "Pose ControlNet choreography")
                                + (f" · {len(windows)} relay windows (22f double latent carry)" if (len(windows) > 1 and preset in ("realism_fast", "realism"))
                                   else f" · {len(windows)} relay windows (22f overlap)" if len(windows) > 1 else "")),
@@ -3740,7 +4322,7 @@ def _motion_pipeline_report(data, folder, clip_id=None, available=None):
                     "id": "plate", "title": "Plate composite & output", "component": ("H3CompositeSourcePlate" if plate_on else "Direct 1088p output") + (" + RelayVSR 2x" if sharp_on else ""),
                     "nodes": ["250", "33", "34", "35", "36", "18", "19"],
                     "status": "cached" if active_t else ("ready" if (not sharp_on or relay_ok) else "missing"),
-                    "badge": (f"{active_t['quality'].title()} · {active_t['frames']}f" if active_t else ("Fast Sharp F2 ready" if preset == "fast_sharp" else "Sharp 2x ready" if sharp_on else "Pending render")),
+                    "badge": (f"{active_t['quality'].title()} · {active_t['frames']}f" if active_t else ("Fast Sharp ready" if preset == "fast_sharp" else "Sharp 2x ready" if sharp_on else "Pending render")),
                     "detail": (("Zero-halo plate on (src +18px / gen +4px)" if plate_on else "Source plate off (full new scene)")
                                + (" · RelayVSR 2x (0.85) before 1080p plate" if preset == "fast_sharp" else " · RelayVSR 2x final enabled" if sharp_on else "")
                                + (f" · Active take {active_t.get('size', [0, 0])[0]}×{active_t.get('size', [0, 0])[1]}" if active_t and active_t.get("size") else "")),
@@ -4023,6 +4605,11 @@ ROUTES = (
     ("POST", "/h3take/api/project/{name}/sprite-export", "sprite_export"),
     ("POST", "/h3take/api/project/{name}/sprite-atlas", "sprite_atlas"),
     ("POST", "/h3take/api/project/{name}/sprite-self-pin", "sprite_self_pin"),
+    ("GET", "/h3take/api/project/{name}/sprite-pose-info", "sprite_pose_info"),
+    ("POST", "/h3take/api/project/{name}/sprite-fix-alpha", "sprite_fix_alpha"),
+    ("POST", "/h3take/api/project/{name}/sprite-nudge-pose", "sprite_nudge_pose"),
+    ("POST", "/h3take/api/project/{name}/sprite-fix-ai", "sprite_fix_ai"),
+    ("POST", "/h3take/api/project/{name}/sprite-revert-pose", "sprite_revert_pose"),
     ("GET", "/h3take/api/project/{name}/props", "list_props"),
     ("POST", "/h3take/api/project/{name}/props", "sprite_prop"),
     ("POST", "/h3take/api/project/{name}/cancel", "cancel"),

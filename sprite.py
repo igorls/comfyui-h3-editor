@@ -802,7 +802,9 @@ def playback_fps(layout, poses, idle, export_24fps=False):
         return 24
     if "indices" in layout:
         indices = layout["indices"]
-        return round(24 * (poses - 1) / (indices[-1] - indices[0]), 2)
+        span = indices[-1] - indices[0]
+        if span > 0:
+            return round(24 * (poses - 1) / span, 2)
     return 6 if idle else 12
 
 
@@ -810,9 +812,10 @@ def playback_indices(layout, poses, idle, export_24fps, total_frames=FRAMES):
     """Map output cells to saved movie frames, keeping the authored loop duration."""
     start = layout["start"]
     indices = layout.get("indices", [start + 2 * i for i in range(poses)])
+    nudged = bool(layout.get("nudged"))
     if (not isinstance(indices, list) or len(indices) != poses
             or any(type(i) is not int or not 0 <= i < total_frames for i in indices)
-            or indices != sorted(set(indices)) or indices[0] != start):
+            or (not nudged and (indices != sorted(set(indices)) or indices[0] != start))):
         raise ValueError("Invalid sprite pose indices")
     cycle = indices + indices[-2:0:-1] if idle else indices
     if not export_24fps:
@@ -1142,3 +1145,379 @@ def pack_atlas(rows, tile, style, include_webp=True, webp_quality=84):
         archive.writestr("preview.html", prefix + '<script id="bundled-atlas" type="application/json">'
                          + payload + "</script>" + suffix)
     return data.getvalue()
+
+
+def _pose_layout_info(sheet, total_frames=None):
+    if not isinstance(sheet, dict) or not isinstance(sheet.get("layout"), dict):
+        raise ValueError("Sprite sheet metadata with layout is required")
+    poses = int(sheet.get("source_poses") or sheet.get("poses") or 7)
+    idle = int(sheet.get("poses") or poses) == 2 * poses - 2
+    total = int(total_frames or sheet.get("frames") or FRAMES)
+    return poses, idle, total
+
+
+def _mask_to_pil_l(mask_img):
+    """Convert a PIL image or numpy mask to a grayscale 'L' PIL image in 0..255."""
+    import numpy as np
+    from PIL import Image
+
+    if isinstance(mask_img, Image.Image):
+        if mask_img.mode == "L":
+            return mask_img
+        if mask_img.mode in ("RGBA", "LA", "PA"):
+            rgba = mask_img.convert("RGBA")
+            alpha = rgba.getchannel("A")
+            bg = Image.new("RGB", rgba.size, (0, 0, 0))
+            bg.paste(rgba, mask=alpha)
+            lum = bg.convert("L")
+            if lum.getbbox() is None and alpha.getbbox() is not None:
+                return alpha
+            return lum
+        return mask_img.convert("L")
+    arr = np.asarray(mask_img)
+    if arr.ndim == 3:
+        arr = arr[..., 0]
+    if np.issubdtype(arr.dtype, np.floating):
+        u8 = (arr.clip(0.0, 1.0) * 255.0).round().astype(np.uint8)
+    else:
+        u8 = arr.clip(0, 255).astype(np.uint8)
+    return Image.fromarray(u8, mode="L")
+
+
+def _to_frame_mask(mask, frame_size, layout, tile_size, canvas="portrait"):
+    import numpy as np
+
+    frame_w, frame_h = int(frame_size[0]), int(frame_size[1])
+    if isinstance(mask, np.ndarray) and mask.shape[:2] == (frame_h, frame_w):
+        arr = mask[..., 0] if mask.ndim == 3 else mask
+        arr = arr.astype(np.float32)
+        if arr.max() > 1.0:
+            arr = arr / 255.0
+        return arr.clip(0.0, 1.0)
+    return tile_mask_to_frame_mask(mask, (frame_w, frame_h), layout, tile_size, canvas=canvas)
+
+
+def pose_source_index(sheet, pose_index, total_frames=None):
+    """Resolve a visible pose index to (order, source_index, orig_index)."""
+    if type(pose_index) is not int:
+        raise ValueError("pose_index must be an integer")
+    poses, idle, total = _pose_layout_info(sheet, total_frames=total_frames)
+    order = playback_indices(sheet["layout"], poses, idle, False, total_frames=total)
+    if not 0 <= pose_index < len(order):
+        raise ValueError("pose_index %s is out of range 0..%s" % (pose_index, len(order) - 1))
+    source_index = int(order[pose_index])
+    patched = (sheet.get("patched_poses") or {}).get(str(pose_index))
+    orig_index = (
+        int(patched["orig_index"])
+        if isinstance(patched, dict) and patched.get("orig_index") is not None
+        else source_index
+    )
+    return order, source_index, orig_index
+
+
+def tile_mask_to_frame_mask(mask_img, frame_size, layout, tile_size, canvas="portrait"):
+    """Project a tile-space grayscale mask (0..255) onto the source frame's (frame_w, frame_h) pixel space.
+
+    Inverts the exact `_render_cells` crop box `(x, y, x + tile_w*sx/scale_x, y + tile_h*sy/scale_y)`
+    and returns a float32 numpy array of shape `(frame_h, frame_w)` in `[0, 1]`.
+    """
+    import numpy as np
+    from PIL import Image
+
+    tile_w, tile_h = validate_tile_size(tile_size)
+    frame_w, frame_h = int(frame_size[0]), int(frame_size[1])
+    if frame_w <= 0 or frame_h <= 0:
+        raise ValueError("frame_size must be positive (width, height)")
+    ref_w, ref_h = canvas_size({"canvas": canvas or "portrait"}, "draft")
+    scale_unit = BODY / float(layout["height"])
+    scale_x = scale_unit * (tile_w / float(TILE))
+    scale_y = scale_unit * (tile_h / float(TILE))
+    px = PIVOT[0] * (tile_w / float(TILE))
+    py = PIVOT[1] * (tile_h / float(TILE))
+    sx, sy = frame_w / float(ref_w), frame_h / float(ref_h)
+    x0 = (float(layout["center"]) - px / scale_x) * sx
+    y0 = (float(layout["ground"]) - py / scale_y) * sy
+    box_w = tile_w * sx / scale_x
+    box_h = tile_h * sy / scale_y
+    if box_w <= 0 or box_h <= 0:
+        raise ValueError("Invalid sprite layout box")
+
+    mask_l = _mask_to_pil_l(mask_img)
+    mw, mh = mask_l.size
+    mx0 = (0.0 - x0) * (mw / box_w)
+    my0 = (0.0 - y0) * (mh / box_h)
+    mx1 = (frame_w - x0) * (mw / box_w)
+    my1 = (frame_h - y0) * (mh / box_h)
+    projected = mask_l.transform(
+        (frame_w, frame_h),
+        Image.Transform.EXTENT,
+        (mx0, my0, mx1, my1),
+        Image.Resampling.BILINEAR,
+    )
+    return (np.asarray(projected, dtype=np.float32) / 255.0).clip(0.0, 1.0)
+
+
+def backup_pose_frame(cache_dir, source_index):
+    """Copy fNNNN.png to <cache_dir>/orig/fNNNN.png once so pose edits stay reversible."""
+    import shutil
+
+    idx = int(source_index)
+    name = "f%04d.png" % idx
+    src = os.path.join(cache_dir, name)
+    if not os.path.isfile(src):
+        raise FileNotFoundError("Cached pose frame %s is missing" % name)
+    orig_dir = os.path.join(cache_dir, "orig")
+    os.makedirs(orig_dir, exist_ok=True)
+    dst = os.path.join(orig_dir, name)
+    if not os.path.isfile(dst):
+        tmp = dst + ".tmp"
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+    return dst
+
+
+def repack_take_from_cache(cache_dir, sheet, dest_dir, stem, total_frames=None):
+    """Rewrite <stem>.illustrated.png and <stem>.indexed.png from frame_cache and purge stale *px* variants."""
+    import fnmatch
+
+    poses, idle, total = _pose_layout_info(sheet, total_frames=total_frames)
+    base_tile = validate_tile_size(sheet.get("tile_size") or sheet.get("tile") or TILE)
+    canvas = sheet.get("canvas") or "portrait"
+    alpha = sheet.get("alpha") or "soft"
+    rendered = export_from_cache(
+        cache_dir, sheet["layout"], poses, base_tile,
+        idle=idle, export_24fps=False, total_frames=total, canvas=canvas, alpha=alpha,
+    )
+    if rendered is None:
+        raise FileNotFoundError("Cached sprite frames are missing for repack")
+    full, indexed = rendered
+    os.makedirs(dest_dir, exist_ok=True)
+    written = {}
+    for style, img in (("illustrated", full), ("indexed", indexed)):
+        fname = stem + "." + style + ".png"
+        dest = os.path.join(dest_dir, fname)
+        tmp = dest + ".tmp"
+        img.save(tmp, format="PNG")
+        os.replace(tmp, dest)
+        written[style] = fname
+    webp_name = sheet.get("illustrated_webp")
+    if webp_name:
+        webp_path = os.path.join(dest_dir, webp_name)
+        if os.path.isfile(webp_path):
+            tmp = webp_path + ".tmp"
+            full.save(tmp, format="WEBP", quality=84, alpha_quality=90, method=6)
+            os.replace(tmp, webp_path)
+    removed = []
+    pattern = stem + ".*px.*.png"
+    for fname in os.listdir(dest_dir):
+        if fnmatch.fnmatch(fname, pattern):
+            full_path = os.path.join(dest_dir, fname)
+            if os.path.isfile(full_path):
+                os.remove(full_path)
+                removed.append(fname)
+    return {"illustrated": written["illustrated"], "indexed": written["indexed"], "removed_variants": sorted(removed)}
+
+
+def apply_pose_alpha(cache_dir, sheet, pose_index, erase_mask=None, restore_mask=None, raw_frame=None,
+                     total_frames=None):
+    """Apply tile-space alpha erase and/or restore to a single cached pose frame (0-GPU)."""
+    import numpy as np
+    from PIL import Image
+
+    if erase_mask is None and restore_mask is None:
+        raise ValueError("Provide erase_mask or restore_mask")
+    _, source_index, orig_index = pose_source_index(sheet, pose_index, total_frames=total_frames)
+    backup_pose_frame(cache_dir, source_index)
+    frame_path = os.path.join(cache_dir, "f%04d.png" % source_index)
+    with Image.open(frame_path) as im:
+        rgba = im.convert("RGBA")
+    arr = np.asarray(rgba, dtype=np.float32) / 255.0
+    frame_size = rgba.size
+    tile_size = sheet.get("tile_size") or sheet.get("tile") or TILE
+    canvas = sheet.get("canvas") or "portrait"
+    layout = sheet["layout"]
+
+    if restore_mask is not None:
+        r = _to_frame_mask(restore_mask, frame_size, layout, tile_size, canvas=canvas)
+        new_alpha = np.maximum(arr[:, :, 3], r)
+        if raw_frame is not None:
+            raw_rgb = raw_frame.convert("RGB")
+            if raw_rgb.size != frame_size:
+                raw_rgb = raw_rgb.resize(frame_size, Image.Resampling.LANCZOS)
+            defringed = with_matte(raw_rgb, new_alpha, alpha_low=0.0, alpha_high=1.0, key=False)
+            def_rgb = np.asarray(defringed, dtype=np.float32)[:, :, :3] / 255.0
+            w = r[..., None]
+            arr[:, :, :3] = arr[:, :, :3] * (1.0 - w) + def_rgb * w
+        arr[:, :, 3] = new_alpha
+
+    if erase_mask is not None:
+        e = _to_frame_mask(erase_mask, frame_size, layout, tile_size, canvas=canvas)
+        arr[:, :, 3] = arr[:, :, 3] * (1.0 - e)
+
+    out_im = Image.fromarray((arr.clip(0.0, 1.0) * 255.0).round().astype(np.uint8), "RGBA")
+    tmp = frame_path + ".tmp"
+    out_im.save(tmp, format="PNG")
+    os.replace(tmp, frame_path)
+
+    patched_map = sheet.setdefault("patched_poses", {})
+    prev = patched_map.get(str(pose_index)) if isinstance(patched_map.get(str(pose_index)), dict) else {}
+    meta = dict(prev)
+    meta.update({"method": "alpha", "source_index": source_index, "orig_index": prev.get("orig_index", orig_index)})
+    patched_map[str(pose_index)] = meta
+    return {"pose": pose_index, "source_index": source_index, "orig_index": meta["orig_index"], "method": "alpha"}
+
+
+def composite_pose_repair(cache_dir, sheet, pose_index, repaired_rgba, mask_tile=None, feather_px=3,
+                          total_frames=None):
+    """Composite an AI-repaired RGBA pose frame into frame_cache, keeping unmasked pixels bit-exact."""
+    import numpy as np
+    from PIL import Image
+    from scipy.ndimage import distance_transform_edt, gaussian_filter
+
+    _, source_index, orig_index = pose_source_index(sheet, pose_index, total_frames=total_frames)
+    backup_pose_frame(cache_dir, source_index)
+    frame_path = os.path.join(cache_dir, "f%04d.png" % source_index)
+    with Image.open(frame_path) as im:
+        orig_im = im.convert("RGBA")
+    rep_im = repaired_rgba.convert("RGBA")
+    if rep_im.size != orig_im.size:
+        rep_im = rep_im.convert("RGBa").resize(orig_im.size, Image.Resampling.LANCZOS).convert("RGBA")
+
+    if mask_tile is None:
+        out_im = rep_im
+    else:
+        tile_size = sheet.get("tile_size") or sheet.get("tile") or TILE
+        canvas = sheet.get("canvas") or "portrait"
+        raw_m = _to_frame_mask(mask_tile, orig_im.size, sheet["layout"], tile_size, canvas=canvas)
+        inside = raw_m > 0.0
+        if feather_px and float(feather_px) > 0:
+            fp = float(feather_px)
+            dist = distance_transform_edt(inside)
+            ramp = np.clip((dist - 0.5) / fp, 0.0, 1.0)
+            ramp = ramp * ramp * (3.0 - 2.0 * ramp)
+            weight = gaussian_filter(raw_m * ramp, sigma=max(0.5, fp * 0.35))
+            weight = np.where(inside, weight, 0.0).clip(0.0, 1.0).astype(np.float32)
+        else:
+            weight = np.where(inside, raw_m, 0.0).clip(0.0, 1.0).astype(np.float32)
+
+        orig_u8 = np.asarray(orig_im, dtype=np.uint8)
+        rep_u8 = np.asarray(rep_im, dtype=np.uint8)
+        orig_f = orig_u8.astype(np.float32) / 255.0
+        rep_f = rep_u8.astype(np.float32) / 255.0
+        orig_pm = orig_f[..., :3] * orig_f[..., 3:4]
+        rep_pm = rep_f[..., :3] * rep_f[..., 3:4]
+        w = weight[..., None]
+        out_a = orig_f[..., 3:4] * (1.0 - w) + rep_f[..., 3:4] * w
+        out_pm = orig_pm * (1.0 - w) + rep_pm * w
+        out_rgb = np.where(out_a > 1e-6, out_pm / np.maximum(out_a, 1e-6), 0.0).clip(0.0, 1.0)
+        blended_u8 = (np.concatenate((out_rgb, out_a.clip(0.0, 1.0)), axis=2) * 255.0).round().astype(np.uint8)
+        out_u8 = np.where(w > 0.0, blended_u8, orig_u8)
+        out_im = Image.fromarray(out_u8, "RGBA")
+
+    tmp = frame_path + ".tmp"
+    out_im.save(tmp, format="PNG")
+    os.replace(tmp, frame_path)
+
+    patched_map = sheet.setdefault("patched_poses", {})
+    prev = patched_map.get(str(pose_index)) if isinstance(patched_map.get(str(pose_index)), dict) else {}
+    meta = dict(prev)
+    meta.update({"method": "ai", "source_index": source_index, "orig_index": prev.get("orig_index", orig_index)})
+    patched_map[str(pose_index)] = meta
+    return {"pose": pose_index, "source_index": source_index, "orig_index": meta["orig_index"], "method": "ai"}
+
+
+def nudge_pose_frame(cache_dir, sheet, pose_index, new_source_index, new_rgba, total_frames=None):
+    """Replace a pose's source video frame index in layout['indices'] and write its cutout to frame_cache."""
+    poses, idle, total = _pose_layout_info(sheet, total_frames=total_frames)
+    _, source_index, orig_index = pose_source_index(sheet, pose_index, total_frames=total)
+    new_idx = int(new_source_index)
+    if not 0 <= new_idx < total:
+        raise ValueError("new_source_index %s is out of range 0..%s" % (new_idx, total - 1))
+
+    if os.path.isfile(os.path.join(cache_dir, "f%04d.png" % source_index)):
+        backup_pose_frame(cache_dir, source_index)
+    if new_idx != source_index and os.path.isfile(os.path.join(cache_dir, "f%04d.png" % new_idx)):
+        backup_pose_frame(cache_dir, new_idx)
+
+    layout = sheet["layout"]
+    had_indices = "indices" in layout
+    orig_start = int(layout["start"])
+    if not had_indices:
+        layout["indices"] = [orig_start + 2 * i for i in range(poses)]
+    base_idx = (2 * (poses - 1) - pose_index) if (idle and pose_index >= poses) else pose_index
+
+    patched_map = sheet.setdefault("patched_poses", {})
+    prev = patched_map.get(str(pose_index)) if isinstance(patched_map.get(str(pose_index)), dict) else {}
+    meta = {
+        "method": "nudge",
+        "source_index": new_idx,
+        "orig_index": prev.get("orig_index", orig_index),
+        "orig_had_indices": prev.get("orig_had_indices", had_indices),
+        "orig_start": prev.get("orig_start", orig_start),
+        "base_index": base_idx,
+    }
+    layout["indices"][base_idx] = new_idx
+    layout["nudged"] = True
+    if base_idx == 0:
+        layout["start"] = new_idx
+
+    os.makedirs(cache_dir, exist_ok=True)
+    dest = os.path.join(cache_dir, "f%04d.png" % new_idx)
+    tmp = dest + ".tmp"
+    new_rgba.convert("RGBA").save(tmp, format="PNG")
+    os.replace(tmp, dest)
+
+    patched_map[str(pose_index)] = meta
+    return {"pose": pose_index, "source_index": new_idx, "orig_index": meta["orig_index"], "method": "nudge"}
+
+
+def revert_pose_frame(cache_dir, sheet, pose_index, total_frames=None):
+    """Restore a pose's original cached RGBA frame and layout['indices'] entry, clearing patched_poses."""
+    import shutil
+
+    poses, idle, total = _pose_layout_info(sheet, total_frames=total_frames)
+    _, source_index, orig_index = pose_source_index(sheet, pose_index, total_frames=total)
+    patched_map = sheet.get("patched_poses")
+    meta = patched_map.get(str(pose_index)) if isinstance(patched_map, dict) else None
+    base_idx = (
+        int(meta["base_index"])
+        if isinstance(meta, dict) and meta.get("base_index") is not None
+        else ((2 * (poses - 1) - pose_index) if (idle and pose_index >= poses) else pose_index)
+    )
+    if isinstance(meta, dict) and meta.get("orig_index") is not None:
+        orig_index = int(meta["orig_index"])
+
+    layout = sheet["layout"]
+    if "indices" in layout and 0 <= base_idx < len(layout["indices"]):
+        layout["indices"][base_idx] = orig_index
+        if base_idx == 0:
+            layout["start"] = int(meta["orig_start"]) if isinstance(meta, dict) and "orig_start" in meta else orig_index
+
+    orig_dir = os.path.join(cache_dir, "orig")
+    for idx in dict.fromkeys((orig_index, source_index)):
+        backup = os.path.join(orig_dir, "f%04d.png" % int(idx))
+        target = os.path.join(cache_dir, "f%04d.png" % int(idx))
+        if os.path.isfile(backup):
+            tmp = target + ".tmp"
+            shutil.copy2(backup, tmp)
+            os.replace(tmp, target)
+
+    if isinstance(patched_map, dict):
+        patched_map.pop(str(pose_index), None)
+        if not patched_map:
+            sheet.pop("patched_poses", None)
+
+    remaining = sheet.get("patched_poses") or {}
+    if not any(
+        isinstance(v, dict) and (v.get("method") == "nudge" or v.get("source_index") != v.get("orig_index"))
+        for v in remaining.values()
+    ):
+        layout.pop("nudged", None)
+
+    if "indices" in layout and isinstance(meta, dict) and not meta.get("orig_had_indices", True):
+        if not remaining:
+            default_indices = [int(layout["start"]) + 2 * i for i in range(poses)]
+            if layout["indices"] == default_indices:
+                layout.pop("indices", None)
+
+    return {"pose": pose_index, "source_index": orig_index, "reverted": True}

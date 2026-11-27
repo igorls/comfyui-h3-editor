@@ -326,9 +326,10 @@ Renders queue on the user's GPU one at a time. Measured with the models loaded:
 - a project can render on another checkpoint family instead (`set_project` `profile`; the
   reference lists them). In tests a 2 second 9:16 final took 1.5 to 2.5 minutes on
   HyperFlow, MiniMax H3 Turbo and the 20-step MiniMax H3 alike. Keep HyperFlow unless the
-  user asks for another. Do not suggest PRISM for anyone who speaks, or for a shot made of
+  user asks for another. Do not suggest PRISM (`prism`) for anyone who speaks, or for a shot made of
   extensions: its mouth follows the words less exactly, and its extensions drift. It suits
-  short single shots;
+  short single shots. `triprism` (TriPRISM TurboFusion) and `sulphur3` (Sulphur 3) hold speech,
+  cast references and 2D anime cleanly;
 - one clip can render on another family than the rest (`update_clip` `profile`). Changing
   family between renders loads the new models first. Send the renders in one batch: the
   editor queues the ones that share a model file together, so each model loads once;

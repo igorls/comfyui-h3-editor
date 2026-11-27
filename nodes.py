@@ -120,6 +120,10 @@ class H3Take(io.ComfyNode):
                 io.Float.Input("keep", default=0.0, min=0.0, max=1.0, step=0.0001, tooltip="Raw mask value, read only when strength is custom. The useful range is about 0.95 to 0.996."),
                 io.Combo.Input("align", options=["av", "video"], default="av", tooltip="av snaps holds to 39, 90, 141, so picture and sound share a boundary."),
                 io.Mask.Input("region", optional=True, tooltip="White areas of the held video regenerate. One mask or one per frame."),
+                io.Int.Input("region_frame", default=-1, min=-1, max=3600, optional=True,
+                             tooltip="When >= 0, apply the region mask ONLY to the single latent step containing this frame, leaving all other held steps frozen. -1 applies region across all steps."),
+                io.Boolean.Input("pooled_region", default=False, optional=True,
+                                 tooltip="Snap the region mask to binary 32px DiT cells across H3's 1-4-4-4-4 temporal spans for HyperFlow Flash compatibility."),
                 io.Int.Input("video_feather", default=0, min=0, max=20, tooltip="Latent steps of soft edge where held video meets generated video."),
                 io.Float.Input("context_noise", default=0.0, min=0.0, max=1.0, step=0.001, optional=True, tooltip="Lets the held frames far from the join be partly redrawn, rising from nothing at the join to this mask value at the far end of the hold, so a chain of extensions does not pile up small shifts of colour and texture. The frames at the join stay held. 0 holds every frame as it is."),
                 io.Combo.Input("audio_hold", options=list(AUDIO_HOLDS), default="off", tooltip="span holds the source audio across the held video. full lays it along the whole take."),
@@ -155,7 +159,7 @@ class H3Take(io.ComfyNode):
                 audio_vae=None, start_image=None, end_image=None, mid_images=None, source_video=None, end_video=None,
                 end_audio=None, carry=None, region=None, source_audio=None, ref_images=None, ref_videos=None, ref_video_audios=None,
                 ref_audios=None, audio_align="video", source_hold=None, end_hold=None, end_hold_frames=0,
-                context_noise=0.0, style_markers="[]") -> io.NodeOutput:
+                context_noise=0.0, style_markers="[]", region_frame=-1, pooled_region=False) -> io.NodeOutput:
         keep = resolve_keep(strength, keep)
         second = None
         if video_mode == "bridge":
@@ -260,7 +264,8 @@ class H3Take(io.ComfyNode):
             if second is not None:
                 pieces.append(second)
             latent = cls.hold(latent, vae, audio_vae, pieces, length, width, height,
-                              video_feather, audio_feather, region, carry, context_noise or 0.0)
+                              video_feather, audio_feather, region, carry, context_noise or 0.0,
+                              region_frame=region_frame, pooled_region=pooled_region)
 
         card = "; ".join(decided["labels"])
         if styles:
@@ -271,7 +276,7 @@ class H3Take(io.ComfyNode):
 
     @staticmethod
     def hold(latent, vae, audio_vae, pieces, length, width, height, video_feather, audio_feather, region, carry=None,
-             context_noise=0.0):
+             context_noise=0.0, region_frame=-1, pooled_region=False):
         total_steps = video_steps(length)
         video_curve = None
         audio_curve = None
@@ -314,7 +319,8 @@ class H3Take(io.ComfyNode):
             writes.append((video_latent, video_first, audio_latent, audio_first))
         for video_latent, video_first, audio_latent, audio_first in writes:
             latent = write_holds(latent, video_latent, video_first, audio_latent, audio_first,
-                                 video_curve, audio_curve, region)
+                                 video_curve, audio_curve, region, pooled_region=pooled_region,
+                                 region_frame=region_frame)
         return latent
 
 
@@ -472,6 +478,7 @@ class H3LoadClip(io.ComfyNode):
             with av.open(path) as container:
                 stream = container.streams.video[0]
                 width, height = stream.width, stream.height
+                total = int(stream.frames or 0)
                 if reference_only:
                     scale = min(1, 768 / max(width, height))
                     width, height = (max(2, round(side * scale / 2) * 2) for side in (width, height))
@@ -479,7 +486,11 @@ class H3LoadClip(io.ComfyNode):
                           for frame in islice(container.decode(stream), first, last or None)]
             if not images or (last and len(images) != last - first):
                 raise ValueError("the source video ends before the selected frame range")
-            return io.NodeOutput(torch.from_numpy(np.stack(images)).float().div_(255), None, None)
+            stop = last or (first + len(images))
+            held = None
+            if frames_only and not reference_only and total > 0:
+                held = holds.part(holds.hold_path(path), first, stop, total)
+            return io.NodeOutput(torch.from_numpy(np.stack(images)).float().div_(255), None, held)
         video = InputImpl.VideoFromFile(path).get_components()
         frames = video.images
         stop = last or frames.shape[0]

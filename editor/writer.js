@@ -201,14 +201,22 @@ export async function freeComfyMemory() {
 }
 
 // One answer. With pictures, a model that cannot take them (a text-only model, or an endpoint that refuses
-// images) is asked once more with the text alone, and lastSeen() says so.
-async function ask(given, system, user, pictures = []) {
+// images) is asked once more with the text alone, and lastSeen() says so — unless requirePictures is true,
+// in which case describing images without seeing them would only guess.
+async function ask(given, system, user, pictures = [], { requirePictures = false } = {}) {
   seen = { pictures: pictures.length, blind: false, freed: null };
   if (freesVram(given)) seen.freed = await freeComfyMemory();
   if (!pictures.length) return askOnce(given, system, user, []);
   try {
     return await askOnce(given, system, user, pictures);
   } catch (error) {
+    if (requirePictures) {
+      const msg = String(error?.message || error || "");
+      if (/image|vision|multimodal|unsupported|media|content.*type/i.test(msg)) {
+        throw new Error("This language model could not read the reference pictures. Choose a vision-capable model in Writing setup. (" + msg + ")");
+      }
+      throw error;
+    }
     const text = await askOnce(given, system, user.replace(/\n\nPictures with this message[\s\S]*?\n\n/, "\n\n"), []).catch(() => null);
     if (text === null) throw error;
     seen = { ...seen, pictures: 0, blind: true };
@@ -366,4 +374,38 @@ export async function writeShots({ project, brief, count, seconds, pictures = []
   if (rows && !Array.isArray(rows) && Array.isArray(rows.shots)) rows = rows.shots;
   if (!Array.isArray(rows) || !rows.length) throw new Error("The model did not answer with a list of shots. Try again, or another model.");
   return rows.slice(0, LIMITS.shots[1]).map((row, index) => ({ name: clean(row?.name, 60) || "Shot " + (index + 1), ...fieldsFrom(row, each) }));
+}
+
+const CAST_DESCRIPTION_RULES = `You write concise visual cast descriptions for MiniMax H3 video generation.
+Your output is inserted directly into prompts like "<Subject 1> is <description> in <Image 1>."
+
+Rules:
+- Describe ONLY the subject's enduring visual identity visible across the attached reference pictures: subject type (person, creature, product, or place), approximate age and build, facial features, skin tone/material, hair/texture, distinctive details, clothing, colors, and accessories.
+- Synthesize consistent details across all attached angles (front, side, back, close-up, full-body).
+- Write ONE compact, concrete English noun phrase or single flowing description (about 35 to 75 words).
+- Do NOT mention camera framing, pose, facial expression of a single photo, lighting, or background setting unless the cast member itself is a place.
+- Do NOT include the subject's name, introductory phrases ("This image shows", "A photo of"), quotes, bullet lists, or markdown.
+- Reply with the plain description text only.`;
+
+export function cleanCastDescription(text) {
+  let out = String(text ?? "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  out = out.replace(/^```(?:\w+)?\s*|\s*```$/g, "").trim();
+  out = out.replace(/^["'“”]+|["'“”]+$/g, "").trim();
+  out = out.replace(/^(?:description|subject)\s*:\s*/i, "").trim();
+  out = out.replace(/\s*\n+\s*/g, " ").replace(/\s{2,}/g, " ").trim();
+  return out.slice(0, 1500);
+}
+
+// Write a cast member's visual description from their reference pictures.
+export async function describeCast({ person, project = null, pictures = [] }, given = settings()) {
+  if (!pictures.length) throw new Error("Add at least one reference picture before describing.");
+  const parts = [];
+  if (project && clean(project.style)) parts.push("Project look (do not repeat camera/lighting style, focus on the subject): " + clean(project.style, 400));
+  if (person && clean(person.name)) parts.push("Cast member label (do not include this name in the output): " + clean(person.name, 80));
+  parts.push(picturesNote(pictures).trim());
+  parts.push("Write the visual description of this cast member from these reference pictures.");
+  const raw = await ask(given, CAST_DESCRIPTION_RULES, parts.filter(Boolean).join("\n\n"), pictures, { requirePictures: true });
+  const text = cleanCastDescription(raw);
+  if (!text) throw new Error("The model answered with an empty description. Try again, or another model.");
+  return text;
 }

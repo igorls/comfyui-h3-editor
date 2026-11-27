@@ -292,7 +292,7 @@ class ProjectTest(unittest.TestCase):
                         self.assertEqual(graph["5"]["inputs"]["model"], ["95", 0])
                         refine = graph["87"]
                         if profile.get("refine_sigmas"):
-                            self.assertEqual(refine, {"class_type": "ManualSigmas", "inputs": {"sigmas": REFINE_TAIL}})
+                            self.assertEqual(refine, {"class_type": "ManualSigmas", "inputs": {"sigmas": profile["refine_sigmas"]}})
                             self.assertEqual(graph["90"]["inputs"]["sigmas"], ["87", 0])
                         else:
                             self.assertEqual(refine["inputs"], {"sigmas": ["12", 0], "step": profile["refine_from"]})
@@ -1323,13 +1323,14 @@ class CheckpointTest(unittest.TestCase):
             self.own(lora="no")
 
     def test_the_merged_community_checkpoints_are_built_in(self):
-        for name, steps in (("eros", (6, 8)), ("dasiwa_v5", (6, 8))):
+        for name, steps in (("eros", (6, 8)), ("dasiwa_v5", (6, 8)), ("triprism", (6, 8))):
             project = new_project("x")
             set_project(project, {"profile": name})
             draft = render_graph(project, "x", clip(), "t1", "draft", 3)
             final = render_graph(project, "x", clip(), "t1", "final", 3)
             self.assertEqual(draft["1"], {"class_type": "UNETLoader", "inputs": {"unet_name": PROFILES[name]["unet"][0], "weight_dtype": "default"}})
             self.assertEqual((draft["12"]["inputs"]["steps"], final["12"]["inputs"]["steps"]), steps)
+            self.assertEqual((draft["11"]["inputs"]["sampler_name"], draft["12"]["inputs"]["scheduler"]), ("euler", "simple"))
             # Their turbo is in the weights, so no family LoRA, and a prompt-only clip renders on the one file.
             self.assertNotIn("94", draft)
             self.assertEqual(draft["10"]["inputs"]["checkpoint"], "ref2va")
@@ -1337,8 +1338,31 @@ class CheckpointTest(unittest.TestCase):
         found = {"dasiwa_minimax_h3_ref2va_v5xs_pruned_graviton_turbo_w4a8.safetensors"}
         self.assertEqual(render_graph(dict(new_project("x"), profile="dasiwa_v5"), "x", clip(), "t1", "draft", 3, found)["1"]["inputs"]["unet_name"],
                          "dasiwa_minimax_h3_ref2va_v5xs_pruned_graviton_turbo_w4a8.safetensors")
+        triprism_hf = {"Sulphur3_10ErosMax_SingularityV2_TriPRISM_TurboFusion_realism_pruned_w6a8_g32.safetensors"}
+        self.assertEqual(render_graph(dict(new_project("x"), profile="triprism"), "x", clip(), "t1", "draft", 3, triprism_hf)["1"]["inputs"]["unet_name"],
+                         "Sulphur3_10ErosMax_SingularityV2_TriPRISM_TurboFusion_realism_pruned_w6a8_g32.safetensors")
+        # TriPRISM already bakes Realism Slider 1.5, so finals default to a lighter Realism V2 pass (0.5) unless overridden.
+        tri_final = render_graph(dict(new_project("x"), profile="triprism"), "x", clip(), "t1", "final", 3)
+        self.assertAlmostEqual(tri_final["95"]["inputs"]["strength"], 0.5)
+        tri_override = render_graph(dict(new_project("x"), profile="triprism", realism=1.0), "x", clip(), "t1", "final", 3)
+        self.assertAlmostEqual(tri_override["95"]["inputs"]["strength"], 1.0)
+        # PRISM is also very sharp/textured out of the box, so finals default to a lighter Realism V2 pass (0.5).
+        prism_final = render_graph(dict(new_project("x"), profile="prism"), "x", clip(), "t1", "final", 3)
+        self.assertAlmostEqual(prism_final["95"]["inputs"]["strength"], 0.5)
+        # Sulphur 3 is a 20-step res_multistep community fine-tune and falls back to its W4A8 quant.
+        s3_project = new_project("x")
+        set_project(s3_project, {"profile": "sulphur3"})
+        s3_draft = render_graph(s3_project, "x", clip(), "t1", "draft", 3, {"s3_w4a8.safetensors"})
+        s3_final = render_graph(s3_project, "x", clip(), "t1", "final", 3, FINALS | {"s3_w4a8.safetensors"})
+        self.assertEqual(s3_draft["1"]["inputs"]["unet_name"], "s3_w4a8.safetensors")
+        self.assertEqual((s3_draft["12"]["inputs"]["steps"], s3_final["12"]["inputs"]["steps"]), (10, 20))
+        self.assertEqual((s3_draft["11"]["inputs"]["sampler_name"], s3_draft["12"]["inputs"]["scheduler"]), ("res_multistep", "simple"))
+        self.assertEqual(s3_final["87"]["class_type"], "SplitSigmas")
+        self.assertEqual(s3_final["87"]["inputs"]["step"], 17)
+        self.assertNotIn("94", s3_draft)
         rows = {row["id"]: row for row in profile_status(set())}
-        self.assertEqual((rows["h3_turbo"]["lora"], rows["eros"]["lora"]), (PROFILES["h3_turbo"]["lora"][0], None))
+        self.assertEqual((rows["h3_turbo"]["lora"], rows["eros"]["lora"], rows["triprism"]["lora"], rows["sulphur3"]["lora"]),
+                         (PROFILES["h3_turbo"]["lora"][0], None, None, None))
 
     def test_one_clip_can_render_on_it(self):
         project = self.own()
